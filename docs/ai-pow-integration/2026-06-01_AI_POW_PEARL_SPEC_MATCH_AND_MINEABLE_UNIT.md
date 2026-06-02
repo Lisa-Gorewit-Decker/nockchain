@@ -11,6 +11,12 @@ Status: Current compatibility audit, updated after legacy NCMN removal
 > See
 > `2026-06-01_PEARL_MERGE_MINING_COMPATIBILITY_SPEC.md` for the wire-level
 > production shape.
+>
+> Update, 2026-06-02: the Pearl-compatible production spec now adopts Pearl's
+> tile-ticket work model. A Pearl work instance is keyed by `sigma || mu` and
+> may expose multiple public tile tickets. Ticket offsets are public proof
+> parameters for an opened tile; they are not additional entropy before
+> `kappa`.
 
 The live implementation mines Pearl-compatible ticket attempts in Rust,
 submits Nockchain hits as `%ai-pow`, submits Pearl hits as Gateway
@@ -29,42 +35,50 @@ core mineable primitive:
 - Noised tiled matmul accumulator.
 - 16-word jackpot/tile-state update.
 - Little-endian 256-bit target comparison.
-- Shape-aware target weight `r * tile_m * tile_n`.
+- Shape-aware target weight
+  `dot_product_length * rows_pattern.size() * cols_pattern.size()`.
 
-The important caveat is that "close to Pearl" now means close at the mineable
-ticket attempt layer, not identical at the proof-system or chain-submission
-layer:
+The important caveat is that "close to Pearl" means close at the Pearl
+work-instance and tile-ticket layer, not identical at the proof-system or
+chain-submission layer:
 
 - The mineable attempt nonce is a Rust-owned Pearl-compatible `AIP1` ticket
   envelope. Hoon treats it as opaque bytes and does not model Pearl fields.
-- The attempt binds Pearl header fields, mining configuration, Nockchain aux
-  commitment, ticket offset, and ticket rows/columns before deriving `kappa`,
-  matrix commitments, noise, noised matrices, and matmul-derived tile states.
-- The Rust miner evaluates each attempt against the Nockchain target and the
-  adjusted Pearl target independently. It submits to Pearl Gateway for Pearl
-  target hits and submits `%ai-pow` to Nockchain for Nockchain target hits. It
-  submits to both only when the same attempt satisfies both targets.
+- `sigma` is the Pearl incomplete header bytes, including the Nockchain aux
+  commitment. `mu` is the Pearl mining configuration. Pearl derives `kappa`,
+  matrix commitments, noise, noised matrices, and matmul-derived tile states
+  from `sigma || mu`, the committed matrices, and the configured puzzle shape.
+- Public proof parameters choose a tile ticket from that committed work
+  instance. Changing a ticket offset changes the opened tile and jackpot
+  statement, not the `kappa` or noised matmul instance.
+- The Rust miner evaluates each attempt against the Pearl adjusted target and
+  the Nockchain target adjusted by Pearl's pattern-size work factor
+  independently. It submits to Pearl Gateway for Pearl target hits and submits
+  `%ai-pow` to Nockchain for Pearl-priced Nockchain target hits. It submits to
+  both only when the same attempt satisfies both targets.
 - The canonical Nockchain block artifact is the recursive ZK certificate noun,
   not Pearl's plain block-opening proof and not a raw Layer-0 STARK blob.
 
-The biggest remaining semantic difference is the mineable unit for multi-tile
-matmuls. Pearl's paper describes computing the full tiled noised matmul and
-checking the block-opening condition on computed full-rank tiles. Current
-Nockchain production admission is intentionally limited to the supported
-recursive certificate shape and rejects unsupported recursive parameters before
-mining.
+The main implementation gap is no longer an unresolved lottery rule. The spec
+rule is Pearl's rule: a full noised tiled matmul work instance can yield one or
+more tile tickets, and each ticket is priced by Pearl's target factor
+`dot_product_length * rows_pattern.size() * cols_pattern.size()`, where
+`dot_product_length = common_dim - common_dim % rank`. The Nockchain
+production spec supports the same puzzle requirements as Pearl: canonical
+`MiningConfiguration`, canonical row/column `PeriodicPattern` values, valid
+`t_rows`/`t_cols` offsets, and the exact shifted row/column sets selected by
+those public proof parameters. Current implementation admission and the
+Layer-0 recursive bridge bind those explicit shifted row/column schedules
+instead of rewriting them to a native square tile.
 
 Therefore:
 
-- For the current single-tile canonical smoke profile, the unit of mineable
-  work is effectively the same Pearl-style ticket/tile execution, with
-  Nockchain aux commitment binding included in the Rust-owned ticket envelope.
-- For real multi-tile AI workloads, the current canonical proof path is not yet
-  Pearl-equivalent because it is fail-closed. Before enabling multi-tile
-  consensus, we must explicitly choose and implement the lottery semantics:
-  Pearl-style "each computed eligible tile is a ticket" or Nockchain-style
-  "one verifier-selected tile per nonce-bound full matmul" with target/work
-  accounting adjusted accordingly.
+- At the protocol/spec level, the unit of mineable work is the same
+  Pearl-style work instance/tile-ticket execution, with Nockchain aux
+  commitment binding included in `sigma`.
+- At the implementation level, Nockchain must not replace Pearl's ticket set
+  with a one-verifier-selected-tile lottery while still claiming Pearl
+  compatibility. The proof statement binds the public Pearl ticket schedule.
 
 ## Pearl Baseline
 
@@ -85,9 +99,10 @@ The Pearl whitepaper's relevant PoW pipeline is:
    from `s_A` and `s_B`.
 6. The miner computes `(A + E) * (B + F)` with a tiled matmul algorithm.
    Each output tile carries a compact 16-word state `M`.
-7. A tile wins when the BLAKE3 hash of that tile state is below:
-   `2^(256 - b) * r * tile_m * tile_n`, interpreted as a little-endian
-   `uint256`.
+7. A ticket wins when the BLAKE3 hash of that ticket's tile state is below:
+   Pearl's base target adjusted by
+   `dot_product_length * rows_pattern.size() * cols_pattern.size()`,
+   interpreted as a little-endian `uint256`.
 8. A block-opening proof lets the verifier reconstruct the opened tile from
    matrix openings and commitments. Pearl then compresses this proof with a
    recursive ZK proof.
@@ -96,7 +111,7 @@ Pearl's stated unit is therefore tied to the actual tiled noised matmul work:
 the ticket is not "hash a nonce"; it is "prove a tile state produced by the
 prescribed noised matmul under commitments derived from the chain state."
 
-## Current Nockchain Pipeline
+## Current Pearl-Compatible Pipeline
 
 The current Rust pipeline is:
 
@@ -105,34 +120,36 @@ The current Rust pipeline is:
    domain-separated extra data.
 2. `PearlMergeMiningJob` combines the Pearl header template, Pearl mining
    configuration, canonical aux bytes, matrix bytes, and Nockchain target.
-3. Each loop iteration constructs one explicit Pearl-compatible ticket attempt
-   (`AIP1`) with a ticket offset and concrete row/column ticket selections.
-4. `params_tag(params)` binds the `MatmulParams`.
-5. `pearl_merge_attempt_state(...)` binds the ticket bytes and aux context
-   before `commitment_key(..., params_tag)` derives `kappa`.
-6. `BlockContext::build(block_commitment, nonce, A, B, params)` computes:
-   - legacy diagnostic row/column roots `h_a` / `h_b`;
-   - canonical chunk commitments `h_a_chunk` / `h_b_chunk`;
-   - `s_A` / `s_B` from the chunk commitments;
-   - low-rank noise;
-   - noised matrices;
-   - per-tile `M` states for that exact ticket attempt.
-7. The ticket worker hashes the Pearl jackpot digest for that exact attempt and
-   returns only after the Nockchain target is hit. Recursive proof construction
-   happens after the target hit, not for target misses.
-8. The ZK statement precheck re-derives `kappa`, `s_A`, `s_B`, `pow_key`,
-   `HASH_A`, `HASH_B`, trace height, target satisfaction, and the
-   verifier-derived `found_idx` before accepting the recursive certificate
-   metadata.
+3. The Pearl work instance derives:
+   `kappa = BLAKE3(sigma || mu)`, where `sigma` is the aux-bearing incomplete
+   Pearl header and `mu` is the mining configuration.
+4. The work instance computes Pearl commitments and seeds:
+   - `H_A = BLAKE3(pad(A_row_major), key=kappa)`;
+   - `H_B = BLAKE3(pad(B_col_major), key=kappa)`;
+   - `s_B = BLAKE3(kappa || H_B)`;
+   - `s_A = BLAKE3(s_B || H_A)`.
+5. The miner computes the noised tiled matmul `(A + E) * (B + F)`.
+   Each eligible output tile has a Pearl 16-word state `M`.
+6. Each public proof-parameter ticket selects valid `t_rows` and `t_cols`
+   from that work instance. The jackpot digest is
+   `BLAKE3(M_ticket, key=s_A)`.
+7. The ticket worker evaluates the same Pearl jackpot digest against the
+   adjusted Pearl target and the Pearl-priced Nockchain target independently.
+   Recursive proof construction happens after a Nockchain target hit, not for
+   target misses.
+8. The ZK statement precheck re-derives `kappa`, `s_A`, `s_B`, `HASH_A`,
+   `HASH_B`, trace height, target satisfaction, and the submitted ticket
+   metadata before accepting the recursive certificate metadata.
 9. The canonical artifact intended for Hoon/block persistence is:
    `[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]`, where
    `ai-pow-nonce=[len=@ud data=@uxaipownonce]` is opaque to Hoon and the
    certificate carries commitments `[h-a-chunk h-b-chunk]` only.
 
-This is intentionally not a reusable mining cache. Changing the nonce changes
-`kappa`, commitments, noise, noised matrices, tile states, and final jackpot
-key. Raw matrix bytes and shape validation can be reused; nonce-independent
-noised matrices or tile states cannot.
+This is reusable only in the way Pearl permits. A miner may evaluate multiple
+valid tile tickets from one committed noised matmul work instance. A miner must
+not add a separate Nockchain nonce or cheap hash loop that creates fresh
+Nockchain target trials without producing a Pearl-valid tile ticket from a
+properly committed work instance.
 
 ## What Matches Pearl Closely
 
@@ -141,7 +158,7 @@ noised matrices or tile states cannot.
 Pearl's Algorithm 2 shape is preserved:
 
 ```text
-kappa = BLAKE3(attempt_state || params_tag)
+kappa = BLAKE3(sigma || mu)
 H_A   = BLAKE3(pad(A_row_major), key=kappa)
 H_B   = BLAKE3(pad(B_col_major), key=kappa)
 s_B   = BLAKE3(kappa || H_B)
@@ -173,16 +190,24 @@ reference. The ZK layer then proves the corresponding composite AIR execution.
 
 ### Target Formula
 
-Nockchain's local `difficulty_target(params)` uses:
+For square-contiguous diagnostic parameters, Nockchain's local
+`difficulty_target(params)` uses:
 
 ```text
 target = 2^(256 - b) * r * tile^2
 ```
 
-with little-endian `uint256` comparison, matching Pearl for square tiles.
+with little-endian `uint256` comparison. In Pearl-compatible production, the
+normative pricing is the Pearl pattern-size formula:
+
+```text
+target = base_target * dot_product_length * rows_pattern.size() * cols_pattern.size()
+```
 
 When consensus supplies an arbitrary chain target, `ai-pow-miner` passes that
-explicit 32-byte target instead of relying on `difficulty_bits`.
+explicit 32-byte base target instead of relying on `difficulty_bits`, then
+applies Pearl's pattern-size factor before checking the ticket's jackpot hash.
+The ticket's Pearl pattern size remains part of the work statement.
 
 ## Deliberate Differences
 
@@ -193,52 +218,50 @@ variable-size proof/certificate. Nockchain carries an explicit AI-PoW nonce
 inside the `%ai-pow` command, but that nonce is no longer an NCMN structure.
 It is an opaque Rust-owned Pearl-compatible ticket envelope.
 
-This is safe only because the ticket bytes and Nockchain aux commitment are
-part of the attempt state before `kappa`. If the nonce only keyed the final
-BLAKE3 jackpot hash, one expensive matmul could be reused for many cheap hash
-trials. That was the critical bug class fixed in the current branch.
+This is safe only because the envelope carries a Pearl-valid public statement
+and Nockchain aux evidence for a work instance whose `sigma` already commits to
+the candidate Nockchain block. If the envelope introduced an independent
+Nockchain nonce that only keyed the final BLAKE3 jackpot hash, one expensive
+Pearl work instance could be reused for many cheap Nockchain-only hash trials.
+That bug class remains forbidden.
 
 ### Jackpot Key
 
 Pearl's Algorithm 4 uses `BLAKE3(M, key=s_A)` in the tile check.
 
-Nockchain uses:
+Pearl-compatible Nockchain submissions use that same Pearl jackpot digest for
+attempt search and target checking:
 
 ```text
-pow_key = derive_key("pow-key", s_A || nonce)
-hash    = BLAKE3(M, key=pow_key)
+hash = BLAKE3(M_ticket, key=s_A)
 ```
 
-Since `s_A` is already nonce-bound, this is extra domain separation and
-statement binding, not the sole nonce binding. The hash primitive and target
-comparison are still Pearl-shaped. For merge mining, the Rust ticket worker
-uses the Pearl-compatible jackpot digest for attempt search; the recursive
-certificate path must continue to bind the same ticket bytes and target-hit
-metadata before any Nockchain submission.
+Native diagnostic helpers may still use additional local domain separation for
+tests or non-consensus experiments, but Pearl-compatible consensus must bind
+the recursive certificate to the same Pearl jackpot digest carried by the
+submitted ticket.
 
-### One Verifier-Derived Tile
+### Pearl-Style Tile Tickets
 
-Pearl's text describes checking the block-opening condition on computed
-full-rank tiles during the tiled matmul. In the straightforward reading, a
-multi-tile matmul creates many tile-level tickets, each weighted by
-`r * tile_m * tile_n`.
+Pearl's implementation checks the block-opening condition on ticket row/column
+sets selected by public proof parameters. A work instance creates the valid
+ticket set induced by `rows_pattern`, `cols_pattern`, `t_rows`, and `t_cols`;
+each ticket is weighted by
+`dot_product_length * rows_pattern.size() * cols_pattern.size()`.
 
-Nockchain's local recursive statement derives one eligible jackpot tile:
+Nockchain adopts this Pearl-style ticket rule for Pearl-compatible consensus.
+The submitted ticket selects a valid tile from the committed work instance, and
+the target formula prices the tile with Pearl's pattern-size factor. This is
+not miner-selected grinding in the forbidden sense: the ticket must be an
+opened Pearl tile from the noised matmul committed by `sigma || mu`, and the
+same jackpot digest is checked by both chains under their own targets.
 
-```text
-found_idx = attempt_tile_index(block_state, params_tag, s_A, num_tiles)
-```
-
-and rejects a proof whose submitted `found_idx` differs.
-
-This removes miner-selected tile grinding. It also changes multi-tile
-economics unless the target/work accounting is adjusted. A full multi-tile
-matmul with only one admissible ticket is not the same lottery as Pearl's
-"all eligible computed tiles can win" model.
-
-Current consensus-facing code avoids silently choosing wrong multi-tile
-economics by failing closed for unsupported recursive configurations until the
-recursive proof and target/work accounting are explicitly extended.
+The older native recursive helper that derived one verifier-selected
+`found_idx` remains useful as a diagnostic/smoke-profile guard. It is not the
+multi-tile consensus rule for Pearl compatibility. Current consensus-facing
+code avoids accepting the wrong economics by failing closed for unsupported
+recursive configurations until Pearl's full tile-ticket requirements are
+implemented.
 
 ### Proof System and Artifact
 
@@ -256,75 +279,78 @@ Nockchain's current `ai-pow-zk` stack is different:
 This affects proof size, verification code, wire shape, and audit surface, but
 it does not by itself change the underlying mineable matmul computation.
 
-### Parameter Shape
+### Parameter Shape and Current Admission
 
-Pearl supports a richer tile-shape/configuration language. Current
-`MatmulParams` is narrower:
+Pearl supports a richer tile-shape/configuration language than native
+Nockchain's square-tile helpers. Pearl-compatible recursive proving uses an
+explicit strip schedule derived from Pearl public parameters, so the legacy
+`tile` field is not the source of truth for the opened row/column set.
 
-- square tiles only;
-- power-of-two rank constraints;
-- explicit DoS caps;
-- production envelope checks split from fast test profiles.
-
-The core square-tile formula matches Pearl, but the supported parameter space
-is not identical.
+The spec requirement is Pearl's puzzle requirement set: any canonical
+`PeriodicPattern` accepted by Pearl, valid shifted offsets, in-bounds opened
+row/column sets, and Pearl's pattern-size target pricing. The implementation
+now carries those shifted row/column sets into the canonical program and proof
+statement as an explicit strip schedule.
 
 ## Is the Unit of Mineable Work the Same?
 
-### Single-Tile Canonical Path
+### Spec-Level Answer
 
-For the currently admissible single-tile recursive path, yes in the operational
+Yes. Nockchain's Pearl-compatible spec uses the same unit in the operational
 sense that matters for soundness:
 
-- one Pearl-compatible ticket attempt builds fresh commitments, noise, noised
-  matrices, and tile state;
-- the proof certifies the tile computation;
+- one Pearl-compatible work instance builds commitments, noise, noised
+  matrices, and the tile state from `sigma || mu`;
+- public Pearl ticket parameters select a valid shifted periodic row/column set
+  from that work instance;
+- the proof certifies that ticket computation;
 - the jackpot hash is checked against a Pearl-shaped target.
 
 The unit is not a cheap nonce hash. It is the ticket-bound noised matmul work
-for that tile.
+for that Pearl-valid ticket.
+
+### Current Implementation Status
+
+Implementation support now follows the Pearl ticket schedule for contiguous,
+non-contiguous, and rectangular row/column patterns that satisfy Pearl's public
+parameter sanity envelope and the recursive prover's stripe capacity.
 
 ### Multi-Tile Real AI Workloads
 
-Not yet.
+Spec yes; current explicit-schedule implementation yes.
 
-Pearl's model gives a large matmul many tile-level opportunities proportional
-to the useful work performed. Nockchain currently has the machinery to compute
-many tile states in the plain path, but the production recursive certificate
-only proves one selected tile and the miner preflight rejects multi-tile
-canonical submission.
+Pearl's model gives a large matmul many ticket opportunities proportional to
+the useful work performed. Nockchain's production spec adopts that rule: every
+valid Pearl ticket from the committed work instance may be checked against
+Nockchain's target after applying the same
+`dot_product_length * rows_pattern.size() * cols_pattern.size()` pricing Pearl uses
+for the ticket.
 
-This is the most important remaining spec decision:
-
-1. **Pearl-style tickets:** every computed eligible tile may be a ticket.
-   The proof/certificate must bind the full matmul or a verifier-sampled
-   aggregate so a miner cannot skip most tiles and only prove a cherry-picked
-   winner.
-2. **Nockchain one-tile ticket:** each nonce-bound full matmul yields one
-   verifier-selected tile ticket. This minimizes tile grinding but changes the
-   target economics for multi-tile matrices. The target must account for the
-   fact that only one tile is checked despite all tiles being computed.
-
-Until this is resolved, multi-tile production AI-PoW should remain fail-closed.
+The current recursive certificate proves one explicit Pearl ticket. The proof
+maps `t_rows`/`t_cols` and the Pearl periodic patterns to an explicit strip
+schedule, then binds the opened ticket to the committed Pearl work instance.
 
 ## Current Security Posture
 
 The current branch is sounder than the earlier pre-fix design because it closes
-the cache-friendly nonce-grinding bug:
+the cache-friendly Nockchain-only grinding bug:
 
-- A nonce change forces fresh `kappa`.
-- Fresh `kappa` changes matrix commitments.
-- Fresh commitments change `s_A` / `s_B`.
-- Fresh seeds change low-rank noise.
-- Fresh noise changes noised matrices and tile states.
-- The recursive statement precheck rejects metadata inconsistent with those
-  verifier-derived values.
+- The Nockchain candidate block is committed through Pearl aux data in
+  `sigma`, before `kappa` is derived.
+- Pearl public ticket parameters select an opened tile from that committed work
+  instance; they do not introduce independent Nockchain hash entropy.
+- The jackpot digest is Pearl's `BLAKE3(M_ticket, key=s_A)` for the opened
+  tile state.
+- The recursive statement precheck rejects aux, ticket, commitment, target, or
+  public-input metadata inconsistent with the verifier-recomputed Pearl work.
 
 Remaining caveats:
 
 - Hoon consensus still rejects `%ai-pow`; real verifier work is deliberately
   out of scope for the current milestone.
-- Multi-tile canonical recursive proof is not enabled.
+- Broad real recursive L1 proof-generation coverage remains opt-in because it
+  is expensive, but the cheap Layer-0 and metadata tests cover explicit
+  contiguous, non-contiguous, rectangular, and non-native-grid schedules.
 - The current recursive proof stack is not Pearl's Plonky2 three-layer stack,
   so proof size and verification assumptions differ from Pearl's paper.
 - Plain `MatmulProof` remains a diagnostic artifact and still carries
@@ -334,21 +360,18 @@ Remaining caveats:
 
 1. Keep `%ai-pow` fail-closed in Hoon. Do not pursue real verifier wiring in
    the current milestone.
-2. Write the multi-tile lottery rule explicitly before enabling real AI
-   workloads:
-   - Pearl-style per-tile tickets, or
-   - one selected tile per nonce-bound full matmul with adjusted target/work
-     accounting.
-3. If choosing Pearl-style tickets, design a recursive certificate that proves
-   enough of the full matmul aggregate to prevent "compute only the winning
-   tile" shortcuts.
-4. If choosing one selected tile, update the difficulty/work accounting docs
-   and ASERT integration so large matrices are not under- or over-rewarded.
+2. Keep Pearl-style per-tile tickets as the production lottery rule. Do not
+   introduce a Nockchain-only verifier-selected tile rule for Pearl-compatible
+   consensus.
+3. Keep the recursive certificate bound to the exact Pearl ticket schedule and
+   Pearl-priced Nockchain target.
+4. Keep broad explicit-schedule tests in place so future native square-tile
+   refactors cannot silently narrow Pearl admission.
 5. Keep the canonical commitment surface as exactly `[h-a-chunk h-b-chunk]`.
    Do not reintroduce row/column opening roots as commitment parameters.
 6. Rename or document the `COMMITMENT_HASH` public-input slot as the
    nonce-derived jackpot key to avoid future Pearl/Nockchain confusion.
-7. Keep Rust metadata-precheck tests broad enough to cover nonce tamper,
-   `h_a_chunk` / `h_b_chunk` tamper, wrong `found_idx`, target misses, and
-   multi-tile rejection for the currently unsupported rule. Do not add Hoon
+7. Keep Rust metadata-precheck tests broad enough to cover aux tamper,
+   `h_a_chunk` / `h_b_chunk` tamper, invalid ticket metadata, target misses,
+   and multi-tile rejection while proof support is incomplete. Do not add Hoon
    verifier-acceptance tests until real verifier work is explicitly scheduled.

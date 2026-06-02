@@ -22,10 +22,10 @@ use ai_pow::pearl_compat::{
 #[cfg(test)]
 use ai_pow::pearl_compat::{PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX, PEARL_NOCKCHAIN_AUX_EXTRA_MAX};
 use ai_pow::zk_bridge::{
-    expected_layer0_rows, validate_canonical_recursive_certificate_params,
-    verify_ai_pow_full_matmul_production_statement, zk_params_from_matmul,
-    AiPowRecursiveCertificateRun, BridgeError, ZkPublicCommitments,
+    expected_layer0_rows_for_strip_schedule, verify_ai_pow_full_matmul_production_statement,
+    zk_params_from_matmul, AiPowRecursiveCertificateRun, BridgeError, ZkPublicCommitments,
 };
+use ai_pow_zk::canonical::StripIndexSchedule;
 use ai_pow_zk::{CompositePublicInputs, ZkParams};
 use nockapp::noun::slab::{CueError, NounSlab};
 use nockapp::Bytes;
@@ -86,7 +86,7 @@ pub enum CertificateNounError {
     PearlMergeStatement(#[from] PearlCompatError),
     #[error("Pearl merge recursive certificate public input mismatch: {0}")]
     PearlMergePublicInputMismatch(&'static str),
-    #[error("Pearl merge recursive certificate params are not supported by the current square-tile verifier")]
+    #[error("Pearl merge recursive certificate params are not supported by the current recursive parameter envelope")]
     PearlMergeUnsupportedTileShape,
     #[error("recursive certificate verification failed: {0}")]
     RecursiveCertificate(String),
@@ -378,6 +378,7 @@ pub struct PearlMergeRecursiveCertificateParts {
     pub statement: PearlMergePublicStatementShape,
     pub zk_params: ZkParams,
     pub found_idx: u32,
+    pub strip_schedule: StripIndexSchedule,
     pub trace_height: usize,
     pub commitments: ZkPublicCommitments,
     pub public_inputs: CompositePublicInputs,
@@ -732,10 +733,11 @@ pub(crate) fn build_ai_pow_pearl_merge_artifact_noun_from_node(
 ///
 /// This is the producer-side canonicalization boundary. It rejects non-winning
 /// tickets, forged statement/public-param drift, forged public ticket work, and
-/// Pearl geometries outside the square contiguous subset supported by the
-/// current recursive verifier. It does not build a block artifact and does not
-/// accept proof material; the public production artifact builder requires a
-/// real [`AiPowRecursiveCertificateRun`].
+/// Pearl geometries outside the current recursive parameter envelope. The
+/// recursive statement binds the explicit Pearl ticket schedule, not a native
+/// verifier-selected full-matmul attempt. This helper does not build a block
+/// artifact and does not accept proof material; the public production artifact
+/// builder requires a real [`AiPowRecursiveCertificateRun`].
 pub fn pearl_merge_recursive_certificate_parts_from_ticket(
     attempt: &PearlMergeTicketAttempt,
     a_row_major: &[i8],
@@ -818,28 +820,18 @@ pub fn pearl_merge_recursive_certificate_parts_from_ticket(
         ));
     }
 
+    let expected_rows = attempt
+        .public_params
+        .a_rows_indices_bounded(max_pattern_len)?;
+    let expected_cols = attempt
+        .public_params
+        .b_cols_indices_bounded(max_pattern_len)?;
+    if attempt.ticket.a_rows != expected_rows || attempt.ticket.b_cols != expected_cols {
+        return Err(CertificateNounError::PearlMergePublicInputMismatch(
+            "ticket.pattern-indices",
+        ));
+    }
     let h = attempt.public_params.h()?;
-    let w = attempt.public_params.w()?;
-    if h != w {
-        return Err(CertificateNounError::PearlMergeUnsupportedTileShape);
-    }
-    if attempt.ticket.a_rows != contiguous_indices(attempt.public_params.t_rows, h)
-        || attempt.ticket.b_cols != contiguous_indices(attempt.public_params.t_cols, w)
-    {
-        return Err(CertificateNounError::PearlMergeUnsupportedTileShape);
-    }
-    if attempt.public_params.t_rows % h != 0 || attempt.public_params.t_cols % w != 0 {
-        return Err(CertificateNounError::PearlMergeUnsupportedTileShape);
-    }
-    let row_tiles = attempt.public_params.m / h;
-    let col_tiles = attempt.public_params.n / w;
-    if row_tiles == 0 || col_tiles == 0 {
-        return Err(CertificateNounError::PearlMergeUnsupportedTileShape);
-    }
-    let found_idx = (attempt.public_params.t_rows / h)
-        .checked_mul(col_tiles)
-        .and_then(|base| base.checked_add(attempt.public_params.t_cols / w))
-        .ok_or(CertificateNounError::PearlMergeUnsupportedTileShape)?;
     let params = MatmulParams {
         m: attempt.public_params.m,
         k: attempt.public_params.mining_config.common_dim,
@@ -849,17 +841,20 @@ pub fn pearl_merge_recursive_certificate_parts_from_ticket(
         spot_checks: 1,
         difficulty_bits: 0,
     };
-    params
-        .validate_prod_envelope()
+    validate_pearl_merge_recursive_params(&params)?;
+    let zk_params = zk_params_from_matmul(&params);
+    let strip_schedule = StripIndexSchedule::from_indices(&zk_params, expected_rows, expected_cols)
         .map_err(|_| CertificateNounError::PearlMergeUnsupportedTileShape)?;
-    validate_canonical_recursive_certificate_params(&params)
-        .map_err(|_| CertificateNounError::PearlMergeUnsupportedTileShape)?;
-    let trace_height = expected_layer0_rows(&params).required_trace_len();
+    let found_idx = pearl_merge_legacy_found_idx(&attempt.public_params, &params).unwrap_or(0);
+    let trace_height = expected_layer0_rows_for_strip_schedule(&params, &strip_schedule)
+        .map_err(|_| CertificateNounError::PearlMergeUnsupportedTileShape)?
+        .required_trace_len();
 
     Ok(PearlMergeRecursiveCertificateParts {
         statement,
-        zk_params: zk_params_from_matmul(&params),
+        zk_params,
         found_idx,
+        strip_schedule,
         trace_height,
         commitments: ZkPublicCommitments {
             h_a_chunk: attempt.commitments.h_a,
@@ -974,6 +969,11 @@ pub fn build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run(
     if run.found_idx() != parts.found_idx {
         return Err(CertificateNounError::PearlMergePublicInputMismatch(
             "recursive-run.found-idx",
+        ));
+    }
+    if run.strip_schedule() != &parts.strip_schedule {
+        return Err(CertificateNounError::PearlMergePublicInputMismatch(
+            "recursive-run.strip-schedule",
         ));
     }
     if run.trace_height() != parts.trace_height {
@@ -1807,32 +1807,8 @@ fn precheck_pearl_merge_certificate_metadata(
         ));
     }
     let h = public_params.h()?;
-    let w = public_params.w()?;
-    if h != w || metadata.zk_params.tile != h {
+    if metadata.zk_params.tile != h {
         return Err(CertificateNounError::PearlMergeUnsupportedTileShape);
-    }
-    let expected_rows = contiguous_indices(public_params.t_rows, h);
-    let expected_cols = contiguous_indices(public_params.t_cols, w);
-    if precheck.work.ticket.a_rows != expected_rows || precheck.work.ticket.b_cols != expected_cols
-    {
-        return Err(CertificateNounError::PearlMergeUnsupportedTileShape);
-    }
-    if public_params.t_rows % h != 0 || public_params.t_cols % w != 0 {
-        return Err(CertificateNounError::PearlMergeUnsupportedTileShape);
-    }
-    let row_tiles = public_params.m / h;
-    let col_tiles = public_params.n / w;
-    if row_tiles == 0 || col_tiles == 0 {
-        return Err(CertificateNounError::PearlMergeUnsupportedTileShape);
-    }
-    let expected_found_idx = (public_params.t_rows / h)
-        .checked_mul(col_tiles)
-        .and_then(|base| base.checked_add(public_params.t_cols / w))
-        .ok_or(CertificateNounError::PearlMergeUnsupportedTileShape)?;
-    if metadata.found_idx != expected_found_idx {
-        return Err(CertificateNounError::PearlMergePublicInputMismatch(
-            "found-idx",
-        ));
     }
     let params = MatmulParams {
         m: public_params.m,
@@ -1843,18 +1819,28 @@ fn precheck_pearl_merge_certificate_metadata(
         spot_checks: 1,
         difficulty_bits: metadata.zk_params.difficulty_bits,
     };
-    params
-        .validate_prod_envelope()
-        .map_err(|_| CertificateNounError::PearlMergeUnsupportedTileShape)?;
-    validate_canonical_recursive_certificate_params(&params)
-        .map_err(|_| CertificateNounError::PearlMergeUnsupportedTileShape)?;
+    validate_pearl_merge_recursive_params(&params)?;
     let expected_zk_params = zk_params_from_matmul(&params);
     if metadata.zk_params != expected_zk_params {
         return Err(CertificateNounError::PearlMergePublicInputMismatch(
             "params",
         ));
     }
-    let expected_trace_height = expected_layer0_rows(&params).required_trace_len();
+    let strip_schedule = StripIndexSchedule::from_indices(
+        &metadata.zk_params,
+        precheck.work.ticket.a_rows.clone(),
+        precheck.work.ticket.b_cols.clone(),
+    )
+    .map_err(|_| CertificateNounError::PearlMergeUnsupportedTileShape)?;
+    let expected_found_idx = pearl_merge_legacy_found_idx(&public_params, &params).unwrap_or(0);
+    if metadata.found_idx != expected_found_idx {
+        return Err(CertificateNounError::PearlMergePublicInputMismatch(
+            "found-idx",
+        ));
+    }
+    let expected_trace_height = expected_layer0_rows_for_strip_schedule(&params, &strip_schedule)
+        .map_err(|_| CertificateNounError::PearlMergeUnsupportedTileShape)?
+        .required_trace_len();
     if metadata.trace_height != expected_trace_height {
         return Err(CertificateNounError::PearlMergePublicInputMismatch(
             "trace-height",
@@ -1914,8 +1900,52 @@ fn precheck_pearl_merge_bound_public_inputs(
     Ok(())
 }
 
+#[cfg(test)]
 fn contiguous_indices(start: u32, len: u32) -> Vec<u32> {
     (0..len).map(|offset| start + offset).collect()
+}
+
+fn pearl_merge_legacy_found_idx(
+    public_params: &PearlPublicProofParams,
+    params: &MatmulParams,
+) -> Option<u32> {
+    let h = public_params.h().ok()?;
+    let w = public_params.w().ok()?;
+    if h != params.tile || w != params.tile {
+        return None;
+    }
+    if public_params.t_rows % params.tile != 0 || public_params.t_cols % params.tile != 0 {
+        return None;
+    }
+    let col_tiles = public_params.n / params.tile;
+    if col_tiles == 0 {
+        return None;
+    }
+    (public_params.t_rows / params.tile)
+        .checked_mul(col_tiles)
+        .and_then(|base| base.checked_add(public_params.t_cols / params.tile))
+}
+
+fn validate_pearl_merge_recursive_params(
+    params: &MatmulParams,
+) -> Result<(), CertificateNounError> {
+    if params.m == 0 || params.n == 0 {
+        return Err(CertificateNounError::PearlMergeUnsupportedTileShape);
+    }
+    if params.k == 0 || params.k > ai_pow::params::PEARL_K_MAX {
+        return Err(CertificateNounError::PearlMergeUnsupportedTileShape);
+    }
+    if params.noise_rank < 2
+        || params.noise_rank > params.k
+        || !params.noise_rank.is_power_of_two()
+        || params.k % params.noise_rank != 0
+    {
+        return Err(CertificateNounError::PearlMergeUnsupportedTileShape);
+    }
+    if (params.k / params.noise_rank) as usize > ai_pow::params::STRIPE_MAX {
+        return Err(CertificateNounError::PearlMergeUnsupportedTileShape);
+    }
+    Ok(())
 }
 
 /// Derive the recursive certificate public-input slots that identify a
@@ -4170,6 +4200,26 @@ mod tests {
         (statement, aux_inclusion, commitments, pis, a, b)
     }
 
+    fn pearl_test_trace_height(params: &MatmulParams) -> usize {
+        let config = pearl_test_config();
+        let zk_params = zk_params_from_matmul(params);
+        let strip_schedule = StripIndexSchedule::from_indices(
+            &zk_params,
+            config
+                .rows_pattern
+                .indices_with_offset_bounded(0, 16)
+                .expect("default Pearl row schedule"),
+            config
+                .cols_pattern
+                .indices_with_offset_bounded(0, 16)
+                .expect("default Pearl column schedule"),
+        )
+        .expect("default Pearl strip schedule");
+        expected_layer0_rows_for_strip_schedule(params, &strip_schedule)
+            .expect("default Pearl trace height")
+            .required_trace_len()
+    }
+
     fn pearl_merge_ticket_attempt_fixture() -> (
         PearlMergeTicketAttempt,
         PearlAuxInclusionProof,
@@ -4542,7 +4592,7 @@ mod tests {
         let cert_slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             &AiProofNode::Unit,
@@ -4589,7 +4639,7 @@ mod tests {
         let cert_slab = build_certificate_slab_with_statement_and_raw_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             |_| D(0),
@@ -4682,7 +4732,9 @@ mod tests {
         assert_eq!(parts.found_idx, 0);
         assert_eq!(
             parts.trace_height,
-            expected_layer0_rows(&params).required_trace_len()
+            expected_layer0_rows_for_strip_schedule(&params, &parts.strip_schedule)
+                .expect("schedule-aware row budget")
+                .required_trace_len()
         );
         assert_eq!(
             parts.commitments,
@@ -4692,6 +4744,11 @@ mod tests {
             }
         );
         assert_eq!(parts.public_inputs, expected_pis);
+        assert_eq!(
+            parts.strip_schedule,
+            ai_pow_zk::canonical::StripIndexSchedule::from_tile(&parts.zk_params, 0, 0)
+                .expect("expected tile schedule")
+        );
 
         let artifact_slab = build_ai_pow_pearl_merge_artifact_noun_from_ticket_node(
             &attempt,
@@ -4779,6 +4836,68 @@ mod tests {
                 Err(CertificateNounError::PearlMergePublicInputMismatch(got)) if got == field
             ));
         }
+    }
+
+    /// Heavy opt-in integration: builds a real Pearl recursive certificate for
+    /// a rectangular non-native ticket, emits the canonical `%ai-pow` artifact
+    /// noun, jams it, then verifies the artifact from the jammed bytes.
+    ///
+    /// Run with:
+    ///
+    /// ```text
+    /// GNORT_DISABLE=1 cargo test -p ai-pow-miner --release --features node \
+    ///   real_pearl_merge_rectangular_non_native_artifact_roundtrips_and_verifies -- --ignored --nocapture
+    /// ```
+    #[ignore = "real Pearl recursive proof generation is intentionally opt-in"]
+    #[test]
+    fn real_pearl_merge_rectangular_non_native_artifact_roundtrips_and_verifies() {
+        let params = MatmulParams {
+            m: 128,
+            k: 1024,
+            n: 125,
+            noise_rank: 64,
+            tile: 6,
+            spot_checks: 1,
+            difficulty_bits: 0,
+        };
+        assert!(
+            params.validate().is_err(),
+            "native square tile grid rejects this Pearl-valid schedule"
+        );
+        let aux = pearl_test_aux();
+        let (header, aux_inclusion) = pearl_test_aux_inclusion(&aux.commitment().unwrap());
+        let config = PearlMiningConfig {
+            rows_pattern: PearlPeriodicPattern::from_list(&[0, 1, 2, 3, 4, 5]).unwrap(),
+            cols_pattern: PearlPeriodicPattern::from_list(&[0, 1, 2, 3, 4, 5, 6, 7]).unwrap(),
+            ..pearl_test_config()
+        };
+        let (a, b) = synth_matrices(b"pearl-real-artifact-rectangular-non-native", &params);
+        let attempt = evaluate_pearl_merge_ticket_attempt(
+            &header, &config, &params, 0, 0, &a, &b, &[0xff; 32], 16, aux,
+        )
+        .expect("evaluate rectangular non-native Pearl ticket");
+        let run = ai_pow::zk_bridge::prove_pearl_merge_recursive_certificate(
+            &attempt, &params, &a, &b, 16,
+        )
+        .expect("prove rectangular non-native Pearl recursive certificate");
+
+        let artifact_slab = build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run(
+            &attempt, &aux_inclusion, &a, &b, 16, &run,
+        )
+        .expect("build artifact from real recursive run");
+        let jammed = artifact_slab.jam();
+        let precheck = verify_ai_pow_pearl_merge_artifact_jam(
+            &jammed,
+            CertificateNounLimits::default(),
+            &attempt.aux.nock_block_commitment,
+            &a,
+            &b,
+            &attempt.nockchain_target,
+            16,
+        )
+        .expect("jammed real Pearl artifact verifies");
+        assert_eq!(precheck.work.ticket, attempt.ticket);
+        assert_eq!(precheck.work.commitments, attempt.commitments);
     }
 
     #[test]
@@ -4869,9 +4988,10 @@ mod tests {
     }
 
     #[test]
-    fn pearl_merge_ticket_artifact_builder_rejects_multi_tile_recursive_claim() {
+    fn pearl_merge_ticket_artifact_builder_accepts_multi_tile_ticket_metadata() {
         let params = MatmulParams {
             m: 16,
+            n: 16,
             ..pearl_test_params()
         };
         let aux = pearl_test_aux();
@@ -4879,19 +4999,30 @@ mod tests {
         let config = pearl_test_config();
         let (a, b) = synth_matrices(b"pearl-ticket-multi-tile-artifact", &params);
         let attempt = evaluate_pearl_merge_ticket_attempt(
-            &header, &config, &params, 0, 0, &a, &b, &[0xff; 32], 16, aux,
+            &header, &config, &params, 8, 8, &a, &b, &[0xff; 32], 16, aux,
         )
         .expect("evaluate multi-tile Pearl merge ticket attempt");
         assert!(params.num_tiles() > 1);
 
-        assert!(matches!(
-            pearl_merge_recursive_certificate_parts_from_ticket(&attempt, &a, &b, 16),
-            Err(CertificateNounError::PearlMergeUnsupportedTileShape)
-        ));
+        let parts = pearl_merge_recursive_certificate_parts_from_ticket(&attempt, &a, &b, 16)
+            .expect("derive multi-tile Pearl recursive metadata");
+        assert_eq!(parts.found_idx, 3);
+        assert_eq!(parts.zk_params, zk_params_from_matmul(&params));
+        assert_eq!(parts.commitments.h_a_chunk, attempt.commitments.h_a);
+        assert_eq!(parts.commitments.h_b_chunk, attempt.commitments.h_b);
+        assert_eq!(
+            parts.public_inputs,
+            pearl_merge_recursive_public_inputs_from_work(&attempt.commitments, &attempt.ticket)
+        );
+        assert_eq!(
+            parts.strip_schedule,
+            ai_pow_zk::canonical::StripIndexSchedule::from_tile(&parts.zk_params, 1, 1)
+                .expect("expected multi-tile schedule")
+        );
     }
 
     #[test]
-    fn pearl_merge_ticket_artifact_builder_rejects_unsupported_noncontiguous_ticket() {
+    fn pearl_merge_ticket_artifact_builder_derives_noncontiguous_schedule() {
         let params = MatmulParams {
             m: 128,
             n: 128,
@@ -4918,10 +5049,52 @@ mod tests {
         )
         .expect("evaluate non-contiguous Pearl merge ticket attempt");
 
-        assert!(matches!(
-            pearl_merge_recursive_certificate_parts_from_ticket(&attempt, &a, &b, 16),
-            Err(CertificateNounError::PearlMergeUnsupportedTileShape)
-        ));
+        let parts = pearl_merge_recursive_certificate_parts_from_ticket(&attempt, &a, &b, 16)
+            .expect("derive non-contiguous Pearl recursive metadata");
+        assert_eq!(parts.strip_schedule.a_indices, attempt.ticket.a_rows);
+        assert_eq!(parts.strip_schedule.b_indices, attempt.ticket.b_cols);
+        assert_ne!(parts.strip_schedule.a_indices, contiguous_indices(0, 8));
+    }
+
+    #[test]
+    fn pearl_merge_ticket_artifact_builder_derives_rectangular_non_native_schedule() {
+        let params = MatmulParams {
+            m: 128,
+            n: 125,
+            tile: 6,
+            ..pearl_test_params()
+        };
+        assert!(
+            params.validate().is_err(),
+            "native square tile grid rejects this Pearl-valid schedule"
+        );
+        let header = pearl_test_header();
+        let config = PearlMiningConfig {
+            rows_pattern: PearlPeriodicPattern::from_list(&[0, 1, 2, 3, 4, 5]).unwrap(),
+            cols_pattern: PearlPeriodicPattern::from_list(&[0, 1, 2, 3, 4, 5, 6, 7]).unwrap(),
+            ..pearl_test_config()
+        };
+        let (a, b) = synth_matrices(b"pearl-ticket-rectangular-native-grid-artifact", &params);
+        let attempt = evaluate_pearl_merge_ticket_attempt(
+            &header,
+            &config,
+            &params,
+            0,
+            0,
+            &a,
+            &b,
+            &[0xff; 32],
+            16,
+            pearl_test_aux(),
+        )
+        .expect("evaluate rectangular Pearl merge ticket attempt");
+
+        let parts = pearl_merge_recursive_certificate_parts_from_ticket(&attempt, &a, &b, 16)
+            .expect("derive rectangular Pearl recursive metadata");
+        assert_eq!(parts.found_idx, 0);
+        assert_eq!(parts.strip_schedule.a_indices, attempt.ticket.a_rows);
+        assert_eq!(parts.strip_schedule.b_indices, attempt.ticket.b_cols);
+        assert_eq!(parts.zk_params.tile, 6);
     }
 
     #[test]
@@ -4973,7 +5146,7 @@ mod tests {
     fn pearl_merge_artifact_public_builder_round_trips_through_jam_decoder() {
         let (statement, aux_inclusion, commitments, pis, _, _) = pearl_merge_statement_fixture();
         let params = pearl_test_params();
-        let trace_height = expected_layer0_rows(&params).required_trace_len();
+        let trace_height = pearl_test_trace_height(&params);
         let certificate = AiProofNode::Seq(vec![
             AiProofNode::U64(1),
             AiProofNode::Bytes(b"recursive-node-placeholder".to_vec()),
@@ -5020,7 +5193,7 @@ mod tests {
             &aux_inclusion,
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             &AiProofNode::Unit,
@@ -5045,7 +5218,7 @@ mod tests {
             &aux_inclusion,
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             &AiProofNode::Unit,
@@ -5089,7 +5262,7 @@ mod tests {
         let cert_slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             &AiProofNode::Unit,
@@ -5200,7 +5373,7 @@ mod tests {
         let cert_slab = build_certificate_slab_with_statement_and_raw_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             |_| D(999),
@@ -5236,7 +5409,7 @@ mod tests {
         let cert_slab = build_certificate_slab_with_statement_and_raw_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             |_| D(0),
@@ -5266,7 +5439,7 @@ mod tests {
         let cert_slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             &AiProofNode::Unit,
@@ -5294,7 +5467,7 @@ mod tests {
         let bad_cert_slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &bad_pis,
             &AiProofNode::Unit,
@@ -5320,7 +5493,7 @@ mod tests {
         let bad_jackpot_cert_slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &bad_jackpot_pis,
             &AiProofNode::Unit,
@@ -5356,7 +5529,7 @@ mod tests {
             let bad_commitments_slab = build_ai_pow_certificate_noun_from_node(
                 &zk_params_from_matmul(&params),
                 0,
-                expected_layer0_rows(&params).required_trace_len(),
+                pearl_test_trace_height(&params),
                 &bad_commitments,
                 &pis,
                 &AiProofNode::Unit,
@@ -5380,7 +5553,7 @@ mod tests {
         let wrong_found_idx_slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
             1,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             &AiProofNode::Unit,
@@ -5405,7 +5578,7 @@ mod tests {
         let wrong_trace_slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len() + 1,
+            pearl_test_trace_height(&params) + 1,
             &commitments,
             &pis,
             &AiProofNode::Unit,
@@ -5432,7 +5605,7 @@ mod tests {
         let wrong_difficulty_slab = build_ai_pow_certificate_noun_from_node(
             &bad_zk_params,
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             &AiProofNode::Unit,
@@ -5464,7 +5637,7 @@ mod tests {
         let cert_slab = build_certificate_slab_with_statement_and_raw_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             |_| D(0),
@@ -5488,14 +5661,14 @@ mod tests {
     }
 
     #[test]
-    fn pearl_merge_artifact_rejects_geometry_outside_current_recursive_subset() {
+    fn pearl_merge_artifact_accepts_non_native_pearl_geometry() {
         let (statement, aux_inclusion, commitments, pis, a, b, params) =
             unsupported_pearl_merge_geometry_fixture();
         assert_ne!(params.m % params.tile, 0);
         let cert_slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
             0,
-            1,
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             &AiProofNode::Unit,
@@ -5507,18 +5680,17 @@ mod tests {
         )
         .expect("decode pearl merge artifact with unsupported geometry");
 
-        assert!(matches!(
-            precheck_ai_pow_pearl_merge_artifact_statement(
-                &decoded, &statement.aux.nock_block_commitment, &a, &b, &[0xffu8; 32], 16,
-            ),
-            Err(CertificateNounError::PearlMergeUnsupportedTileShape)
-        ));
+        precheck_ai_pow_pearl_merge_artifact_statement(
+            &decoded, &statement.aux.nock_block_commitment, &a, &b, &[0xffu8; 32], 16,
+        )
+        .expect("Pearl-valid non-native geometry should precheck");
     }
 
     #[test]
-    fn pearl_merge_artifact_metadata_precheck_rejects_multi_tile_recursive_claim() {
+    fn pearl_merge_artifact_metadata_precheck_accepts_multi_tile_ticket_claim() {
         let params = MatmulParams {
             m: 16,
+            n: 16,
             ..pearl_test_params()
         };
         assert!(params.num_tiles() > 1);
@@ -5527,17 +5699,25 @@ mod tests {
         let config = pearl_test_config();
         let (a, b) = synth_matrices(b"pearl-metadata-multi-tile", &params);
         let attempt = evaluate_pearl_merge_ticket_attempt(
-            &header, &config, &params, 0, 0, &a, &b, &[0xff; 32], 16, aux,
+            &header, &config, &params, 8, 0, &a, &b, &[0xff; 32], 16, aux,
         )
         .expect("evaluate multi-tile Pearl metadata attempt");
         let statement =
             PearlMergePublicStatementShape::from_wire_statement(&attempt.statement).unwrap();
         let pis =
             pearl_merge_recursive_public_inputs_from_work(&attempt.commitments, &attempt.ticket);
+        let strip_schedule = StripIndexSchedule::from_indices(
+            &zk_params_from_matmul(&params),
+            attempt.ticket.a_rows.clone(),
+            attempt.ticket.b_cols.clone(),
+        )
+        .expect("multi-tile Pearl schedule");
         let cert_slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
-            0,
-            expected_layer0_rows(&params).required_trace_len(),
+            2,
+            expected_layer0_rows_for_strip_schedule(&params, &strip_schedule)
+                .expect("schedule-aware trace height")
+                .required_trace_len(),
             &ZkPublicCommitments {
                 h_a_chunk: attempt.commitments.h_a,
                 h_b_chunk: attempt.commitments.h_b,
@@ -5552,12 +5732,11 @@ mod tests {
         )
         .expect("decode multi-tile Pearl metadata");
 
-        assert!(matches!(
-            precheck_ai_pow_pearl_merge_artifact_metadata(
-                &metadata, &statement.aux.nock_block_commitment, &a, &b, &[0xffu8; 32], 16,
-            ),
-            Err(CertificateNounError::PearlMergeUnsupportedTileShape)
-        ));
+        let precheck = precheck_ai_pow_pearl_merge_artifact_metadata(
+            &metadata, &statement.aux.nock_block_commitment, &a, &b, &[0xffu8; 32], 16,
+        )
+        .expect("metadata precheck accepts multi-tile Pearl ticket claim");
+        assert_eq!(precheck.work.ticket, attempt.ticket);
     }
 
     #[test]
@@ -5567,7 +5746,7 @@ mod tests {
         let cert_slab = build_certificate_slab_with_statement_and_raw_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             |_| D(0),
@@ -5612,7 +5791,7 @@ mod tests {
         let cert_slab = build_certificate_slab_with_statement_and_raw_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             |_| D(0),
@@ -5683,7 +5862,7 @@ mod tests {
         let bad_cert_slab = build_certificate_slab_with_statement_and_raw_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &bad_commitments,
             &pis,
             |_| D(0),
@@ -5724,7 +5903,7 @@ mod tests {
         let cert_slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             &AiProofNode::Unit,
@@ -5786,7 +5965,7 @@ mod tests {
         let cert_slab = build_certificate_slab_with_statement_and_raw_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             |_| D(0),
@@ -5834,7 +6013,7 @@ mod tests {
         let cert_slab = build_certificate_slab_with_statement_and_raw_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             |_| D(0),
@@ -5883,7 +6062,7 @@ mod tests {
         let cert_slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             &AiProofNode::Unit,
@@ -5931,7 +6110,7 @@ mod tests {
         let cert_slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
             0,
-            expected_layer0_rows(&params).required_trace_len(),
+            pearl_test_trace_height(&params),
             &commitments,
             &pis,
             &AiProofNode::Unit,

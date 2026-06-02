@@ -8,6 +8,16 @@ Status: Critical audit finding, repair plan, and implementation tracking
 > `%ai-pow` artifact carries `ai-pow-nonce=[len data]`, an opaque Rust-owned
 > nonce envelope described in
 > `2026-06-01_PEARL_MERGE_MINING_COMPATIBILITY_SPEC.md`.
+>
+> Supersession note, 2026-06-02: the one-nonce/one-verifier-selected-tile rule
+> below applies to the native diagnostic path and the pre-Pearl repair plan,
+> not to Pearl-compatible production consensus. The Pearl-compatible spec now
+> adopts Pearl's work model: one committed noised matmul work instance, derived
+> from `sigma || mu`, may expose many valid public tile tickets. The forbidden
+> shortcut is a Nockchain-only nonce/hash loop or any proof that opens an
+> unbound tile while claiming Pearl work, not Pearl's own tile-ticket reuse.
+> Mentions below of `matmul_attempts_tried` as fresh full attempts should be
+> read as native-path accounting, not Pearl-compatible ticket accounting.
 
 ## Executive Summary
 
@@ -1077,10 +1087,12 @@ proof-bound chunk commitments through
 `canonical_noise_seeds_from_matrix_commitments(kappa, h_a_chunk, h_b_chunk)`.
 `BlockContext`, the legacy plain verifier, selected-tile statement prechecks,
 and noun certificate fixtures all use this helper. `h_a` / `h_b` remain legacy
-spot-opening roots and are no longer seed inputs. Single-tile recursive
-statements can pass the Rust production precheck; multi-tile params still fail
-first with `FullMatmulProofUnavailable` until the recursive certificate binds a
-full-matrix aggregate.
+spot-opening roots and are no longer seed inputs. Native selected-tile
+recursive statements can pass the Rust production precheck only for single-tile
+params; native multi-tile params still fail first with
+`FullMatmulProofUnavailable` until that native path binds a full-matrix
+aggregate. Pearl-compatible production consensus is now governed by the
+2026-06-01 Pearl merge spec and uses explicit Pearl tile-ticket semantics.
 
 ## Latest Re-Audit: Hoon Commitment Mold Source of Truth
 

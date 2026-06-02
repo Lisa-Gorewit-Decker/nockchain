@@ -64,9 +64,15 @@ What `ai-pow` provides:
   consensus API.
 - **Production certificate verification**: Nockchain block/persistence/wire
   boundaries must verify the structured recursive certificate noun and run the
-  full-matmul statement precheck. Recursive certificate statements derive
-  canonical seeds from proof-bound chunk commitments and remain fail-closed for
-  multi-tile shapes until the proof binds the intended full-matmul work unit.
+  Pearl-compatible statement precheck. Recursive certificate statements derive
+  canonical seeds from proof-bound chunk commitments. The Pearl-compatible
+  protocol requirement set is Pearl's full periodic-pattern ticket model:
+  canonical `MiningConfiguration`, row/column `PeriodicPattern` values,
+  valid `t_rows`/`t_cols` offsets, shifted opened row/column sets, and
+  Pearl's pattern-size target pricing. The current recursive prover supports
+  square-contiguous Pearl tile tickets across multi-tile matrices and remains
+  fail-closed for other Pearl-valid pattern shapes until proof support catches
+  up to the spec.
 - **Proof format**: 32-byte tile-state commitment `comm_m`, BLAKE3-keyed
   matrix commitments `H_A` and `H_B`, and per-tile openings (raw strips,
   m-path to `comm_m`, per-row/col paths to `H_A` / `H_B`).
@@ -115,8 +121,8 @@ list of `ai-pow`-side derived portions.
 | `src/matmul.rs` | `BlockNoise`, `Matrices` (`A' = A + E`, `B' = B + F`), `TileState`, `compute_tile`, `compute_tile_from_slices` |
 | `src/tile_hash.rs` | `difficulty_target`, `hash_le_target` (little-endian U256 semantics) |
 | `src/commit.rs` | Tile-state Merkle (sentinel-padded) and Pearl `matrix_commitment` chunk-Merkle |
-| `src/fiat_shamir.rs` | Pearl §4.3 commitment-hash chain over nonce-bound attempt state + final pow-key derivation |
-| `src/prover.rs` | nonce-bound `BlockContext`, `mine`, `mine_block` |
+| `src/fiat_shamir.rs` | Pearl §4.3 commitment-hash chain helpers; Pearl-compatible mode derives from `sigma || mu`, while native diagnostics can derive from nonce-bound attempt state |
+| `src/prover.rs` | native diagnostic `BlockContext`, `mine`, `mine_block` |
 | `src/verifier.rs` | `verify` |
 | `src/proof.rs` | `MatmulProof`, `TileOpening`, encode / decode |
 | `src/synth.rs` | Deterministic `(A, B)` test synthesis |

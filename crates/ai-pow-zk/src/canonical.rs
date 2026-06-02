@@ -24,7 +24,7 @@
 
 use p3_matrix::dense::RowMajorMatrix;
 
-use crate::blake3_tree::{left_len, strip_opening_rows, tile_chunk_range};
+use crate::blake3_tree::{indexed_strips_chunk_range, left_len, strip_opening_rows};
 use crate::chips::blake3::chip::pack_tweak;
 use crate::chips::blake3::compress::Blake3Tweak;
 use crate::chips::control::NUM_SELECTORS;
@@ -140,6 +140,16 @@ pub(crate) fn schedule_layout(
     tile_j: u32,
     trace_len: usize,
 ) -> ScheduleLayout {
+    let strip_schedule = StripIndexSchedule::from_tile(params, tile_i, tile_j)
+        .expect("schedule_layout requires a valid contiguous tile schedule");
+    schedule_layout_for_strip_schedule(params, &strip_schedule, trace_len)
+}
+
+pub(crate) fn schedule_layout_for_strip_schedule(
+    params: &ZkParams,
+    strip_schedule: &StripIndexSchedule,
+    trace_len: usize,
+) -> ScheduleLayout {
     assert_eq!(
         params.noise_rank % 16,
         0,
@@ -147,27 +157,35 @@ pub(crate) fn schedule_layout(
          co-location path (Pearl §4.8 is always 16|r); non-16|r \
          is the documented A3.2b test path"
     );
-    let t = params.tile as usize;
+    let h_tile = strip_schedule.a_indices.len();
+    let w_tile = strip_schedule.b_indices.len();
+    assert!(
+        h_tile % TILE_H == 0,
+        "schedule_layout requires h_tile divisible by TILE_H"
+    );
+    assert!(
+        w_tile % TILE_H == 0,
+        "schedule_layout requires w_tile divisible by TILE_H"
+    );
     let k = params.k as usize;
-    let m = params.m as usize;
-    let n = params.n as usize;
     let r = params.noise_rank as usize;
     let num_stripes = k / r;
 
-    // Strip-opening A then B (P-B.2.4 + A1 tile_chunk_range +
-    // CR.0a strip_opening_rows — all params-pure).
-    let (ca0, ca1, a_nc) = tile_chunk_range(tile_i as usize, t, k, m * k);
+    // Strip-opening A then B (P-B.2.4 + public strip schedule +
+    // CR.0a strip_opening_rows -- all params-pure).
+    let ((ca0, ca1, a_nc), (cb0, cb1, b_nc)) = strip_schedule
+        .chunk_ranges(params)
+        .expect("schedule_layout requires valid strip chunk ranges");
     let na = strip_opening_rows(ca0, ca1, a_nc);
-    let (cb0, cb1, b_nc) = tile_chunk_range(tile_j as usize, t, k, n * k);
     let nb = strip_opening_rows(cb0, cb1, b_nc);
     let mh_end = na + nb;
 
     // Key-pin: row mh_end is the gap; mh_end+1 = JOB_KEY,
     // mh_end+2 = COMMITMENT_HASH; sweep_start = mh_end+3.
     let sweep_start = mh_end + 3;
-    // §6(b)-G1/G2 sweep = (t/TILE_H)² · num_stripes · ⌈r/TILE_D⌉
-    // (== place_useful_work_chain's rows_used).
-    let sweep_rows = (t / TILE_H) * (t / TILE_H) * num_stripes * r.div_ceil(TILE_D);
+    // §6(b)-G1/G2 sweep = (h/TILE_H) · (w/TILE_H) · num_stripes ·
+    // ⌈r/TILE_D⌉ (== place_useful_work_chain_hw's rows_used).
+    let sweep_rows = (h_tile / TILE_H) * (w_tile / TILE_H) * num_stripes * r.div_ceil(TILE_D);
     let store_start = sweep_start + sweep_rows;
     // 16|r: producers are the co-located StripOpen leaf round-0
     // rows ⇒ ZERO separate store rows. fold_start =
@@ -214,6 +232,117 @@ pub struct BlockPublic {
     pub s_a: [u8; 32],
     /// C1-pinned B-side public seed s_b.
     pub s_b: [u8; 32],
+}
+
+pub type StripChunkRange = (usize, usize, usize);
+
+/// Verifier-known Pearl-style strip schedule.
+///
+/// Pearl tickets are identified by explicit shifted row/column sets derived
+/// from `PeriodicPattern.indices_with_offset(t_rows/t_cols)`, not only by a
+/// square-contiguous `(tile_i, tile_j)`. This public schedule is the verifier
+/// boundary for that requirement set: callers provide the exact A rows and B
+/// columns, and the schedule validates that they are nonempty, canonical
+/// strictly-increasing sets inside the committed matrices.
+///
+/// The current recursive AIR still admits only the contiguous-square subset
+/// through [`BlockPublic`]. This type exists so future recursive statements can
+/// bind Pearl's full public ticket without silently rewriting it to one tile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StripIndexSchedule {
+    pub a_indices: Vec<u32>,
+    pub b_indices: Vec<u32>,
+}
+
+impl StripIndexSchedule {
+    pub fn from_indices(
+        params: &ZkParams,
+        a_indices: Vec<u32>,
+        b_indices: Vec<u32>,
+    ) -> Result<Self, String> {
+        params.validate_base()?;
+        validate_strip_indices("A", &a_indices, params.m)?;
+        validate_strip_indices("B", &b_indices, params.n)?;
+        Ok(Self {
+            a_indices,
+            b_indices,
+        })
+    }
+
+    pub fn from_tile(params: &ZkParams, tile_i: u32, tile_j: u32) -> Result<Self, String> {
+        params.validate()?;
+        let row_tiles = params.m / params.tile;
+        let col_tiles = params.n / params.tile;
+        if tile_i >= row_tiles || tile_j >= col_tiles {
+            return Err(format!(
+                "strip schedule tile_i={tile_i} or tile_j={tile_j} out of grid \
+                 ({row_tiles}x{col_tiles} tiles)"
+            ));
+        }
+        let a0 = tile_i
+            .checked_mul(params.tile)
+            .ok_or_else(|| "strip schedule A tile offset overflow".to_string())?;
+        let b0 = tile_j
+            .checked_mul(params.tile)
+            .ok_or_else(|| "strip schedule B tile offset overflow".to_string())?;
+        let a_indices = (0..params.tile)
+            .map(|di| {
+                a0.checked_add(di)
+                    .ok_or_else(|| "strip schedule A index overflow".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let b_indices = (0..params.tile)
+            .map(|dj| {
+                b0.checked_add(dj)
+                    .ok_or_else(|| "strip schedule B index overflow".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::from_indices(params, a_indices, b_indices)
+    }
+
+    pub fn from_block_public(params: &ZkParams, bp: &BlockPublic) -> Result<Self, String> {
+        Self::from_tile(params, bp.tile_i, bp.tile_j)
+    }
+
+    pub fn chunk_ranges(
+        &self,
+        params: &ZkParams,
+    ) -> Result<(StripChunkRange, StripChunkRange), String> {
+        params.validate_base()?;
+        validate_strip_indices("A", &self.a_indices, params.m)?;
+        validate_strip_indices("B", &self.b_indices, params.n)?;
+        let k = params.k as usize;
+        let a_total = (params.m as usize)
+            .checked_mul(k)
+            .ok_or_else(|| "A matrix byte length overflow".to_string())?;
+        let b_total = (params.n as usize)
+            .checked_mul(k)
+            .ok_or_else(|| "B matrix byte length overflow".to_string())?;
+        Ok((
+            indexed_strips_chunk_range(&self.a_indices, k, a_total),
+            indexed_strips_chunk_range(&self.b_indices, k, b_total),
+        ))
+    }
+}
+
+fn validate_strip_indices(name: &str, indices: &[u32], dimension: u32) -> Result<(), String> {
+    if indices.is_empty() {
+        return Err(format!("{name} strip schedule must be nonempty"));
+    }
+    if indices.windows(2).any(|w| w[0] >= w[1]) {
+        return Err(format!(
+            "{name} strip schedule must be strictly increasing with no duplicates"
+        ));
+    }
+    let last = *indices
+        .last()
+        .expect("nonempty strip schedule has last index");
+    if last >= dimension {
+        return Err(format!(
+            "{name} strip schedule index {last} out of committed dimension {dimension}"
+        ));
+    }
+    Ok(())
 }
 
 /// Phase A-CR — which [`RowClass`]es `canonical_program` already
@@ -368,8 +497,34 @@ pub fn canonical_program(
              power of two ≥ 16"
         ));
     }
-    let l = schedule_layout(params, bp.tile_i, bp.tile_j, trace_len);
-    let sp = StripPlan::build(params, bp);
+    let strip_schedule = StripIndexSchedule::from_block_public(params, bp)?;
+    canonical_program_for_strip_schedule(params, &strip_schedule, bp, trace_len)
+}
+
+pub fn canonical_program_for_strip_schedule(
+    params: &ZkParams,
+    strip_schedule: &StripIndexSchedule,
+    bp: &BlockPublic,
+    trace_len: usize,
+) -> Result<RowMajorMatrix<Val>, String> {
+    params.validate_base()?;
+    if params.noise_rank % 16 != 0 {
+        return Err(format!(
+            "canonical_program requires 16 | noise_rank (Pearl §4.8 \
+             always-16|r co-location path); got noise_rank={}",
+            params.noise_rank
+        ));
+    }
+    if trace_len < 16 || !trace_len.is_power_of_two() {
+        return Err(format!(
+            "canonical_program: trace_len {trace_len} must be a \
+             power of two ≥ 16"
+        ));
+    }
+    validate_strip_indices("A", &strip_schedule.a_indices, params.m)?;
+    validate_strip_indices("B", &strip_schedule.b_indices, params.n)?;
+    let l = schedule_layout_for_strip_schedule(params, strip_schedule, trace_len);
+    let sp = StripPlan::build_for_strip_schedule(params, strip_schedule);
     let program: Vec<RowDescriptor> = (0..trace_len)
         .map(|r| row_descriptor(r, l.class_of(r), &l, &sp, params, bp))
         .collect();
@@ -463,13 +618,10 @@ struct StripPlan {
 }
 
 impl StripPlan {
-    fn build(params: &ZkParams, bp: &BlockPublic) -> Self {
-        let t = params.tile as usize;
-        let k = params.k as usize;
-        let m = params.m as usize;
-        let n = params.n as usize;
-        let (ca0, ca1, a_nc) = tile_chunk_range(bp.tile_i as usize, t, k, m * k);
-        let (cb0, cb1, b_nc) = tile_chunk_range(bp.tile_j as usize, t, k, n * k);
+    fn build_for_strip_schedule(params: &ZkParams, strip_schedule: &StripIndexSchedule) -> Self {
+        let ((ca0, ca1, a_nc), (cb0, cb1, b_nc)) = strip_schedule
+            .chunk_ranges(params)
+            .expect("StripPlan requires valid strip chunk ranges");
         StripPlan {
             blocks_a: strip_blocks(ca0, ca1, a_nc),
             blocks_b: strip_blocks(cb0, cb1, b_nc),
@@ -733,7 +885,10 @@ fn row_descriptor(
 
 #[cfg(test)]
 mod tests {
+    use p3_matrix::Matrix;
+
     use super::*;
+    use crate::blake3_tree::tile_chunk_range;
 
     fn p16() -> ZkParams {
         ZkParams {
@@ -780,6 +935,181 @@ mod tests {
             s_a: [0u8; 32],
             s_b: [0u8; 32],
         }
+    }
+
+    #[test]
+    fn strip_index_schedule_from_tile_matches_legacy_tile_ranges() {
+        let p = ZkParams {
+            m: 64,
+            k: 1536,
+            n: 96,
+            noise_rank: 16,
+            tile: 8,
+            difficulty_bits: 0,
+        };
+        let sched = StripIndexSchedule::from_tile(&p, 3, 7).expect("tile in grid");
+        assert_eq!(sched.a_indices, vec![24, 25, 26, 27, 28, 29, 30, 31]);
+        assert_eq!(sched.b_indices, vec![56, 57, 58, 59, 60, 61, 62, 63]);
+
+        let (a_range, b_range) = sched.chunk_ranges(&p).expect("valid schedule");
+        let t = p.tile as usize;
+        let k = p.k as usize;
+        assert_eq!(
+            a_range,
+            tile_chunk_range(3, t, k, (p.m as usize) * k),
+            "contiguous A schedule must preserve legacy verifier range"
+        );
+        assert_eq!(
+            b_range,
+            tile_chunk_range(7, t, k, (p.n as usize) * k),
+            "contiguous B schedule must preserve legacy verifier range"
+        );
+    }
+
+    #[test]
+    fn strip_index_schedule_accepts_pearl_noncontiguous_public_sets() {
+        let p = ZkParams {
+            m: 128,
+            k: 2048,
+            n: 128,
+            noise_rank: 16,
+            tile: 8,
+            difficulty_bits: 0,
+        };
+        let sched = StripIndexSchedule::from_indices(
+            &p,
+            vec![0, 8, 64, 72],
+            vec![0, 1, 8, 9, 32, 33, 40, 41],
+        )
+        .expect("Pearl periodic-pattern ticket sets are valid");
+        let (a_range, b_range) = sched.chunk_ranges(&p).expect("valid ranges");
+        assert_eq!(a_range, (0, 146, 256));
+        assert_eq!(b_range, (0, 84, 256));
+    }
+
+    #[test]
+    fn strip_index_schedule_rejects_invalid_public_sets_without_panic() {
+        let p = p16();
+        assert!(
+            StripIndexSchedule::from_indices(&p, vec![], vec![0]).is_err(),
+            "empty A schedule must be rejected"
+        );
+        assert!(
+            StripIndexSchedule::from_indices(&p, vec![0], vec![0, 0]).is_err(),
+            "duplicate B index must be rejected"
+        );
+        assert!(
+            StripIndexSchedule::from_indices(&p, vec![2, 1], vec![0]).is_err(),
+            "unsorted A schedule must be rejected"
+        );
+        assert!(
+            StripIndexSchedule::from_indices(&p, vec![0], vec![p.n]).is_err(),
+            "out-of-bounds B index must be rejected"
+        );
+        assert!(
+            StripIndexSchedule::from_tile(&p, p.m / p.tile, 0).is_err(),
+            "out-of-grid tile must be rejected"
+        );
+    }
+
+    #[test]
+    fn schedule_layout_for_strip_schedule_matches_contiguous_tile_layout() {
+        let p = ZkParams {
+            m: 64,
+            k: 512,
+            n: 96,
+            noise_rank: 16,
+            tile: 8,
+            difficulty_bits: 0,
+        };
+        let len = 1 << 15;
+        let sched = StripIndexSchedule::from_tile(&p, 3, 7).expect("tile schedule");
+        let from_tile = schedule_layout(&p, 3, 7, len);
+        let from_schedule = schedule_layout_for_strip_schedule(&p, &sched, len);
+        assert_eq!(from_schedule.na, from_tile.na);
+        assert_eq!(from_schedule.mh_end, from_tile.mh_end);
+        assert_eq!(from_schedule.sweep_start, from_tile.sweep_start);
+        assert_eq!(from_schedule.store_start, from_tile.store_start);
+        assert_eq!(from_schedule.fold_start, from_tile.fold_start);
+        assert_eq!(from_schedule.fold_end, from_tile.fold_end);
+        assert_eq!(from_schedule.jpot_start, from_tile.jpot_start);
+
+        let bp = BlockPublic {
+            tile_i: 3,
+            tile_j: 7,
+            ..bp0()
+        };
+        let from_public = canonical_program(&p, &bp, len).expect("contiguous canonical program");
+        let from_explicit = canonical_program_for_strip_schedule(&p, &sched, &bp, len)
+            .expect("explicit schedule canonical program");
+        assert_eq!(from_explicit.width, from_public.width);
+        assert_eq!(from_explicit.height(), from_public.height());
+        assert_eq!(from_explicit.values, from_public.values);
+    }
+
+    #[test]
+    fn schedule_layout_for_strip_schedule_accounts_for_rectangular_shape() {
+        let p = ZkParams {
+            m: 128,
+            k: 512,
+            n: 128,
+            noise_rank: 16,
+            tile: 8,
+            difficulty_bits: 0,
+        };
+        let len = 1 << 15;
+        let sched = StripIndexSchedule::from_indices(
+            &p,
+            vec![0, 8, 64, 72],
+            vec![0, 1, 8, 9, 32, 33, 40, 41],
+        )
+        .expect("rectangular Pearl schedule");
+        let layout = schedule_layout_for_strip_schedule(&p, &sched, len);
+        let ((ca0, ca1, a_nc), (cb0, cb1, b_nc)) = sched.chunk_ranges(&p).expect("chunk ranges");
+        let na = strip_opening_rows(ca0, ca1, a_nc);
+        let nb = strip_opening_rows(cb0, cb1, b_nc);
+        assert_eq!(layout.na, na);
+        assert_eq!(layout.mh_end, na + nb);
+
+        let num_stripes = (p.k / p.noise_rank) as usize;
+        let chunks = (p.noise_rank as usize).div_ceil(TILE_D);
+        let expected_sweep = (sched.a_indices.len() / TILE_H)
+            * (sched.b_indices.len() / TILE_H)
+            * num_stripes
+            * chunks;
+        assert_eq!(layout.store_start - layout.sweep_start, expected_sweep);
+        assert_eq!(layout.fold_end - layout.fold_start, num_stripes);
+
+        let bp = bp0();
+        let program = canonical_program_for_strip_schedule(&p, &sched, &bp, len)
+            .expect("rectangular schedule canonical program");
+        assert_eq!(program.height(), len);
+    }
+
+    #[test]
+    fn explicit_strip_schedule_does_not_require_native_tile_grid() {
+        let p = ZkParams {
+            m: 128,
+            k: 512,
+            n: 125,
+            noise_rank: 16,
+            tile: 6,
+            difficulty_bits: 0,
+        };
+        assert!(
+            p.validate().is_err(),
+            "native square tile grid must reject this shape"
+        );
+        let sched = StripIndexSchedule::from_indices(
+            &p,
+            vec![0, 1, 6, 7, 12, 13],
+            vec![0, 1, 8, 9, 16, 17, 24, 25],
+        )
+        .expect("explicit Pearl schedule is independent of native tile grid");
+        let bp = bp0();
+        let program = canonical_program_for_strip_schedule(&p, &sched, &bp, 1 << 15)
+            .expect("explicit canonical program accepts non-native grid");
+        assert_eq!(program.height(), 1 << 15);
     }
 
     #[test]

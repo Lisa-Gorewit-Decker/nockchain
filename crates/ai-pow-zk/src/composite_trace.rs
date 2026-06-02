@@ -1540,8 +1540,29 @@ impl CompositeTrace {
         r: usize,
         num_stripes: usize,
     ) -> (usize, [u32; STRIPE_MAX]) {
+        self.place_useful_work_chain_hw(row_start, a_prime_rows, b_prime_cols, t, t, r, num_stripes)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn place_useful_work_chain_hw(
+        &mut self,
+        row_start: usize,
+        a_prime_rows: &[i8],
+        b_prime_cols: &[i8],
+        h_tile: usize,
+        w_tile: usize,
+        r: usize,
+        num_stripes: usize,
+    ) -> (usize, [u32; STRIPE_MAX]) {
         use p3_field::integers::QuotientMap;
-        assert!(t % TILE_H == 0, "tile must split into TILE_H sub-blocks");
+        assert!(
+            h_tile % TILE_H == 0,
+            "tile height must split into TILE_H sub-blocks"
+        );
+        assert!(
+            w_tile % TILE_H == 0,
+            "tile width must split into TILE_H sub-blocks"
+        );
         assert!(
             num_stripes <= STRIPE_MAX,
             "num_stripes {num_stripes} > STRIPE_MAX={STRIPE_MAX} (§6(b)-G2); \
@@ -1550,13 +1571,18 @@ impl CompositeTrace {
         // §6(b)-G1: an `r`-wide stripe dot is covered by
         // `C = ⌈r/TILE_D⌉` accumulating TILE_D-wide micro-steps.
         let chunks = r.div_ceil(TILE_D).max(1);
-        let k = if t == 0 { 0 } else { a_prime_rows.len() / t };
-        assert_eq!(a_prime_rows.len(), t * k, "a_prime_rows must be t·k");
-        assert_eq!(b_prime_cols.len(), t * k, "b_prime_cols must be t·k");
-        let n_sb = t / TILE_H;
-        let h = self.height();
+        let k = if h_tile == 0 {
+            0
+        } else {
+            a_prime_rows.len() / h_tile
+        };
+        assert_eq!(a_prime_rows.len(), h_tile * k, "a_prime_rows must be h*k");
+        assert_eq!(b_prime_cols.len(), w_tile * k, "b_prime_cols must be w*k");
+        let n_sbi = h_tile / TILE_H;
+        let n_sbj = w_tile / TILE_H;
+        let trace_h = self.height();
         assert!(
-            row_start + n_sb * n_sb * num_stripes * chunks < h,
+            row_start + n_sbi * n_sbj * num_stripes * chunks < trace_h,
             "useful-work sweep must fit before the last row"
         );
 
@@ -1569,8 +1595,8 @@ impl CompositeTrace {
         let mut xr = [0u32; STRIPE_MAX];
         let mut carry = [0i32; CUMSUM_LEN];
         let mut row = row_start;
-        for sbi in 0..n_sb {
-            for sbj in 0..n_sb {
+        for sbi in 0..n_sbi {
+            for sbj in 0..n_sbj {
                 for step in 0..num_stripes {
                     let lo = step * r;
                     for chunk in 0..chunks {
@@ -1655,7 +1681,7 @@ impl CompositeTrace {
         // post-sweep row ⇒ all STRIPE_MAX lanes pass through, so the
         // final register reaches the fold rows + the last row where
         // the §6(b) keystone reads it.
-        for rr in row..h {
+        for rr in row..trace_h {
             let base = rr * TOTAL_TRACE_WIDTH;
             let rs = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
             for s in 0..STRIPE_MAX {
@@ -1692,9 +1718,27 @@ impl CompositeTrace {
         r: usize,
         num_stripes: usize,
     ) -> Vec<[i8; 8]> {
+        Self::enumerate_noised_chunks_hw(a_prime_rows, b_prime_cols, t, t, r, num_stripes)
+    }
+
+    pub fn enumerate_noised_chunks_hw(
+        a_prime_rows: &[i8],
+        b_prime_cols: &[i8],
+        h_tile: usize,
+        w_tile: usize,
+        r: usize,
+        num_stripes: usize,
+    ) -> Vec<[i8; 8]> {
         let chunks = r.div_ceil(TILE_D).max(1);
-        let k = if t == 0 { 0 } else { a_prime_rows.len() / t };
-        let n_sb = t / TILE_H;
+        let k = if h_tile == 0 {
+            0
+        } else {
+            a_prime_rows.len() / h_tile
+        };
+        assert_eq!(a_prime_rows.len(), h_tile * k, "a_prime_rows must be h*k");
+        assert_eq!(b_prime_cols.len(), w_tile * k, "b_prime_cols must be w*k");
+        let n_sbi = h_tile / TILE_H;
+        let n_sbj = w_tile / TILE_H;
         let n_chunk = A_NOISED_LEN / 2; // 2 packed cells = 8 i8 each
 
         let mut seen: hashbrown::HashSet<[i8; 8]> = hashbrown::HashSet::new();
@@ -1714,8 +1758,8 @@ impl CompositeTrace {
             }
         };
 
-        for sbi in 0..n_sb {
-            for sbj in 0..n_sb {
+        for sbi in 0..n_sbi {
+            for sbj in 0..n_sbj {
                 for step in 0..num_stripes {
                     let lo = step * r;
                     for chunk in 0..chunks {
@@ -1761,22 +1805,40 @@ impl CompositeTrace {
         r: usize,
         num_stripes: usize,
     ) -> Vec<NoisedChunkSrc> {
+        Self::enumerate_noised_chunks_with_src_hw(a_prime_rows, b_prime_cols, t, t, r, num_stripes)
+    }
+
+    pub fn enumerate_noised_chunks_with_src_hw(
+        a_prime_rows: &[i8],
+        b_prime_cols: &[i8],
+        h_tile: usize,
+        w_tile: usize,
+        r: usize,
+        num_stripes: usize,
+    ) -> Vec<NoisedChunkSrc> {
         let chunks = r.div_ceil(TILE_D).max(1);
-        let k = if t == 0 { 0 } else { a_prime_rows.len() / t };
-        let n_sb = t / TILE_H;
+        let k = if h_tile == 0 {
+            0
+        } else {
+            a_prime_rows.len() / h_tile
+        };
+        assert_eq!(a_prime_rows.len(), h_tile * k, "a_prime_rows must be h*k");
+        assert_eq!(b_prime_cols.len(), w_tile * k, "b_prime_cols must be w*k");
+        let n_sbi = h_tile / TILE_H;
+        let n_sbj = w_tile / TILE_H;
         let n_chunk = A_NOISED_LEN / 2;
 
         let mut seen: hashbrown::HashSet<[i8; 8]> = hashbrown::HashSet::new();
         let mut out: Vec<NoisedChunkSrc> = Vec::new();
         // `lane_base` = sub-block-major row/col-in-tile of blk[*][0];
         // `col0 = lo + c0`; width `w`. side: true=A,false=B.
-        let mut push = |blk: &[[i8; TILE_D]; TILE_H],
-                        side_a: bool,
-                        lane_base: usize,
-                        col0: usize,
-                        w: usize,
-                        seen: &mut hashbrown::HashSet<[i8; 8]>,
-                        out: &mut Vec<NoisedChunkSrc>| {
+        let push = |blk: &[[i8; TILE_D]; TILE_H],
+                    side_a: bool,
+                    lane_base: usize,
+                    col0: usize,
+                    w: usize,
+                    seen: &mut hashbrown::HashSet<[i8; 8]>,
+                    out: &mut Vec<NoisedChunkSrc>| {
             for jc in 0..n_chunk {
                 let mut bytes = [0i8; 8];
                 let mut src = [None; 8];
@@ -1795,8 +1857,8 @@ impl CompositeTrace {
             }
         };
 
-        for sbi in 0..n_sb {
-            for sbj in 0..n_sb {
+        for sbi in 0..n_sbi {
+            for sbj in 0..n_sbj {
                 for step in 0..num_stripes {
                     let lo = step * r;
                     for chunk in 0..chunks {
@@ -1844,17 +1906,37 @@ impl CompositeTrace {
         r: usize,
         num_stripes: usize,
     ) -> Vec<NoisedChunkSrc> {
+        Self::enumerate_noised_chunks_positioned_hw(
+            a_prime_rows, b_prime_cols, t, t, r, num_stripes,
+        )
+    }
+
+    pub fn enumerate_noised_chunks_positioned_hw(
+        a_prime_rows: &[i8],
+        b_prime_cols: &[i8],
+        h_tile: usize,
+        w_tile: usize,
+        r: usize,
+        num_stripes: usize,
+    ) -> Vec<NoisedChunkSrc> {
         let chunks = r.div_ceil(TILE_D).max(1);
-        let k = if t == 0 { 0 } else { a_prime_rows.len() / t };
-        let n_sb = t / TILE_H;
+        let k = if h_tile == 0 {
+            0
+        } else {
+            a_prime_rows.len() / h_tile
+        };
+        assert_eq!(a_prime_rows.len(), h_tile * k, "a_prime_rows must be h*k");
+        assert_eq!(b_prime_cols.len(), w_tile * k, "b_prime_cols must be w*k");
+        let n_sbi = h_tile / TILE_H;
+        let n_sbj = w_tile / TILE_H;
         let n_chunk = A_NOISED_LEN / 2;
         let mut out: Vec<NoisedChunkSrc> = Vec::new();
-        let mut push = |blk: &[[i8; TILE_D]; TILE_H],
-                        side_a: bool,
-                        lane_base: usize,
-                        col0: usize,
-                        w: usize,
-                        out: &mut Vec<NoisedChunkSrc>| {
+        let push = |blk: &[[i8; TILE_D]; TILE_H],
+                    side_a: bool,
+                    lane_base: usize,
+                    col0: usize,
+                    w: usize,
+                    out: &mut Vec<NoisedChunkSrc>| {
             for jc in 0..n_chunk {
                 let mut bytes = [0i8; 8];
                 let mut src = [None; 8];
@@ -1869,8 +1951,8 @@ impl CompositeTrace {
                 out.push(NoisedChunkSrc { bytes, side_a, src });
             }
         };
-        for sbi in 0..n_sb {
-            for sbj in 0..n_sb {
+        for sbi in 0..n_sbi {
+            for sbj in 0..n_sbj {
                 for step in 0..num_stripes {
                     let lo = step * r;
                     for chunk in 0..chunks {
@@ -1910,11 +1992,24 @@ impl CompositeTrace {
         num_stripes: usize,
         k: usize,
     ) -> Vec<(bool, [Option<(u32, u32)>; 8])> {
-        let zeros = vec![0i8; t * k];
-        Self::enumerate_noised_chunks_positioned(&zeros, &zeros, t, r, num_stripes)
-            .into_iter()
-            .map(|c| (c.side_a, c.src))
-            .collect()
+        Self::noised_store_layout_hw(t, t, r, num_stripes, k)
+    }
+
+    pub fn noised_store_layout_hw(
+        h_tile: usize,
+        w_tile: usize,
+        r: usize,
+        num_stripes: usize,
+        k: usize,
+    ) -> Vec<(bool, [Option<(u32, u32)>; 8])> {
+        let a_zeros = vec![0i8; h_tile * k];
+        let b_zeros = vec![0i8; w_tile * k];
+        Self::enumerate_noised_chunks_positioned_hw(
+            &a_zeros, &b_zeros, h_tile, w_tile, r, num_stripes,
+        )
+        .into_iter()
+        .map(|c| (c.side_a, c.src))
+        .collect()
     }
 
     /// M-S1 (§4.C.11) — place the `noised_packed` producer store:
@@ -2307,6 +2402,36 @@ mod tests {
         }
     }
 
+    fn expected_pattern_x_steps(
+        a_prime_rows: &[i8],
+        b_prime_cols: &[i8],
+        h: usize,
+        w: usize,
+        k: usize,
+        r: usize,
+        num_stripes: usize,
+    ) -> Vec<u32> {
+        let mut accum = vec![0i32; h * w];
+        let mut out = Vec::with_capacity(num_stripes);
+        for step in 0..num_stripes {
+            let lo = step * r;
+            for u in 0..h {
+                let a_row = &a_prime_rows[u * k + lo..u * k + lo + r];
+                for v in 0..w {
+                    let b_col = &b_prime_cols[v * k + lo..v * k + lo + r];
+                    let mut delta = 0i32;
+                    for l in 0..r {
+                        delta = delta.wrapping_add((a_row[l] as i32) * (b_col[l] as i32));
+                    }
+                    let idx = u * w + v;
+                    accum[idx] = accum[idx].wrapping_add(delta);
+                }
+            }
+            out.push(accum.iter().fold(0i32, |acc, &value| acc ^ value) as u32);
+        }
+        out
+    }
+
     #[test]
     fn baseline_trace_has_correct_shape() {
         let trace = CompositeTrace::baseline(MIN_STARK_LEN);
@@ -2355,6 +2480,153 @@ mod tests {
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("2× baseline must verify");
+    }
+
+    #[test]
+    fn useful_work_chain_hw_matches_rectangular_pattern_x_steps() {
+        let h = 4usize;
+        let w = 8usize;
+        let k = 64usize;
+        let r = 16usize;
+        let num_stripes = k / r;
+        let mut a_rows = vec![0i8; h * k];
+        let mut b_cols = vec![0i8; w * k];
+        for (idx, cell) in a_rows.iter_mut().enumerate() {
+            *cell = ((idx * 13 + 5) % 89) as i8 - 44;
+        }
+        for (idx, cell) in b_cols.iter_mut().enumerate() {
+            *cell = ((idx * 19 + 7) % 83) as i8 - 41;
+        }
+
+        let mut trace = CompositeTrace::baseline_min();
+        let (rows_used, x_steps) =
+            trace.place_useful_work_chain_hw(8, &a_rows, &b_cols, h, w, r, num_stripes);
+        assert_eq!(
+            rows_used,
+            (h / TILE_H) * (w / TILE_H) * num_stripes * r.div_ceil(TILE_D)
+        );
+        assert_eq!(
+            &x_steps[..num_stripes],
+            expected_pattern_x_steps(&a_rows, &b_cols, h, w, k, r, num_stripes).as_slice()
+        );
+    }
+
+    #[test]
+    fn useful_work_chain_square_wrapper_matches_hw_entrypoint() {
+        let t = 8usize;
+        let k = 64usize;
+        let r = 16usize;
+        let num_stripes = k / r;
+        let mut a_rows = vec![0i8; t * k];
+        let mut b_cols = vec![0i8; t * k];
+        for (idx, cell) in a_rows.iter_mut().enumerate() {
+            *cell = ((idx * 11 + 3) % 79) as i8 - 39;
+        }
+        for (idx, cell) in b_cols.iter_mut().enumerate() {
+            *cell = ((idx * 23 + 17) % 73) as i8 - 36;
+        }
+
+        let mut square = CompositeTrace::baseline_min();
+        let (square_rows, square_x) =
+            square.place_useful_work_chain(8, &a_rows, &b_cols, t, r, num_stripes);
+        let mut hw = CompositeTrace::baseline_min();
+        let (hw_rows, hw_x) =
+            hw.place_useful_work_chain_hw(8, &a_rows, &b_cols, t, t, r, num_stripes);
+        assert_eq!(square_rows, hw_rows);
+        assert_eq!(&square_x[..num_stripes], &hw_x[..num_stripes]);
+    }
+
+    #[test]
+    fn noised_chunk_hw_square_wrappers_match_hw_variants() {
+        let t = 8usize;
+        let k = 64usize;
+        let r = 16usize;
+        let num_stripes = k / r;
+        let mut a_rows = vec![0i8; t * k];
+        let mut b_cols = vec![0i8; t * k];
+        for (idx, cell) in a_rows.iter_mut().enumerate() {
+            *cell = ((idx * 7 + 1) % 67) as i8 - 33;
+        }
+        for (idx, cell) in b_cols.iter_mut().enumerate() {
+            *cell = ((idx * 31 + 9) % 71) as i8 - 35;
+        }
+
+        assert_eq!(
+            CompositeTrace::enumerate_noised_chunks(&a_rows, &b_cols, t, r, num_stripes),
+            CompositeTrace::enumerate_noised_chunks_hw(&a_rows, &b_cols, t, t, r, num_stripes)
+        );
+        assert_eq!(
+            CompositeTrace::enumerate_noised_chunks_with_src(&a_rows, &b_cols, t, r, num_stripes),
+            CompositeTrace::enumerate_noised_chunks_with_src_hw(
+                &a_rows, &b_cols, t, t, r, num_stripes
+            )
+        );
+        assert_eq!(
+            CompositeTrace::enumerate_noised_chunks_positioned(&a_rows, &b_cols, t, r, num_stripes),
+            CompositeTrace::enumerate_noised_chunks_positioned_hw(
+                &a_rows, &b_cols, t, t, r, num_stripes
+            )
+        );
+        assert_eq!(
+            CompositeTrace::noised_store_layout(t, r, num_stripes, k),
+            CompositeTrace::noised_store_layout_hw(t, t, r, num_stripes, k)
+        );
+    }
+
+    #[test]
+    fn noised_chunk_hw_rectangular_layout_is_params_pure_and_bounded() {
+        let h = 4usize;
+        let w = 8usize;
+        let k = 64usize;
+        let r = 16usize;
+        let num_stripes = k / r;
+        let chunks = r.div_ceil(TILE_D).max(1);
+        let n_chunk = A_NOISED_LEN / 2;
+        let mut a_rows = vec![0i8; h * k];
+        let mut b_cols = vec![0i8; w * k];
+        for (idx, cell) in a_rows.iter_mut().enumerate() {
+            *cell = ((idx * 5 + 11) % 61) as i8 - 30;
+        }
+        for (idx, cell) in b_cols.iter_mut().enumerate() {
+            *cell = ((idx * 37 + 13) % 59) as i8 - 29;
+        }
+
+        let positioned = CompositeTrace::enumerate_noised_chunks_positioned_hw(
+            &a_rows, &b_cols, h, w, r, num_stripes,
+        );
+        assert_eq!(
+            positioned.len(),
+            (h / TILE_H) * (w / TILE_H) * num_stripes * chunks * 2 * n_chunk
+        );
+
+        let layout = CompositeTrace::noised_store_layout_hw(h, w, r, num_stripes, k);
+        assert_eq!(
+            layout,
+            positioned
+                .iter()
+                .map(|chunk| (chunk.side_a, chunk.src))
+                .collect::<Vec<_>>()
+        );
+
+        for chunk in positioned {
+            for source in chunk.src.into_iter().flatten() {
+                let (lane, l) = source;
+                assert!((l as usize) < k, "source k-index must be in bounds");
+                if chunk.side_a {
+                    assert!((lane as usize) < h, "A source lane must be in h");
+                } else {
+                    assert!((lane as usize) < w, "B source lane must be in w");
+                }
+            }
+        }
+
+        let deduped =
+            CompositeTrace::enumerate_noised_chunks_hw(&a_rows, &b_cols, h, w, r, num_stripes);
+        let deduped_with_src = CompositeTrace::enumerate_noised_chunks_with_src_hw(
+            &a_rows, &b_cols, h, w, r, num_stripes,
+        );
+        assert_eq!(deduped.len(), deduped_with_src.len());
+        assert!(deduped.len() <= layout.len());
     }
 
     #[test]

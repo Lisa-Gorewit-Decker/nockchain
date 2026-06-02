@@ -1528,7 +1528,7 @@ mod tests {
     //! `%mine` effect, and assert the miner pokes an
     //! `AiPowMinerWire::Mined` slab back at the server within a
     //! generous timeout. Uses `MatmulParams::TEST_SMALL` + trivial
-    //! `FF..FF` target so the real ai-pow prover wins on extranonce 0.
+    //! uint256 `FF..FF` target so the real ai-pow prover wins on extranonce 0.
 
     use std::net::{SocketAddr, TcpListener};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1656,14 +1656,6 @@ mod tests {
 
         // Publish a synthetic %mine-ai effect (the AI miner subscribes
         // to mine-ai post Stage 4; the mock fixture publishes accordingly).
-        fn publish_synth_mine_effect(&self, commitment_seed: u64, target_seed: u64, pow_len: u64) {
-            self.publish_synth_mine_effect_with_target_limbs(
-                commitment_seed,
-                &[target_seed],
-                pow_len,
-            );
-        }
-
         fn publish_synth_mine_effect_with_target_limbs(
             &self,
             commitment_seed: u64,
@@ -2857,37 +2849,46 @@ mod tests {
     }
 
     #[test]
-    fn production_preflight_rejects_pearl_merge_multi_tile_recursive_params() {
+    fn production_preflight_accepts_pearl_merge_multi_tile_recursive_params() {
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
         cfg.puzzle.params.m = 16;
+        cfg.puzzle.params.n = 16;
+
+        cfg.puzzle
+            .validate_canonical_submission_ready()
+            .expect("Pearl mode supports square-contiguous multi-tile ticket params");
+    }
+
+    #[test]
+    fn production_preflight_rejects_pearl_merge_wrong_spot_checks() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.puzzle.params.spot_checks = 2;
 
         let err = cfg
             .puzzle
             .validate_canonical_submission_ready()
-            .expect_err("Pearl mode must reject multi-tile recursive params before mining");
+            .expect_err("Pearl mode must reject unsupported spot-check params before mining");
         assert!(
-            err.to_string().contains("num_tiles must be 1"),
+            err.to_string().contains("spot_checks must be 1"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
-    fn production_preflight_rejects_pearl_merge_unsupported_recursive_pattern() {
+    fn production_preflight_accepts_pearl_merge_noncontiguous_recursive_pattern() {
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
         let mut pearl = pearl_submission_cfg();
         pearl.mining_config.rows_pattern =
             PearlPeriodicPattern::from_list(&[0, 1, 8, 9, 64, 65, 72, 73]).unwrap();
+        pearl.mining_config.cols_pattern =
+            PearlPeriodicPattern::from_list(&[0, 1, 8, 9, 64, 65, 72, 73]).unwrap();
         cfg.puzzle.pearl_merge = pearl;
+        cfg.puzzle.params.m = 128;
+        cfg.puzzle.params.n = 128;
 
-        let err = cfg
-            .puzzle
+        cfg.puzzle
             .validate_canonical_submission_ready()
-            .expect_err("Pearl mode must reject patterns outside the recursive prover subset");
-        assert!(
-            err.to_string()
-                .contains("outside the current recursive prover subset"),
-            "unexpected error: {err}"
-        );
+            .expect("Pearl mode must accept in-bounds non-contiguous recursive patterns");
     }
 
     #[test]
@@ -4163,15 +4164,34 @@ mod tests {
     }
 
     /// Heavy: runs the real ai-pow prover on TEST_SMALL with a trivial
-    /// `FF..FF` target. Should complete in well under 30 s on any
+    /// uint256 `FF..FF` target. Should complete in well under 30 s on any
     /// modern machine; marked `#[ignore]` so `cargo test` is fast by
     /// default. Run with `cargo test -p ai-pow-miner --features node
     /// --test node_run_mock_node -- --ignored`.
     #[ignore = "manual mock-node integration test; runs the real prover"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_loop_against_mock_node_submits_ai_pow_command_when_recursive_cert_available() {
+        let gateway = spawn_static_aux_pearl_gateway(
+            pearl_test_header(),
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+        );
         let node = MockNode::spawn().await;
-        let cfg = test_cfg(node.url());
+        let mut cfg = test_cfg(node.url());
+        let params = cfg.puzzle.params;
+        let a = cfg.puzzle.a.clone();
+        let b = cfg.puzzle.b.clone();
+        let pearl_cfg = cfg.puzzle.pearl_merge.clone();
+        cfg.puzzle.pearl_merge = PearlMergeSubmissionConfig::new_recursive(
+            gateway.config.clone(),
+            pearl_cfg.mining_config,
+            pearl_cfg.aux_template,
+            pearl_cfg.max_pattern_len,
+            pearl_cfg.mine_opts,
+            params,
+            a,
+            b,
+        );
 
         let shutdown = CancellationToken::new();
         let shutdown_clone = shutdown.clone();
@@ -4179,10 +4199,12 @@ mod tests {
 
         // Brief pause for the miner to connect + configure + subscribe.
         tokio::time::sleep(Duration::from_millis(300)).await;
-        node.publish_synth_mine_effect(100, 0xFFFF_FFFF, 64);
+        assert_node_received_pkh_only_set_key(&node).await;
+        node.publish_synth_mine_effect_with_target_limbs(100, &[u64::from(u32::MAX); 8], 64);
 
-        // Poll for the miner wire poke. Allow up to 30 s for the trivial-target prover.
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        // Poll for the miner wire poke. The ticket hits immediately, but the
+        // production recursive certificate is built before the node submission.
+        let deadline = std::time::Instant::now() + Duration::from_secs(90);
         let mut got_mined = false;
         while std::time::Instant::now() < deadline {
             if !node.mined_pokes.lock().await.is_empty() {
@@ -4193,7 +4215,7 @@ mod tests {
         }
         assert!(
             got_mined,
-            "miner did not submit a %mined poke within 30s; observed {} total pokes",
+            "miner did not submit a %mined poke within 90s; observed {} total pokes",
             node.pokes_observed.load(Ordering::SeqCst)
         );
 
@@ -4202,6 +4224,7 @@ mod tests {
             .await
             .expect("miner task did not exit");
         node.shutdown().await;
+        gateway.shutdown();
     }
 
     /// Cheap: confirms the node runner fails closed before reconnect work when

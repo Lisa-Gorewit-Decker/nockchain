@@ -27,23 +27,19 @@ pub struct ZkParams {
     /// `r`: Pearl noise rank, also the accumulator stripe width. Must be
     /// a power of two and divide `k`.
     pub noise_rank: u32,
-    /// `t`: square tile size. Must divide both `m` and `n`.
+    /// `t`: native square tile size. Native tile-derived schedules require it
+    /// to divide both `m` and `n`; explicit Pearl strip schedules only use it
+    /// as legacy metadata and validate their row/column sets directly.
     pub tile: u32,
     /// `b`: log-2 difficulty (Pearl §4.5).
     pub difficulty_bits: u32,
 }
 
 impl ZkParams {
-    /// Same precondition set as `ai_pow::params::MatmulParams::validate`.
-    /// Re-validated here defensively because the cross-crate boundary
-    /// could be misused.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.tile == 0 || self.m % self.tile != 0 || self.n % self.tile != 0 {
-            return Err("tile must divide m and n".into());
-        }
-        // M3 (DoS audit): explicit nonzero so `row_tiles = m/tile` and
-        // `col_tiles = n/tile` are ≥ 1 (tile divides 0 vacuously,
-        // hiding the 0-tile-grid case behind the divisibility check).
+    /// Base preconditions for any explicit strip schedule. This deliberately
+    /// does not require `tile | m,n`; Pearl schedules bind concrete public row
+    /// and column sets instead of deriving them from a native square grid.
+    pub fn validate_base(&self) -> Result<(), String> {
         if self.m == 0 || self.n == 0 {
             return Err("m and n must be > 0".into());
         }
@@ -55,6 +51,17 @@ impl ZkParams {
         }
         if self.k % self.noise_rank != 0 {
             return Err("noise_rank must divide k".into());
+        }
+        Ok(())
+    }
+
+    /// Same native square-grid precondition set as
+    /// `ai_pow::params::MatmulParams::validate`. Re-validated here
+    /// defensively because the cross-crate boundary could be misused.
+    pub fn validate(&self) -> Result<(), String> {
+        self.validate_base()?;
+        if self.tile == 0 || self.m % self.tile != 0 || self.n % self.tile != 0 {
+            return Err("tile must divide m and n".into());
         }
         Ok(())
     }

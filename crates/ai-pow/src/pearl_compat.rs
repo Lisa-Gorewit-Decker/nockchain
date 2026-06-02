@@ -24,8 +24,10 @@ use thiserror::Error;
 
 use crate::commit::matrix_commitment;
 use crate::fiat_shamir::{noise_seed_a, noise_seed_b};
-use crate::matmul::{compute_tile, BlockNoise, Matrices, TileState};
-use crate::params::{MatmulParams, ParamError};
+use crate::matmul::{
+    compute_pattern_tile_trace_from_slices, compute_tile, BlockNoise, Matrices, TileState,
+};
+use crate::params::{MatmulParams, ParamError, STRIPE_MAX};
 use crate::prng;
 use crate::tile_hash::hash_le_target;
 
@@ -108,9 +110,9 @@ pub enum PearlCompatError {
     PatternOutOfMatrix,
     #[error("Pearl public proof params violate the production parameter envelope")]
     PublicParamEnvelope,
-    #[error("Pearl mining config is outside the current recursive prover subset")]
+    #[error("Pearl mining config is outside the recursive prover envelope")]
     UnsupportedRecursivePearlShape,
-    #[error("Pearl recursive prover params are outside the current supported subset: {0}")]
+    #[error("Pearl recursive prover params are outside the recursive prover envelope: {0}")]
     UnsupportedRecursivePearlParams(&'static str),
     #[error("Pearl public proof commitments do not match the derived work commitments")]
     PublicCommitmentMismatch,
@@ -661,6 +663,16 @@ impl PearlPublicProofParams {
         ))
     }
 
+    pub fn nockchain_adjusted_target(
+        &self,
+        nockchain_target: &[u8; 32],
+    ) -> Result<[u8; 32], PearlCompatError> {
+        Ok(u256_le_mul_u128_saturating(
+            nockchain_target,
+            self.difficulty_adjustment_factor()?,
+        ))
+    }
+
     pub fn check_pearl_jackpot_difficulty(&self) -> Result<(), PearlCompatError> {
         let target = self.pearl_adjusted_target()?;
         if hash_le_target(&self.hash_jackpot, &target) {
@@ -674,7 +686,8 @@ impl PearlPublicProofParams {
         &self,
         nockchain_target: &[u8; 32],
     ) -> Result<(), PearlCompatError> {
-        if hash_le_target(&self.hash_jackpot, nockchain_target) {
+        let target = self.nockchain_adjusted_target(nockchain_target)?;
+        if hash_le_target(&self.hash_jackpot, &target) {
             Ok(())
         } else {
             Err(PearlCompatError::NockchainTargetNotMet)
@@ -722,15 +735,14 @@ pub fn pearl_adjust_target_for_config(
     ))
 }
 
-/// Validate the Pearl mining config that Nockchain's current recursive
+/// Validate the Pearl mining config that Nockchain's Pearl merge recursive
 /// certificate producer can prove.
 ///
-/// Pearl's pattern language is more general than the current Nockchain
-/// recursive bridge. Until that bridge proves arbitrary Pearl row/column
-/// patterns, production Pearl-compatible Nockchain mining must use square,
-/// contiguous tiles whose row and column patterns are exactly
-/// `[0, 1, ..., params.tile - 1]`, and the trusted matrix shape must contain
-/// exactly one tile.
+/// Production Pearl-compatible Nockchain mining proves one explicit Pearl
+/// ticket selected by the Pearl public row/column patterns and `t_rows` /
+/// `t_cols`. The recursive bridge binds those concrete shifted indices as a
+/// verifier-derived strip schedule; it must not rewrite them to a cheaper
+/// square-contiguous native tile.
 pub fn validate_pearl_merge_config_for_recursive_prover(
     config: &PearlMiningConfig,
     params: &MatmulParams,
@@ -746,21 +758,15 @@ pub fn validate_pearl_merge_config_for_recursive_prover(
             "spot_checks must be 1; Pearl-compatible mode proves one explicit ticket",
         ));
     }
-    params.validate_prod_envelope()?;
-    if params.num_tiles() > 1 {
-        return Err(PearlCompatError::UnsupportedRecursivePearlParams(
-            "num_tiles must be 1; current recursive certificate proves one selected tile",
-        ));
+    validate_recursive_params_for_pearl_schedule(params)?;
+    if (params.k / params.noise_rank) as usize > STRIPE_MAX {
+        return Err(PearlCompatError::PublicParamEnvelope);
     }
     config.to_bytes()?;
     validate_config_matches_params(config, params)?;
 
-    let expected: Vec<u32> = (0..params.tile).collect();
-    let rows = config.rows_pattern.to_list_bounded(max_pattern_len)?;
-    let cols = config.cols_pattern.to_list_bounded(max_pattern_len)?;
-    if rows != expected || cols != expected {
-        return Err(PearlCompatError::UnsupportedRecursivePearlShape);
-    }
+    config.rows_pattern.to_list_bounded(max_pattern_len)?;
+    config.cols_pattern.to_list_bounded(max_pattern_len)?;
 
     PearlPublicProofParams {
         block_header: PearlIncompleteBlockHeader {
@@ -780,6 +786,25 @@ pub fn validate_pearl_merge_config_for_recursive_prover(
         t_cols: 0,
     }
     .sanity_check()?;
+    Ok(())
+}
+
+fn validate_recursive_params_for_pearl_schedule(
+    params: &MatmulParams,
+) -> Result<(), PearlCompatError> {
+    if params.m == 0 || params.n == 0 {
+        return Err(PearlCompatError::PublicParamEnvelope);
+    }
+    if params.k == 0 || params.k > crate::params::PEARL_K_MAX {
+        return Err(PearlCompatError::PublicParamEnvelope);
+    }
+    if params.noise_rank < 2
+        || params.noise_rank > params.k
+        || !params.noise_rank.is_power_of_two()
+        || params.k % params.noise_rank != 0
+    {
+        return Err(PearlCompatError::PublicParamEnvelope);
+    }
     Ok(())
 }
 
@@ -894,7 +919,6 @@ pub fn compute_pearl_pattern_ticket(
     let k = public_params.mining_config.common_dim as usize;
     let r = public_params.mining_config.rank as usize;
     let dot_product_len = public_params.mining_config.dot_product_length()?;
-    let steps = dot_product_len / r;
 
     let mut a_prime_rows = Vec::with_capacity(a_rows.len() * k);
     let mut e_row = vec![0i8; k];
@@ -922,29 +946,10 @@ pub fn compute_pearl_pattern_ticket(
 
     let h = a_rows.len();
     let w = b_cols.len();
-    let mut accum = vec![0i32; h * w];
-    let mut tile_state = TileState::zero();
-
-    for step in 0..steps {
-        let lo = step * r;
-        for u in 0..h {
-            let a_row = &a_prime_rows[u * k + lo..u * k + lo + r];
-            for v in 0..w {
-                let b_col = &b_prime_cols[v * k + lo..v * k + lo + r];
-                let mut delta = 0i32;
-                for l in 0..r {
-                    delta = delta.wrapping_add((a_row[l] as i32) * (b_col[l] as i32));
-                }
-                let idx = u * w + v;
-                accum[idx] = accum[idx].wrapping_add(delta);
-            }
-        }
-        let mut x = 0i32;
-        for &value in &accum {
-            x ^= value;
-        }
-        tile_state.fold(step as u32, x);
-    }
+    let tile_state = compute_pattern_tile_trace_from_slices(
+        &a_prime_rows, &b_prime_cols, h, w, k, r, dot_product_len,
+    )
+    .state;
 
     let jackpot_hash = pearl_jackpot_hash(&tile_state, &commitments.s_a);
     Ok(PearlPatternTicket {
@@ -977,6 +982,7 @@ pub struct PearlCompatibleWorkPrecheck {
     pub ticket: PearlPatternTicket,
     pub pearl_target: [u8; 32],
     pub nockchain_target: [u8; 32],
+    pub nockchain_adjusted_target: [u8; 32],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1234,7 +1240,8 @@ pub fn verify_pearl_compatible_work(
     public_params.sanity_check()?;
 
     let pearl_target = public_params.pearl_adjusted_target()?;
-    if !hash_le_target(&public_params.hash_jackpot, nockchain_target) {
+    let nockchain_adjusted_target = public_params.nockchain_adjusted_target(nockchain_target)?;
+    if !hash_le_target(&public_params.hash_jackpot, &nockchain_adjusted_target) {
         return Err(PearlCompatError::NockchainTargetNotMet);
     }
     validate_public_matrix_inputs(a_row_major, b_col_major, public_params)?;
@@ -1251,6 +1258,7 @@ pub fn verify_pearl_compatible_work(
         ticket,
         pearl_target,
         nockchain_target: *nockchain_target,
+        nockchain_adjusted_target,
     })
 }
 
@@ -1679,12 +1687,13 @@ pub fn derive_pearl_work_commitments(
 }
 
 impl PearlAttempt {
-    /// Build a Pearl-compatible attempt from typed Pearl header/config values.
+    /// Build a diagnostic native-square tile digest set from typed Pearl
+    /// header/config values.
     ///
-    /// This is the preferred entrypoint for code that has already decoded the
-    /// Pearl block template. It serializes `sigma`/`mu` exactly as Pearl does
-    /// and rejects obvious config/params mismatches before computing the
-    /// matrix commitments, noise, or tile hashes.
+    /// Production Pearl merge mining should use
+    /// [`evaluate_pearl_merge_ticket_attempt`], which binds the exact Pearl
+    /// periodic-pattern ticket. This helper remains for tests and native
+    /// square-tile diagnostics that want all legacy tile digests.
     pub fn build_with_config(
         header: &PearlIncompleteBlockHeader,
         config: &PearlMiningConfig,
@@ -1697,15 +1706,12 @@ impl PearlAttempt {
         Self::build_from_serialized(&sigma, &mu, a_row_major, b_col_major, params)
     }
 
-    /// Build a Pearl-compatible attempt from Pearl's serialized
+    /// Build a diagnostic native-square tile digest set from Pearl's serialized
     /// `IncompleteBlockHeader` (`sigma`) and `MiningConfiguration` (`mu`).
     ///
-    /// Both byte strings are parsed before use. The current Nockchain
-    /// `MatmulParams` model is still square-tile-oriented, while Pearl's
-    /// production `PeriodicPattern` language is more general; this entrypoint
-    /// therefore validates the shared consensus-critical scalar parameters
-    /// (`common_dim`, `rank`, MMA type, reserved bytes) and leaves full pattern
-    /// support to the merge-mining verifier implementation.
+    /// Both byte strings are parsed before use. This helper enumerates native
+    /// square tiles through `MatmulParams`; it is not the production
+    /// Pearl-compatible ticket path for arbitrary `PeriodicPattern` values.
     pub fn build_from_serialized(
         sigma: &[u8],
         mu: &[u8],
@@ -1793,7 +1799,7 @@ fn validate_attempt_inputs(
     b_col_major: &[i8],
     params: &MatmulParams,
 ) -> Result<(), PearlCompatError> {
-    params.validate()?;
+    validate_recursive_params_for_pearl_schedule(params)?;
     let m = params.m as usize;
     let k = params.k as usize;
     let n = params.n as usize;

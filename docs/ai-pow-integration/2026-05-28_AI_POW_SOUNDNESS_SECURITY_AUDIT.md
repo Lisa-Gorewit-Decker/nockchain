@@ -715,15 +715,19 @@ Current status:
 
 - `ai-pow-miner::pearl_mining::run` is the only miner loop, and the connected
   run-loop preflight validates the Pearl merge config against the canonical
-  recursive prover subset before enabling mining.
+  recursive prover envelope before enabling mining. Pearl-ticket recursive
+  certificates use an explicit row/column strip schedule, so bounded
+  rectangular, non-contiguous, and non-native periodic-pattern tickets are not
+  reduced to the native square-tile grid.
 - `ai_pow::verifier::verify_prod_at_target` enforces the production envelope
   for plain-proof diagnostics. The structured Pearl merge recursive certificate
   noun verifier is the block/wire boundary.
 - `zk_bridge::prove_and_verify_for_block`,
   `prove_ai_pow_recursive_certificate`, and
   `verify_ai_pow_full_matmul_production_statement` enforce the production
-  envelope. The recursive certificate builder and full-matmul verifier both
-  fail closed for multi-tile selected-tile recursive statements.
+  envelope. Native full-matmul entrypoints stay on the production square-grid
+  envelope, while Pearl-ticket recursive certificates use scheduled validation
+  derived from the committed ticket rows and columns.
 - `ai-pow-mine`'s recursive certificate builder is Pearl-ticket-derived and
   constructible only after the ticket loop reports a Nockchain target hit, using
   the trusted candidate Nockchain commitment carried by the mining result before

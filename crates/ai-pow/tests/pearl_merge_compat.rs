@@ -21,6 +21,7 @@ use ai_pow::pearl_compat::{
 };
 use ai_pow::prover::{params_tag, BlockContext};
 use ai_pow::synth::synth_matrices;
+use ai_pow::tile_hash::hash_le_target;
 
 fn simple_pattern(length: u32) -> PearlPeriodicPattern {
     PearlPeriodicPattern {
@@ -117,6 +118,27 @@ fn mining_config() -> PearlMiningConfig {
 
 fn pearl_default_cols_pattern() -> Vec<u32> {
     (0..32).flat_map(|i| [8 * i, 8 * i + 1]).collect()
+}
+
+fn u256_le_div_ceil_u32(value: &[u8; 32], divisor: u32) -> [u8; 32] {
+    assert!(divisor > 0);
+    let mut out = [0u8; 32];
+    let mut remainder = 0u32;
+    for i in (0..32).rev() {
+        let acc = (u64::from(remainder) << 8) | u64::from(value[i]);
+        out[i] = (acc / u64::from(divisor)) as u8;
+        remainder = (acc % u64::from(divisor)) as u32;
+    }
+    if remainder != 0 {
+        for byte in &mut out {
+            let (next, carry) = byte.overflowing_add(1);
+            *byte = next;
+            if !carry {
+                break;
+            }
+        }
+    }
+    out
 }
 
 fn pearl_compat_test_pattern() -> PearlPeriodicPattern {
@@ -493,7 +515,7 @@ fn pearl_periodic_pattern_rejects_noncanonical_or_unbounded_shapes() {
 }
 
 #[test]
-fn pearl_recursive_prover_config_preflight_rejects_unsupported_patterns() {
+fn pearl_recursive_prover_config_preflight_accepts_bounded_patterns() {
     let params = MatmulParams {
         m: 8,
         k: 1024,
@@ -518,11 +540,9 @@ fn pearl_recursive_prover_config_preflight_rejects_unsupported_patterns() {
 
     let mut multi_tile = params;
     multi_tile.m = 16;
-    assert_eq!(
-        validate_pearl_merge_config_for_recursive_prover(&supported, &multi_tile, 16),
-        Err(PearlCompatError::UnsupportedRecursivePearlParams(
-            "num_tiles must be 1; current recursive certificate proves one selected tile"
-        ))
+    multi_tile.n = 16;
+    validate_pearl_merge_config_for_recursive_prover(&supported, &multi_tile, 16).expect(
+        "Pearl-compatible recursive preflight supports square-contiguous multi-tile tickets",
     );
 
     let mut wrong_difficulty = params;
@@ -568,13 +588,34 @@ fn pearl_recursive_prover_config_preflight_rejects_unsupported_patterns() {
         Err(PearlCompatError::PublicParamEnvelope)
     );
 
+    let mut noncontiguous_params = params;
+    noncontiguous_params.m = 128;
+    noncontiguous_params.n = 128;
     let mut noncontiguous = supported;
     noncontiguous.rows_pattern =
         PearlPeriodicPattern::from_list(&[0, 1, 8, 9, 64, 65, 72, 73]).unwrap();
-    assert_eq!(
-        validate_pearl_merge_config_for_recursive_prover(&noncontiguous, &params, 16),
-        Err(PearlCompatError::UnsupportedRecursivePearlShape)
+    validate_pearl_merge_config_for_recursive_prover(&noncontiguous, &noncontiguous_params, 16)
+        .expect(
+            "bounded non-contiguous Pearl patterns are supported by the explicit schedule bridge",
+        );
+
+    let rectangular_params = MatmulParams {
+        m: 128,
+        n: 125,
+        tile: 6,
+        ..params
+    };
+    assert!(
+        rectangular_params.validate().is_err(),
+        "legacy native tile grid rejects this Pearl-valid rectangular schedule"
     );
+    let rectangular = PearlMiningConfig {
+        rows_pattern: simple_pattern(6),
+        cols_pattern: simple_pattern(8),
+        ..supported
+    };
+    validate_pearl_merge_config_for_recursive_prover(&rectangular, &rectangular_params, 16)
+        .expect("Pearl h*w, not legacy square tile^2, determines ticket entropy");
 
     assert_eq!(
         validate_pearl_merge_config_for_recursive_prover(&supported, &params, 7),
@@ -731,10 +772,23 @@ fn pearl_and_nockchain_target_checks_are_independent() {
     public.hash_jackpot = [0u8; 32];
     assert_eq!(public.check_pearl_jackpot_difficulty(), Ok(()));
 
-    public.hash_jackpot = [7u8; 32];
-    let mut nock_target = [7u8; 32];
-    assert_eq!(public.check_nockchain_jackpot_target(&nock_target), Ok(()));
-    nock_target[0] = 6;
+    public.hash_jackpot = {
+        let mut bytes = [0u8; 32];
+        bytes[0] = 2;
+        bytes
+    };
+    let nock_target = {
+        let mut bytes = [0u8; 32];
+        bytes[0] = 1;
+        bytes
+    };
+    let nock_adjusted = public.nockchain_adjusted_target(&nock_target).unwrap();
+    assert_eq!(&nock_adjusted[..16], &4096u128.to_le_bytes());
+    assert!(
+        public.check_nockchain_jackpot_target(&nock_target).is_ok(),
+        "Nockchain target checks use Pearl's h*w*dot_product_length work factor"
+    );
+    let nock_target = [0u8; 32];
     assert_eq!(
         public.check_nockchain_jackpot_target(&nock_target),
         Err(PearlCompatError::NockchainTargetNotMet)
@@ -942,6 +996,52 @@ fn changing_sigma_changes_pearl_work_before_jackpot_hashing() {
 }
 
 #[test]
+fn changing_ticket_offset_reuses_work_instance_but_changes_opened_ticket() {
+    let params = pearl_square_params();
+    let config = pearl_square_config();
+    let easy_header = PearlIncompleteBlockHeader {
+        nbits: 0x207f_ffff,
+        ..header()
+    };
+    let (a, b) = synth_matrices(b"pearl-merge-ticket-offset-binding", &params);
+    let aux = PearlNockchainAux {
+        nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+        nock_block_commitment: [0x42; 32],
+        nockchain_target_epoch_or_height: 123_456,
+        extra_domain_data: b"ai-pow-target-window".to_vec(),
+    };
+
+    let first = evaluate_pearl_merge_ticket_attempt(
+        &easy_header,
+        &config,
+        &params,
+        0,
+        0,
+        &a,
+        &b,
+        &[0xff; 32],
+        16,
+        aux.clone(),
+    )
+    .expect("evaluate first Pearl ticket");
+    let second = evaluate_pearl_merge_ticket_attempt(
+        &easy_header, &config, &params, 8, 0, &a, &b, &[0xff; 32], 16, aux,
+    )
+    .expect("evaluate second Pearl ticket");
+
+    assert_eq!(first.commitments, second.commitments);
+    assert_eq!(first.public_params.hash_a, second.public_params.hash_a);
+    assert_eq!(first.public_params.hash_b, second.public_params.hash_b);
+    assert_ne!(first.ticket.a_rows, second.ticket.a_rows);
+    assert_eq!(first.ticket.b_cols, second.ticket.b_cols);
+    assert_ne!(first.ticket.tile_state, second.ticket.tile_state);
+    assert_ne!(
+        first.public_params.hash_jackpot,
+        second.public_params.hash_jackpot
+    );
+}
+
+#[test]
 fn pearl_attempt_rejects_config_that_does_not_match_params() {
     let params = MatmulParams::TEST_SMALL;
     let (a, b) = synth_matrices(b"pearl-merge-config-binding", &params);
@@ -1063,6 +1163,19 @@ fn pearl_compatible_work_precheck_rejects_target_and_input_failures() {
         t_cols: 0,
     };
     assert_ne!(public.hash_jackpot, [0u8; 32]);
+
+    let priced_nockchain_target = u256_le_div_ceil_u32(&public.hash_jackpot, 65_536);
+    assert!(
+        !hash_le_target(&public.hash_jackpot, &priced_nockchain_target),
+        "fixture must be above the raw chain target"
+    );
+    let priced_precheck =
+        verify_pearl_compatible_work(&public, &a, &b, &priced_nockchain_target, 16)
+            .expect("Nockchain-side precheck must apply Pearl's ticket work factor");
+    assert_eq!(priced_precheck.nockchain_target, priced_nockchain_target);
+    assert!(hash_le_target(
+        &public.hash_jackpot, &priced_precheck.nockchain_adjusted_target
+    ));
 
     let nockchain_target = [0u8; 32];
     assert_eq!(
@@ -1847,6 +1960,65 @@ fn pearl_merge_ticket_attempt_builds_statement_for_one_explicit_ticket() {
     assert_eq!(precheck.work.commitments, attempt.commitments);
     assert_eq!(precheck.work.ticket, attempt.ticket);
     assert_eq!(precheck.aux, aux);
+}
+
+#[test]
+fn pearl_merge_ticket_attempt_supports_rectangular_non_native_tile_grid() {
+    let params = MatmulParams {
+        m: 128,
+        k: 1024,
+        n: 125,
+        noise_rank: 64,
+        tile: 6,
+        spot_checks: 1,
+        difficulty_bits: 0,
+    };
+    assert!(
+        params.validate().is_err(),
+        "native square tile grid rejects this Pearl-valid schedule"
+    );
+    let config = PearlMiningConfig {
+        common_dim: params.k,
+        rank: params.noise_rank as u16,
+        mma_type: PEARL_MMA_INT7XINT7_TO_INT32,
+        rows_pattern: simple_pattern(6),
+        cols_pattern: simple_pattern(8),
+        reserved: [0u8; PEARL_MINING_CONFIG_RESERVED_SIZE],
+    };
+    let easy_header = PearlIncompleteBlockHeader {
+        nbits: 0x207f_ffff,
+        ..header()
+    };
+    let (a, b) = synth_matrices(b"pearl-merge-ticket-rectangular-native-grid", &params);
+    let aux = PearlNockchainAux {
+        nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+        nock_block_commitment: [0x42; 32],
+        nockchain_target_epoch_or_height: 123_456,
+        extra_domain_data: b"ai-pow-target-window".to_vec(),
+    };
+
+    let attempt = evaluate_pearl_merge_ticket_attempt(
+        &easy_header,
+        &config,
+        &params,
+        0,
+        0,
+        &a,
+        &b,
+        &[0xffu8; 32],
+        16,
+        aux.clone(),
+    )
+    .expect("Pearl-valid rectangular explicit ticket");
+    assert_eq!(attempt.ticket.a_rows, vec![0, 1, 2, 3, 4, 5]);
+    assert_eq!(attempt.ticket.b_cols, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+
+    let statement_bytes = attempt.statement.to_bytes().unwrap();
+    let precheck = verify_pearl_merge_public_statement_bytes(
+        &aux.nock_block_commitment, &statement_bytes, &a, &b, &[0xffu8; 32], 16,
+    )
+    .unwrap();
+    assert_eq!(precheck.work.ticket, attempt.ticket);
 }
 
 #[test]

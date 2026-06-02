@@ -331,25 +331,57 @@ pub fn compute_tile_trace_from_slices(
     let t = params.tile as usize;
     let r = params.noise_rank as usize;
     let k = params.k as usize;
-    debug_assert_eq!(a_prime_rows.len(), t * k);
-    debug_assert_eq!(b_prime_cols.len(), t * k);
-    let steps = params.num_stripes() as usize;
+    compute_pattern_tile_trace_from_slices(a_prime_rows, b_prime_cols, t, t, k, r, k)
+}
 
-    let mut c_blk = vec![0i32; t * t];
+/// Compute a Pearl pattern tile state from already-extracted noised A rows and
+/// B columns.
+///
+/// This is the dimension-general form of [`compute_tile_trace_from_slices`].
+/// Pearl tickets are `h × w`, where `h = rows_pattern.size()` and
+/// `w = cols_pattern.size()`; the legacy Nockchain tile path is the special
+/// case `h == w == params.tile` and `dot_product_len == k`.
+pub fn compute_pattern_tile_trace_from_slices(
+    a_prime_rows: &[i8],
+    b_prime_cols: &[i8],
+    h: usize,
+    w: usize,
+    k: usize,
+    r: usize,
+    dot_product_len: usize,
+) -> TileTrace {
+    assert!(h > 0, "Pearl pattern tile height must be nonzero");
+    assert!(w > 0, "Pearl pattern tile width must be nonzero");
+    assert!(k > 0, "Pearl pattern common dimension must be nonzero");
+    assert!(r > 0, "Pearl pattern rank must be nonzero");
+    assert!(
+        dot_product_len <= k,
+        "Pearl pattern dot_product_len must be <= common dimension"
+    );
+    assert_eq!(
+        dot_product_len % r,
+        0,
+        "Pearl pattern rank must divide dot_product_len"
+    );
+    assert_eq!(a_prime_rows.len(), h * k, "a_prime_rows must be h*k");
+    assert_eq!(b_prime_cols.len(), w * k, "b_prime_cols must be w*k");
+    let steps = dot_product_len / r;
+
+    let mut c_blk = vec![0i32; h * w];
     let mut state = TileState::zero();
     let mut x_steps = Vec::with_capacity(steps);
 
     for step in 0..steps {
         let lo = step * r;
-        for di in 0..t {
-            let a_row = &a_prime_rows[di * k + lo..di * k + lo + r];
-            for dj in 0..t {
-                let b_col = &b_prime_cols[dj * k + lo..dj * k + lo + r];
+        for u in 0..h {
+            let a_row = &a_prime_rows[u * k + lo..u * k + lo + r];
+            for v in 0..w {
+                let b_col = &b_prime_cols[v * k + lo..v * k + lo + r];
                 let mut delta: i32 = 0;
                 for l in 0..r {
                     delta = delta.wrapping_add((a_row[l] as i32) * (b_col[l] as i32));
                 }
-                let idx = di * t + dj;
+                let idx = u * w + v;
                 c_blk[idx] = c_blk[idx].wrapping_add(delta);
             }
         }
@@ -544,6 +576,64 @@ mod tests {
         let from_full = compute_tile(&mats, &params, tile_i, tile_j);
         let from_slices = compute_tile_from_slices(&a_rows, &b_cols, &params);
         assert_eq!(from_full, from_slices);
+        let from_pattern = compute_pattern_tile_trace_from_slices(
+            &a_rows, &b_cols, t, t, k, params.noise_rank as usize, k,
+        )
+        .state;
+        assert_eq!(
+            from_full, from_pattern,
+            "dimension-general Pearl helper must preserve square tile behavior"
+        );
+    }
+
+    #[test]
+    fn pattern_slice_path_supports_rectangular_rank_aligned_prefix() {
+        let h = 4usize;
+        let w = 8usize;
+        let k = 80usize;
+        let r = 16usize;
+        let dot_product_len = 64usize;
+        let mut a_rows = vec![0i8; h * k];
+        let mut b_cols = vec![0i8; w * k];
+        for (idx, cell) in a_rows.iter_mut().enumerate() {
+            *cell = ((idx * 17 + 3) % 101) as i8 - 50;
+        }
+        for (idx, cell) in b_cols.iter_mut().enumerate() {
+            *cell = ((idx * 29 + 11) % 97) as i8 - 48;
+        }
+
+        let prefix =
+            compute_pattern_tile_trace_from_slices(&a_rows, &b_cols, h, w, k, r, dot_product_len);
+        assert_eq!(prefix.x_steps.len(), dot_product_len / r);
+
+        let mut suffix_mutated_a = a_rows.clone();
+        let mut suffix_mutated_b = b_cols.clone();
+        for row in 0..h {
+            for l in dot_product_len..k {
+                suffix_mutated_a[row * k + l] = suffix_mutated_a[row * k + l].wrapping_add(17);
+            }
+        }
+        for col in 0..w {
+            for l in dot_product_len..k {
+                suffix_mutated_b[col * k + l] = suffix_mutated_b[col * k + l].wrapping_sub(19);
+            }
+        }
+        let same_prefix = compute_pattern_tile_trace_from_slices(
+            &suffix_mutated_a, &suffix_mutated_b, h, w, k, r, dot_product_len,
+        );
+        assert_eq!(
+            prefix.state, same_prefix.state,
+            "Pearl dot_product_len prefix must ignore rank-truncated suffix"
+        );
+
+        let full = compute_pattern_tile_trace_from_slices(&a_rows, &b_cols, h, w, k, r, k);
+        let full_mutated = compute_pattern_tile_trace_from_slices(
+            &suffix_mutated_a, &suffix_mutated_b, h, w, k, r, k,
+        );
+        assert_ne!(
+            full.state, full_mutated.state,
+            "mutated suffix should affect a full-length rank-aligned computation"
+        );
     }
 
     #[test]

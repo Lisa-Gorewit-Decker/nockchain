@@ -24,7 +24,7 @@ the Rust miner also wires Pearl Gateway submission. That means:
 - Hoon does not define Pearl-specific molds or dispatch arms.
 - Pearl-format details live inside Rust-owned nonce bytes.
 - Nockchain acceptance requires the shared jackpot digest to satisfy the
-  Nockchain target.
+  Nockchain target after Pearl's pattern-size work-factor adjustment.
 - Nockchain acceptance does not require the shared jackpot digest to satisfy
   Pearl's `nbits` target.
 - Pearl submission does not build or submit a Nockchain recursive certificate
@@ -218,6 +218,65 @@ verification work.
 This is separate from the recursive proof node tree. Hoon sees only `[len data]`
 for the nonce and the structured recursive certificate.
 
+## Work Unit Terminology
+
+Pearl-compatible Nockchain mining uses Pearl's work vocabulary:
+
+- A **work instance** is the transcript and computation defined by
+  `sigma`, `mu`, trusted `A`/`B`, `kappa`, `H_A`, `H_B`, `s_A`, `s_B`, and the
+  noised tiled matmul.
+- A **tile ticket** is a public proof-parameter selection, such as
+  `t_rows`/`t_cols`, plus the jackpot digest for the opened tile state from
+  that work instance.
+- A single work instance may expose many valid tile tickets. That is Pearl's
+  intended lottery model, not a shortcut.
+
+The forbidden shortcut is different: a miner must not introduce a
+Nockchain-only nonce or hash loop that produces many Nockchain target trials
+without producing Pearl-valid tile tickets bound to the committed work
+instance.
+
+## Pearl Puzzle Requirements
+
+Nockchain's Pearl-compatible puzzle requirement set is Pearl's requirement set,
+not a narrower native square-tile subset.
+
+Normative requirements:
+
+1. The mining configuration `mu` is Pearl's 52-byte `MiningConfiguration`:
+   `common_dim`, `rank`, `mma_type`, `rows_pattern`, `cols_pattern`, and
+   all-zero reserved bytes.
+2. `rows_pattern` and `cols_pattern` are Pearl 6-byte `PeriodicPattern`
+   values. They may describe any canonical Pearl periodic pattern, including
+   non-contiguous multi-dimensional patterns, not only `[0, 1, ..., t - 1]`.
+3. The ticket public parameters are Pearl's `(t_rows, t_cols)` offsets. Each
+   offset must be valid for its pattern, and the shifted pattern indices must
+   remain inside the committed matrix dimensions:
+   `t_rows + max(rows_pattern) < m` and
+   `t_cols + max(cols_pattern) < n`.
+4. The opened ticket rows are
+   `rows_pattern.indices_with_offset(t_rows)`. The opened ticket columns are
+   `cols_pattern.indices_with_offset(t_cols)`. These exact row/column sets
+   define the tile state being proven and hashed.
+5. The mineable work instance computes the full Pearl noised matmul schedule
+   for the configured pattern partition. A submitted Nockchain ticket must be
+   one of the Pearl-valid tickets from that work instance.
+6. The target-price adjustment is Pearl's pattern-size rule:
+   `target * rows_pattern.size() * cols_pattern.size() * dot_product_length`,
+   where `dot_product_length = common_dim - common_dim % rank`, with the
+   jackpot digest interpreted as Pearl's little-endian `uint256`. When
+   Nockchain supplies an arbitrary chain target, that target replaces Pearl's
+   `nbits` base target but the same pattern-size work factor applies.
+7. The recursive certificate statement must bind the same public
+   `MiningConfiguration`, `(t_rows, t_cols)`, `H_A`, `H_B`, `s_A`, tile state,
+   and jackpot digest that a Pearl verifier would derive for the ticket.
+
+Any implementation that cannot prove or verify an otherwise valid Pearl
+periodic-pattern ticket must fail closed for that configuration until support
+exists. It must not silently rewrite Pearl's puzzle into square-contiguous
+tiles, verifier-selected tiles, a single-tile lottery, or a Nockchain-only
+nonce loop.
+
 ## Work Transcript
 
 For Pearl-format-compatible mode, Rust derives the mineable attempt with Pearl's
@@ -233,13 +292,15 @@ hash  = BLAKE3(tile_state, key=s_A)
 ```
 
 The nonce must not add a second Nockchain-only nonce into the attempt state.
-Changing the Pearl header, mining configuration, public proof params, aux
-commitment, Nockchain block commitment, or selected ticket offset changes the
-work attempt.
+Changing the Pearl header, mining configuration, aux commitment, or Nockchain
+block commitment changes the work instance. Changing public proof parameters,
+including a selected ticket offset, changes the public ticket and jackpot
+statement for that work instance; it does not derive a fresh `kappa` or fresh
+noised matmul.
 
-Minimal work reuse is intentional. Cache-friendly retry loops are a soundness
-risk. A miner must not be able to run one matrix/noise attempt and then grind
-many independent Nockchain nonces against it.
+Pearl-style tile-ticket reuse is intentional. Cache-friendly Nockchain-only
+retry loops are the soundness risk. A miner may not run one Pearl work instance
+and then grind many independent Nockchain nonces against it.
 
 ## Nockchain Acceptance Contract
 
@@ -262,17 +323,28 @@ perform these checks before recursive proof verification:
 5. Verify the aux inclusion proof against the Pearl header merkle root.
 6. Verify the `NPA1` aux block commitment equals the trusted candidate
    Nockchain block commitment.
-7. Recompute Pearl-compatible `H_A`, `H_B`, noise seeds, tile state, and
-   jackpot digest from trusted matrices and public statement bytes.
-8. Verify the jackpot digest satisfies the Nockchain target.
-9. Do not require the jackpot digest to satisfy Pearl's target for Nockchain
+7. Recompute Pearl-compatible `kappa`, `H_A`, `H_B`, noise seeds, tile state,
+   and jackpot digest from trusted matrices, `sigma`, `mu`, and the submitted
+   public ticket parameters.
+8. Verify the submitted ticket parameters are valid for Pearl's full puzzle
+   configuration: canonical periodic row/column patterns, valid `t_rows` and
+   `t_cols` offsets, in-bounds shifted pattern indices, and the exact opened
+   row/column sets used by the recursive statement.
+9. Verify the jackpot digest satisfies the Nockchain target after applying the
+   same Pearl pattern-size work factor used for Pearl's target check.
+10. Do not require the jackpot digest to satisfy Pearl's target for Nockchain
    acceptance.
-10. Verify recursive certificate metadata matches the recomputed work:
+11. Verify recursive certificate metadata matches the recomputed work:
     `zk_params`, `found_idx`, `trace_height`, `h_a_chunk`, `h_b_chunk`,
     `JOB_KEY = kappa`, `COMMITMENT_HASH = s_A`, `JACKPOT_MSG = tile_state`,
     and `HASH_JACKPOT = jackpot_hash`.
-11. Only after those cheap checks, reconstruct and verify the recursive
+12. Only after those cheap checks, reconstruct and verify the recursive
     certificate.
+
+For multi-tile and non-contiguous periodic-pattern configurations, Nockchain
+verification must support Pearl's tile-ticket semantics or fail closed. It must
+not accept a one-verifier-selected-tile statement as the final consensus rule
+while claiming Pearl-compatible puzzle requirements.
 
 ## Current Implemented Surface
 
@@ -280,12 +352,27 @@ Implemented in this branch:
 
 - `ai_pow::pearl_compat` serializes and parses Pearl header/config/public data,
   `NPA1` aux, and `PMP1` public statements.
+- Pearl ticket tile-state computation uses the shared dimension-general
+  matmul helper for `rows_pattern.size() × cols_pattern.size()` tickets and
+  Pearl's rank-aligned `dot_product_length`; the old square `params.tile ×
+  params.tile` tile path delegates to the same helper for the contiguous
+  subset.
+- The Layer-0 trace generator has dimension-general useful-work sweep and
+  noised-chunk/store-layout entrypoints for `h × w` Pearl tile shapes.
+  Canonical program reconstruction and the recursive bridge use an explicit
+  strip-schedule entrypoint that sizes strip openings and sweep rows from the
+  public A-row/B-column sets. The recursive prover must bind those exact
+  shifted Pearl pattern indices; it must not prove a square-contiguous
+  surrogate.
 - The Rust precheck now treats Pearl and Nockchain targets independently for
-  Nockchain submission: Nockchain-side precheck requires the Nockchain target
-  only.
-- `ai_pow_miner::pearl_mining` evaluates one explicit Pearl ticket attempt per
-  counted attempt and returns when either the Pearl adjusted target or the
-  Nockchain target is hit. The returned ticket records
+  Nockchain submission: Nockchain-side precheck requires only the Nockchain
+  target, adjusted by Pearl's
+  `dot_product_length * rows_pattern.size() * cols_pattern.size()` work factor.
+- `ai_pow_miner::pearl_mining` evaluates explicit Pearl tile tickets and
+  returns when either the Pearl adjusted target or the Pearl-priced Nockchain
+  target is hit.
+  Attempt counters in this path count ticket evaluations, not necessarily
+  fresh `sigma || mu` noised-matmul work instances. The returned ticket records
   `pearl_target_hit` and `nockchain_target_hit`, so the run loop can submit to
   the appropriate chain without treating one chain's target as the other's
   admission rule.
@@ -305,17 +392,17 @@ Implemented in this branch:
   for inspection; callers cannot mutate the Gateway, Pearl mining config, aux
   template, mining options, or recursive certificate builder fields in place.
 - The connected run loop submits the Nockchain `%ai-pow` command only for
-  Nockchain target hits. Pearl-only hits do not build a recursive certificate
-  and do not poke Hoon. The Hoon kernel still receives no Pearl-specific fields
-  beyond the Rust-owned opaque nonce bytes.
+  Pearl-priced Nockchain target hits. Pearl-only hits do not build a recursive
+  certificate and do not poke Hoon. The Hoon kernel still receives no
+  Pearl-specific fields beyond the Rust-owned opaque nonce bytes.
 - The Pearl-compatible run loop accepts recursive certificate data only through
   a wrapper constructible by public callers from the opaque
   `AiPowRecursiveCertificateRun` returned by the recursive prover. Downstream
   crates cannot synthesize this run object directly. Before wrapping the
   command, the miner rechecks the run's `zk_params`, `found_idx`,
-  `trace_height`, commitments, and bound public inputs against the
-  ticket-derived metadata, so a stale or wrong-ticket recursive run is rejected
-  before it is submitted to the node.
+  exact A-row/B-column strip schedule, `trace_height`, commitments, and bound
+  public inputs against the ticket-derived metadata, so a stale or wrong-ticket
+  recursive run is rejected before it is submitted to the node.
 - `ai-pow-mine` no longer has a submission-mode switch. It always builds
   canonical Pearl-format-compatible Nockchain `%ai-pow` submissions. It fetches
   the Pearl incomplete block header from Pearl Gateway miner RPC
@@ -356,12 +443,14 @@ Implemented in this branch:
   empty legacy public-key config list and a nonempty PKH config list.
 - Pearl-compatible miner preflight rejects Rust-side submission configs whose
   `common_dim`, `rank`, recursive params, or row/column patterns do not match
-  the configured AI params and the current square-contiguous recursive prover
-  subset. The current subset requires `difficulty_bits = 0` because the
+  the configured AI params or Pearl's bounded public-parameter envelope. This
+  is an implementation guard, not the protocol requirement set.
+  The protocol requirement set is the Pearl periodic-pattern ticket semantics
+  above. The current prover subset requires `difficulty_bits = 0` because the
   Nockchain target is verifier-supplied, and `spot_checks = 1` because the
-  Pearl-compatible recursive statement proves one explicit ticket. This keeps
-  unsupported Pearl pattern-language and parameter configs from reaching the
-  mining loop and failing only after a target hit.
+  current recursive statement proves one explicit ticket. Contiguous,
+  non-contiguous, rectangular, and non-native-grid Pearl schedules are
+  represented by an explicit strip schedule derived from the public ticket.
 - `ai_pow_miner::certificate_noun` emits canonical `%ai-pow` artifacts with an
   opaque `[len data]` nonce and structured recursive certificate.
 - Public certificate-noun construction is typed around
@@ -457,8 +546,10 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
 13. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,
    candidate-block replay, aux inclusion tamper, target miss, metadata drift,
    and proof-node DoS limits without wiring Hoon acceptance.
-14. Extend the recursive prover beyond square-contiguous Pearl row/column
-   patterns, or keep production admission explicitly restricted to that subset.
+14. Keep the explicit strip-schedule bridge separate from native square-tile
+   helper paths. The legacy `tile` field remains in serialized ZK params as
+   metadata, but Pearl ticket rows/columns are bound by the explicit schedule,
+   not by `tile_i/tile_j`.
 
 ## Non-Negotiable Requirements
 
@@ -466,9 +557,11 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
 - Hoon must not define or dispatch on Pearl concepts.
 - Hoon must not accept a Pearl ZKP, raw `MatmulProof`, or nonrecursive proof as
   the production AI-PoW certificate.
-- One work attempt must correspond to one target check per chain. No grinding
-  a fresh Nockchain nonce against cached Pearl work.
-- Nockchain target satisfaction is sufficient for Nockchain submission; Pearl
-  target satisfaction must not be enforced by Nockchain-side submission.
+- A Pearl work instance may expose many tile tickets; each submitted ticket
+  checks the same Pearl jackpot digest against the relevant chain target. No
+  grinding a fresh Nockchain nonce against cached Pearl work.
+- Pearl-priced Nockchain target satisfaction is sufficient for Nockchain
+  submission; Pearl target satisfaction must not be enforced by Nockchain-side
+  submission.
 - Cheap replay, target, aux inclusion, metadata, and size checks must happen
   before recursive proof reconstruction or verification.

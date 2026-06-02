@@ -206,6 +206,58 @@ pub fn tile_chunk_range(
     (c0, c1, num_chunks)
 }
 
+/// Pattern-aware variant of [`tile_chunk_range`].
+///
+/// Given explicit row/column indices into a row-major or column-major matrix
+/// whose selected strips are each `k` bytes, return the minimal single
+/// contiguous BLAKE3 chunk range that covers every selected strip. This is the
+/// low-level schedule primitive needed for Pearl `PeriodicPattern` tickets:
+/// non-contiguous Pearl row/column sets can still be authenticated to the one
+/// committed matrix root by opening the chunk-covering interval.
+///
+/// This deliberately returns one contiguous range because
+/// `place_matrix_strip_opening` proves one strip-opening root today. A future
+/// multi-range opening can optimize this, but the single-range cover is already
+/// verifier-recomputable and sound: it may reveal extra committed bytes, never
+/// fewer than the selected ticket uses.
+pub fn indexed_strips_chunk_range(
+    indices: &[u32],
+    k: usize,
+    total_bytes: usize,
+) -> (usize, usize, usize) {
+    assert!(
+        !indices.is_empty(),
+        "indexed strip opening requires at least one index"
+    );
+    assert!(k > 0, "strip length k must be nonzero");
+    let min_idx = indices
+        .iter()
+        .copied()
+        .min()
+        .expect("nonempty indices have min") as usize;
+    let max_idx = indices
+        .iter()
+        .copied()
+        .max()
+        .expect("nonempty indices have max") as usize;
+    let lo = min_idx
+        .checked_mul(k)
+        .expect("indexed strip opening lo overflow");
+    let hi = max_idx
+        .checked_add(1)
+        .and_then(|idx| idx.checked_mul(k))
+        .expect("indexed strip opening hi overflow");
+    assert!(
+        hi <= total_bytes,
+        "indexed strip span [{lo},{hi}) exceeds matrix {total_bytes}B"
+    );
+    let padded = (total_bytes.div_ceil(CHUNK_LEN) * CHUNK_LEN).max(CHUNK_LEN);
+    let num_chunks = padded / CHUNK_LEN;
+    let c0 = lo / CHUNK_LEN;
+    let c1 = hi.div_ceil(CHUNK_LEN).min(num_chunks).max(c0 + 1);
+    (c0, c1, num_chunks)
+}
+
 /// **Phase A-CR (CR.0).** The number of trace rows
 /// [`crate::composite_trace::CompositeTrace::place_matrix_strip_opening`]
 /// consumes for the opening of `[c0,c1)` within `num_chunks`
@@ -561,6 +613,57 @@ mod tests {
                     "tile {ti} schedule [{c0},{c1}) of {nc} must auth to root"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn indexed_strips_chunk_range_matches_contiguous_tile_schedule() {
+        for &(m, kk, t) in
+            &[(4096usize, 4096usize, 64usize), (4096, 14336, 64), (64, 64, 8), (96, 64, 8)]
+        {
+            let total = m * kk;
+            let n_tiles = m / t;
+            for ti in 0..n_tiles {
+                let indices: Vec<u32> = (0..t).map(|d| (ti * t + d) as u32).collect();
+                assert_eq!(
+                    indexed_strips_chunk_range(&indices, kk, total),
+                    tile_chunk_range(ti, t, kk, total),
+                    "indexed contiguous range must match tile schedule for m={m} k={kk} t={t} tile={ti}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_strips_chunk_range_authenticates_noncontiguous_patterns() {
+        let kappa = kappa();
+        let kk = 1024usize;
+        let total_rows = 128usize;
+        let raw: Vec<u8> = (0..total_rows * kk)
+            .map(|i| (i.wrapping_mul(1103515245) ^ (i >> 9)) as u8)
+            .collect();
+        let root = merkle_root(&raw, &kappa);
+        for indices in [
+            vec![0u32, 8, 64, 72],
+            vec![0u32, 1, 8, 9, 32, 33, 40, 41, 64, 65, 72, 73],
+            vec![7u32, 15, 63, 95],
+        ] {
+            let (c0, c1, nc) = indexed_strips_chunk_range(&indices, kk, raw.len());
+            assert!(c0 < c1 && c1 <= nc);
+            for idx in &indices {
+                let lo = (*idx as usize * kk) / CHUNK_LEN;
+                let hi = ((*idx as usize + 1) * kk).div_ceil(CHUNK_LEN);
+                assert!(
+                    c0 <= lo && hi <= c1,
+                    "range [{c0},{c1}) must cover selected strip index {idx}"
+                );
+            }
+            let (opened, sibs) = open_strip(&raw, &kappa, c0, c1);
+            assert_eq!(
+                verify_strip_opening(&opened, &sibs, c0, c1, nc, &kappa),
+                root,
+                "non-contiguous indexed cover must authenticate to the committed root"
+            );
         }
     }
 

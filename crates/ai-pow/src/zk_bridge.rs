@@ -52,6 +52,7 @@
 //! attempt with Nockchain's recursive certificate and does not serialize
 //! Pearl's ZKP.
 
+use ai_pow_zk::canonical::StripIndexSchedule;
 use ai_pow_zk::composite_proof::{
     build_config, composite_prove_pinned_logup, composite_verify_pow_pinned_logup,
 };
@@ -169,6 +170,54 @@ pub fn expected_layer0_rows(params: &MatmulParams) -> Layer0RowBudget {
     }
 }
 
+pub fn expected_layer0_rows_for_strip_schedule(
+    params: &MatmulParams,
+    strip_schedule: &StripIndexSchedule,
+) -> Result<Layer0RowBudget, BridgeError> {
+    validate_scheduled_params(params)?;
+    let zk_params = zk_params_from(params);
+    let ((ca0, ca1, a_nc), (cb0, cb1, b_nc)) = strip_schedule
+        .chunk_ranges(&zk_params)
+        .map_err(BridgeError::ZkParamsInvalid)?;
+    let h = strip_schedule.a_indices.len() as u64;
+    let w = strip_schedule.b_indices.len() as u64;
+    let r = params.noise_rank as u64;
+    let k = params.k as u64;
+    let num_stripes = params.num_stripes() as u64;
+    let sweep = (h / 2) * (w / 2) * num_stripes * r.div_ceil(16);
+    Ok(Layer0RowBudget {
+        mhash_a: ai_pow_zk::blake3_tree::strip_opening_rows(ca0, ca1, a_nc) as u64,
+        mhash_b: ai_pow_zk::blake3_tree::strip_opening_rows(cb0, cb1, b_nc) as u64,
+        sweep,
+        store: ((h + w).saturating_mul(k)) / 8 + 1,
+        fixed: 3 + num_stripes + 8 + 16,
+    })
+}
+
+fn validate_scheduled_params(params: &MatmulParams) -> Result<(), BridgeError> {
+    if params.m == 0 || params.n == 0 {
+        return Err(BridgeError::ZkParamsInvalid("m and n must be > 0".into()));
+    }
+    if params.k == 0 || params.k > crate::params::PEARL_K_MAX {
+        return Err(BridgeError::ZkParamsInvalid("k must be in 1..=2^16".into()));
+    }
+    if params.noise_rank < 2
+        || params.noise_rank > params.k
+        || !params.noise_rank.is_power_of_two()
+        || params.k % params.noise_rank != 0
+    {
+        return Err(BridgeError::ZkParamsInvalid(
+            "noise_rank must be a power of two in 2..=k and divide k".into(),
+        ));
+    }
+    if params.spot_checks == 0 || params.spot_checks > crate::params::SPOT_CHECKS_MAX {
+        return Err(BridgeError::ZkParamsInvalid(
+            "spot_checks must be in 1..=SPOT_CHECKS_MAX".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Outcome of a successful F1 bridge run.
 pub struct ZkOutcome {
     /// The derived public inputs the proof commits to. Callers
@@ -261,6 +310,7 @@ pub(crate) struct ZkProofArtifact {
 pub struct AiPowRecursiveCertificateRun {
     zk_params: ZkParams,
     found_idx: u32,
+    strip_schedule: ai_pow_zk::canonical::StripIndexSchedule,
     commitments: ZkPublicCommitments,
     pis: CompositePublicInputs,
     trace_height: usize,
@@ -279,6 +329,11 @@ impl AiPowRecursiveCertificateRun {
     /// Linear tile index proved by the recursive certificate.
     pub fn found_idx(&self) -> u32 {
         self.found_idx
+    }
+
+    /// Exact verifier-side A-row/B-column schedule bound by this run.
+    pub fn strip_schedule(&self) -> &ai_pow_zk::canonical::StripIndexSchedule {
+        &self.strip_schedule
     }
 
     /// Public matrix commitments bound by the recursive certificate.
@@ -684,6 +739,7 @@ struct ZkDerivedStatement {
 struct VerifiedZkStatement {
     tile_i: u32,
     tile_j: u32,
+    strip_schedule: ai_pow_zk::canonical::StripIndexSchedule,
     derived: ZkDerivedStatement,
 }
 
@@ -745,8 +801,8 @@ pub enum BridgeError {
     RecursiveCertificate(String),
     /// Pearl-compatible merge-mining statement precheck failed.
     PearlMergeStatement(PearlCompatError),
-    /// The Pearl-compatible ticket is outside the currently supported
-    /// square-contiguous recursive proof subset.
+    /// The Pearl-compatible ticket is outside the current legacy
+    /// `MatmulParams` / `ZkParams` envelope.
     PearlMergeUnsupportedTileShape,
 }
 
@@ -796,7 +852,7 @@ impl core::fmt::Display for BridgeError {
             }
             BridgeError::PearlMergeUnsupportedTileShape => write!(
                 f,
-                "Pearl merge ticket shape is outside the current square-contiguous recursive subset"
+                "Pearl merge ticket shape is outside the current recursive parameter envelope"
             ),
         }
     }
@@ -874,9 +930,7 @@ fn prove_ai_pow_block(
     target: &[u8; 32],
     found_idx: u32,
 ) -> Result<ZkProofArtifact, BridgeError> {
-    params
-        .validate_prod_envelope()
-        .map_err(BridgeError::InvalidParams)?;
+    params.validate().map_err(BridgeError::InvalidParams)?;
     ensure_context_params(ctx, params)?;
     ensure_context_attempt(ctx, nonce)?;
     let commitments = ZkPublicCommitments::from_context(ctx);
@@ -902,11 +956,11 @@ fn prove_ai_pow_block(
 /// returned value deliberately does not expose the plain `MatmulProof`.
 ///
 /// Current soundness boundary: the recursive Layer-0 statement proves one
-/// verifier-derived jackpot tile. For `params.num_tiles() > 1`, that is not a
-/// proof of one full-matmul attempt, so this production-facing builder fails
-/// before spending ZK proving work. Re-enable multi-tile production only after
-/// the recursive statement binds a full-matrix aggregate or equivalent
-/// full-work certificate.
+/// verifier-derived jackpot tile. For native AI-PoW, `params.num_tiles() > 1`
+/// is not a proof of one full-matmul attempt, so this production-facing builder
+/// fails before spending ZK proving work. Pearl merge-mining uses
+/// [`prove_pearl_merge_recursive_certificate`] because Pearl's unit is an
+/// explicit tile ticket from a committed work instance.
 pub fn prove_ai_pow_recursive_certificate(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
@@ -936,7 +990,7 @@ pub fn prove_ai_pow_recursive_certificate(
         &ctx.block_commitment, &ctx.nonce, params, target, found_idx, &commitments, &artifact.pis,
         artifact.trace_height, true,
     )?;
-    verify_ai_pow_tiled_with_statement(params, target, verified, &artifact)?;
+    verify_ai_pow_tiled_with_statement(params, target, &verified, &artifact)?;
     let zk_params = zk_params_from(params);
     let l1 = ai_pow_zk::recursion::prove_canonical_ai_pow_certificate_from_composite_proof(
         &zk_params,
@@ -949,6 +1003,7 @@ pub fn prove_ai_pow_recursive_certificate(
     Ok(AiPowRecursiveCertificateRun {
         zk_params,
         found_idx,
+        strip_schedule: verified.strip_schedule,
         commitments,
         pis: artifact.pis,
         trace_height: artifact.trace_height,
@@ -962,12 +1017,11 @@ pub fn prove_ai_pow_recursive_certificate(
 /// Build the recursive AI-PoW certificate for a Pearl-compatible merge-mined
 /// ticket.
 ///
-/// This is the production prover handoff for canonical `%ai-pow` on the currently
-/// supported square-contiguous Pearl subset. It rechecks the public `PMP1`
-/// statement against trusted matrices and the Nockchain target, proves the exact
-/// Pearl ticket tile, uses Pearl's `s_A` directly as the jackpot key, and
-/// returns a Nockchain-native recursive certificate. It intentionally does not
-/// serialize or reuse Pearl's own ZKP.
+/// This is the production prover handoff for canonical `%ai-pow`. It rechecks
+/// the public `PMP1` statement against trusted matrices and the Nockchain
+/// target, proves the exact Pearl ticket row/column schedule, uses Pearl's
+/// `s_A` directly as the jackpot key, and returns a Nockchain-native recursive
+/// certificate. It intentionally does not serialize or reuse Pearl's own ZKP.
 pub fn prove_pearl_merge_recursive_certificate(
     attempt: &PearlMergeTicketAttempt,
     params: &MatmulParams,
@@ -975,10 +1029,10 @@ pub fn prove_pearl_merge_recursive_certificate(
     b_col_major: &[i8],
     max_pattern_len: usize,
 ) -> Result<AiPowRecursiveCertificateRun, BridgeError> {
-    validate_canonical_recursive_certificate_params(params)?;
     if params.difficulty_bits != 0 || params.spot_checks != 1 {
         return Err(BridgeError::PearlMergeUnsupportedTileShape);
     }
+    validate_scheduled_params(params)?;
 
     let statement_bytes = attempt
         .statement
@@ -1043,37 +1097,18 @@ pub fn prove_pearl_merge_recursive_certificate(
         });
     }
 
-    let h = public_params
-        .h()
-        .map_err(BridgeError::PearlMergeStatement)?;
-    let w = public_params
-        .w()
-        .map_err(BridgeError::PearlMergeStatement)?;
-    if h != w || params.tile != h {
-        return Err(BridgeError::PearlMergeUnsupportedTileShape);
-    }
-    let expected_rows: Vec<u32> = (0..h).map(|offset| public_params.t_rows + offset).collect();
-    let expected_cols: Vec<u32> = (0..w).map(|offset| public_params.t_cols + offset).collect();
-    if precheck.work.ticket.a_rows != expected_rows || precheck.work.ticket.b_cols != expected_cols
-    {
-        return Err(BridgeError::PearlMergeUnsupportedTileShape);
-    }
-    if public_params.t_rows % h != 0 || public_params.t_cols % w != 0 {
-        return Err(BridgeError::PearlMergeUnsupportedTileShape);
-    }
-    let row_tiles = public_params.m / h;
-    let col_tiles = public_params.n / w;
-    if row_tiles == 0 || col_tiles == 0 {
-        return Err(BridgeError::PearlMergeUnsupportedTileShape);
-    }
-    let found_idx = (public_params.t_rows / h)
-        .checked_mul(col_tiles)
-        .and_then(|base| base.checked_add(public_params.t_cols / w))
-        .ok_or(BridgeError::PearlMergeUnsupportedTileShape)?;
-    let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
-        found_idx,
-        num_tiles: params.num_tiles(),
-    })?;
+    let zk_params = zk_params_from(params);
+    let strip_schedule = StripIndexSchedule::from_indices(
+        &zk_params,
+        precheck.work.ticket.a_rows.clone(),
+        precheck.work.ticket.b_cols.clone(),
+    )
+    .map_err(BridgeError::ZkParamsInvalid)?;
+    let legacy_tile = pearl_merge_legacy_ticket(params, &public_params);
+    let found_idx = legacy_tile.map(|(idx, _, _)| idx).unwrap_or(0);
+    let (tile_i, tile_j) = legacy_tile
+        .map(|(_, tile_i, tile_j)| (tile_i, tile_j))
+        .unwrap_or((0, 0));
 
     let zctx = ZkProverContext {
         a: a_row_major,
@@ -1086,8 +1121,15 @@ pub fn prove_pearl_merge_recursive_certificate(
         s_b: precheck.work.commitments.s_b,
         jackpot_key: precheck.work.commitments.s_a,
     };
-    let (artifact, prover_program, _) =
-        prove_ai_pow_tiled_full_with_context(&zctx, params, tile_i, tile_j, |_| {}, None)?;
+    let (artifact, prover_program, _) = prove_ai_pow_scheduled_full_with_context(
+        &zctx,
+        params,
+        tile_i,
+        tile_j,
+        &strip_schedule,
+        |_| {},
+        None,
+    )?;
 
     expect_pi_eq(
         &artifact.pis.hash_a,
@@ -1121,6 +1163,7 @@ pub fn prove_pearl_merge_recursive_certificate(
     let verified = VerifiedZkStatement {
         tile_i,
         tile_j,
+        strip_schedule: strip_schedule.clone(),
         derived: ZkDerivedStatement {
             kappa: precheck.work.commitments.kappa,
             s_a: precheck.work.commitments.s_a,
@@ -1128,10 +1171,9 @@ pub fn prove_pearl_merge_recursive_certificate(
         },
     };
     verify_ai_pow_tiled_with_statement(
-        params, &precheck.work.nockchain_target, verified, &artifact,
+        params, &precheck.work.nockchain_adjusted_target, &verified, &artifact,
     )?;
 
-    let zk_params = zk_params_from(params);
     let l1 = ai_pow_zk::recursion::prove_canonical_ai_pow_certificate_from_composite_proof(
         &zk_params,
         &CircuitConfig::PROD,
@@ -1144,6 +1186,7 @@ pub fn prove_pearl_merge_recursive_certificate(
     Ok(AiPowRecursiveCertificateRun {
         zk_params,
         found_idx,
+        strip_schedule,
         commitments: ZkPublicCommitments {
             h_a_chunk: precheck.work.commitments.h_a,
             h_b_chunk: precheck.work.commitments.h_b,
@@ -1201,7 +1244,7 @@ fn verify_ai_pow_block(
         block_commitment, nonce, params, target, found_idx, commitments, &artifact.pis,
         artifact.trace_height, true,
     )?;
-    verify_ai_pow_tiled_with_statement(params, target, verified, artifact)
+    verify_ai_pow_tiled_with_statement(params, target, &verified, artifact)
 }
 
 /// Verify the statement metadata carried next to a selected-tile recursive
@@ -1300,7 +1343,12 @@ fn derive_ai_pow_statement(
     let (s_a, s_b) = canonical_noise_seeds_from_matrix_commitments(
         &kappa, &commitments.h_a_chunk, &commitments.h_b_chunk,
     );
-    let expected_height = expected_layer0_rows(params).required_trace_len();
+    let zk_params = zk_params_from(params);
+    let strip_schedule =
+        ai_pow_zk::canonical::StripIndexSchedule::from_tile(&zk_params, tile_i, tile_j)
+            .map_err(BridgeError::ZkParamsInvalid)?;
+    let expected_height =
+        expected_layer0_rows_for_strip_schedule(params, &strip_schedule)?.required_trace_len();
     if trace_height != expected_height {
         return Err(BridgeError::TraceHeightMismatch {
             expected: expected_height,
@@ -1332,6 +1380,7 @@ fn derive_ai_pow_statement(
     Ok(VerifiedZkStatement {
         tile_i,
         tile_j,
+        strip_schedule,
         derived: ZkDerivedStatement { kappa, s_a, s_b },
     })
 }
@@ -1339,22 +1388,28 @@ fn derive_ai_pow_statement(
 fn verify_ai_pow_tiled_with_statement(
     params: &MatmulParams,
     target: &[u8; 32],
-    verified: VerifiedZkStatement,
+    verified: &VerifiedZkStatement,
     artifact: &ZkProofArtifact,
 ) -> Result<(), BridgeError> {
     let zk_params = zk_params_from(params);
     let cfg = build_config(&zk_params, &CircuitConfig::PROD);
-    let bp = ai_pow_zk::canonical::BlockPublic {
+    let bp = verified_block_public(verified);
+    let canonical = ai_pow_zk::canonical::canonical_program_for_strip_schedule(
+        &zk_params, &verified.strip_schedule, &bp, artifact.trace_height,
+    )
+    .map_err(BridgeError::ZkParamsInvalid)?;
+    composite_verify_pow_pinned_logup(&cfg, &canonical, &artifact.proof, &artifact.pis, target)
+        .map_err(BridgeError::Pow)
+}
+
+fn verified_block_public(verified: &VerifiedZkStatement) -> ai_pow_zk::canonical::BlockPublic {
+    ai_pow_zk::canonical::BlockPublic {
         tile_i: verified.tile_i,
         tile_j: verified.tile_j,
         kappa: verified.derived.kappa,
         s_a: verified.derived.s_a,
         s_b: verified.derived.s_b,
-    };
-    let canonical = ai_pow_zk::canonical::canonical_program(&zk_params, &bp, artifact.trace_height)
-        .map_err(BridgeError::ZkParamsInvalid)?;
-    composite_verify_pow_pinned_logup(&cfg, &canonical, &artifact.proof, &artifact.pis, target)
-        .map_err(BridgeError::Pow)
+    }
 }
 
 /// Build a `CompositeTrace` from `ctx`, derive its public inputs,
@@ -1478,12 +1533,38 @@ fn prove_ai_pow_tiled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
     tamper: F,
     sweep_override: Option<(&[i8], &[i8])>,
 ) -> Result<(ZkProofArtifact, AiPowProgram, bool), BridgeError> {
-    params.validate().map_err(BridgeError::InvalidParams)?;
+    let zk_params = zk_params_from(params);
+    let strip_schedule = StripIndexSchedule::from_tile(&zk_params, tile_i, tile_j)
+        .map_err(BridgeError::ZkParamsInvalid)?;
+    prove_ai_pow_scheduled_full_with_context(
+        zctx, params, tile_i, tile_j, &strip_schedule, tamper, sweep_override,
+    )
+}
+
+fn prove_ai_pow_scheduled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
+    zctx: &ZkProverContext<'_>,
+    params: &MatmulParams,
+    _tile_i: u32,
+    _tile_j: u32,
+    strip_schedule: &StripIndexSchedule,
+    tamper: F,
+    sweep_override: Option<(&[i8], &[i8])>,
+) -> Result<(ZkProofArtifact, AiPowProgram, bool), BridgeError> {
+    validate_scheduled_params(params)?;
     if zctx.params != *params {
         return Err(BridgeError::ParamsMismatch {
             context: zctx.params,
             supplied: *params,
         });
+    }
+    let zk_params = zk_params_from(params);
+    strip_schedule
+        .chunk_ranges(&zk_params)
+        .map_err(BridgeError::ZkParamsInvalid)?;
+    if strip_schedule.a_indices.len() % ai_pow_zk::composite_layout::TILE_H != 0
+        || strip_schedule.b_indices.len() % ai_pow_zk::composite_layout::TILE_H != 0
+    {
+        return Err(BridgeError::PearlMergeUnsupportedTileShape);
     }
     // P-B (γ Pearl-faithful): size the Layer-0 trace from `params`
     // — the faithful analogue of Pearl's `degree_bits()` — instead
@@ -1493,7 +1574,7 @@ fn prove_ai_pow_tiled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
     // PROD-class params grow the trace modestly (P-B.2.4: the
     // matrix side is now an O(t·k) strip opening, not the
     // O(|matrix|) full re-hash).
-    let budget = expected_layer0_rows(params);
+    let budget = expected_layer0_rows_for_strip_schedule(params, strip_schedule)?;
     let mut trace = CompositeTrace::baseline(budget.required_trace_len());
     let height = trace.height();
 
@@ -1509,14 +1590,14 @@ fn prove_ai_pow_tiled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
     // schedule (P-B.2.3) — a pure fn of public params + the
     // attested tile, so the prover cannot open a cheaper region.
     // O(t·k), size-independent ⇒ one tile = one STARK.
-    use ai_pow_zk::blake3_tree::{open_strip, pad_to_chunk_boundary, tile_chunk_range};
+    use ai_pow_zk::blake3_tree::{indexed_strips_chunk_range, open_strip, pad_to_chunk_boundary};
     let a_bytes: Vec<u8> = zctx.a.iter().map(|&v| v as u8).collect();
     let b_bytes: Vec<u8> = zctx.b.iter().map(|&v| v as u8).collect();
-    let tt = params.tile as usize;
     let kk = params.k as usize;
     // A row-major (m rows × k): tile_i's `t` rows, span t·k.
     let a_pad = pad_to_chunk_boundary(&a_bytes);
-    let (ca0, ca1, a_nc) = tile_chunk_range(tile_i as usize, tt, kk, a_bytes.len());
+    let a_indices = &strip_schedule.a_indices;
+    let (ca0, ca1, a_nc) = indexed_strips_chunk_range(a_indices, kk, a_bytes.len());
     let (_oa, a_sibs) = open_strip(&a_bytes, &zctx.kappa, ca0, ca1);
     // §4.C.2 c-exact cx.2 g=1 co-location: the Pearl `noise_ref`
     // byte parallel to the opened A strip — entry j = noise at the
@@ -1559,7 +1640,8 @@ fn prove_ai_pow_tiled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
     );
     // B col-major (n cols × k, col j at j·k): tile_j's `t` cols.
     let b_pad = pad_to_chunk_boundary(&b_bytes);
-    let (cb0, cb1, b_nc) = tile_chunk_range(tile_j as usize, tt, kk, b_bytes.len());
+    let b_indices = &strip_schedule.b_indices;
+    let (cb0, cb1, b_nc) = indexed_strips_chunk_range(b_indices, kk, b_bytes.len());
     let (_ob, b_sibs) = open_strip(&b_bytes, &zctx.kappa, cb0, cb1);
     // B is col-major flattened [col0(k)|col1(k)|…]: for byte p the
     // matrix col = p/k, k-index = p%k ⇒ f_value(s_b, k-idx, col).
@@ -1627,23 +1709,21 @@ fn prove_ai_pow_tiled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
     // always stay the committed `ctx.a`/`ctx.b`. Production = `None`.
     let (sweep_a, sweep_b) = sweep_override.unwrap_or((zctx.a, zctx.b));
     let mats = crate::matmul::Matrices::build(sweep_a, sweep_b, &noise, params);
-    assert!(
-        tile_i < params.row_tiles() && tile_j < params.col_tiles(),
-        "attested tile ({tile_i},{tile_j}) out of grid \
-         {}×{}",
-        params.row_tiles(),
-        params.col_tiles()
-    );
-    let t = params.tile as usize;
+    let h_tile = strip_schedule.a_indices.len();
+    let w_tile = strip_schedule.b_indices.len();
     let r = params.noise_rank as usize;
     let num_stripes = params.num_stripes() as usize;
     // `t·k` row-major A-strips / col-major B-strips for the tile
     // (the `compute_tile_from_slices` layout).
-    let a_strips: Vec<i8> = (0..t as u32)
-        .flat_map(|di| mats.a_prime_row(tile_i * params.tile + di).to_vec())
+    let a_strips: Vec<i8> = strip_schedule
+        .a_indices
+        .iter()
+        .flat_map(|&i| mats.a_prime_row(i).to_vec())
         .collect();
-    let b_strips: Vec<i8> = (0..t as u32)
-        .flat_map(|dj| mats.b_prime_col(tile_j * params.tile + dj).to_vec())
+    let b_strips: Vec<i8> = strip_schedule
+        .b_indices
+        .iter()
+        .flat_map(|&j| mats.b_prime_col(j).to_vec())
         .collect();
     // HIGH-2.2 §6(b)+G1+G2: `StripeXorChip` now has
     // `STRIPE_MAX = 64` per-stripe lanes and `place_useful_work_chain`
@@ -1682,8 +1762,9 @@ fn prove_ai_pow_tiled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
     //    (MAT_UNPACK=committed-plain, NOISE_UNPACK=noise_ref,
     //    NOISE_PACKED_PREP CRIT-1-pinned ⇒ strictly stronger than
     //    pre-A3, not zero-gap).
-    let store_srcs =
-        CompositeTrace::enumerate_noised_chunks_with_src(&a_strips, &b_strips, t, r, num_stripes);
+    let store_srcs = CompositeTrace::enumerate_noised_chunks_with_src_hw(
+        &a_strips, &b_strips, h_tile, w_tile, r, num_stripes,
+    );
     let n_store = store_srcs.len();
     let kk2 = params.k as usize;
     let plain_noise = |s: &ai_pow_zk::composite_trace::NoisedChunkSrc| -> ([i8; 8], [i8; 8]) {
@@ -1692,11 +1773,11 @@ fn prove_ai_pow_tiled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
         for m in 0..8 {
             if let Some((lane, l)) = s.src[m] {
                 if s.side_a {
-                    let i = tile_i * params.tile + lane;
+                    let i = strip_schedule.a_indices[lane as usize];
                     plain[m] = zctx.a[(i as usize) * kk2 + l as usize];
                     noise[m] = ai_pow_zk::noise_ref::e_value(&zctx.s_a, i, l, r as u32);
                 } else {
-                    let jc = tile_j * params.tile + lane;
+                    let jc = strip_schedule.b_indices[lane as usize];
                     plain[m] = zctx.b[(jc as usize) * kk2 + l as usize];
                     noise[m] = ai_pow_zk::noise_ref::f_value(&zctx.s_b, l, jc, r as u32);
                 }
@@ -1714,8 +1795,9 @@ fn prove_ai_pow_tiled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
     // `place_useful_work_chain` self-asserts both invariants.
     let real_m = {
         let sweep_start = mh_end + 3;
-        let (rows_used, x_steps) =
-            trace.place_useful_work_chain(sweep_start, &a_strips, &b_strips, t, r, num_stripes);
+        let (rows_used, x_steps) = trace.place_useful_work_chain_hw(
+            sweep_start, &a_strips, &b_strips, h_tile, w_tile, r, num_stripes,
+        );
         // Store rows live in the post-sweep passthrough region
         // (place AFTER the sweep so its SX/CUMSUM passthrough on
         // `[sweep_start+rows_used, h)` is already written — this
@@ -1834,7 +1916,7 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
             &ctx.block_commitment, &ctx.nonce, params, target, found_idx, &commitments,
             &artifact.pis, artifact.trace_height, false,
         )?;
-        verify_ai_pow_tiled_with_statement(params, target, verified, &artifact)?;
+        verify_ai_pow_tiled_with_statement(params, target, &verified, &artifact)?;
     } else {
         let zk_params = zk_params_from(params);
         let cfg = build_config(&zk_params, &CircuitConfig::PROD);
@@ -1943,6 +2025,30 @@ pub fn tile_ij(found_idx: u32, params: &MatmulParams) -> Option<(u32, u32)> {
     }
     let col_tiles = params.col_tiles();
     Some((found_idx / col_tiles, found_idx % col_tiles))
+}
+
+fn pearl_merge_legacy_ticket(
+    params: &MatmulParams,
+    public_params: &PearlPublicProofParams,
+) -> Option<(u32, u32, u32)> {
+    let h = public_params.h().ok()?;
+    let w = public_params.w().ok()?;
+    if h != params.tile || w != params.tile {
+        return None;
+    }
+    if public_params.t_rows % params.tile != 0 || public_params.t_cols % params.tile != 0 {
+        return None;
+    }
+    let col_tiles = public_params.n / params.tile;
+    if col_tiles == 0 {
+        return None;
+    }
+    let tile_i = public_params.t_rows / params.tile;
+    let tile_j = public_params.t_cols / params.tile;
+    let found_idx = tile_i
+        .checked_mul(col_tiles)
+        .and_then(|base| base.checked_add(tile_j))?;
+    Some((found_idx, tile_i, tile_j))
 }
 
 #[cfg(test)]
@@ -2070,6 +2176,114 @@ mod tests {
             h_a_chunk: [3; 32],
             h_b_chunk: [4; 32],
         }
+    }
+
+    #[test]
+    fn verified_strip_schedule_drives_canonical_program() {
+        let zk = ZkParams {
+            m: 16,
+            k: 512,
+            n: 16,
+            noise_rank: 32,
+            tile: 8,
+            difficulty_bits: 0,
+        };
+        let derived = ZkDerivedStatement {
+            kappa: [1; 32],
+            s_a: [2; 32],
+            s_b: [3; 32],
+        };
+        let scheduled = VerifiedZkStatement {
+            tile_i: 0,
+            tile_j: 0,
+            strip_schedule: ai_pow_zk::canonical::StripIndexSchedule::from_tile(&zk, 1, 0)
+                .expect("alternate tile is in grid"),
+            derived,
+        };
+        let scheduled_bp = verified_block_public(&scheduled);
+        let explicit = ai_pow_zk::canonical::canonical_program_for_strip_schedule(
+            &zk,
+            &scheduled.strip_schedule,
+            &scheduled_bp,
+            ai_pow_zk::composite_layout::MIN_STARK_LEN,
+        )
+        .expect("explicit schedule canonical program");
+
+        let equivalent_tile_statement = VerifiedZkStatement {
+            tile_i: 1,
+            tile_j: 0,
+            strip_schedule: scheduled.strip_schedule.clone(),
+            derived: ZkDerivedStatement {
+                kappa: [1; 32],
+                s_a: [2; 32],
+                s_b: [3; 32],
+            },
+        };
+        let equivalent_bp = verified_block_public(&equivalent_tile_statement);
+        let legacy = ai_pow_zk::canonical::canonical_program(
+            &zk,
+            &equivalent_bp,
+            ai_pow_zk::composite_layout::MIN_STARK_LEN,
+        )
+        .expect("legacy tile canonical program");
+        assert_eq!(explicit.values, legacy.values);
+    }
+
+    #[test]
+    fn scheduled_layer0_proof_accepts_non_native_tile_grid() {
+        let params = MatmulParams {
+            m: 5,
+            k: 64,
+            n: 7,
+            noise_rank: 16,
+            tile: 3,
+            spot_checks: 1,
+            difficulty_bits: 0,
+        };
+        assert!(
+            params.validate().is_err(),
+            "native square tile grid rejects this explicit schedule"
+        );
+        let (a, b) = synth_matrices(b"scheduled-layer0-non-native-grid", &params);
+        let kappa = [0x41; 32];
+        let a_bytes: Vec<u8> = a.iter().map(|&v| v as u8).collect();
+        let b_bytes: Vec<u8> = b.iter().map(|&v| v as u8).collect();
+        let h_a = crate::commit::matrix_commitment(&a_bytes, &kappa);
+        let h_b = crate::commit::matrix_commitment(&b_bytes, &kappa);
+        let s_a = [0x51; 32];
+        let s_b = [0x61; 32];
+        let zctx = ZkProverContext {
+            a: &a,
+            b: &b,
+            params,
+            kappa,
+            h_a_chunk: h_a,
+            h_b_chunk: h_b,
+            s_a,
+            s_b,
+            jackpot_key: s_a,
+        };
+        let zk = zk_params_from(&params);
+        let strip_schedule = StripIndexSchedule::from_indices(&zk, vec![0, 1], vec![0, 1])
+            .expect("explicit schedule");
+        let (artifact, _, _) = prove_ai_pow_scheduled_full_with_context(
+            &zctx,
+            &params,
+            0,
+            0,
+            &strip_schedule,
+            |_| {},
+            None,
+        )
+        .expect("scheduled proof over non-native tile grid");
+        let verified = VerifiedZkStatement {
+            tile_i: 0,
+            tile_j: 0,
+            strip_schedule,
+            derived: ZkDerivedStatement { kappa, s_a, s_b },
+        };
+        verify_ai_pow_tiled_with_statement(&params, &[0xff; 32], &verified, &artifact)
+            .expect("scheduled verifier accepts explicit non-native grid proof");
     }
 
     fn test_production_artifact() -> AiPowProductionArtifact {
@@ -2543,23 +2757,30 @@ mod tests {
     }
 
     #[test]
-    fn pearl_merge_recursive_certificate_rejects_multi_tile_before_zkp() {
-        let (attempt, mut params, a, b) = pearl_merge_ticket_fixture(
-            b"pearl-recursive-multi-tile",
+    fn pearl_merge_recursive_certificate_multi_tile_checks_target_before_zkp() {
+        let params = MatmulParams {
+            m: 16,
+            n: 16,
+            ..pearl_merge_prod_params()
+        };
+        let (mut attempt, params, a, b) = pearl_merge_ticket_fixture_with_params(
+            b"pearl-recursive-multi-tile-target",
+            params,
             pearl_test_pattern(8),
             pearl_test_pattern(8),
         );
-        params.m = 16;
+        attempt.nockchain_target = [0u8; 32];
 
         assert!(matches!(
             prove_pearl_merge_recursive_certificate(&attempt, &params, &a, &b, 16),
-            Err(BridgeError::FullMatmulProofUnavailable { num_tiles })
-                if num_tiles == params.num_tiles()
+            Err(BridgeError::PearlMergeStatement(
+                PearlCompatError::NockchainTargetNotMet
+            ))
         ));
     }
 
     #[test]
-    fn pearl_merge_recursive_certificate_rejects_noncontiguous_ticket_before_zkp() {
+    fn pearl_merge_recursive_certificate_noncontiguous_checks_target_before_zkp() {
         let noncontiguous =
             crate::pearl_compat::PearlPeriodicPattern::from_list(&[0, 1, 8, 9, 64, 65, 72, 73])
                 .expect("representable Pearl pattern");
@@ -2572,17 +2793,51 @@ mod tests {
             spot_checks: 1,
             difficulty_bits: 0,
         };
-        let (attempt, params, a, b) = pearl_merge_ticket_fixture_with_params(
+        let (mut attempt, params, a, b) = pearl_merge_ticket_fixture_with_params(
             b"pearl-recursive-noncontiguous",
             params,
             noncontiguous,
             pearl_test_pattern(8),
         );
+        attempt.nockchain_target = [0u8; 32];
 
         assert!(matches!(
             prove_pearl_merge_recursive_certificate(&attempt, &params, &a, &b, 16),
-            Err(BridgeError::FullMatmulProofUnavailable { num_tiles })
-                if num_tiles == params.num_tiles()
+            Err(BridgeError::PearlMergeStatement(
+                PearlCompatError::NockchainTargetNotMet
+            ))
+        ));
+    }
+
+    #[test]
+    fn pearl_merge_recursive_certificate_rectangular_non_native_checks_target_before_zkp() {
+        let params = MatmulParams {
+            m: 128,
+            k: 1024,
+            n: 125,
+            noise_rank: 64,
+            tile: 6,
+            spot_checks: 1,
+            difficulty_bits: 0,
+        };
+        assert!(
+            params.validate().is_err(),
+            "native square tile grid rejects this Pearl-valid schedule"
+        );
+        let rows = crate::pearl_compat::PearlPeriodicPattern::from_list(&[0, 1, 2, 3, 4, 5])
+            .expect("representable row pattern");
+        let cols = crate::pearl_compat::PearlPeriodicPattern::from_list(&[0, 1, 2, 3, 4, 5, 6, 7])
+            .expect("representable col pattern");
+        let (mut attempt, params, a, b) = pearl_merge_ticket_fixture_with_params(
+            b"pearl-recursive-rectangular-non-native", params, rows, cols,
+        );
+        attempt.nockchain_target = [0u8; 32];
+
+        assert!(matches!(
+            prove_pearl_merge_recursive_certificate(&attempt, &params, &a, &b, 16),
+            Err(BridgeError::PearlMergeStatement(
+                PearlCompatError::NockchainTargetNotMet
+            ))
         ));
     }
 
@@ -2623,6 +2878,66 @@ mod tests {
         );
         ai_pow_zk::recursion::verify_recursive_certificate(&run.certificate, &run.pis)
             .expect("recursive certificate verifies against Pearl public inputs");
+    }
+
+    /// Opt-in companion to the legacy-square real proof above. This proves a
+    /// Pearl-valid rectangular ticket whose legacy `tile` metadata does not
+    /// divide `n`, so the recursive prover must use the explicit strip
+    /// schedule instead of a native square tile.
+    ///
+    /// Run with:
+    /// `GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk \
+    /// real_pearl_merge_recursive_certificate_proves_rectangular_non_native_ticket -- --ignored --nocapture`
+    #[test]
+    #[ignore = "real Pearl-compatible recursive proof generation is intentionally opt-in"]
+    fn real_pearl_merge_recursive_certificate_proves_rectangular_non_native_ticket() {
+        let params = MatmulParams {
+            m: 128,
+            k: 1024,
+            n: 125,
+            noise_rank: 64,
+            tile: 6,
+            spot_checks: 1,
+            difficulty_bits: 0,
+        };
+        assert!(
+            params.validate().is_err(),
+            "native square tile grid rejects this Pearl-valid schedule"
+        );
+        let rows = crate::pearl_compat::PearlPeriodicPattern::from_list(&[0, 1, 2, 3, 4, 5])
+            .expect("representable row pattern");
+        let cols = crate::pearl_compat::PearlPeriodicPattern::from_list(&[0, 1, 2, 3, 4, 5, 6, 7])
+            .expect("representable column pattern");
+        let (attempt, params, a, b) = pearl_merge_ticket_fixture_with_params(
+            b"pearl-recursive-real-rectangular-non-native", params, rows, cols,
+        );
+
+        let run = prove_pearl_merge_recursive_certificate(&attempt, &params, &a, &b, 16)
+            .expect("prove rectangular non-native Pearl merge recursive certificate");
+
+        assert_eq!(run.found_idx, 0);
+        assert_eq!(run.strip_schedule.a_indices, attempt.ticket.a_rows);
+        assert_eq!(run.strip_schedule.b_indices, attempt.ticket.b_cols);
+        assert_eq!(run.commitments.h_a_chunk, attempt.commitments.h_a);
+        assert_eq!(run.commitments.h_b_chunk, attempt.commitments.h_b);
+        assert_eq!(
+            run.pis.job_key,
+            bytes_to_words_le(&attempt.commitments.kappa)
+        );
+        assert_eq!(
+            run.pis.commitment_hash,
+            bytes_to_words_le(&attempt.commitments.s_a)
+        );
+        assert_eq!(
+            run.pis.jackpot,
+            tile_state_words(&attempt.ticket.tile_state)
+        );
+        assert_eq!(
+            run.pis.hash_jackpot,
+            bytes_to_words_le(&attempt.ticket.jackpot_hash)
+        );
+        ai_pow_zk::recursion::verify_recursive_certificate(&run.certificate, &run.pis)
+            .expect("rectangular non-native recursive certificate verifies");
     }
 
     #[test]
