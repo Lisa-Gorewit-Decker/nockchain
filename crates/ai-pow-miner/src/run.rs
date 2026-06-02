@@ -890,9 +890,9 @@ mod tests {
 
     use ai_pow::params::MatmulParams;
     use ai_pow::pearl_compat::{
-        evaluate_pearl_merge_ticket_attempt, PearlIncompleteBlockHeader, PearlMiningConfig,
-        PearlNockchainAux, PearlPeriodicPattern, PEARL_MINING_CONFIG_RESERVED_SIZE,
-        PEARL_MMA_INT7XINT7_TO_INT32,
+        evaluate_pearl_merge_ticket_attempt, verify_pearl_aux_inclusion,
+        PearlIncompleteBlockHeader, PearlMiningConfig, PearlNockchainAux, PearlPeriodicPattern,
+        PEARL_MINING_CONFIG_RESERVED_SIZE, PEARL_MMA_INT7XINT7_TO_INT32,
     };
     use ai_pow::synth::synth_matrices;
     use ai_pow::zk_bridge::ZkPublicCommitments;
@@ -1265,6 +1265,27 @@ mod tests {
             job_a.aux.nock_block_commitment,
             pearl_test_aux().nock_block_commitment,
             "candidate commitment must replace the static aux template placeholder"
+        );
+    }
+
+    #[test]
+    fn derive_pearl_merge_job_inputs_builds_self_verifying_aux_inclusion() {
+        let cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let candidate =
+            candidate_for_target_and_commitment(bignum_target_slab(&[u64::from(u32::MAX)]), 0xD00D);
+
+        let job = derive_pearl_merge_job_inputs(&cfg, &candidate).expect("derive Pearl job");
+        let expected_aux_commitment = job.aux.commitment().expect("aux commitment");
+        verify_pearl_aux_inclusion(&job.header, &expected_aux_commitment, &job.aux_inclusion)
+            .expect("derived coinbase-only Pearl aux inclusion should verify");
+
+        let mut stale_aux = job.aux.clone();
+        stale_aux.nock_block_commitment = [0x99; 32];
+        let stale_aux_commitment = stale_aux.commitment().expect("stale aux commitment");
+        assert!(
+            verify_pearl_aux_inclusion(&job.header, &stale_aux_commitment, &job.aux_inclusion)
+                .is_err(),
+            "aux inclusion must bind the candidate-derived Nockchain block commitment"
         );
     }
 
