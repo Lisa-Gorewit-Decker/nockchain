@@ -5519,6 +5519,28 @@ mod tests {
             ))
         ));
 
+        let mut tampered_aux_inclusion = aux_inclusion.clone();
+        tampered_aux_inclusion.merkle_branch.push([0x77; 32]);
+        let tampered_aux_artifact_slab =
+            build_pearl_merge_artifact_slab(&statement, &tampered_aux_inclusion, &cert_slab);
+        let tampered_aux_command_slab = build_ai_pow_command_slab(&tampered_aux_artifact_slab);
+        assert!(matches!(
+            precheck_ai_pow_pearl_merge_command_metadata_with_context(
+                &tampered_aux_command_slab,
+                CertificateNounLimits::default(),
+                PearlMergeAiPowVerifierContext {
+                    candidate_nock_block_commitment: &statement.aux.nock_block_commitment,
+                    a_row_major: &a,
+                    b_col_major: &b,
+                    nockchain_target: &[0xffu8; 32],
+                    max_pattern_len: 16,
+                },
+            ),
+            Err(CertificateNounError::PearlMergeStatement(
+                PearlCompatError::PearlAuxMerkleRootMismatch
+            ))
+        ));
+
         let mut bad_commitments = commitments;
         bad_commitments.h_b_chunk[0] ^= 1;
         let bad_cert_slab = build_certificate_slab_with_statement_and_raw_node(
