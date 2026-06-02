@@ -4678,6 +4678,19 @@ mod tests {
     }
 
     #[test]
+    fn pearl_merge_ticket_artifact_builder_rejects_forged_ticket_rows() {
+        let (mut attempt, _, a, b) = pearl_merge_ticket_attempt_fixture();
+        attempt.ticket.a_rows[0] = attempt.ticket.a_rows[0].saturating_add(1);
+
+        assert!(matches!(
+            pearl_merge_recursive_certificate_parts_from_ticket(&attempt, &a, &b, 16),
+            Err(CertificateNounError::PearlMergePublicInputMismatch(
+                "ticket.work"
+            ))
+        ));
+    }
+
+    #[test]
     fn pearl_merge_ticket_artifact_builder_rejects_wrong_matrices() {
         let (attempt, _, mut a, b) = pearl_merge_ticket_attempt_fixture();
         a[0] ^= 1;
