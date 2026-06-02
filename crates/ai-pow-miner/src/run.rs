@@ -2013,6 +2013,55 @@ mod tests {
         node.shutdown().await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn run_loop_miss_does_not_build_recursive_certificate_or_submit_poke() {
+        let node = MockNode::spawn().await;
+        let mut cfg = test_cfg(node.url());
+        let builder_calls = Arc::new(AtomicU64::new(0));
+        let builder_calls_for_cfg = builder_calls.clone();
+        let pearl_cfg = cfg
+            .puzzle
+            .pearl_merge
+            .as_mut()
+            .expect("test config has Pearl merge submission");
+        pearl_cfg.mine_opts = PearlMergeMineOptions {
+            max_attempts: Some(1),
+            ..PearlMergeMineOptions::default()
+        };
+        pearl_cfg.certificate_builder = Arc::new(move |_attempt: &PearlMergeTicketAttempt| {
+            builder_calls_for_cfg.fetch_add(1, Ordering::SeqCst);
+            Err(AiPowCertificateBuildError(
+                "certificate builder must not be called on a target miss".to_string(),
+            ))
+        });
+
+        let shutdown = CancellationToken::new();
+        let shutdown_clone = shutdown.clone();
+        let mining_task = tokio::spawn(async move { run(cfg, shutdown_clone).await });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        node.publish_synth_mine_effect_with_target_limbs(702, &[0], 64);
+        tokio::time::sleep(Duration::from_millis(700)).await;
+
+        assert_eq!(
+            builder_calls.load(Ordering::SeqCst),
+            0,
+            "recursive certificate builder must only run after a ticket target hit"
+        );
+        assert!(
+            node.mined_pokes.lock().await.is_empty(),
+            "target misses must not submit %ai-pow pokes"
+        );
+
+        shutdown.cancel();
+        let r = tokio::time::timeout(Duration::from_secs(5), mining_task)
+            .await
+            .expect("miner task did not exit")
+            .expect("miner panicked");
+        assert!(matches!(r, Ok(())), "unexpected miner result: {r:?}");
+        node.shutdown().await;
+    }
+
     /// Heavy: runs the real ai-pow prover on TEST_SMALL with a trivial
     /// `FF..FF` target. Should complete in well under 30 s on any
     /// modern machine; marked `#[ignore]` so `cargo test` is fast by
