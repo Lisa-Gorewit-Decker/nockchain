@@ -22,7 +22,9 @@
 //!
 //! Hysteresis is applied only on the `CatchingUp -> Tip` transition: we
 //! require the "drained" condition (`max_deferred_height - frontier <= 1`)
-//! to hold for `HYSTERESIS_MS` before declaring `Tip`.
+//! to hold for `HYSTERESIS_MS` before declaring `Tip`. Read paths that gate
+//! live traffic call `refresh_mode` to let this timer expire without waiting
+//! for another block/deferred event.
 
 use std::time::{Duration, Instant};
 
@@ -139,6 +141,14 @@ impl CatchUpSignal {
         self.mode
     }
 
+    /// True when the node is demonstrably behind tip (`SyncMode::CatchingUp`).
+    /// Used to suppress all outgoing gossip while catching up. That includes
+    /// historic block rebroadcasts, tx submission gossip, and mining output.
+    /// A catching-up node stays quiet until this returns to `false`.
+    pub fn is_catching_up(&self) -> bool {
+        matches!(self.mode, SyncMode::CatchingUp)
+    }
+
     pub fn transitions(&self) -> u64 {
         self.transitions
     }
@@ -206,6 +216,12 @@ impl CatchUpSignal {
         if height > self.peer_observed_max_height {
             self.peer_observed_max_height = height;
         }
+        self.recompute_mode(now)
+    }
+
+    /// Recompute the mode without changing any signal inputs. This lets
+    /// `CatchingUp -> Tip` hysteresis expire on read-side gates.
+    pub fn refresh_mode(&mut self, now: Instant) -> Option<ModeTransition> {
         self.recompute_mode(now)
     }
 
@@ -356,6 +372,30 @@ mod tests {
     }
 
     #[test]
+    fn refresh_exits_catching_up_after_hysteresis_without_new_input() {
+        let mut signal = CatchUpSignal::with_thresholds(8, 32, Duration::from_millis(30_000));
+        let now = t0();
+        signal.note_deferred_max_height(now, Some(100));
+        signal.note_frontier_advance(now, 1);
+        assert_eq!(signal.mode(), SyncMode::CatchingUp);
+
+        let drained_at = now + Duration::from_millis(10_000);
+        let t = signal.note_deferred_max_height(drained_at, None);
+        assert!(t.is_none(), "must not flip to Tip without hysteresis");
+        assert_eq!(signal.mode(), SyncMode::CatchingUp);
+
+        let still_inside = drained_at + Duration::from_millis(20_000);
+        let t = signal.refresh_mode(still_inside);
+        assert!(t.is_none());
+        assert_eq!(signal.mode(), SyncMode::CatchingUp);
+
+        let past_hysteresis = drained_at + Duration::from_millis(30_001);
+        let t = signal.refresh_mode(past_hysteresis);
+        assert_eq!(t.map(|t| t.to), Some(SyncMode::Tip));
+        assert!(!signal.is_catching_up());
+    }
+
+    #[test]
     fn drained_resets_when_backlog_returns() {
         let mut signal = CatchUpSignal::with_thresholds(8, 32, Duration::from_millis(30_000));
         let now = t0();
@@ -401,6 +441,26 @@ mod tests {
         signal.note_frontier_advance(now, 100);
         signal.note_frontier_advance(now, 50);
         assert_eq!(signal.frontier(), 100);
+    }
+
+    #[test]
+    fn is_catching_up_only_in_catching_up_mode() {
+        let now = t0();
+        let mut signal = CatchUpSignal::new();
+        // Cold at boot: not suppressed (we do not yet know we are behind).
+        assert_eq!(signal.mode(), SyncMode::Cold);
+        assert!(!signal.is_catching_up());
+
+        // Demonstrably behind tip: suppressed.
+        signal.note_deferred_max_height(now, Some(100));
+        assert_eq!(signal.mode(), SyncMode::CatchingUp);
+        assert!(signal.is_catching_up());
+
+        // Back at tip: not suppressed.
+        let mut tip_signal = CatchUpSignal::new();
+        tip_signal.note_frontier_advance(now, 1);
+        assert_eq!(tip_signal.mode(), SyncMode::Tip);
+        assert!(!tip_signal.is_catching_up());
     }
 
     #[test]

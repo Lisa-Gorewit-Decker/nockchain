@@ -2497,13 +2497,27 @@ impl P2PState {
         self.log_mode_transition(transition);
     }
 
-    /// Read-only view of the catch-up signal. Phase 1 exposes this for tests
-    /// and future-phase consumers; nothing in the live driver path reads it
-    /// yet. Allow dead_code rather than gating behind `cfg(test)` so the
-    /// surface is visible to phase-4 reviewers.
+    /// Read-only view of the catch-up signal.
     #[allow(dead_code)]
     pub fn catch_up_signal(&self) -> &CatchUpSignal {
         &self.catch_up
+    }
+
+    fn refresh_catch_up_mode(&mut self, now: Instant) {
+        let transition = self.catch_up.refresh_mode(now);
+        self.publish_catch_up_metrics();
+        self.log_mode_transition(transition);
+    }
+
+    /// Whether outgoing gossip should be suppressed right now.
+    /// True only while the catch-up signal reports `CatchingUp` (demonstrably
+    /// behind tip). This deliberately covers every outbound gossip effect:
+    /// historic block rebroadcasts, tx submission gossip, and mining output.
+    /// A catching-up node is not allowed to originate gossip until it returns
+    /// to `Tip`.
+    pub fn should_suppress_outgoing_gossip(&mut self) -> bool {
+        self.refresh_catch_up_mode(Instant::now());
+        self.catch_up.is_catching_up()
     }
 
     fn publish_catch_up_metrics(&self) {
@@ -4426,6 +4440,68 @@ mod tests {
         assert_eq!(state.catch_up_signal().max_deferred_height(), 109);
         // No frontier advance yet, so behind_tip_estimate is the deferred max.
         assert_eq!(state.catch_up_signal().behind_tip_estimate(), 109);
+    }
+
+    #[test]
+    fn suppress_outgoing_gossip_only_while_catching_up() {
+        let mut state = P2PState::new(isolated_test_metrics(), 100);
+        // Cold at boot: do not suppress (we don't yet know we're behind).
+        assert!(!state.should_suppress_outgoing_gossip());
+
+        // Build a deferred backlog above the threshold -> CatchingUp -> suppress.
+        let peer_id = PeerId::random();
+        for height in 100..110u64 {
+            state.defer_heard_block(
+                peer_id,
+                height,
+                format!("block-{height}"),
+                dummy_heard_block_fact(),
+            );
+        }
+        assert_eq!(
+            state.catch_up_signal().mode(),
+            crate::catch_up::SyncMode::CatchingUp
+        );
+        assert!(state.should_suppress_outgoing_gossip());
+
+        // A separate node that advances frontier with no backlog reaches Tip
+        // and must not suppress.
+        let mut tip_state = P2PState::new(isolated_test_metrics(), 100);
+        tip_state.first_negative = 1;
+        tip_state.note_frontier_advanced();
+        assert_eq!(
+            tip_state.catch_up_signal().mode(),
+            crate::catch_up::SyncMode::Tip
+        );
+        assert!(!tip_state.should_suppress_outgoing_gossip());
+    }
+
+    #[test]
+    fn suppress_outgoing_gossip_refreshes_hysteresis_before_reading() {
+        let mut state = P2PState::new(isolated_test_metrics(), 100);
+        let now = Instant::now();
+
+        state.catch_up.note_deferred_max_height(now, Some(100));
+        state.catch_up.note_frontier_advance(now, 1);
+        assert_eq!(
+            state.catch_up_signal().mode(),
+            crate::catch_up::SyncMode::CatchingUp
+        );
+
+        let drained_at = now + Duration::from_millis(10_000);
+        state.catch_up.note_deferred_max_height(drained_at, None);
+        assert_eq!(
+            state.catch_up_signal().mode(),
+            crate::catch_up::SyncMode::CatchingUp
+        );
+
+        let past_hysteresis = drained_at + Duration::from_millis(30_001);
+        state.refresh_catch_up_mode(past_hysteresis);
+        assert_eq!(
+            state.catch_up_signal().mode(),
+            crate::catch_up::SyncMode::Tip
+        );
+        assert!(!state.catch_up_signal().is_catching_up());
     }
 
     #[test]

@@ -1187,37 +1187,68 @@ async fn handle_effect_with_dispatcher(
         EffectType::Gossip => {
             let tail_slab = extract_gossip_effect_payload(&noun_slab)?;
 
-            let is_heard_block_gossip = {
+            let gossip_kind = {
                 let gossip_space = tail_slab.noun_space();
                 let gossip_noun = unsafe { *tail_slab.root() };
                 gossip_noun
                     .in_space(&gossip_space)
                     .as_cell()
-                    .map(|data_cell| data_cell.head().eq_bytes(b"heard-block"))
-                    .unwrap_or(false)
-            };
-            if is_heard_block_gossip {
-                trace!("Gossip effect for heard-block, clearing block and elders cache");
-                let mut state_guard = driver_state.lock().await;
-                state_guard.block_cache.clear();
-                state_guard.elders_cache.clear();
-                state_guard.clear_elders_negative_cache();
-            }
-
-            let gossip_request = NockchainRequest::new_gossip(&tail_slab);
-            debug!("Gossiping to {} peers", connected_peers.len());
-            for peer_id in connected_peers.clone() {
-                let gossip_request_clone = gossip_request.clone();
-                swarm_actions
-                    .dispatch(SwarmAction::SendRequest {
-                        peer_id,
-                        request: gossip_request_clone,
-                        request_context: None,
+                    .map(|data_cell| {
+                        if data_cell.head().eq_bytes(b"heard-block") {
+                            "heard-block"
+                        } else if data_cell.head().eq_bytes(b"heard-tx") {
+                            "heard-tx"
+                        } else {
+                            "unknown"
+                        }
                     })
-                    .await
-                    .map_err(|_e| {
-                        NockAppError::OtherError(String::from("Failed to send gossip request"))
-                    })?;
+                    .unwrap_or("unknown")
+            };
+            let is_heard_block_gossip = gossip_kind == "heard-block";
+            // Clear the serve caches on a new heaviest block (local-state
+            // bookkeeping, independent of whether we re-broadcast) and, while
+            // holding the lock, read whether we should suppress the outgoing
+            // gossip because we are behind tip.
+            let (suppress_outgoing_gossip, behind_tip_estimate) = {
+                let mut state_guard = driver_state.lock().await;
+                if is_heard_block_gossip {
+                    trace!("Gossip effect for heard-block, clearing block and elders cache");
+                    state_guard.block_cache.clear();
+                    state_guard.elders_cache.clear();
+                    state_guard.clear_elders_negative_cache();
+                }
+                (
+                    state_guard.should_suppress_outgoing_gossip(),
+                    state_guard.catch_up_signal().behind_tip_estimate(),
+                )
+            };
+
+            if suppress_outgoing_gossip {
+                // We are demonstrably behind tip (SyncMode::CatchingUp). The
+                // node is intentionally quiet: no historic block rebroadcasts,
+                // local tx submission gossip, or mining output until catch-up
+                // exits.
+                trace!(
+                    behind_tip_estimate, gossip_kind,
+                    "Suppressing outgoing gossip while catching up"
+                );
+                metrics.gossip_suppressed_behind_tip_total.increment();
+            } else {
+                let gossip_request = NockchainRequest::new_gossip(&tail_slab);
+                debug!("Gossiping to {} peers", connected_peers.len());
+                for peer_id in connected_peers.clone() {
+                    let gossip_request_clone = gossip_request.clone();
+                    swarm_actions
+                        .dispatch(SwarmAction::SendRequest {
+                            peer_id,
+                            request: gossip_request_clone,
+                            request_context: None,
+                        })
+                        .await
+                        .map_err(|_e| {
+                            NockAppError::OtherError(String::from("Failed to send gossip request"))
+                        })?;
+                }
             }
         }
         EffectType::Request => {

@@ -7559,15 +7559,23 @@ fn test_equix_pow_verification() {
     );
 }
 
-fn build_gossip_effect(version: u64, page_words: &[u64]) -> (NounSlab, ByteBuf) {
+fn build_gossip_effect_with_tag(
+    version: u64,
+    tag: &'static str,
+    page_words: &[u64],
+) -> (NounSlab, ByteBuf) {
     let mut effect_slab = NounSlab::new();
-    let heard_block = Atom::from_value(&mut effect_slab, "heard-block")
-        .expect("Failed to create heard-block atom");
-    let page = T(
-        &mut effect_slab,
-        &page_words.iter().copied().map(D).collect::<Vec<_>>(),
-    );
-    let payload = T(&mut effect_slab, &[heard_block.as_noun(), page]);
+    let gossip_tag =
+        Atom::from_value(&mut effect_slab, tag).expect("Failed to create gossip tag atom");
+    let page = match page_words {
+        [] => D(0),
+        [word] => D(*word),
+        words => T(
+            &mut effect_slab,
+            &words.iter().copied().map(D).collect::<Vec<_>>(),
+        ),
+    };
+    let payload = T(&mut effect_slab, &[gossip_tag.as_noun(), page]);
     let effect = T(&mut effect_slab, &[D(tas!(b"gossip")), D(version), payload]);
     effect_slab.set_root(effect);
 
@@ -7578,6 +7586,10 @@ fn build_gossip_effect(version: u64, page_words: &[u64]) -> (NounSlab, ByteBuf) 
         effect_slab,
         ByteBuf::from(payload_slab.jam().as_ref().to_vec()),
     )
+}
+
+fn build_gossip_effect(version: u64, page_words: &[u64]) -> (NounSlab, ByteBuf) {
+    build_gossip_effect_with_tag(version, "heard-block", page_words)
 }
 
 #[test]
@@ -8155,6 +8167,62 @@ async fn test_gossip_effect_current_version_forwards_payload_and_clears_caches()
     assert!(state_guard.block_cache.is_empty());
     assert!(state_guard.elders_cache.is_empty());
     assert!(state_guard.elders_negative_cache.is_empty());
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // ibig has a memory leak so miri fails this test
+async fn test_gossip_effect_suppresses_all_outbound_gossip_while_catching_up() {
+    use tokio::sync::mpsc;
+
+    let peer_a = PeerId::random();
+    let peer_b = PeerId::random();
+    let peers = vec![peer_a, peer_b];
+    let metrics = isolated_test_metrics();
+    let state_arc = Arc::new(Mutex::new(P2PState::new(
+        metrics.clone(),
+        LIBP2P_CONFIG.seen_tx_clear_interval,
+    )));
+
+    {
+        let source_peer = PeerId::random();
+        let mut state_guard = state_arc.lock().await;
+        for height in 100..110u64 {
+            let (fact, _) = heard_block_fact_with_tx_ids(height, &[]);
+            let block_id = match &fact {
+                NockchainFact::HeardBlock(block_id, _) => block_id.clone(),
+                other => panic!("expected heard-block fact, got {other:?}"),
+            };
+            assert!(
+                state_guard.defer_heard_block(source_peer, height, block_id, fact),
+                "test setup should build a catch-up backlog",
+            );
+        }
+        assert_eq!(
+            state_guard.catch_up_signal().mode(),
+            crate::catch_up::SyncMode::CatchingUp
+        );
+    }
+
+    let (swarm_tx, mut swarm_rx) = mpsc::channel(4);
+    for (tag, seed) in [("heard-block", 10), ("heard-tx", 20)] {
+        let (effect_slab, _) = build_gossip_effect_with_tag(FACT_POKE_VERSION, tag, &[seed]);
+        handle_effect(
+            effect_slab,
+            swarm_tx.clone(),
+            peers.clone(),
+            false,
+            state_arc.clone(),
+            metrics.clone(),
+        )
+        .await
+        .expect("catch-up gossip suppression should not error");
+    }
+
+    assert!(
+        swarm_rx.try_recv().is_err(),
+        "catching-up nodes must not fan out block, tx, or mining gossip",
+    );
+    assert_eq!(metrics.gossip_suppressed_behind_tip_total.fetch_add(0), 2);
 }
 
 #[tokio::test]
