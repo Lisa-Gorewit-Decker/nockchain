@@ -143,6 +143,15 @@ Rust miner default policy for this milestone:
   cached candidate is cleared and Gateway refresh does not redispatch that
   solved candidate; the miner waits for the node to emit a new candidate.
   Manual/static header mode does not refresh.
+- Gateway-backed merge work asks `getMiningInfo` for a Pearl block template
+  that already contains the Nockchain aux commitment. The request carries
+  generic Pearl-side `coinbase_aux_flags`, encoded as standard base64 of
+  `NOCKCHAIN-AI-POW-AUX || aux_commitment`, plus
+  `return_aux_inclusion=true`. A compatible Gateway returns an
+  `aux_inclusion` object containing standard-base64 `coinbase_tx` and a
+  standard-base64 `merkle_branch` list. The Rust miner verifies that returned
+  proof against the returned incomplete header before using the work. Hoon
+  still receives only the opaque nonce and recursive certificate.
 - Pearl Gateway submission uses `submitPlainProof` with the Pearl wire format:
   `plain_proof` is standard base64 of Pearl's `bincode 1.3.3`
   `PlainProof`, and `mining_job` contains the base64 incomplete header bytes
@@ -156,14 +165,13 @@ Rust miner default policy for this milestone:
   template's `serialize_without_proof_commitment()` and silently skips old or
   different headers after returning `"submitted"`. Therefore production
   merge-mining requires the Pearl Gateway template to already commit to the
-  same aux-bearing Pearl header that the Nockchain attempt used. The current
-  Rust coinbase-only aux inclusion builder is sufficient for Nockchain-side
-  self-verification, but a Gateway that did not issue that exact header will
-  not accept the Pearl block. The Rust miner now fail-closes this case before
-  RPC submission: it carries the Gateway-issued mining-job header alongside the
-  mined aux-bearing header and calls `submitPlainProof` only when they are
-  identical, avoiding false success from Gateway's pre-async `"submitted"`
-  acknowledgement.
+  same aux-bearing Pearl header that the Nockchain attempt used. The Rust miner
+  now requests that aux-bearing work through the `getMiningInfo` extension
+  above. If a Gateway accepts the request but omits `aux_inclusion`, the miner
+  can still build a coinbase-only aux proof for Nockchain-side
+  self-verification, but Pearl-side `submitPlainProof` remains fail-closed
+  unless the Gateway-issued header equals the mined aux-bearing header. This
+  avoids false success from Gateway's pre-async `"submitted"` acknowledgement.
 
 The `coinbase_tx` and `merkle_branch` prove that
 `"NOCKCHAIN-AI-POW-AUX" || expected_aux_commitment` appears in the
@@ -389,12 +397,12 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
 9. Done for this milestone: after a successful Nockchain `%ai-pow` submission,
    the run loop clears the cached candidate so Pearl Gateway refresh cannot
    redispatch solved work. Only a fresh Nockchain candidate restarts mining.
-10. Done for the Rust client path: Pearl Gateway `submitPlainProof` plumbing
-    and Pearl-compatible `PlainProof` serialization exist in Rust. The miner
-    refuses Gateway submission when the issued mining-job header does not equal
-    the aux-bearing mined header. Complete production Pearl-side acceptance
-    still requires Pearl Gateway to issue or accept the exact aux-bearing
-    incomplete header used by the Nockchain attempt.
+10. Done for the Rust client path: Pearl Gateway `submitPlainProof` plumbing,
+    Pearl-compatible `PlainProof` serialization, aux-bearing `getMiningInfo`
+    requests, and returned `aux_inclusion` verification exist in Rust. Complete
+    production Pearl-side acceptance requires deploying a Pearl Gateway server
+    with the matching `getMiningInfo` extension so it issues the exact
+    aux-bearing incomplete header used by the Nockchain attempt.
 11. Re-run and tighten real recursive certificate size-budget caps after the
    final production proof shape is fixed.
 12. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,

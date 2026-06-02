@@ -47,8 +47,9 @@ use std::time::Duration;
 use ai_pow::params::MatmulParams;
 use ai_pow::pearl_compat::{
     pearl_bitcoin_double_sha256_raw, validate_pearl_merge_config_for_recursive_prover,
-    PearlAuxInclusionProof, PearlCompatError, PearlIncompleteBlockHeader, PearlMergeTicketAttempt,
-    PearlMiningConfig, PearlNockchainAux, PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG,
+    verify_pearl_aux_inclusion, PearlAuxInclusionProof, PearlCompatError,
+    PearlIncompleteBlockHeader, PearlMergeTicketAttempt, PearlMiningConfig, PearlNockchainAux,
+    PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG,
 };
 use ai_pow::zk_bridge::{AiPowRecursiveCertificateRun, ZkPublicCommitments};
 use ai_pow_zk::{CompositePublicInputs, ZkParams};
@@ -721,6 +722,7 @@ struct PearlMergeMinedSubmission {
 struct PearlGatewayResolvedMiningJob {
     header: PearlIncompleteBlockHeader,
     target: serde_json::Value,
+    aux_inclusion: Option<PearlAuxInclusionProof>,
 }
 
 #[derive(Clone, Copy)]
@@ -762,16 +764,31 @@ fn derive_pearl_merge_job_inputs_from_nockchain(
         .ok_or_else(|| "missing Pearl merge submission config".to_string())?;
     let mut aux = pearl.aux_template.clone();
     aux.nock_block_commitment = candidate.nock_block_commitment;
-    let (header_template, gateway_mining_job) = match &pearl.header_source {
-        PearlMergeHeaderSource::Static(header) => (*header, None),
+    let aux_commitment = aux
+        .commitment()
+        .map_err(|e| format!("build Nockchain aux commitment: {e}"))?;
+    let (header, gateway_mining_job, aux_inclusion) = match &pearl.header_source {
+        PearlMergeHeaderSource::Static(header_template) => {
+            let (header, aux_inclusion) =
+                build_coinbase_only_pearl_aux_inclusion(header_template, &aux)
+                    .map_err(|e| format!("build Pearl aux inclusion: {e}"))?;
+            (header, None, aux_inclusion)
+        }
         PearlMergeHeaderSource::Gateway(config) => {
-            let job = fetch_pearl_gateway_mining_job(config)
+            let job = fetch_pearl_gateway_mining_job(config, Some(&aux_commitment))
                 .map_err(|e| format!("resolve Pearl work header: {e}"))?;
-            (job.header, Some(job))
+            let (header, aux_inclusion) = match job.aux_inclusion.clone() {
+                Some(aux_inclusion) => {
+                    verify_pearl_aux_inclusion(&job.header, &aux_commitment, &aux_inclusion)
+                        .map_err(|e| format!("verify Pearl Gateway aux inclusion: {e}"))?;
+                    (job.header, aux_inclusion)
+                }
+                None => build_coinbase_only_pearl_aux_inclusion(&job.header, &aux)
+                    .map_err(|e| format!("build Pearl aux inclusion: {e}"))?,
+            };
+            (header, Some(job), aux_inclusion)
         }
     };
-    let (header, aux_inclusion) = build_coinbase_only_pearl_aux_inclusion(&header_template, &aux)
-        .map_err(|e| format!("build Pearl aux inclusion: {e}"))?;
     Ok(PearlMergeCandidateJob {
         header,
         gateway_mining_job,
@@ -797,6 +814,8 @@ enum PearlGatewayError {
     TargetOverflow,
     #[error("Pearl gateway response line exceeded {limit} bytes")]
     ResponseTooLarge { limit: usize },
+    #[error("Pearl gateway aux inclusion merkle branch digest has wrong length: got {0}")]
+    AuxInclusionDigestLen(usize),
     #[error("Pearl gateway header: {0}")]
     Header(#[from] PearlCompatError),
     #[cfg(not(unix))]
@@ -823,6 +842,15 @@ struct PearlGatewayRpcError {
 struct PearlGatewayMiningJob {
     incomplete_header_bytes: String,
     target: serde_json::Value,
+    #[serde(default)]
+    aux_inclusion: Option<PearlGatewayAuxInclusion>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PearlGatewayAuxInclusion {
+    coinbase_tx: String,
+    #[serde(default)]
+    merkle_branch: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -834,12 +862,30 @@ struct PearlGatewaySubmitRpcResponse {
 
 fn fetch_pearl_gateway_mining_job(
     config: &PearlGatewayMinerRpcConfig,
+    aux_commitment: Option<&[u8; 32]>,
 ) -> Result<PearlGatewayResolvedMiningJob, PearlGatewayError> {
     let request_id = 1u64;
+    let params = match aux_commitment {
+        Some(aux_commitment) => {
+            let mut coinbase_aux_flags =
+                Vec::with_capacity(PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG.len() + 32);
+            coinbase_aux_flags.extend_from_slice(PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG);
+            coinbase_aux_flags.extend_from_slice(aux_commitment);
+            let coinbase_aux_flags = {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD.encode(coinbase_aux_flags)
+            };
+            json!({
+                "coinbase_aux_flags": coinbase_aux_flags,
+                "return_aux_inclusion": true,
+            })
+        }
+        None => json!({}),
+    };
     let request = json!({
         "jsonrpc": "2.0",
         "method": "getMiningInfo",
-        "params": {},
+        "params": params,
         "id": request_id,
     })
     .to_string();
@@ -872,6 +918,30 @@ fn fetch_pearl_gateway_mining_job(
     Ok(PearlGatewayResolvedMiningJob {
         header: PearlIncompleteBlockHeader::from_bytes(&header_bytes)?,
         target: job.target,
+        aux_inclusion: job
+            .aux_inclusion
+            .map(decode_pearl_gateway_aux_inclusion)
+            .transpose()?,
+    })
+}
+
+fn decode_pearl_gateway_aux_inclusion(
+    value: PearlGatewayAuxInclusion,
+) -> Result<PearlAuxInclusionProof, PearlGatewayError> {
+    use base64::Engine as _;
+    let coinbase_tx = base64::engine::general_purpose::STANDARD.decode(value.coinbase_tx)?;
+    let mut merkle_branch = Vec::with_capacity(value.merkle_branch.len());
+    for encoded in value.merkle_branch {
+        let digest = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+        let digest: [u8; 32] = digest
+            .as_slice()
+            .try_into()
+            .map_err(|_| PearlGatewayError::AuxInclusionDigestLen(digest.len()))?;
+        merkle_branch.push(digest);
+    }
+    Ok(PearlAuxInclusionProof {
+        coinbase_tx,
+        merkle_branch,
     })
 }
 
@@ -1639,7 +1709,7 @@ mod tests {
             request_timeout: Duration::from_secs(2),
             refresh_interval: Duration::from_secs(1),
         };
-        let fetched = fetch_pearl_gateway_mining_job(&source)
+        let fetched = fetch_pearl_gateway_mining_job(&source, None)
             .expect("fetch Pearl gateway mining header")
             .header;
         gateway.join().expect("gateway fixture exited");
@@ -1714,7 +1784,7 @@ mod tests {
         };
 
         let started = std::time::Instant::now();
-        let err = fetch_pearl_gateway_mining_job(&source)
+        let err = fetch_pearl_gateway_mining_job(&source, None)
             .expect_err("silent Pearl gateway must not block indefinitely");
         assert!(
             started.elapsed() < Duration::from_secs(1),
@@ -1797,7 +1867,7 @@ mod tests {
             request_timeout: Duration::from_secs(2),
             refresh_interval: Duration::from_secs(1),
         };
-        let err = fetch_pearl_gateway_mining_job(&source)
+        let err = fetch_pearl_gateway_mining_job(&source, None)
             .expect_err("Pearl Gateway string target must be rejected");
         gateway.join().expect("gateway fixture exited");
 
@@ -1859,6 +1929,7 @@ mod tests {
             gateway_mining_job: Some(PearlGatewayResolvedMiningJob {
                 header: header_template,
                 target: serde_json::Value::from(123_456u64),
+                aux_inclusion: None,
             }),
             aux_inclusion,
         };
@@ -2060,6 +2131,91 @@ mod tests {
                 .is_err(),
             "aux inclusion must bind the candidate-derived Nockchain block commitment"
         );
+    }
+
+    #[test]
+    fn derive_pearl_merge_job_inputs_uses_gateway_returned_aux_inclusion() {
+        let candidate =
+            candidate_for_target_and_commitment(bignum_target_slab(&[u64::from(u32::MAX)]), 0xD0A1);
+        let mut aux = pearl_test_aux();
+        aux.nock_block_commitment = expected_aux_commitment_bridge(&candidate);
+        let aux_commitment = aux.commitment().expect("aux commitment");
+        let coinbase_tx = pearl_test_coinbase_tx(&aux_commitment);
+        let mut merkle_root = pearl_bitcoin_double_sha256_raw(&coinbase_tx);
+        merkle_root.reverse();
+        let mut gateway_header = pearl_test_header();
+        gateway_header.merkle_root = merkle_root;
+
+        let encoded_header = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(gateway_header.to_bytes())
+        };
+        let encoded_coinbase = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(&coinbase_tx)
+        };
+        let expected_coinbase_aux_flags = {
+            let mut flags =
+                Vec::with_capacity(PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG.len() + aux_commitment.len());
+            flags.extend_from_slice(PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG);
+            flags.extend_from_slice(&aux_commitment);
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(flags)
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind gateway fixture");
+        let port = listener.local_addr().expect("gateway fixture addr").port();
+        let gateway = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept gateway client");
+            let mut request_line = String::new();
+            {
+                let mut reader =
+                    std::io::BufReader::new(stream.try_clone().expect("clone gateway stream"));
+                std::io::BufRead::read_line(&mut reader, &mut request_line)
+                    .expect("read gateway request");
+            }
+            let request: serde_json::Value =
+                serde_json::from_str(&request_line).expect("parse gateway request");
+            assert_eq!(request["method"], "getMiningInfo");
+            assert_eq!(
+                request["params"]["coinbase_aux_flags"],
+                expected_coinbase_aux_flags
+            );
+            assert_eq!(request["params"]["return_aux_inclusion"], true);
+            let response = format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":424242,\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
+                encoded_header, encoded_coinbase
+            );
+            std::io::Write::write_all(&mut stream, response.as_bytes())
+                .expect("write gateway response");
+        });
+
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.puzzle
+            .pearl_merge
+            .as_mut()
+            .expect("test config has Pearl merge submission")
+            .header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+            transport: PearlGatewayTransport::Tcp {
+                host: "127.0.0.1".to_string(),
+                port,
+            },
+            request_timeout: Duration::from_secs(2),
+            refresh_interval: Duration::from_secs(1),
+        });
+
+        let job = derive_pearl_merge_job_inputs(&cfg, &candidate)
+            .expect("derive Gateway aux-bearing Pearl job");
+        gateway.join().expect("gateway fixture exited");
+
+        assert_eq!(job.header, gateway_header);
+        assert_eq!(
+            job.gateway_mining_job.as_ref().expect("gateway job").header,
+            gateway_header
+        );
+        verify_pearl_aux_inclusion(&job.header, &aux_commitment, &job.aux_inclusion)
+            .expect("Gateway-returned aux inclusion should verify");
+        assert_eq!(job.aux_inclusion.coinbase_tx, coinbase_tx);
     }
 
     #[test]
