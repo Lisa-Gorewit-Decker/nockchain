@@ -2525,6 +2525,24 @@ mod tests {
     }
 
     #[test]
+    fn pearl_merge_recursive_certificate_recomputes_forged_public_commitments_before_zkp() {
+        let (mut attempt, params, a, b) = pearl_merge_ticket_fixture(
+            b"pearl-recursive-forged-public-commitments",
+            pearl_test_pattern(8),
+            pearl_test_pattern(8),
+        );
+        attempt.public_params.hash_a[0] ^= 1;
+        attempt.statement.public_data = attempt.public_params.to_public_data().unwrap();
+
+        assert!(matches!(
+            prove_pearl_merge_recursive_certificate(&attempt, &params, &a, &b, 16),
+            Err(BridgeError::PearlMergeStatement(
+                PearlCompatError::PublicCommitmentMismatch
+            ))
+        ));
+    }
+
+    #[test]
     fn pearl_merge_recursive_certificate_rejects_multi_tile_before_zkp() {
         let (attempt, mut params, a, b) = pearl_merge_ticket_fixture(
             b"pearl-recursive-multi-tile",
