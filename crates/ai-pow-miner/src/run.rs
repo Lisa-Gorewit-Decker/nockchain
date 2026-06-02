@@ -75,6 +75,7 @@ use crate::certificate_noun::{
 use crate::pearl_mining::{
     self, PearlMergeMineOptions, PearlMergeMinedTicket, PearlMergeMiningError, PearlMergeMiningJob,
 };
+use crate::pearl_plain_proof::PearlPlainProof;
 use crate::wire::AiPowMinerWire;
 use crate::{DifficultyTarget, MiningCancel};
 
@@ -497,13 +498,25 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                                 matmul_attempts = mined.ticket.stats.matmul_attempts_tried,
                                 elapsed_s = mined.ticket.stats.elapsed.as_secs_f64(),
                                 matmul_attempt_rate = mined.ticket.stats.matmul_attempt_rate_per_sec(),
-                                "ai-pow-miner: Pearl-compatible solution found; submitting Nockchain %ai-pow"
+                                pearl_target_hit = mined.ticket.pearl_target_hit,
+                                nockchain_target_hit = mined.ticket.nockchain_target_hit,
+                                "ai-pow-miner: Pearl-compatible solution found"
                             );
                             let Some(pearl_cfg) = cfg.puzzle.pearl_merge.as_ref() else {
                                 break InnerOutcome::Fatal(MinerError::CertificateBuild(
                                     "Pearl merge solution found without Pearl config".to_string(),
                                 ));
                             };
+                            if mined.ticket.pearl_target_hit {
+                                if let Err(e) = submit_pearl_solution_if_gateway(&cfg, pearl_cfg, &mined.ticket) {
+                                    warn!(error = %e, "submit Pearl Gateway plain proof failed");
+                                }
+                            }
+                            if !mined.ticket.nockchain_target_hit {
+                                latest_candidate = None;
+                                current_pearl_header = None;
+                                continue;
+                            }
                             let proof = match (pearl_cfg.certificate_builder)(&mined.ticket.attempt) {
                                 Ok(proof) => proof,
                                 Err(e) => {
@@ -786,7 +799,7 @@ enum PearlGatewayError {
 }
 
 #[derive(Debug, Deserialize)]
-struct PearlGatewayRpcResponse {
+struct PearlGatewayMiningInfoRpcResponse {
     id: serde_json::Value,
     result: Option<PearlGatewayMiningJob>,
     error: Option<PearlGatewayRpcError>,
@@ -806,6 +819,13 @@ struct PearlGatewayMiningJob {
     target: serde_json::Value,
 }
 
+#[derive(Debug, Deserialize)]
+struct PearlGatewaySubmitRpcResponse {
+    id: serde_json::Value,
+    result: Option<serde_json::Value>,
+    error: Option<PearlGatewayRpcError>,
+}
+
 fn fetch_pearl_gateway_header(
     config: &PearlGatewayMinerRpcConfig,
 ) -> Result<PearlIncompleteBlockHeader, PearlGatewayError> {
@@ -817,38 +837,9 @@ fn fetch_pearl_gateway_header(
         "id": request_id,
     })
     .to_string();
-    let response_line = match &config.transport {
-        PearlGatewayTransport::Tcp { host, port } => {
-            let mut stream = connect_tcp_with_timeout(host, *port, config.request_timeout)?;
-            stream.set_read_timeout(Some(config.request_timeout))?;
-            stream.set_write_timeout(Some(config.request_timeout))?;
-            stream.write_all(request.as_bytes())?;
-            stream.write_all(b"\n")?;
-            stream.flush()?;
-            let mut reader = BufReader::new(stream);
-            read_bounded_gateway_response_line(&mut reader)?
-        }
-        PearlGatewayTransport::UnixSocket { path } => {
-            #[cfg(unix)]
-            {
-                let mut stream = UnixStream::connect(path)?;
-                stream.set_read_timeout(Some(config.request_timeout))?;
-                stream.set_write_timeout(Some(config.request_timeout))?;
-                stream.write_all(request.as_bytes())?;
-                stream.write_all(b"\n")?;
-                stream.flush()?;
-                let mut reader = BufReader::new(stream);
-                read_bounded_gateway_response_line(&mut reader)?
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = path;
-                return Err(PearlGatewayError::UnixSocketUnsupported);
-            }
-        }
-    };
+    let response_line = exchange_pearl_gateway_request(config, &request)?;
 
-    let response: PearlGatewayRpcResponse = serde_json::from_str(&response_line)?;
+    let response: PearlGatewayMiningInfoRpcResponse = serde_json::from_str(&response_line)?;
     if response.id != serde_json::Value::from(request_id) {
         return Err(PearlGatewayError::ResponseIdMismatch {
             expected: request_id,
@@ -873,6 +864,92 @@ fn fetch_pearl_gateway_header(
         base64::engine::general_purpose::STANDARD.decode(job.incomplete_header_bytes)?
     };
     Ok(PearlIncompleteBlockHeader::from_bytes(&header_bytes)?)
+}
+
+fn submit_pearl_gateway_plain_proof(
+    config: &PearlGatewayMinerRpcConfig,
+    plain_proof_base64: &str,
+    header: &PearlIncompleteBlockHeader,
+    target: serde_json::Value,
+) -> Result<(), PearlGatewayError> {
+    validate_pearl_gateway_target_uint256(&target)?;
+    let request_id = 2u64;
+    let incomplete_header_bytes = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
+    };
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "submitPlainProof",
+        "params": {
+            "plain_proof": plain_proof_base64,
+            "mining_job": {
+                "incomplete_header_bytes": incomplete_header_bytes,
+                "target": target,
+            },
+        },
+        "id": request_id,
+    })
+    .to_string();
+    let response_line = exchange_pearl_gateway_request(config, &request)?;
+    let response: PearlGatewaySubmitRpcResponse = serde_json::from_str(&response_line)?;
+    if response.id != serde_json::Value::from(request_id) {
+        return Err(PearlGatewayError::ResponseIdMismatch {
+            expected: request_id,
+            actual: response.id.to_string(),
+        });
+    }
+    if let Some(error) = response.error {
+        let mut msg = format!("{}: {}", error.code, error.message);
+        if let Some(data) = error.data {
+            msg.push_str(": ");
+            msg.push_str(&data);
+        }
+        return Err(PearlGatewayError::Rpc(msg));
+    }
+    match response.result {
+        Some(serde_json::Value::String(result)) if result == "submitted" => Ok(()),
+        Some(other) => Err(PearlGatewayError::Rpc(format!(
+            "unexpected submitPlainProof result: {other}"
+        ))),
+        None => Err(PearlGatewayError::Rpc("missing result".to_string())),
+    }
+}
+
+fn exchange_pearl_gateway_request(
+    config: &PearlGatewayMinerRpcConfig,
+    request: &str,
+) -> Result<String, PearlGatewayError> {
+    match &config.transport {
+        PearlGatewayTransport::Tcp { host, port } => {
+            let mut stream = connect_tcp_with_timeout(host, *port, config.request_timeout)?;
+            stream.set_read_timeout(Some(config.request_timeout))?;
+            stream.set_write_timeout(Some(config.request_timeout))?;
+            stream.write_all(request.as_bytes())?;
+            stream.write_all(b"\n")?;
+            stream.flush()?;
+            let mut reader = BufReader::new(stream);
+            read_bounded_gateway_response_line(&mut reader)
+        }
+        PearlGatewayTransport::UnixSocket { path } => {
+            #[cfg(unix)]
+            {
+                let mut stream = UnixStream::connect(path)?;
+                stream.set_read_timeout(Some(config.request_timeout))?;
+                stream.set_write_timeout(Some(config.request_timeout))?;
+                stream.write_all(request.as_bytes())?;
+                stream.write_all(b"\n")?;
+                stream.flush()?;
+                let mut reader = BufReader::new(stream);
+                read_bounded_gateway_response_line(&mut reader)
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = path;
+                return Err(PearlGatewayError::UnixSocketUnsupported);
+            }
+        }
+    }
 }
 
 fn read_bounded_gateway_response_line<R: BufRead>(
@@ -1094,6 +1171,60 @@ fn spawn_pearl_merge_attempt(
             aux_inclusion: job_inputs.aux_inclusion,
         })
     })
+}
+
+fn submit_pearl_solution_if_gateway(
+    cfg: &MinerConfig,
+    pearl_cfg: &PearlMergeSubmissionConfig,
+    mined: &PearlMergeMinedTicket,
+) -> Result<(), String> {
+    let PearlMergeHeaderSource::Gateway(gateway) = &pearl_cfg.header_source else {
+        debug!(
+            "Pearl target hit with static Pearl header source; no Gateway submission configured"
+        );
+        return Ok(());
+    };
+    let plain = PearlPlainProof::from_attempt(
+        &cfg.puzzle.params, &mined.attempt, &cfg.puzzle.a, &cfg.puzzle.b,
+    )
+    .map_err(|e| format!("build Pearl plain proof: {e}"))?;
+    let plain_proof_base64 = plain
+        .to_base64_bincode1()
+        .map_err(|e| format!("serialize Pearl plain proof: {e}"))?;
+    let target = serde_json_uint256_le(&mined.attempt.pearl_target)
+        .map_err(|e| format!("encode Pearl target: {e}"))?;
+    submit_pearl_gateway_plain_proof(
+        gateway, &plain_proof_base64, &mined.attempt.public_params.block_header, target,
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn serde_json_uint256_le(le: &[u8; 32]) -> Result<serde_json::Value, serde_json::Error> {
+    let digits = uint256_le_to_decimal_string(le);
+    serde_json::from_str(&digits)
+}
+
+fn uint256_le_to_decimal_string(le: &[u8; 32]) -> String {
+    let mut be = le.to_vec();
+    be.reverse();
+    if be.iter().all(|&b| b == 0) {
+        return "0".to_string();
+    }
+
+    let mut digits = Vec::new();
+    while be.iter().any(|&b| b != 0) {
+        let mut carry = 0u16;
+        for byte in &mut be {
+            let value = (carry << 8) | u16::from(*byte);
+            *byte = (value / 10) as u8;
+            carry = value % 10;
+        }
+        digits.push((b'0' + carry as u8) as char);
+        while be.first().copied() == Some(0) {
+            be.remove(0);
+        }
+    }
+    digits.iter().rev().collect()
 }
 
 /// Internal wrapper for a prebuilt Pearl-format-compatible `%ai-pow` artifact:
@@ -1521,6 +1652,55 @@ mod tests {
         gateway.join().expect("gateway fixture exited");
 
         assert_eq!(fetched, header);
+    }
+
+    #[test]
+    fn pearl_gateway_submit_plain_proof_sends_gateway_wire_format() {
+        let header = pearl_test_header();
+        let proof_base64 = "AQIDBA==";
+        let target = serde_json::Value::from(123_456u64);
+        let expected_header = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind gateway fixture");
+        let port = listener.local_addr().expect("gateway fixture addr").port();
+        let gateway = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept gateway client");
+            let mut request_line = String::new();
+            {
+                let mut reader =
+                    std::io::BufReader::new(stream.try_clone().expect("clone gateway stream"));
+                std::io::BufRead::read_line(&mut reader, &mut request_line)
+                    .expect("read gateway request");
+            }
+            let request: serde_json::Value =
+                serde_json::from_str(&request_line).expect("parse gateway request");
+            assert_eq!(request["jsonrpc"], "2.0");
+            assert_eq!(request["method"], "submitPlainProof");
+            assert_eq!(request["id"], 2);
+            assert_eq!(request["params"]["plain_proof"], proof_base64);
+            assert_eq!(
+                request["params"]["mining_job"]["incomplete_header_bytes"],
+                expected_header
+            );
+            assert_eq!(request["params"]["mining_job"]["target"], 123_456);
+            let response = "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":\"submitted\"}\n";
+            std::io::Write::write_all(&mut stream, response.as_bytes())
+                .expect("write gateway response");
+        });
+
+        let cfg = PearlGatewayMinerRpcConfig {
+            transport: PearlGatewayTransport::Tcp {
+                host: "127.0.0.1".to_string(),
+                port,
+            },
+            request_timeout: Duration::from_secs(2),
+            refresh_interval: Duration::from_secs(1),
+        };
+        submit_pearl_gateway_plain_proof(&cfg, proof_base64, &header, target)
+            .expect("submit Pearl plain proof");
+        gateway.join().expect("gateway fixture exited");
     }
 
     #[test]
@@ -2631,6 +2811,15 @@ mod tests {
                 }
                 let request: serde_json::Value =
                     serde_json::from_str(&request_line).expect("parse gateway request");
+                if request["method"] == "submitPlainProof" {
+                    let response = format!(
+                        "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":\"submitted\"}}\n",
+                        request["id"]
+                    );
+                    std::io::Write::write_all(&mut stream, response.as_bytes())
+                        .expect("write gateway submit response");
+                    continue;
+                }
                 assert_eq!(request["method"], "getMiningInfo");
                 let encoded_header = {
                     use base64::Engine as _;
@@ -2736,6 +2925,15 @@ mod tests {
                 }
                 let request: serde_json::Value =
                     serde_json::from_str(&request_line).expect("parse gateway request");
+                if request["method"] == "submitPlainProof" {
+                    let response = format!(
+                        "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":\"submitted\"}}\n",
+                        request["id"]
+                    );
+                    std::io::Write::write_all(&mut stream, response.as_bytes())
+                        .expect("write gateway submit response");
+                    continue;
+                }
                 assert_eq!(request["method"], "getMiningInfo");
                 let encoded_header = {
                     use base64::Engine as _;
@@ -2800,6 +2998,139 @@ mod tests {
             node.mined_pokes.lock().await.len(),
             1,
             "a solved Nockchain candidate must produce at most one %ai-pow poke"
+        );
+
+        shutdown.cancel();
+        let r = tokio::time::timeout(Duration::from_secs(5), mining_task)
+            .await
+            .expect("miner task did not exit")
+            .expect("miner panicked");
+        assert!(matches!(r, Ok(())), "unexpected miner result: {r:?}");
+        stop_gateway.store(true, Ordering::SeqCst);
+        gateway_thread.join().expect("gateway fixture exited");
+        node.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn run_loop_pearl_only_hit_submits_plain_proof_without_nockchain_poke() {
+        let header = pearl_test_header();
+        let expected_get_header = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind Pearl gateway fixture");
+        listener
+            .set_nonblocking(true)
+            .expect("set Pearl gateway fixture nonblocking");
+        let gateway_port = listener.local_addr().expect("gateway addr").port();
+        let get_calls = Arc::new(AtomicU64::new(0));
+        let submit_calls = Arc::new(AtomicU64::new(0));
+        let stop_gateway = Arc::new(AtomicBool::new(false));
+        let get_calls_for_thread = get_calls.clone();
+        let submit_calls_for_thread = submit_calls.clone();
+        let stop_gateway_for_thread = stop_gateway.clone();
+        let gateway_thread = std::thread::spawn(move || {
+            while !stop_gateway_for_thread.load(Ordering::SeqCst) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(x) => x,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(e) => panic!("accept Pearl gateway client: {e}"),
+                };
+                let mut request_line = String::new();
+                {
+                    let mut reader =
+                        std::io::BufReader::new(stream.try_clone().expect("clone gateway stream"));
+                    std::io::BufRead::read_line(&mut reader, &mut request_line)
+                        .expect("read gateway request");
+                }
+                let request: serde_json::Value =
+                    serde_json::from_str(&request_line).expect("parse gateway request");
+                match request["method"].as_str().expect("method string") {
+                    "getMiningInfo" => {
+                        let response = format!(
+                            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":115792089237316195423570985008687907853269984665640564039457584007913129639935}}}}\n",
+                            expected_get_header
+                        );
+                        std::io::Write::write_all(&mut stream, response.as_bytes())
+                            .expect("write gateway response");
+                        get_calls_for_thread.fetch_add(1, Ordering::SeqCst);
+                    }
+                    "submitPlainProof" => {
+                        assert!(
+                            request["params"]["plain_proof"]
+                                .as_str()
+                                .expect("plain_proof string")
+                                .len()
+                                > 1024
+                        );
+                        assert!(
+                            request["params"]["mining_job"]["incomplete_header_bytes"]
+                                .as_str()
+                                .expect("incomplete header string")
+                                .len()
+                                > 32
+                        );
+                        assert!(request["params"]["mining_job"]["target"].is_number());
+                        let response = format!(
+                            "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":\"submitted\"}}\n",
+                            request["id"]
+                        );
+                        std::io::Write::write_all(&mut stream, response.as_bytes())
+                            .expect("write gateway submit response");
+                        submit_calls_for_thread.fetch_add(1, Ordering::SeqCst);
+                    }
+                    other => panic!("unexpected Gateway method: {other}"),
+                }
+            }
+        });
+
+        let node = MockNode::spawn().await;
+        let mut cfg = test_cfg(node.url());
+        let pearl_cfg = cfg
+            .puzzle
+            .pearl_merge
+            .as_mut()
+            .expect("test config has Pearl merge submission");
+        pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+            transport: PearlGatewayTransport::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: gateway_port,
+            },
+            request_timeout: Duration::from_millis(200),
+            refresh_interval: Duration::from_millis(100),
+        });
+        pearl_cfg.mine_opts = PearlMergeMineOptions {
+            max_attempts: Some(1),
+            ..PearlMergeMineOptions::default()
+        };
+
+        let shutdown = CancellationToken::new();
+        let shutdown_clone = shutdown.clone();
+        let mining_task = tokio::spawn(async move { run(cfg, shutdown_clone).await });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        node.publish_synth_mine_effect_with_target_limbs(705, &[0], 64);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while submit_calls.load(Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Pearl-only hit did not submit a Gateway plain proof"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            get_calls.load(Ordering::SeqCst) <= 2,
+            "Pearl-only hit should not keep refreshing Gateway work after submission"
+        );
+        assert_eq!(submit_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            node.mined_pokes.lock().await.is_empty(),
+            "Pearl-only hit must not submit a Nockchain %ai-pow poke"
         );
 
         shutdown.cancel();

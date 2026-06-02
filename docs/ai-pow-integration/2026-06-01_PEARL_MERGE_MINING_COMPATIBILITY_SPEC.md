@@ -1,23 +1,24 @@
 # Pearl-Compatible Nockchain AI-PoW Submission Specification
 
 Date: 2026-06-01
-Status: Nockchain-side submission target
+Status: Pearl-compatible dual submission plumbing in progress
 
 ## Goal
 
 Nockchain AI-PoW should support a Pearl-format-compatible work attempt so one
 miner can commit to a Pearl block candidate and a Nockchain block candidate,
-evaluate one Pearl-style useful-work attempt, and submit the result to
-Nockchain when that attempt satisfies Nockchain's target. Pearl-chain
-submission plumbing is intentionally outside this milestone.
+evaluate one Pearl-style useful-work attempt, and submit the result to the
+chain whose target was satisfied. A Nockchain hit submits the canonical
+recursive `%ai-pow` certificate to the Nockchain node. A Pearl hit submits a
+Pearl `PlainProof` to Pearl Gateway via `submitPlainProof`.
 
 The chains do not need to share proof systems. Nockchain should use its own
 recursive certificate and verifier. Compatibility is at the mineable work layer:
 the same Pearl-style `sigma`, `mu`, matrix commitments, noise seeds, ticket
 tile state, and jackpot digest must be used.
 
-For the current milestone, only Nockchain-side submission is being wired. That
-means:
+For the current milestone, the Hoon/kernel surface remains Nockchain-only while
+the Rust miner also wires Pearl Gateway submission. That means:
 
 - Nockchain accepts only the canonical `%ai-pow` block proof arm.
 - Hoon does not define Pearl-specific molds or dispatch arms.
@@ -25,8 +26,12 @@ means:
 - Nockchain acceptance requires the shared jackpot digest to satisfy the
   Nockchain target.
 - Nockchain acceptance does not require the shared jackpot digest to satisfy
-  Pearl's `nbits` target. Pearl target handling belongs to a separate
-  Pearl-side submission implementation, not this Nockchain wiring.
+  Pearl's `nbits` target.
+- Pearl submission does not build or submit a Nockchain recursive certificate
+  unless the same attempt also satisfies the Nockchain target.
+- The attempt does not need to satisfy both targets. If only Pearl's adjusted
+  target is hit, submit only to Pearl. If only Nockchain's target is hit,
+  submit only to Nockchain. If both are hit, submit both.
 
 ## Canonical Hoon Artifact
 
@@ -138,6 +143,21 @@ Rust miner default policy for this milestone:
   cached candidate is cleared and Gateway refresh does not redispatch that
   solved candidate; the miner waits for the node to emit a new candidate.
   Manual/static header mode does not refresh.
+- Pearl Gateway submission uses `submitPlainProof` with the Pearl wire format:
+  `plain_proof` is standard base64 of Pearl's `bincode 1.3.3`
+  `PlainProof`, and `mining_job` contains the base64 incomplete header bytes
+  plus the adjusted Pearl target as a JSON integer. The proof contains the two
+  matrix Merkle proofs for `A` and `B^T`; it is not a Nockchain block artifact
+  and is never serialized into Hoon.
+- Gateway acceptance is header-template sensitive. Pearl Gateway's async
+  handler compares `mining_job.incomplete_header_bytes` with its current block
+  template's `serialize_without_proof_commitment()` and silently skips old or
+  different headers after returning `"submitted"`. Therefore production
+  merge-mining requires the Pearl Gateway template to already commit to the
+  same aux-bearing Pearl header that the Nockchain attempt used. The current
+  Rust coinbase-only aux inclusion builder is sufficient for Nockchain-side
+  self-verification, but a Gateway that did not issue that exact header will
+  not accept the Pearl block.
 
 The `coinbase_tx` and `merkle_branch` prove that
 `"NOCKCHAIN-AI-POW-AUX" || expected_aux_commitment` appears in the
@@ -226,16 +246,26 @@ Implemented in this branch:
 - The Rust precheck now treats Pearl and Nockchain targets independently for
   Nockchain submission: Nockchain-side precheck requires the Nockchain target
   only.
-- `mine_pearl_merge_ticket_attempt` returns a ticket before ZKP work only when
-  the Nockchain target is hit.
+- `ai_pow_miner::pearl_mining` evaluates one explicit Pearl ticket attempt per
+  counted attempt and returns when either the Pearl adjusted target or the
+  Nockchain target is hit. The returned ticket records
+  `pearl_target_hit` and `nockchain_target_hit`, so the run loop can submit to
+  the appropriate chain without treating one chain's target as the other's
+  admission rule.
 - `ai_pow_miner::run` now requires an explicit Rust-only
   `PearlMergeSubmissionConfig`. The connected node run loop derives the
   Nockchain candidate commitment, builds a coinbase-only Pearl-format aux
-  inclusion, mines Pearl-compatible ticket attempts, and constructs the
-  recursive proof-node payload only after a ticket hits the Nockchain target.
-- The connected run loop submits only the Nockchain `%ai-pow` command. It does
-  not submit Pearl blocks, and the Hoon kernel still receives no Pearl-specific
-  fields beyond the Rust-owned opaque nonce bytes.
+  inclusion, mines Pearl-compatible ticket attempts, submits Pearl hits to
+  Gateway when configured, and constructs the recursive proof-node payload only
+  after a ticket hits the Nockchain target.
+- `ai_pow_miner::pearl_plain_proof` builds Pearl's `PlainProof` from the mined
+  attempt, the trusted matrices, and Pearl matrix Merkle proofs, then serializes
+  it as standard base64 of Pearl-compatible `bincode 1.3.3` bytes for Gateway
+  `submitPlainProof`.
+- The connected run loop submits the Nockchain `%ai-pow` command only for
+  Nockchain target hits. Pearl-only hits do not build a recursive certificate
+  and do not poke Hoon. The Hoon kernel still receives no Pearl-specific fields
+  beyond the Rust-owned opaque nonce bytes.
 - The Pearl-compatible run loop accepts recursive certificate data only through
   a wrapper constructible by public callers from the opaque
   `AiPowRecursiveCertificateRun` returned by the recursive prover. Downstream
@@ -259,7 +289,10 @@ Implemented in this branch:
   operator input is the mining key configuration. Once the miner builds a
   `%ai-pow` poke for a candidate and attempts to send it to the node, it clears
   the cached candidate so later Pearl Gateway template changes cannot produce
-  duplicate submissions for the same Nockchain candidate.
+  duplicate submissions for the same Nockchain candidate. Pearl-only Gateway
+  hits also clear the cached Nockchain candidate for now to avoid resubmitting
+  the same Pearl hit against a Gateway that acknowledges before async stale
+  header checks complete.
   The legacy NCMN miner and prover-only smoke CLI were removed so downstream
   callers cannot accidentally treat them as production submission APIs.
 - Miner preflight rejects configurations without Pearl submission config before
@@ -350,12 +383,18 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
 9. Done for this milestone: after a successful Nockchain `%ai-pow` submission,
    the run loop clears the cached candidate so Pearl Gateway refresh cannot
    redispatch solved work. Only a fresh Nockchain candidate restarts mining.
-10. Re-run and tighten real recursive certificate size-budget caps after the
+10. In progress: Pearl Gateway `submitPlainProof` client plumbing and
+    Pearl-compatible `PlainProof` serialization exist in Rust. Complete
+    production Pearl-side acceptance by making Pearl Gateway issue or accept the
+    exact aux-bearing incomplete header used by the Nockchain attempt; otherwise
+    Gateway's async current-template check can skip the submitted proof after
+    returning `"submitted"`.
+11. Re-run and tighten real recursive certificate size-budget caps after the
    final production proof shape is fixed.
-11. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,
+12. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,
    candidate-block replay, aux inclusion tamper, target miss, metadata drift,
    and proof-node DoS limits without wiring Hoon acceptance.
-12. Extend the recursive prover beyond square-contiguous Pearl row/column
+13. Extend the recursive prover beyond square-contiguous Pearl row/column
    patterns, or keep production admission explicitly restricted to that subset.
 
 ## Non-Negotiable Requirements

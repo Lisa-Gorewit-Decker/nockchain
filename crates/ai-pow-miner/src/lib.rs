@@ -3,10 +3,10 @@
 //! Wraps [`ai_pow`] with:
 //! * The production-oriented NockApp driver, [`run`], which performs
 //!   Pearl-format-compatible Nockchain `%ai-pow` submission. The miner searches
-//!   Pearl-style ticket attempts, constructs the canonical recursive
-//!   certificate only after the Nockchain target is hit, and submits only a
-//!   Nockchain command. Pearl-chain block submission is deliberately outside
-//!   this crate's current scope.
+//!   Pearl-style ticket attempts and constructs the canonical recursive
+//!   certificate only after the Nockchain target is hit.
+//! * Pearl Gateway proof-submission plumbing for Pearl-side hits. This remains
+//!   Rust-only miner metadata; it is not part of the Hoon `%ai-pow` artifact.
 //! * A Rust-owned opaque nonce envelope for `%ai-pow` artifacts. Hoon sees the
 //!   nonce only as `[len data]`; Pearl-format transcript details remain Rust
 //!   metadata and must not become Hoon kernel concepts.
@@ -62,6 +62,9 @@ impl MiningCancel {
 
 /// Pearl-compatible merge-mining ticket loop.
 pub mod pearl_mining;
+
+/// Pearl Gateway `submitPlainProof` artifact construction.
+pub mod pearl_plain_proof;
 
 /// Wire vocabulary (`AiPowMinerWire`, `SOURCE = "ai-pow-miner"`). Behind
 /// the `node` feature because it implements `nockapp::wire::Wire`.

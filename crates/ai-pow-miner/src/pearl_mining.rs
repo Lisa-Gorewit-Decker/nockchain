@@ -1,15 +1,15 @@
 //! Pearl-compatible merge-mining ticket loop.
 //!
 //! One iteration evaluates one explicit Pearl-valid `t_rows` / `t_cols` ticket
-//! attempt and returns only after the shared Pearl jackpot digest clears the
-//! Nockchain target. Recursive proof construction and canonical `%ai-pow`
-//! artifact submission happen after this function returns.
+//! attempt and returns after the shared Pearl jackpot digest clears either the
+//! Pearl target or the Nockchain target. Recursive proof construction and
+//! canonical `%ai-pow` artifact submission happen only after a Nockchain hit.
 
 use std::time::{Duration, Instant};
 
 use ai_pow::params::MatmulParams;
 use ai_pow::pearl_compat::{
-    mine_pearl_merge_ticket_attempt, PearlCompatError, PearlIncompleteBlockHeader,
+    evaluate_pearl_merge_ticket_attempt, PearlCompatError, PearlIncompleteBlockHeader,
     PearlMergeTicketAttempt, PearlMiningConfig, PearlNockchainAux, PearlPeriodicPattern,
 };
 
@@ -54,6 +54,8 @@ impl Default for PearlMergeMineOptions {
 #[derive(Debug, Clone)]
 pub struct PearlMergeMinedTicket {
     pub attempt: PearlMergeTicketAttempt,
+    pub pearl_target_hit: bool,
+    pub nockchain_target_hit: bool,
     pub stats: MiningStats,
 }
 
@@ -73,9 +75,8 @@ pub enum PearlMergeMiningError {
 
 /// Run Pearl-compatible ticket mining.
 ///
-/// Every counted attempt calls `mine_pearl_merge_ticket_attempt` for exactly one
-/// `(t_rows, t_cols)` pair. Misses return no proof artifact and no recursive
-/// certificate work is performed here.
+/// Every counted attempt evaluates exactly one `(t_rows, t_cols)` pair. Misses
+/// return no proof artifact and no recursive certificate work is performed here.
 pub fn run(
     job: &PearlMergeMiningJob<'_>,
     opts: &PearlMergeMineOptions,
@@ -133,7 +134,7 @@ pub fn run(
             .offset_at(linear % col_count)
             .ok_or(PearlMergeMiningError::AttemptSpaceExhausted)?;
 
-        let attempt = mine_pearl_merge_ticket_attempt(
+        let attempt = evaluate_pearl_merge_ticket_attempt(
             job.header,
             job.config,
             job.params,
@@ -148,8 +149,22 @@ pub fn run(
         stats.matmul_attempts_tried += 1;
         stats.elapsed = start.elapsed();
 
-        if let Some(attempt) = attempt {
-            return Ok(PearlMergeMinedTicket { attempt, stats });
+        let pearl_target_hit = attempt
+            .public_params
+            .check_pearl_jackpot_difficulty()
+            .is_ok();
+        let nockchain_target_hit = attempt
+            .public_params
+            .check_nockchain_jackpot_target(&job.nockchain_target)
+            .is_ok();
+
+        if pearl_target_hit || nockchain_target_hit {
+            return Ok(PearlMergeMinedTicket {
+                attempt,
+                pearl_target_hit,
+                nockchain_target_hit,
+                stats,
+            });
         }
 
         if let Some(interval) = opts.progress_interval {
@@ -430,6 +445,8 @@ mod tests {
             .expect("trivial targets should mine first Pearl ticket");
 
         assert_eq!(mined.stats.matmul_attempts_tried, 1);
+        assert!(mined.pearl_target_hit);
+        assert!(mined.nockchain_target_hit);
         assert_eq!(mined.attempt.public_params.t_rows, 0);
         assert_eq!(mined.attempt.public_params.t_cols, 0);
         verify_pearl_merge_public_statement_bytes(
@@ -456,6 +473,8 @@ mod tests {
             .expect("Nockchain target hit should not require Pearl target hit");
 
         assert_eq!(mined.stats.matmul_attempts_tried, 1);
+        assert!(!mined.pearl_target_hit);
+        assert!(mined.nockchain_target_hit);
         mined
             .attempt
             .public_params
@@ -472,9 +491,39 @@ mod tests {
     }
 
     #[test]
-    fn pearl_merge_mining_misses_do_not_emit_ticket_artifacts() {
+    fn pearl_merge_mining_returns_pearl_only_target_hits() {
         let params = pearl_test_params();
         let header = pearl_test_header();
+        let config = pearl_test_config();
+        let (a, b) = synth_matrices(b"pearl-ticket-loop-pearl-only", &params);
+        let job = pearl_job(&header, &config, &params, &a, &b, [0; 32]);
+
+        let mined = run(&job, &PearlMergeMineOptions::default(), MiningCancel::new())
+            .expect("Pearl target hit should be independently mineable");
+
+        assert_eq!(mined.stats.matmul_attempts_tried, 1);
+        assert!(mined.pearl_target_hit);
+        assert!(!mined.nockchain_target_hit);
+        mined
+            .attempt
+            .public_params
+            .check_pearl_jackpot_difficulty()
+            .expect("ticket satisfies Pearl target");
+        assert!(
+            mined
+                .attempt
+                .public_params
+                .check_nockchain_jackpot_target(&job.nockchain_target)
+                .is_err(),
+            "fixture must prove the miner did not require Nockchain target satisfaction"
+        );
+    }
+
+    #[test]
+    fn pearl_merge_mining_misses_do_not_emit_ticket_artifacts() {
+        let params = pearl_test_params();
+        let mut header = pearl_test_header();
+        header.nbits = 0x1d00_0000; // zero Pearl target after compact decode.
         let config = pearl_test_config();
         let (a, b) = synth_matrices(b"pearl-ticket-loop-miss", &params);
         let job = pearl_job(&header, &config, &params, &a, &b, [0; 32]);
