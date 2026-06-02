@@ -17,10 +17,10 @@
 //!
 //! The CLI defaults to Pearl-compatible submission with single-tile,
 //! production-envelope smoke parameters for local Layer-0 development. The
-//! Pearl work source defaults to Pearl Gateway miner RPC over the Unix socket
-//! `/tmp/pearlgw.sock`; use `--pearl-gateway tcp://host:port` for a TCP
-//! gateway or `--pearl-gateway /path/to.sock` for a different Unix socket. The
-//! production profile
+//! Pearl work source is Pearl Gateway miner RPC; the endpoint defaults to the
+//! Unix socket `/tmp/pearlgw.sock`. Use `--pearl-gateway tcp://host:port` for a
+//! TCP gateway or `--pearl-gateway /path/to.sock` for a different Unix socket.
+//! The production profile
 //! derives canonical seeds from the nonce-keyed chunk commitments bound by the
 //! recursive proof as `HASH_A` / `HASH_B`; larger production shapes remain
 //! closed until full-matrix aggregation is implemented.

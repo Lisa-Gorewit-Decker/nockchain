@@ -121,7 +121,7 @@ Rust miner default policy for this milestone:
 - Matrix inputs default to deterministic local smoke-profile synthesis with
   seed `ai-pow-prod-v1` when neither `--a + --b` nor `--synth-seed` is
   supplied. Explicit raw matrix paths must be provided as a complete pair.
-- Pearl work headers default to Pearl Gateway miner RPC `getMiningInfo` over
+- Pearl work headers come from Pearl Gateway miner RPC `getMiningInfo` over
   Unix socket `/tmp/pearlgw.sock`, matching Pearl Gateway's default miner-RPC
   configuration. TCP gateway mode is available through the unified
   `--pearl-gateway` endpoint. Manual Pearl header CLI flags were removed; the
@@ -288,7 +288,7 @@ Implemented in this branch:
   `PearlMergeSubmissionConfig`. The connected node run loop derives the
   Nockchain candidate commitment, builds a coinbase-only Pearl-format aux
   inclusion, mines Pearl-compatible ticket attempts, submits Pearl hits to
-  Gateway when configured, and constructs the recursive proof-node payload only
+  Gateway, and constructs the recursive proof-node payload only
   after a ticket hits the Nockchain target.
 - The miner's internal Pearl plain-proof plumbing builds Pearl's `PlainProof`
   from the mined attempt, the trusted matrices, and Pearl matrix Merkle proofs,
@@ -312,9 +312,9 @@ Implemented in this branch:
   ticket-derived metadata, so a stale or wrong-ticket recursive run is rejected
   before it is submitted to the node.
 - `ai-pow-mine` no longer has a submission-mode switch. It always builds
-  canonical Pearl-format-compatible Nockchain `%ai-pow` submissions. By
-  default it fetches the Pearl incomplete block header from Pearl Gateway
-  miner RPC `getMiningInfo`. The visible operator CLI surface is intentionally
+  canonical Pearl-format-compatible Nockchain `%ai-pow` submissions. It fetches
+  the Pearl incomplete block header from Pearl Gateway miner RPC
+  `getMiningInfo`. The visible operator CLI surface is intentionally
   small: node private gRPC address, mining key configuration, unified
   `--pearl-gateway` endpoint, and log filter. The legacy split Gateway
   transport/socket/host/port flags were removed; Gateway location is configured
