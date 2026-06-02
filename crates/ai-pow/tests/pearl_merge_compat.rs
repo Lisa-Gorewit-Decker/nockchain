@@ -1647,6 +1647,17 @@ fn pearl_merge_public_statement_bytes_round_trip_and_verify() {
     .unwrap();
     assert_eq!(precheck.work.commitments, attempt.commitments);
     assert_eq!(precheck.aux, aux);
+
+    let expected_aux_offset =
+        4 + PEARL_INCOMPLETE_BLOCK_HEADER_SIZE + PEARL_PUBLIC_PROOF_PARAMS_SIZE;
+    let mut bad_expected_aux = bytes;
+    bad_expected_aux[expected_aux_offset] ^= 1;
+    assert_eq!(
+        verify_pearl_merge_public_statement_bytes(
+            &aux.nock_block_commitment, &bad_expected_aux, &a, &b, &[0xffu8; 32], 16,
+        ),
+        Err(PearlCompatError::NockchainAuxCommitmentMismatch)
+    );
 }
 
 #[test]
