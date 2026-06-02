@@ -148,8 +148,7 @@ Rust miner default policy for this milestone:
   the same still-unsolved Nockchain candidate. If the synchronous
   `submitPlainProof` RPC/transport fails, the miner keeps the Nockchain
   candidate but clears the solved Pearl-header marker so the next Gateway
-  refresh can retry the same header. There is no production manual/static
-  header mode.
+  refresh can retry the same header. There is no manual or static header mode.
 - Pearl Gateway's work cache treats the full incomplete header bytes as the
   base-template freshness key. Same-parent updates that change timestamp,
   target bits, transaction merkle root, or version replace the current template
@@ -326,8 +325,7 @@ Implemented in this branch:
   miner also polls Gateway while a Nockchain candidate is current and
   redispatches the ticket loop if the Pearl header changes. The miner derives
   the Rust-only Pearl mining config from the canonical recursive AI-PoW params.
-  The Rust submission config carries a direct Pearl Gateway RPC config; the
-  removed manual/static header source is not part of the production API.
+  The Rust submission config carries a direct Pearl Gateway RPC config.
   If no matrix paths or custom `--synth-seed` are supplied, the CLI uses the
   default `ai-pow-prod-v1` local smoke-profile matrices; the remaining required
   local operator input is the mining key configuration. Once the miner builds a
@@ -416,8 +414,7 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
    Pearl-format block templates (`merkle_branch_len = 0`). Revisit only if a
    future milestone deliberately supports Pearl transaction merkle trees.
 5. Done for this milestone: `ai-pow-mine` uses Pearl Gateway miner RPC as its
-   only production Pearl work-header source. Static Pearl headers are retained
-   only as private Rust test harness state.
+   only Pearl work-header source.
 6. Done for this milestone: Pearl Gateway header fetches have bounded request
    timeouts and bounded response-line reads to avoid local Gateway denial of
    service during candidate processing.

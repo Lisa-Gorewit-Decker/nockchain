@@ -133,8 +133,6 @@ impl PearlMergeCertificateProof {
 #[derive(Clone)]
 pub struct PearlMergeSubmissionConfig {
     gateway: PearlGatewayMinerRpcConfig,
-    #[cfg(test)]
-    static_header: Option<PearlIncompleteBlockHeader>,
     mining_config: PearlMiningConfig,
     aux_template: PearlNockchainAux,
     max_pattern_len: usize,
@@ -175,8 +173,6 @@ impl PearlMergeSubmissionConfig {
 
         Self {
             gateway,
-            #[cfg(test)]
-            static_header: None,
             mining_config,
             aux_template,
             max_pattern_len,
@@ -468,10 +464,7 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
         let mut worker: Option<MiningWorker> = None;
         let mut latest_candidate: Option<NockchainCandidateInputs> = None;
         let mut current_pearl_header: Option<PearlIncompleteBlockHeader> = None;
-        let refresh_interval = pearl_work_refresh_interval(&cfg);
-        let refresh_enabled = refresh_interval.is_some();
-        let mut pearl_refresh =
-            tokio::time::interval(refresh_interval.unwrap_or(Duration::from_secs(24 * 60 * 60)));
+        let mut pearl_refresh = tokio::time::interval(pearl_work_refresh_interval(&cfg));
         pearl_refresh.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let inner_result: InnerOutcome = loop {
             tokio::select! {
@@ -518,7 +511,7 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                     let h = spawn_pearl_merge_attempt(&cfg, pearl_job, cancel.clone());
                     worker = Some(MiningWorker::PearlMerge { handle: h, cancel });
                 }
-                _ = pearl_refresh.tick(), if refresh_enabled => {
+                _ = pearl_refresh.tick() => {
                     let Some(candidate_inputs) = latest_candidate else {
                         continue;
                     };
@@ -653,15 +646,8 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
     Ok(())
 }
 
-fn pearl_work_refresh_interval(cfg: &MinerConfig) -> Option<Duration> {
-    let pearl = &cfg.puzzle.pearl_merge;
-    #[cfg(test)]
-    {
-        if pearl.static_header.is_some() {
-            return None;
-        }
-    }
-    Some(pearl.gateway.refresh_interval)
+fn pearl_work_refresh_interval(cfg: &MinerConfig) -> Duration {
+    cfg.puzzle.pearl_merge.gateway.refresh_interval
 }
 
 enum InnerOutcome {
@@ -824,24 +810,6 @@ fn derive_pearl_merge_job_inputs_from_nockchain(
     let aux_commitment = aux
         .commitment()
         .map_err(|e| format!("build Nockchain aux commitment: {e}"))?;
-    #[cfg(test)]
-    if let Some(header_template) = &pearl.static_header {
-        let (header, aux_inclusion) =
-            build_coinbase_only_pearl_aux_inclusion(header_template, &aux)
-                .map_err(|e| format!("build Pearl aux inclusion: {e}"))?;
-        return Ok(PearlMergeCandidateJob {
-            header,
-            gateway_mining_job: PearlGatewayResolvedMiningJob {
-                header,
-                target: serde_json::Value::from(0u64),
-                aux_inclusion: None,
-            },
-            aux_inclusion,
-            target: candidate.target,
-            aux,
-        });
-    }
-
     let (header, gateway_mining_job, aux_inclusion) = {
         let job = fetch_pearl_gateway_mining_job(&pearl.gateway, Some(&aux_commitment))
             .map_err(|e| format!("resolve Pearl work header: {e}"))?;
@@ -1213,48 +1181,6 @@ fn parse_decimal_uint256_le(digits: &str) -> Result<[u8; 32], PearlGatewayError>
     Ok(out)
 }
 
-#[cfg(test)]
-fn build_coinbase_only_pearl_aux_inclusion(
-    header_template: &PearlIncompleteBlockHeader,
-    aux: &PearlNockchainAux,
-) -> Result<(PearlIncompleteBlockHeader, PearlAuxInclusionProof), CertificateNounError> {
-    let aux_commitment = aux.commitment()?;
-    let coinbase_tx = build_coinbase_only_pearl_aux_tx(&aux_commitment);
-    let mut merkle_root = ai_pow::pearl_compat::pearl_bitcoin_double_sha256_raw(&coinbase_tx);
-    merkle_root.reverse();
-    let mut header = header_template.clone();
-    header.merkle_root = merkle_root;
-    Ok((
-        header,
-        PearlAuxInclusionProof {
-            coinbase_tx,
-            merkle_branch: Vec::new(),
-        },
-    ))
-}
-
-#[cfg(test)]
-fn build_coinbase_only_pearl_aux_tx(aux_commitment: &[u8; 32]) -> Vec<u8> {
-    let mut script = Vec::from([0x01, 0x00]);
-    script.extend_from_slice(PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG);
-    script.extend_from_slice(aux_commitment);
-
-    let mut tx = Vec::new();
-    tx.extend_from_slice(&1u32.to_le_bytes());
-    tx.push(1);
-    tx.extend_from_slice(&[0u8; 32]);
-    tx.extend_from_slice(&u32::MAX.to_le_bytes());
-    tx.push(script.len() as u8);
-    tx.extend_from_slice(&script);
-    tx.extend_from_slice(&u32::MAX.to_le_bytes());
-    tx.push(1);
-    tx.extend_from_slice(&0u64.to_le_bytes());
-    tx.push(1);
-    tx.push(0x51);
-    tx.extend_from_slice(&0u32.to_le_bytes());
-    tx
-}
-
 fn decode_chain_target_bignum(target: &NounSlab) -> Result<DifficultyTarget, String> {
     let space = target.noun_space();
     let root = unsafe { *target.root() };
@@ -1358,13 +1284,6 @@ fn submit_pearl_solution_to_gateway(
     pearl_cfg: &PearlMergeSubmissionConfig,
     mined: &PearlMergeMinedSubmission,
 ) -> Result<(), String> {
-    #[cfg(test)]
-    if pearl_cfg.static_header.is_some() {
-        debug!(
-            "Pearl target hit with static Pearl header source; no Gateway submission configured"
-        );
-        return Ok(());
-    }
     let gateway = &pearl_cfg.gateway;
     let mined_header = mined.ticket.attempt.public_params.block_header;
     let gateway_job = &mined.gateway_mining_job;
@@ -1779,7 +1698,6 @@ mod tests {
     fn pearl_submission_cfg() -> PearlMergeSubmissionConfig {
         PearlMergeSubmissionConfig {
             gateway: PearlGatewayMinerRpcConfig::default_unix_socket(),
-            static_header: Some(pearl_test_header()),
             mining_config: pearl_test_config(),
             aux_template: pearl_test_aux(),
             max_pattern_len: 16,
@@ -2033,7 +1951,6 @@ mod tests {
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
         {
             let pearl_cfg = &mut cfg.puzzle.pearl_merge;
-            pearl_cfg.static_header = None;
             pearl_cfg.gateway =
                 pearl_tcp_gateway(9, Duration::from_millis(1), Duration::from_secs(1));
         }
@@ -2043,8 +1960,7 @@ mod tests {
         aux.nock_block_commitment = [0xaa; 32];
         let header_template = pearl_test_header();
         let (mined_header, aux_inclusion) =
-            build_coinbase_only_pearl_aux_inclusion(&header_template, &aux)
-                .expect("build aux-bearing header");
+            pearl_test_aux_inclusion(&aux.commitment().expect("aux commitment"));
         assert_ne!(
             header_template, mined_header,
             "fixture must model Gateway issuing a header without Nockchain aux"
@@ -2129,6 +2045,88 @@ mod tests {
             base64::engine::general_purpose::STANDARD.encode(coinbase_tx)
         };
         (header, encoded_coinbase)
+    }
+
+    struct TestPearlGateway {
+        config: PearlGatewayMinerRpcConfig,
+        stop: Arc<AtomicBool>,
+        thread: std::thread::JoinHandle<()>,
+    }
+
+    impl TestPearlGateway {
+        fn shutdown(self) {
+            self.stop.store(true, Ordering::SeqCst);
+            self.thread.join().expect("gateway fixture exited");
+        }
+    }
+
+    fn spawn_static_aux_pearl_gateway(
+        header_template: PearlIncompleteBlockHeader,
+        request_timeout: Duration,
+        refresh_interval: Duration,
+    ) -> TestPearlGateway {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind Pearl gateway fixture");
+        listener
+            .set_nonblocking(true)
+            .expect("set Pearl gateway fixture nonblocking");
+        let port = listener.local_addr().expect("gateway addr").port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = stop.clone();
+        let thread = std::thread::spawn(move || {
+            while !stop_for_thread.load(Ordering::SeqCst) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(x) => x,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(e) => panic!("accept Pearl gateway client: {e}"),
+                };
+                stream
+                    .set_nonblocking(false)
+                    .expect("set Pearl gateway stream blocking");
+                let mut request_line = String::new();
+                {
+                    let mut reader =
+                        std::io::BufReader::new(stream.try_clone().expect("clone gateway stream"));
+                    std::io::BufRead::read_line(&mut reader, &mut request_line)
+                        .expect("read gateway request");
+                }
+                let request: serde_json::Value =
+                    serde_json::from_str(&request_line).expect("parse gateway request");
+                match request["method"].as_str().expect("method string") {
+                    "getMiningInfo" => {
+                        let (header, encoded_coinbase) =
+                            gateway_aux_header_and_coinbase_from_request(&request, header_template);
+                        let encoded_header = {
+                            use base64::Engine as _;
+                            base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
+                        };
+                        let target = pearl_target_decimal_for_header(&header);
+                        let response = format!(
+                            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":{},\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
+                            encoded_header, target, encoded_coinbase
+                        );
+                        std::io::Write::write_all(&mut stream, response.as_bytes())
+                            .expect("write gateway response");
+                    }
+                    "submitPlainProof" => {
+                        let response = format!(
+                            "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":\"submitted\"}}\n",
+                            request["id"]
+                        );
+                        std::io::Write::write_all(&mut stream, response.as_bytes())
+                            .expect("write gateway submit response");
+                    }
+                    other => panic!("unexpected Gateway method: {other}"),
+                }
+            }
+        });
+        TestPearlGateway {
+            config: pearl_tcp_gateway(port, request_timeout, refresh_interval),
+            stop,
+            thread,
+        }
     }
 
     fn pearl_test_aux_inclusion(
@@ -2249,7 +2247,13 @@ mod tests {
 
     #[test]
     fn derive_pearl_merge_job_inputs_binds_aux_to_candidate_block_commitment() {
-        let cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let gateway = spawn_static_aux_pearl_gateway(
+            pearl_test_header(),
+            Duration::from_secs(2),
+            Duration::from_secs(1),
+        );
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.puzzle.pearl_merge.gateway = gateway.config.clone();
         let candidate_a =
             candidate_for_target_and_commitment(bignum_target_slab(&[u64::from(u32::MAX)]), 0xCAFE);
         let candidate_b =
@@ -2275,11 +2279,18 @@ mod tests {
             pearl_test_aux().nock_block_commitment,
             "candidate commitment must replace the static aux template placeholder"
         );
+        gateway.shutdown();
     }
 
     #[test]
     fn derive_pearl_merge_job_inputs_builds_self_verifying_aux_inclusion() {
-        let cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let gateway = spawn_static_aux_pearl_gateway(
+            pearl_test_header(),
+            Duration::from_secs(2),
+            Duration::from_secs(1),
+        );
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.puzzle.pearl_merge.gateway = gateway.config.clone();
         let candidate =
             candidate_for_target_and_commitment(bignum_target_slab(&[u64::from(u32::MAX)]), 0xD00D);
 
@@ -2296,6 +2307,7 @@ mod tests {
                 .is_err(),
             "aux inclusion must bind the candidate-derived Nockchain block commitment"
         );
+        gateway.shutdown();
     }
 
     #[test]
@@ -2357,7 +2369,6 @@ mod tests {
         });
 
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
-        cfg.puzzle.pearl_merge.static_header = None;
         cfg.puzzle.pearl_merge.gateway =
             pearl_tcp_gateway(port, Duration::from_secs(2), Duration::from_secs(1));
 
@@ -2406,7 +2417,6 @@ mod tests {
         });
 
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
-        cfg.puzzle.pearl_merge.static_header = None;
         cfg.puzzle.pearl_merge.gateway =
             pearl_tcp_gateway(port, Duration::from_secs(2), Duration::from_secs(1));
 
@@ -3055,8 +3065,14 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_loop_pearl_merge_submits_nockchain_ai_pow_after_ticket_hit() {
+        let gateway = spawn_static_aux_pearl_gateway(
+            pearl_test_header(),
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+        );
         let node = MockNode::spawn().await;
-        let cfg = test_cfg(node.url());
+        let mut cfg = test_cfg(node.url());
+        cfg.puzzle.pearl_merge.gateway = gateway.config.clone();
 
         let shutdown = CancellationToken::new();
         let shutdown_clone = shutdown.clone();
@@ -3116,13 +3132,20 @@ mod tests {
             .expect("miner task did not exit")
             .expect("miner panicked");
         assert!(matches!(r, Ok(())), "unexpected miner result: {r:?}");
+        gateway.shutdown();
         node.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_loop_rejects_stale_recursive_metadata_without_submitting_poke() {
+        let gateway = spawn_static_aux_pearl_gateway(
+            pearl_test_header(),
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+        );
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
+        cfg.puzzle.pearl_merge.gateway = gateway.config.clone();
         let pearl_cfg = &mut cfg.puzzle.pearl_merge;
         pearl_cfg.certificate_builder = Arc::new(|attempt: &PearlMergeTicketAttempt| {
             let params = pearl_test_params();
@@ -3165,13 +3188,20 @@ mod tests {
         );
 
         shutdown.cancel();
+        gateway.shutdown();
         node.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_loop_miss_does_not_build_recursive_certificate_or_submit_poke() {
+        let gateway = spawn_static_aux_pearl_gateway(
+            pearl_test_header(),
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+        );
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
+        cfg.puzzle.pearl_merge.gateway = gateway.config.clone();
         let builder_calls = Arc::new(AtomicU64::new(0));
         let builder_calls_for_cfg = builder_calls.clone();
         let pearl_cfg = &mut cfg.puzzle.pearl_merge;
@@ -3210,6 +3240,7 @@ mod tests {
             .expect("miner task did not exit")
             .expect("miner panicked");
         assert!(matches!(r, Ok(())), "unexpected miner result: {r:?}");
+        gateway.shutdown();
         node.shutdown().await;
     }
 
@@ -3285,7 +3316,6 @@ mod tests {
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
         let pearl_cfg = &mut cfg.puzzle.pearl_merge;
-        pearl_cfg.static_header = None;
         pearl_cfg.gateway = pearl_tcp_gateway(
             gateway_port,
             Duration::from_millis(200),
@@ -3399,7 +3429,6 @@ mod tests {
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
         let pearl_cfg = &mut cfg.puzzle.pearl_merge;
-        pearl_cfg.static_header = None;
         pearl_cfg.gateway = pearl_tcp_gateway(
             gateway_port,
             Duration::from_millis(200),
@@ -3552,7 +3581,6 @@ mod tests {
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
         let pearl_cfg = &mut cfg.puzzle.pearl_merge;
-        pearl_cfg.static_header = None;
         pearl_cfg.gateway = pearl_tcp_gateway(
             gateway_port,
             Duration::from_millis(200),
@@ -3677,7 +3705,6 @@ mod tests {
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
         let pearl_cfg = &mut cfg.puzzle.pearl_merge;
-        pearl_cfg.static_header = None;
         pearl_cfg.gateway = pearl_tcp_gateway(
             gateway_port,
             Duration::from_millis(200),
@@ -3800,7 +3827,6 @@ mod tests {
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
         let pearl_cfg = &mut cfg.puzzle.pearl_merge;
-        pearl_cfg.static_header = None;
         pearl_cfg.gateway = pearl_tcp_gateway(
             gateway_port,
             Duration::from_millis(200),
