@@ -350,6 +350,35 @@ mod tests {
         }
     }
 
+    fn assert_offset_space_matches_reference(
+        pattern: &PearlPeriodicPattern,
+        total_dimension: u32,
+        max_pattern_len: usize,
+    ) {
+        let space =
+            PatternOffsetSpace::new(pattern, total_dimension, max_pattern_len).expect("space");
+        let max_index = pattern
+            .to_list_bounded(max_pattern_len)
+            .expect("bounded pattern")
+            .into_iter()
+            .max()
+            .unwrap_or(0);
+        let expected: Vec<u32> = total_dimension
+            .checked_sub(max_index)
+            .map(|upper| {
+                (0..upper)
+                    .filter(|offset| pattern.offset_is_valid(*offset))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        assert_eq!(space.len(), expected.len() as u64);
+        for (ordinal, offset) in expected.iter().enumerate() {
+            assert_eq!(space.offset_at(ordinal as u64), Some(*offset));
+        }
+        assert_eq!(space.offset_at(expected.len() as u64), None);
+    }
+
     #[test]
     fn pattern_offset_space_enumerates_valid_offsets_without_pair_materialization() {
         let pattern = pearl_test_pattern(8);
@@ -360,6 +389,19 @@ mod tests {
         assert_eq!(space.offset_at(1), Some(8));
         assert_eq!(space.offset_at(15), Some(120));
         assert_eq!(space.offset_at(16), None);
+    }
+
+    #[test]
+    fn pattern_offset_space_matches_reference_scan_on_tail_boundaries() {
+        assert_offset_space_matches_reference(&pearl_test_pattern(8), 25, 16);
+        assert_offset_space_matches_reference(&pearl_test_pattern(8), 16, 16);
+        assert_offset_space_matches_reference(&pearl_test_pattern(8), 8, 16);
+
+        let noncontiguous = PearlPeriodicPattern::from_list(&[0, 1, 8, 9, 64, 65, 72, 73])
+            .expect("representable noncontiguous Pearl pattern");
+        assert_offset_space_matches_reference(&noncontiguous, 128, 16);
+        assert_offset_space_matches_reference(&noncontiguous, 80, 16);
+        assert_offset_space_matches_reference(&noncontiguous, 72, 16);
     }
 
     #[test]
