@@ -99,13 +99,6 @@ fn coinbase_aux_script(aux_commitment: &[u8; 32]) -> Vec<u8> {
     script
 }
 
-fn raw_merkle_pair(left_raw: &[u8; 32], right_raw: &[u8; 32]) -> [u8; 32] {
-    let mut pair = [0u8; 64];
-    pair[..32].copy_from_slice(left_raw);
-    pair[32..].copy_from_slice(right_raw);
-    pearl_bitcoin_double_sha256_raw(&pair)
-}
-
 fn display_root_from_raw(mut root_raw: [u8; 32]) -> [u8; 32] {
     root_raw.reverse();
     root_raw
@@ -159,15 +152,12 @@ fn pearl_aux_inclusion_verifies_tagged_coinbase_commitment_against_merkle_root()
         pearl_nockchain_aux_commitment(b"nockchain-mainnet", &[0x42; 32], 123_456, b"merge-window")
             .unwrap();
     let coinbase = coinbase_tx_with_script(&coinbase_aux_script(&aux_commitment), None);
-    let coinbase_txid_raw = pearl_bitcoin_double_sha256_raw(&coinbase);
-    let sibling_raw = [0x7au8; 32];
-    let root_raw = raw_merkle_pair(&coinbase_txid_raw, &sibling_raw);
     let mut header = header();
-    header.merkle_root = display_root_from_raw(root_raw);
+    header.merkle_root = display_root_from_raw(pearl_bitcoin_double_sha256_raw(&coinbase));
 
     let proof = PearlAuxInclusionProof {
         coinbase_tx: coinbase,
-        merkle_branch: vec![sibling_raw],
+        merkle_branch: vec![],
     };
 
     verify_pearl_aux_inclusion(&header, &aux_commitment, &proof)
@@ -218,7 +208,7 @@ fn pearl_aux_inclusion_rejects_output_only_commitment() {
 }
 
 #[test]
-fn pearl_aux_inclusion_rejects_tampered_branch_and_non_coinbase_leaf() {
+fn pearl_aux_inclusion_rejects_non_empty_branch_and_non_coinbase_leaf() {
     let aux_commitment =
         pearl_nockchain_aux_commitment(b"nockchain-mainnet", &[0x42; 32], 123_456, b"merge-window")
             .unwrap();
@@ -233,7 +223,7 @@ fn pearl_aux_inclusion_rejects_tampered_branch_and_non_coinbase_leaf() {
     };
     assert_eq!(
         verify_pearl_aux_inclusion(&header, &aux_commitment, &proof),
-        Err(PearlCompatError::PearlAuxMerkleRootMismatch)
+        Err(PearlCompatError::PearlAuxMerkleBranchTooDeep(1))
     );
 
     let mut non_coinbase = coinbase;
@@ -1690,17 +1680,14 @@ fn pearl_merge_public_statement_with_aux_inclusion_closes_header_binding() {
     };
     let aux_commitment = aux.commitment().unwrap();
     let coinbase = coinbase_tx_with_script(&coinbase_aux_script(&aux_commitment), None);
-    let coinbase_txid_raw = pearl_bitcoin_double_sha256_raw(&coinbase);
-    let sibling_raw = [0x99u8; 32];
     let mut easy_header = PearlIncompleteBlockHeader {
         nbits: 0x207f_ffff,
         ..header()
     };
-    easy_header.merkle_root =
-        display_root_from_raw(raw_merkle_pair(&coinbase_txid_raw, &sibling_raw));
+    easy_header.merkle_root = display_root_from_raw(pearl_bitcoin_double_sha256_raw(&coinbase));
     let inclusion_proof = PearlAuxInclusionProof {
         coinbase_tx: coinbase,
-        merkle_branch: vec![sibling_raw],
+        merkle_branch: vec![],
     };
 
     let (a, b) = synth_matrices(b"pearl-merge-public-statement-aux-inclusion", &params);

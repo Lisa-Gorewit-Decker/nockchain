@@ -4796,7 +4796,7 @@ mod tests {
                 &AiProofNode::Unit,
             ),
             Err(CertificateNounError::PearlMergeStatement(
-                PearlCompatError::PearlAuxMerkleRootMismatch
+                PearlCompatError::PearlAuxMerkleBranchTooDeep(1)
             ))
         ));
     }
@@ -5054,7 +5054,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            CertificateNounError::PearlMergeStatement(PearlCompatError::PearlAuxMerkleRootMismatch)
+            CertificateNounError::LimitExceeded("ai-pow nonce merkle branch")
         ));
     }
 
@@ -5071,7 +5071,7 @@ mod tests {
         let nonce = encode_pearl_merge_ai_pow_nonce(&statement, &aux_inclusion)
             .expect("max-size nonce should encode");
         assert_eq!(nonce.len(), AI_POW_NONCE_MAX_SIZE);
-        assert_eq!(AI_POW_NONCE_MAX_SIZE, 102_448);
+        assert_eq!(AI_POW_NONCE_MAX_SIZE, 101_424);
 
         let decoded =
             decode_pearl_merge_ai_pow_nonce(&nonce).expect("max-size nonce should decode");
@@ -5481,8 +5481,8 @@ mod tests {
                 &[0xffu8; 32],
                 16,
             ),
-            Err(CertificateNounError::PearlMergeStatement(
-                PearlCompatError::PearlAuxMerkleRootMismatch
+            Err(CertificateNounError::LimitExceeded(
+                "ai-pow nonce merkle branch"
             ))
         ));
     }
@@ -5673,8 +5673,8 @@ mod tests {
                     max_pattern_len: 16,
                 },
             ),
-            Err(CertificateNounError::PearlMergeStatement(
-                PearlCompatError::PearlAuxMerkleRootMismatch
+            Err(CertificateNounError::LimitExceeded(
+                "ai-pow nonce merkle branch"
             ))
         ));
 

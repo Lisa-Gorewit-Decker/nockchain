@@ -106,12 +106,14 @@ The `coinbase_tx` and `merkle_branch` prove that
 `"NOCKCHAIN-AI-POW-AUX" || expected_aux_commitment` appears in the
 txid-committed coinbase input script and that the coinbase txid is committed by
 the Pearl header transaction merkle root. Nockchain can use a coinbase-only
-Pearl block profile, so `merkle_branch_len = 0` is the normal production case.
-Nonempty branches are still accepted by Rust for format compatibility with
-ordinary Pearl transaction merkle roots. A witness-only occurrence or an output
-script occurrence is not sufficient for Nockchain acceptance.
+Pearl block profile, so the current production verifier requires
+`merkle_branch_len = 0`. The branch-length byte remains in the Rust-owned nonce
+format for forward compatibility, but any nonzero branch is rejected until a
+future milestone deliberately supports Pearl transaction merkle trees. A
+witness-only occurrence or an output script occurrence is not sufficient for
+Nockchain acceptance.
 
-The current maximum nonce size is pinned by Rust tests at 102,448 bytes
+The current maximum nonce size is pinned by Rust tests at 101,424 bytes
 (approximately 100.0 KiB):
 
 ```text
@@ -249,7 +251,7 @@ Implemented in this branch:
   loose argument list. It contains the candidate block commitment, matrix
   operands, Nockchain target, and Pearl pattern bound, all of which must be
   derived outside the miner-controlled artifact.
-- Size-budget tests pin the maximum `AIP1` nonce envelope at 102,448 bytes,
+- Size-budget tests pin the maximum `AIP1` nonce envelope at 101,424 bytes,
   reject nonce bytes above that cap, and assert a worst-case nonce plus small
   structured certificate jams below 110 KiB.
 - The opt-in real recursive certificate harness currently measures a
@@ -279,9 +281,9 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
    params, and verifier context flow into Rust when that work is explicitly
    scheduled.
 3. Decide the production chain-id and extra-domain-data policy for `NPA1`.
-4. Decide whether Nockchain production will require coinbase-only Pearl-format
-   block templates (`merkle_branch_len = 0`) or continue accepting bounded
-   nonempty branches.
+4. Done for this milestone: Nockchain production requires coinbase-only
+   Pearl-format block templates (`merkle_branch_len = 0`). Revisit only if a
+   future milestone deliberately supports Pearl transaction merkle trees.
 5. Re-run and tighten real recursive certificate size-budget caps after the
    final production proof shape is fixed.
 7. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,

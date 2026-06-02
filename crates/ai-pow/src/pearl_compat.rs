@@ -49,7 +49,9 @@ pub const PEARL_NOCKCHAIN_AUX_MAX_SIZE: usize =
     4 + 1 + PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX + 32 + 8 + 2 + PEARL_NOCKCHAIN_AUX_EXTRA_MAX;
 pub const PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG: &[u8] = b"NOCKCHAIN-AI-POW-AUX";
 pub const PEARL_AUX_INCLUSION_MAX_COINBASE_TX_BYTES: usize = 100_000;
-pub const PEARL_AUX_INCLUSION_MAX_MERKLE_BRANCH: usize = 32;
+/// Current production merge-mining profile uses Pearl blocks with only the
+/// coinbase transaction, so the aux inclusion proof must have no merkle branch.
+pub const PEARL_AUX_INCLUSION_MAX_MERKLE_BRANCH: usize = 0;
 pub const PEARL_MERGE_PUBLIC_STATEMENT_MAGIC: [u8; 4] = *b"PMP1";
 pub const PEARL_MERGE_PUBLIC_STATEMENT_FIXED_SIZE: usize =
     4 + PEARL_INCOMPLETE_BLOCK_HEADER_SIZE + PEARL_PUBLIC_PROOF_PARAMS_SIZE + 32 + 2;
@@ -1084,13 +1086,14 @@ pub struct PearlAuxInclusionProof {
 }
 
 /// Verify that `aux_commitment` is present in the txid-committed coinbase script
-/// and that the coinbase txid is included in the Pearl header merkle root.
+/// and that the coinbase txid is the Pearl header merkle root.
 ///
 /// This checks the Pearl block commitment side of merge mining without
 /// requiring Nockchain to parse or verify Pearl's ZKP, or to construct Pearl
-/// transaction trees itself. For the production coinbase-only Pearl profile,
-/// the merkle branch is empty and the header root is just the coinbase txid in
-/// header byte order. The tagged payload is:
+/// transaction trees itself. The current production profile deliberately
+/// supports only coinbase-only Pearl block templates, so the merkle branch must
+/// be empty and the header root is just the coinbase txid in header byte order.
+/// The tagged payload is:
 ///
 /// ```text
 /// "NOCKCHAIN-AI-POW-AUX" || aux_commitment
