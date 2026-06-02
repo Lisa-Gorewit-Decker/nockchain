@@ -9,8 +9,8 @@
 //! `AiPowMinerWire` submission wire) live here.
 //!
 //! ## Lifecycle
-//! 1. Build the [`MinerConfig`] with the AI-puzzle parameters
-//!    (puzzle id, matmul shape, matrices) baked in.
+//! 1. Build the [`MinerConfig`] with AI-puzzle parameters, matrices, and the
+//!    Pearl header source.
 //! 2. (re)connect to the node with backoff.
 //! 3. `set_mining_key` → `watch_candidates` → `enable_mining(true)`
 //!    (subscribe before enable to avoid the candidate-emit race).
@@ -35,14 +35,18 @@
 //! `%ai-pow` command; it does not submit anything to Pearl. The kernel remains
 //! fail-closed until recursive certificate verification is wired.
 
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::Duration;
 
 use ai_pow::params::MatmulParams;
 use ai_pow::pearl_compat::{
     pearl_bitcoin_double_sha256_raw, validate_pearl_merge_config_for_recursive_prover,
-    PearlAuxInclusionProof, PearlIncompleteBlockHeader, PearlMergeTicketAttempt, PearlMiningConfig,
-    PearlNockchainAux, PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG,
+    PearlAuxInclusionProof, PearlCompatError, PearlIncompleteBlockHeader, PearlMergeTicketAttempt,
+    PearlMiningConfig, PearlNockchainAux, PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG,
 };
 use ai_pow::zk_bridge::{AiPowRecursiveCertificateRun, ZkPublicCommitments};
 use ai_pow_zk::{CompositePublicInputs, ZkParams};
@@ -54,6 +58,8 @@ use nockchain_mining_common::{
 };
 use nockvm::noun::{NounAllocator, D, T};
 use nockvm_macros::tas;
+use serde::Deserialize;
+use serde_json::json;
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -120,12 +126,53 @@ impl PearlMergeCertificateProof {
 /// shared attempt transcript and aux commitment.
 #[derive(Clone)]
 pub struct PearlMergeSubmissionConfig {
-    pub header_template: PearlIncompleteBlockHeader,
+    pub header_source: PearlMergeHeaderSource,
     pub mining_config: PearlMiningConfig,
     pub aux_template: PearlNockchainAux,
     pub max_pattern_len: usize,
     pub mine_opts: PearlMergeMineOptions,
     pub certificate_builder: Arc<AiPowPearlMergeCertificateBuilder>,
+}
+
+/// Source for Pearl work headers used in the shared ticket transcript.
+///
+/// The production-oriented default is Pearl Gateway's miner RPC `getMiningInfo`
+/// endpoint. The static variant is retained for tests and explicit dev/manual
+/// operation; it is not part of the Hoon `%ai-pow` artifact.
+#[derive(Clone, Debug)]
+pub enum PearlMergeHeaderSource {
+    Static(PearlIncompleteBlockHeader),
+    Gateway(PearlGatewayMinerRpcConfig),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PearlGatewayTransport {
+    UnixSocket { path: String },
+    Tcp { host: String, port: u16 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PearlGatewayMinerRpcConfig {
+    pub transport: PearlGatewayTransport,
+}
+
+impl PearlGatewayMinerRpcConfig {
+    pub fn default_unix_socket() -> Self {
+        Self {
+            transport: PearlGatewayTransport::UnixSocket {
+                path: "/tmp/pearlgw.sock".to_string(),
+            },
+        }
+    }
+
+    pub fn default_tcp() -> Self {
+        Self {
+            transport: PearlGatewayTransport::Tcp {
+                host: "localhost".to_string(),
+                port: 8337,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -223,7 +270,7 @@ pub struct MinerConfig {
     pub mining_configs: Vec<MiningKeyConfig>,
     /// v1 (pubkey-hash) reward configs.
     pub mining_pkh_configs: Vec<MiningPkhConfig>,
-    /// AI puzzle local-state inputs (matrices, params, puzzle id).
+    /// AI puzzle local-state inputs (matrices, params, Pearl work source).
     pub puzzle: AiPuzzleInputs,
     pub reconnect_backoff_initial: Duration,
     pub reconnect_backoff_max: Duration,
@@ -603,15 +650,170 @@ fn derive_pearl_merge_job_inputs(
         .ok_or_else(|| "missing Pearl merge submission config".to_string())?;
     let mut aux = pearl.aux_template.clone();
     aux.nock_block_commitment = nck_commitment;
-    let (header, aux_inclusion) =
-        build_coinbase_only_pearl_aux_inclusion(&pearl.header_template, &aux)
-            .map_err(|e| format!("build Pearl aux inclusion: {e}"))?;
+    let header_template = pearl
+        .header_source
+        .resolve_header()
+        .map_err(|e| format!("resolve Pearl work header: {e}"))?;
+    let (header, aux_inclusion) = build_coinbase_only_pearl_aux_inclusion(&header_template, &aux)
+        .map_err(|e| format!("build Pearl aux inclusion: {e}"))?;
     Ok(PearlMergeCandidateJob {
         header,
         aux_inclusion,
         target,
         aux,
     })
+}
+
+impl PearlMergeHeaderSource {
+    fn resolve_header(&self) -> Result<PearlIncompleteBlockHeader, PearlGatewayError> {
+        match self {
+            Self::Static(header) => Ok(*header),
+            Self::Gateway(config) => fetch_pearl_gateway_header(config),
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+enum PearlGatewayError {
+    #[error("I/O: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("JSON: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("base64: {0}")]
+    Base64(#[from] base64::DecodeError),
+    #[error("Pearl gateway returned error: {0}")]
+    Rpc(String),
+    #[error("Pearl gateway response id mismatch: expected {expected}, got {actual}")]
+    ResponseIdMismatch { expected: u64, actual: String },
+    #[error("Pearl gateway mining job target is outside uint256")]
+    TargetOverflow,
+    #[error("Pearl gateway header: {0}")]
+    Header(#[from] PearlCompatError),
+    #[cfg(not(unix))]
+    #[error("Unix socket Pearl gateway transport is not supported on this platform")]
+    UnixSocketUnsupported,
+}
+
+#[derive(Debug, Deserialize)]
+struct PearlGatewayRpcResponse {
+    id: serde_json::Value,
+    result: Option<PearlGatewayMiningJob>,
+    error: Option<PearlGatewayRpcError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PearlGatewayRpcError {
+    code: i64,
+    message: String,
+    #[serde(default)]
+    data: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PearlGatewayMiningJob {
+    incomplete_header_bytes: String,
+    target: serde_json::Value,
+}
+
+fn fetch_pearl_gateway_header(
+    config: &PearlGatewayMinerRpcConfig,
+) -> Result<PearlIncompleteBlockHeader, PearlGatewayError> {
+    let request_id = 1u64;
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "getMiningInfo",
+        "params": {},
+        "id": request_id,
+    })
+    .to_string();
+    let response_line = match &config.transport {
+        PearlGatewayTransport::Tcp { host, port } => {
+            let mut stream = TcpStream::connect((host.as_str(), *port))?;
+            stream.write_all(request.as_bytes())?;
+            stream.write_all(b"\n")?;
+            stream.flush()?;
+            let mut response = String::new();
+            let mut reader = BufReader::new(stream);
+            reader.read_line(&mut response)?;
+            response
+        }
+        PearlGatewayTransport::UnixSocket { path } => {
+            #[cfg(unix)]
+            {
+                let mut stream = UnixStream::connect(path)?;
+                stream.write_all(request.as_bytes())?;
+                stream.write_all(b"\n")?;
+                stream.flush()?;
+                let mut response = String::new();
+                let mut reader = BufReader::new(stream);
+                reader.read_line(&mut response)?;
+                response
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = path;
+                return Err(PearlGatewayError::UnixSocketUnsupported);
+            }
+        }
+    };
+
+    let response: PearlGatewayRpcResponse = serde_json::from_str(&response_line)?;
+    if response.id != serde_json::Value::from(request_id) {
+        return Err(PearlGatewayError::ResponseIdMismatch {
+            expected: request_id,
+            actual: response.id.to_string(),
+        });
+    }
+    if let Some(error) = response.error {
+        let mut msg = format!("{}: {}", error.code, error.message);
+        if let Some(data) = error.data {
+            msg.push_str(": ");
+            msg.push_str(&data);
+        }
+        return Err(PearlGatewayError::Rpc(msg));
+    }
+    let job = response
+        .result
+        .ok_or_else(|| PearlGatewayError::Rpc("missing result".to_string()))?;
+    validate_pearl_gateway_target_uint256(&job.target)?;
+
+    let header_bytes = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.decode(job.incomplete_header_bytes)?
+    };
+    Ok(PearlIncompleteBlockHeader::from_bytes(&header_bytes)?)
+}
+
+fn validate_pearl_gateway_target_uint256(
+    target: &serde_json::Value,
+) -> Result<(), PearlGatewayError> {
+    match target {
+        serde_json::Value::Number(number) => {
+            let digits = number.to_string();
+            validate_decimal_uint256(&digits)
+        }
+        serde_json::Value::String(digits) => validate_decimal_uint256(digits),
+        _ => Err(PearlGatewayError::TargetOverflow),
+    }
+}
+
+fn validate_decimal_uint256(digits: &str) -> Result<(), PearlGatewayError> {
+    let trimmed = digits.trim();
+    if trimmed.is_empty() || !trimmed.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(PearlGatewayError::TargetOverflow);
+    }
+    const MAX_UINT256_DECIMAL: &str =
+        "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+    let normalized = trimmed.trim_start_matches('0');
+    if normalized.is_empty() {
+        return Ok(());
+    }
+    if normalized.len() > MAX_UINT256_DECIMAL.len()
+        || (normalized.len() == MAX_UINT256_DECIMAL.len() && normalized > MAX_UINT256_DECIMAL)
+    {
+        return Err(PearlGatewayError::TargetOverflow);
+    }
+    Ok(())
 }
 
 fn build_coinbase_only_pearl_aux_inclusion(
@@ -1111,7 +1313,7 @@ mod tests {
 
     fn pearl_submission_cfg() -> PearlMergeSubmissionConfig {
         PearlMergeSubmissionConfig {
-            header_template: pearl_test_header(),
+            header_source: PearlMergeHeaderSource::Static(pearl_test_header()),
             mining_config: pearl_test_config(),
             aux_template: pearl_test_aux(),
             max_pattern_len: 16,
@@ -1135,6 +1337,63 @@ mod tests {
                 })
             }),
         }
+    }
+
+    #[test]
+    fn pearl_gateway_header_source_fetches_tcp_mining_info() {
+        let header = pearl_test_header();
+        let header_bytes = header.to_bytes();
+        let encoded_header = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(header_bytes)
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind gateway fixture");
+        let port = listener.local_addr().expect("gateway fixture addr").port();
+        let gateway = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept gateway client");
+            let mut request_line = String::new();
+            {
+                let mut reader =
+                    std::io::BufReader::new(stream.try_clone().expect("clone gateway stream"));
+                std::io::BufRead::read_line(&mut reader, &mut request_line)
+                    .expect("read gateway request");
+            }
+            let request: serde_json::Value =
+                serde_json::from_str(&request_line).expect("parse gateway request");
+            assert_eq!(request["method"], "getMiningInfo");
+            let response = format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":115792089237316195423570985008687907853269984665640564039457584007913129639935}}}}\n",
+                encoded_header
+            );
+            std::io::Write::write_all(&mut stream, response.as_bytes())
+                .expect("write gateway response");
+        });
+
+        let source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+            transport: PearlGatewayTransport::Tcp {
+                host: "127.0.0.1".to_string(),
+                port,
+            },
+        });
+        let fetched = source
+            .resolve_header()
+            .expect("fetch Pearl gateway mining header");
+        gateway.join().expect("gateway fixture exited");
+
+        assert_eq!(fetched, header);
+    }
+
+    #[test]
+    fn pearl_gateway_target_rejects_uint257_decimal_number() {
+        let target: serde_json::Value = serde_json::from_str(
+            "115792089237316195423570985008687907853269984665640564039457584007913129639936",
+        )
+        .expect("parse uint257 target");
+
+        assert!(matches!(
+            validate_pearl_gateway_target_uint256(&target),
+            Err(PearlGatewayError::TargetOverflow)
+        ));
     }
 
     fn pearl_test_coinbase_tx(aux_commitment: &[u8; 32]) -> Vec<u8> {

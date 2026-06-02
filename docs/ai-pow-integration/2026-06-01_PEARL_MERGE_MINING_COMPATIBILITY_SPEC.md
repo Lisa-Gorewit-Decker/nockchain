@@ -102,6 +102,23 @@ NPA1 =
     extra_domain_data[extra_domain_data_len]
 ```
 
+Rust miner default policy for this milestone:
+
+- `chain_id` defaults to `nockchain` and may be overridden with
+  `--pearl-nockchain-chain-id`. The final protocol network/domain string can be
+  changed centrally in the Rust miner default without changing Hoon types or the
+  `%ai-pow` noun shape.
+- `target_epoch_or_height` defaults to zero and may be overridden with
+  `--pearl-nockchain-target-epoch-or-height`.
+- `extra_domain_data` remains optional bounded bytes for deployments that need
+  additional replay protection beyond chain id, candidate commitment, and target
+  epoch/height.
+- Pearl work headers default to Pearl Gateway miner RPC `getMiningInfo` over
+  Unix socket `/tmp/pearlgw.sock`, matching Pearl Gateway's default miner-RPC
+  configuration. TCP gateway mode is available with explicit host/port flags.
+  Manual Pearl header flags are retained only as an explicit development
+  fallback via `--pearl-work-source manual`.
+
 The `coinbase_tx` and `merkle_branch` prove that
 `"NOCKCHAIN-AI-POW-AUX" || expected_aux_commitment` appears in the
 txid-committed coinbase input script and that the coinbase txid is committed by
@@ -207,10 +224,12 @@ Implemented in this branch:
   `trace_height`, commitments, and bound public inputs against the
   ticket-derived metadata, so a stale or wrong-ticket recursive run is rejected
   before it is submitted to the node.
-- `ai-pow-mine` no longer has a submission-mode switch. It requires the
-  operator to provide the Pearl header fields that define the shared transcript
-  (`--pearl-prev-block`, `--pearl-timestamp`, and `--pearl-nbits`) and derives
-  the Rust-only Pearl mining config from the canonical recursive AI-PoW params.
+- `ai-pow-mine` no longer has a submission-mode switch. It always builds
+  canonical Pearl-format-compatible Nockchain `%ai-pow` submissions. By
+  default it fetches the Pearl incomplete block header from Pearl Gateway
+  miner RPC `getMiningInfo`; `--pearl-work-source manual` keeps explicit
+  header flags for tests and local development. The miner derives the
+  Rust-only Pearl mining config from the canonical recursive AI-PoW params.
   The legacy NCMN miner and prover-only smoke CLI were removed so downstream
   callers cannot accidentally treat them as production submission APIs.
 - Miner preflight rejects configurations without Pearl submission config before
@@ -280,11 +299,16 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
    bytes, structured certificate, trusted candidate block commitment, target,
    params, and verifier context flow into Rust when that work is explicitly
    scheduled.
-3. Decide the production chain-id and extra-domain-data policy for `NPA1`.
+3. Done for this milestone: `NPA1.chain_id` has an overrideable Rust miner
+   default, `target_epoch_or_height` defaults to zero, and `extra_domain_data`
+   is optional bounded bytes for deployment-specific replay protection.
 4. Done for this milestone: Nockchain production requires coinbase-only
    Pearl-format block templates (`merkle_branch_len = 0`). Revisit only if a
    future milestone deliberately supports Pearl transaction merkle trees.
-5. Re-run and tighten real recursive certificate size-budget caps after the
+5. Done for this milestone: `ai-pow-mine` defaults to Pearl Gateway miner RPC
+   as its Pearl work-header source, with manual headers retained only as an
+   explicit development fallback.
+6. Re-run and tighten real recursive certificate size-budget caps after the
    final production proof shape is fixed.
 7. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,
    candidate-block replay, aux inclusion tamper, target miss, metadata drift,

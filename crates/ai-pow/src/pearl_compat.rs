@@ -158,7 +158,7 @@ pub enum PearlCompatError {
     PearlAuxCoinbaseTxEmpty,
     #[error("Pearl aux inclusion coinbase transaction is too large: max 100000 bytes, got {0}")]
     PearlAuxCoinbaseTxTooLarge(usize),
-    #[error("Pearl aux inclusion merkle branch is too deep: max 32 siblings, got {0}")]
+    #[error("Pearl aux inclusion merkle branch is too deep: max 0 siblings, got {0}")]
     PearlAuxMerkleBranchTooDeep(usize),
     #[error("Pearl aux inclusion coinbase transaction has malformed Bitcoin encoding")]
     PearlAuxMalformedCoinbaseTx,
@@ -1070,15 +1070,13 @@ impl PearlNockchainAux {
 /// Pearl-side evidence that the Nockchain aux digest was committed before the
 /// shared work attempt was mined.
 ///
-/// The proof is intentionally coinbase-rooted: Pearl consensus fixes the
-/// coinbase transaction at merkle index 0, so the branch is the left edge of
-/// the Bitcoin/Pearl transaction merkle tree. Nockchain production can use the
-/// coinbase-only Pearl block profile, where this branch is empty; nonempty
-/// branches are accepted only to keep the artifact format compatible with
-/// ordinary Pearl block merkle roots. Branch hashes are raw double-SHA256 byte
-/// order, matching Pearl's `chainhash.Hash` merkle calculation. The header
-/// stores the resulting root in display byte order, matching
-/// `IncompleteBlockHeader::merkle_root`.
+/// The proof is intentionally coinbase-rooted. The current Nockchain production
+/// profile uses coinbase-only Pearl block templates, so `merkle_branch` must be
+/// empty and any nonempty branch is rejected. The field remains in the
+/// Rust-owned nonce format so a future milestone can deliberately add ordinary
+/// Pearl transaction merkle tree support without changing the outer `%ai-pow`
+/// noun shape. The header stores the resulting root in display byte order,
+/// matching `IncompleteBlockHeader::merkle_root`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PearlAuxInclusionProof {
     pub coinbase_tx: Vec<u8>,
