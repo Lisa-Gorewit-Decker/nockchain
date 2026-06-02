@@ -142,10 +142,13 @@ Rust miner default policy for this milestone:
   Pearl header. After a solution is turned into a Nockchain poke attempt, the
   cached candidate is cleared and Gateway refresh does not redispatch that
   solved candidate; the miner waits for the node to emit a new candidate. A
-  Pearl-only Gateway hit does not clear the Nockchain candidate: identical
-  refreshed Pearl work is skipped, and a later changed Pearl header restarts
-  ticket search for the same still-unsolved Nockchain candidate. Manual/static
-  header mode does not refresh.
+  Pearl-only Gateway hit with a successful synchronous `submitPlainProof`
+  response does not clear the Nockchain candidate: identical refreshed Pearl
+  work is skipped, and a later changed Pearl header restarts ticket search for
+  the same still-unsolved Nockchain candidate. If the synchronous
+  `submitPlainProof` RPC/transport fails, the miner keeps the Nockchain
+  candidate but clears the solved Pearl-header marker so the next Gateway
+  refresh can retry the same header. Manual/static header mode does not refresh.
 - Pearl Gateway's work cache treats the full incomplete header bytes as the
   base-template freshness key. Same-parent updates that change timestamp,
   target bits, transaction merkle root, or version replace the current template
@@ -319,7 +322,8 @@ Implemented in this branch:
   the cached candidate so later Pearl Gateway template changes cannot produce
   duplicate submissions for the same Nockchain candidate. Pearl-only Gateway
   hits retain the cached Nockchain candidate, remember the solved Pearl header,
-  and resume only after Gateway advertises changed Pearl work.
+  and resume only after Gateway advertises changed Pearl work. Synchronous
+  Gateway submit RPC/transport failures are retried on the next refresh.
   The legacy NCMN miner and prover-only smoke CLI were removed so downstream
   callers cannot accidentally treat them as production submission APIs.
 - Miner preflight rejects configurations without Pearl submission config before
