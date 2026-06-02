@@ -46,10 +46,10 @@ use std::time::Duration;
 
 use ai_pow::params::MatmulParams;
 use ai_pow::pearl_compat::{
-    pearl_bitcoin_double_sha256_raw, pearl_nbits_to_target_le,
-    validate_pearl_merge_config_for_recursive_prover, verify_pearl_aux_inclusion,
-    PearlAuxInclusionProof, PearlCompatError, PearlIncompleteBlockHeader, PearlMergeTicketAttempt,
-    PearlMiningConfig, PearlNockchainAux, PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG,
+    pearl_nbits_to_target_le, validate_pearl_merge_config_for_recursive_prover,
+    verify_pearl_aux_inclusion, PearlAuxInclusionProof, PearlCompatError,
+    PearlIncompleteBlockHeader, PearlMergeTicketAttempt, PearlMiningConfig, PearlNockchainAux,
+    PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG,
 };
 use ai_pow::zk_bridge::{AiPowRecursiveCertificateRun, ZkPublicCommitments};
 use ai_pow_zk::{CompositePublicInputs, ZkParams};
@@ -192,10 +192,12 @@ impl PearlMergeSubmissionConfig {
 /// Source for Pearl work headers used in the shared ticket transcript.
 ///
 /// The production-oriented default is Pearl Gateway's miner RPC `getMiningInfo`
-/// endpoint. The static variant is retained for tests and explicit dev/manual
-/// operation; it is not part of the Hoon `%ai-pow` artifact.
+/// endpoint. Test builds also expose a static header source for local run-loop
+/// harnesses; it is not part of the production API or the Hoon `%ai-pow`
+/// artifact.
 #[derive(Clone, Debug)]
 pub enum PearlMergeHeaderSource {
+    #[cfg(test)]
     Static(PearlIncompleteBlockHeader),
     Gateway(PearlGatewayMinerRpcConfig),
 }
@@ -644,6 +646,7 @@ fn pearl_work_refresh_interval(cfg: &MinerConfig) -> Option<Duration> {
     let pearl = &cfg.puzzle.pearl_merge;
     match &pearl.header_source {
         PearlMergeHeaderSource::Gateway(gateway) => Some(gateway.refresh_interval),
+        #[cfg(test)]
         PearlMergeHeaderSource::Static(_) => None,
     }
 }
@@ -809,6 +812,7 @@ fn derive_pearl_merge_job_inputs_from_nockchain(
         .commitment()
         .map_err(|e| format!("build Nockchain aux commitment: {e}"))?;
     let (header, gateway_mining_job, aux_inclusion) = match &pearl.header_source {
+        #[cfg(test)]
         PearlMergeHeaderSource::Static(header_template) => {
             let (header, aux_inclusion) =
                 build_coinbase_only_pearl_aux_inclusion(header_template, &aux)
@@ -1188,13 +1192,14 @@ fn parse_decimal_uint256_le(digits: &str) -> Result<[u8; 32], PearlGatewayError>
     Ok(out)
 }
 
+#[cfg(test)]
 fn build_coinbase_only_pearl_aux_inclusion(
     header_template: &PearlIncompleteBlockHeader,
     aux: &PearlNockchainAux,
 ) -> Result<(PearlIncompleteBlockHeader, PearlAuxInclusionProof), CertificateNounError> {
     let aux_commitment = aux.commitment()?;
     let coinbase_tx = build_coinbase_only_pearl_aux_tx(&aux_commitment);
-    let mut merkle_root = pearl_bitcoin_double_sha256_raw(&coinbase_tx);
+    let mut merkle_root = ai_pow::pearl_compat::pearl_bitcoin_double_sha256_raw(&coinbase_tx);
     merkle_root.reverse();
     let mut header = header_template.clone();
     header.merkle_root = merkle_root;
@@ -1207,6 +1212,7 @@ fn build_coinbase_only_pearl_aux_inclusion(
     ))
 }
 
+#[cfg(test)]
 fn build_coinbase_only_pearl_aux_tx(aux_commitment: &[u8; 32]) -> Vec<u8> {
     let mut script = Vec::from([0x01, 0x00]);
     script.extend_from_slice(PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG);
@@ -1331,12 +1337,18 @@ fn submit_pearl_solution_if_gateway(
     pearl_cfg: &PearlMergeSubmissionConfig,
     mined: &PearlMergeMinedSubmission,
 ) -> Result<(), String> {
-    let PearlMergeHeaderSource::Gateway(gateway) = &pearl_cfg.header_source else {
-        debug!(
-            "Pearl target hit with static Pearl header source; no Gateway submission configured"
-        );
-        return Ok(());
+    #[cfg(test)]
+    let gateway = match &pearl_cfg.header_source {
+        PearlMergeHeaderSource::Gateway(gateway) => gateway,
+        PearlMergeHeaderSource::Static(_) => {
+            debug!(
+                "Pearl target hit with static Pearl header source; no Gateway submission configured"
+            );
+            return Ok(());
+        }
     };
+    #[cfg(not(test))]
+    let PearlMergeHeaderSource::Gateway(gateway) = &pearl_cfg.header_source;
     let mined_header = mined.ticket.attempt.public_params.block_header;
     let Some(gateway_job) = mined.gateway_mining_job.as_ref() else {
         return Err(
@@ -2085,7 +2097,7 @@ mod tests {
             .try_into()
             .expect("aux commitment length");
         let coinbase_tx = pearl_test_coinbase_tx(&aux_commitment);
-        let mut merkle_root = pearl_bitcoin_double_sha256_raw(&coinbase_tx);
+        let mut merkle_root = ai_pow::pearl_compat::pearl_bitcoin_double_sha256_raw(&coinbase_tx);
         merkle_root.reverse();
         header.merkle_root = merkle_root;
         let encoded_coinbase = {
@@ -2160,10 +2172,6 @@ mod tests {
         );
         slab.set_root(commit);
         slab
-    }
-
-    fn nock_block_commitment_for_seed(commitment_seed: u64) -> [u8; 32] {
-        *blake3::hash(&synth_block_commitment_slab(commitment_seed).jam()).as_bytes()
     }
 
     fn candidate_for_target_and_commitment(
@@ -2274,7 +2282,7 @@ mod tests {
         aux.nock_block_commitment = expected_aux_commitment_bridge(&candidate);
         let aux_commitment = aux.commitment().expect("aux commitment");
         let coinbase_tx = pearl_test_coinbase_tx(&aux_commitment);
-        let mut merkle_root = pearl_bitcoin_double_sha256_raw(&coinbase_tx);
+        let mut merkle_root = ai_pow::pearl_compat::pearl_bitcoin_double_sha256_raw(&coinbase_tx);
         merkle_root.reverse();
         let mut gateway_header = pearl_test_header();
         gateway_header.merkle_root = merkle_root;

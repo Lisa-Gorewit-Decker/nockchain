@@ -19,8 +19,8 @@
 //! production-envelope smoke parameters for local Layer-0 development. The
 //! Pearl work source defaults to Pearl Gateway miner RPC over the Unix socket
 //! `/tmp/pearlgw.sock`; use `--pearl-gateway tcp://host:port` for a TCP
-//! gateway or `--pearl-gateway /path/to.sock` for a different Unix socket.
-//! Manual Pearl header flags remain hidden dev/test controls. That profile
+//! gateway or `--pearl-gateway /path/to.sock` for a different Unix socket. The
+//! production profile
 //! derives canonical seeds from the nonce-keyed chunk commitments bound by the
 //! recursive proof as `HASH_A` / `HASH_B`; larger production shapes remain
 //! closed until full-matrix aggregation is implemented.
@@ -41,9 +41,8 @@ use std::time::Duration;
 
 use ai_pow::params::MatmulParams;
 use ai_pow::pearl_compat::{
-    validate_pearl_merge_config_for_recursive_prover, PearlIncompleteBlockHeader,
-    PearlMiningConfig, PearlNockchainAux, PearlPeriodicPattern, PEARL_MINING_CONFIG_RESERVED_SIZE,
-    PEARL_MMA_INT7XINT7_TO_INT32,
+    validate_pearl_merge_config_for_recursive_prover, PearlMiningConfig, PearlNockchainAux,
+    PearlPeriodicPattern, PEARL_MINING_CONFIG_RESERVED_SIZE, PEARL_MMA_INT7XINT7_TO_INT32,
 };
 use ai_pow_miner::pearl_mining::PearlMergeMineOptions;
 use ai_pow_miner::run::{
@@ -62,12 +61,6 @@ const DEFAULT_PEARL_GATEWAY_ENDPOINT: &str = "unix:/tmp/pearlgw.sock";
 const DEFAULT_PEARL_GATEWAY_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_PEARL_GATEWAY_REFRESH_MS: u64 = 1_000;
 const DEFAULT_SYNTH_SEED: &str = "ai-pow-prod-v1";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-enum PearlWorkSourceArg {
-    Gateway,
-    Manual,
-}
 
 /// `ai-pow-mine` — standalone AI-PoW block miner.
 #[derive(Parser, Debug)]
@@ -120,11 +113,6 @@ struct Args {
     #[arg(long, hide = true)]
     synth_seed: Option<String>,
 
-    // ── Pearl-compatible Rust-only transcript config ───────────────
-    /// Pearl work source. Gateway uses PearlGateway getMiningInfo; manual uses header flags.
-    #[arg(long, value_enum, default_value_t = PearlWorkSourceArg::Gateway, hide = true)]
-    pearl_work_source: PearlWorkSourceArg,
-
     /// Pearl Gateway miner RPC endpoint. Accepts `unix:/path/to.sock`, `/path/to.sock`,
     /// `tcp:host:port`, `tcp://host:port`, or `host:port`.
     #[arg(long, value_name = "ENDPOINT", default_value = DEFAULT_PEARL_GATEWAY_ENDPOINT)]
@@ -137,22 +125,6 @@ struct Args {
     /// Pearl Gateway work refresh interval in milliseconds.
     #[arg(long, default_value_t = DEFAULT_PEARL_GATEWAY_REFRESH_MS, hide = true)]
     pearl_gateway_refresh_ms: u64,
-
-    /// Manual Pearl header version.
-    #[arg(long, default_value_t = 1, hide = true)]
-    pearl_version: u32,
-
-    /// Manual Pearl previous block hash, display-order 32-byte hex.
-    #[arg(long, hide = true)]
-    pearl_prev_block: Option<String>,
-
-    /// Manual Pearl header timestamp.
-    #[arg(long, hide = true)]
-    pearl_timestamp: Option<u32>,
-
-    /// Manual Pearl compact target bits as decimal or 0x-prefixed u32.
-    #[arg(long, hide = true)]
-    pearl_nbits: Option<String>,
 
     /// Rust-only Nockchain chain id committed into the Pearl aux payload.
     #[arg(long, default_value = DEFAULT_PEARL_NOCKCHAIN_CHAIN_ID, hide = true)]
@@ -376,48 +348,19 @@ fn build_pearl_merge_submission_config(
     )
     .map_err(|e| anyhow!("Pearl mining config is not supported for recursive proofs: {e}"))?;
 
-    let header_source = match args.pearl_work_source {
-        PearlWorkSourceArg::Gateway => {
-            let request_timeout = Duration::from_millis(args.pearl_gateway_timeout_ms);
-            if request_timeout.is_zero() {
-                bail!("--pearl-gateway-timeout-ms must be greater than zero");
-            }
-            let refresh_interval = Duration::from_millis(args.pearl_gateway_refresh_ms);
-            if refresh_interval.is_zero() {
-                bail!("--pearl-gateway-refresh-ms must be greater than zero");
-            }
-            let transport = resolve_pearl_gateway_transport(args)?;
-            PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
-                transport,
-                request_timeout,
-                refresh_interval,
-            })
-        }
-        PearlWorkSourceArg::Manual => {
-            let prev_block = parse_required_hex_32(
-                args.pearl_prev_block.as_deref(),
-                "--pearl-prev-block",
-                "required for manual Pearl-compatible AI-PoW submission",
-            )?;
-            let timestamp = args.pearl_timestamp.ok_or_else(|| {
-                anyhow!(
-                    "--pearl-timestamp is required for manual Pearl-compatible AI-PoW submission"
-                )
-            })?;
-            let nbits = parse_required_u32(
-                args.pearl_nbits.as_deref(),
-                "--pearl-nbits",
-                "required for manual Pearl-compatible AI-PoW submission",
-            )?;
-            PearlMergeHeaderSource::Static(PearlIncompleteBlockHeader {
-                version: args.pearl_version,
-                prev_block,
-                merkle_root: [0u8; 32],
-                timestamp,
-                nbits,
-            })
-        }
+    let request_timeout = Duration::from_millis(args.pearl_gateway_timeout_ms);
+    if request_timeout.is_zero() {
+        bail!("--pearl-gateway-timeout-ms must be greater than zero");
     };
+    let refresh_interval = Duration::from_millis(args.pearl_gateway_refresh_ms);
+    if refresh_interval.is_zero() {
+        bail!("--pearl-gateway-refresh-ms must be greater than zero");
+    }
+    let header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+        transport: resolve_pearl_gateway_transport(args)?,
+        request_timeout,
+        refresh_interval,
+    });
     let aux_template = PearlNockchainAux {
         nockchain_chain_id: args.pearl_nockchain_chain_id.as_bytes().to_vec(),
         nock_block_commitment: [0u8; 32],
@@ -502,45 +445,6 @@ fn contiguous_pearl_pattern(tile: u32) -> Result<PearlPeriodicPattern> {
         .map_err(|e| anyhow!("contiguous Pearl pattern for tile {tile} is invalid: {e}"))
 }
 
-fn parse_hex_32(s: &str, label: &str) -> Result<[u8; 32]> {
-    let trimmed = s.strip_prefix("0x").unwrap_or(s);
-    let bytes = hex::decode(trimmed).with_context(|| format!("{label}: invalid hex"))?;
-    if bytes.len() != 32 {
-        bail!("{label}: expected 32 bytes, got {}", bytes.len());
-    }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&bytes);
-    Ok(out)
-}
-
-fn parse_required_hex_32(value: Option<&str>, label: &str, missing: &str) -> Result<[u8; 32]> {
-    let Some(value) = value else {
-        bail!("{label}: {missing}");
-    };
-    parse_hex_32(value, label)
-}
-
-fn parse_required_u32(value: Option<&str>, label: &str, missing: &str) -> Result<u32> {
-    let Some(value) = value else {
-        bail!("{label}: {missing}");
-    };
-    parse_u32_maybe_hex(value, label)
-}
-
-fn parse_u32_maybe_hex(s: &str, label: &str) -> Result<u32> {
-    let trimmed = s.trim();
-    if let Some(hex) = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-    {
-        u32::from_str_radix(hex, 16).with_context(|| format!("{label}: invalid hex u32"))
-    } else {
-        trimmed
-            .parse::<u32>()
-            .with_context(|| format!("{label}: invalid u32"))
-    }
-}
-
 fn parse_optional_hex_or_utf8(s: &str) -> Result<Vec<u8>> {
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         Ok(hex::decode(hex)?)
@@ -590,25 +494,21 @@ mod tests {
         assert_eq!(puzzle.a.as_slice(), expected_a.as_slice());
         assert_eq!(puzzle.b.as_slice(), expected_b.as_slice());
         let pearl = &puzzle.pearl_merge;
-        match &pearl.header_source {
-            PearlMergeHeaderSource::Gateway(cfg) => {
-                assert_eq!(
-                    cfg.transport,
-                    PearlGatewayTransport::UnixSocket {
-                        path: "/tmp/pearlgw.sock".to_string()
-                    }
-                );
-                assert_eq!(
-                    cfg.request_timeout,
-                    Duration::from_millis(DEFAULT_PEARL_GATEWAY_TIMEOUT_MS)
-                );
-                assert_eq!(
-                    cfg.refresh_interval,
-                    Duration::from_millis(DEFAULT_PEARL_GATEWAY_REFRESH_MS)
-                );
+        let PearlMergeHeaderSource::Gateway(cfg) = &pearl.header_source;
+        assert_eq!(
+            cfg.transport,
+            PearlGatewayTransport::UnixSocket {
+                path: "/tmp/pearlgw.sock".to_string()
             }
-            got => panic!("expected default Pearl gateway source, got {got:?}"),
-        };
+        );
+        assert_eq!(
+            cfg.request_timeout,
+            Duration::from_millis(DEFAULT_PEARL_GATEWAY_TIMEOUT_MS)
+        );
+        assert_eq!(
+            cfg.refresh_interval,
+            Duration::from_millis(DEFAULT_PEARL_GATEWAY_REFRESH_MS)
+        );
     }
 
     #[test]
@@ -653,20 +553,16 @@ mod tests {
 
         let puzzle = build_puzzle_inputs(&args).expect("configured Pearl TCP gateway config");
         let pearl = &puzzle.pearl_merge;
-        match &pearl.header_source {
-            PearlMergeHeaderSource::Gateway(cfg) => {
-                assert_eq!(
-                    cfg.transport,
-                    PearlGatewayTransport::Tcp {
-                        host: "127.0.0.1".to_string(),
-                        port: 8337
-                    }
-                );
-                assert_eq!(cfg.request_timeout, Duration::from_millis(250));
-                assert_eq!(cfg.refresh_interval, Duration::from_millis(500));
+        let PearlMergeHeaderSource::Gateway(cfg) = &pearl.header_source;
+        assert_eq!(
+            cfg.transport,
+            PearlGatewayTransport::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 8337
             }
-            got => panic!("expected Pearl TCP gateway source, got {got:?}"),
-        };
+        );
+        assert_eq!(cfg.request_timeout, Duration::from_millis(250));
+        assert_eq!(cfg.refresh_interval, Duration::from_millis(500));
     }
 
     #[test]
@@ -735,9 +631,12 @@ mod tests {
         assert!(help.contains("[default: unix:/tmp/pearlgw.sock]"));
         assert!(help.contains("--node-addr <NODE_ADDR>"));
         assert!(help.contains("--mining-pkh <MINING_PKH>"));
+        assert!(!help.contains("--pearl-work-source"));
         assert!(!help.contains("--pearl-gateway-transport"));
         assert!(!help.contains("--pearl-gateway-socket"));
         assert!(!help.contains("--pearl-prev-block"));
+        assert!(!help.contains("--pearl-timestamp"));
+        assert!(!help.contains("--pearl-nbits"));
         assert!(!help.contains("--pearl-max-attempts"));
         assert!(!help.contains("--noise-rank"));
         assert!(!help.contains("--synth-seed"));
@@ -797,28 +696,26 @@ mod tests {
     }
 
     #[test]
-    fn cli_can_build_configured_manual_pearl_merge_submission_inputs() {
+    fn cli_can_build_configured_pearl_merge_submission_inputs() {
         let args = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
             "ai-pow-pearl-merge-cli", "--m", "8", "--k", "1024", "--n", "8", "--noise-rank", "32",
-            "--tile", "8", "--spot-checks", "1", "--difficulty-bits", "0", "--pearl-work-source",
-            "manual", "--pearl-prev-block",
-            "1111111111111111111111111111111111111111111111111111111111111111",
-            "--pearl-timestamp", "1717171717", "--pearl-nbits", "0x207fffff",
-            "--pearl-nockchain-target-epoch-or-height", "42", "--pearl-extra-domain-data",
-            "0xfeed", "--pearl-max-attempts", "16",
+            "--tile", "8", "--spot-checks", "1", "--difficulty-bits", "0", "--pearl-gateway",
+            "tcp://127.0.0.1:8337", "--pearl-nockchain-target-epoch-or-height", "42",
+            "--pearl-extra-domain-data", "0xfeed", "--pearl-max-attempts", "16",
         ]);
 
         let puzzle = build_puzzle_inputs(&args).expect("pearl merge puzzle inputs");
         let pearl = &puzzle.pearl_merge;
-        let PearlMergeHeaderSource::Static(header) = &pearl.header_source else {
-            panic!("expected manual Pearl header source");
-        };
-        assert_eq!(header.version, 1);
-        assert_eq!(header.prev_block, [0x11; 32]);
-        assert_eq!(header.timestamp, 1_717_171_717);
-        assert_eq!(header.nbits, 0x207f_ffff);
+        let PearlMergeHeaderSource::Gateway(gateway) = &pearl.header_source;
+        assert_eq!(
+            gateway.transport,
+            PearlGatewayTransport::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 8337
+            }
+        );
         assert_eq!(pearl.mining_config.common_dim, 1024);
         assert_eq!(pearl.mining_config.rank, 32);
         assert_eq!(pearl.max_pattern_len, 256);
@@ -839,18 +736,19 @@ mod tests {
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
             "ai-pow-pearl-merge-cli-builder-target-miss", "--m", "8", "--k", "1024", "--n", "8",
             "--noise-rank", "32", "--tile", "8", "--spot-checks", "1", "--difficulty-bits", "0",
-            "--pearl-work-source", "manual", "--pearl-prev-block",
-            "1111111111111111111111111111111111111111111111111111111111111111",
-            "--pearl-timestamp", "1717171717", "--pearl-nbits", "0x207fffff",
         ]);
 
         let puzzle = build_puzzle_inputs(&args).expect("pearl merge puzzle inputs");
         let pearl = &puzzle.pearl_merge;
-        let PearlMergeHeaderSource::Static(header) = &pearl.header_source else {
-            panic!("expected manual Pearl header source");
+        let header = ai_pow::pearl_compat::PearlIncompleteBlockHeader {
+            version: 1,
+            prev_block: [0x11; 32],
+            merkle_root: [0u8; 32],
+            timestamp: 1_717_171_717,
+            nbits: 0x207f_ffff,
         };
         let mut attempt = evaluate_pearl_merge_ticket_attempt(
-            header,
+            &header,
             &pearl.mining_config,
             &puzzle.params,
             0,
@@ -875,69 +773,11 @@ mod tests {
     }
 
     #[test]
-    fn cli_rejects_pearl_merge_without_required_header_fields() {
-        let args = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "ai-pow-pearl-merge-missing-header", "--pearl-work-source", "manual",
-        ]);
-
-        let err = match build_puzzle_inputs(&args) {
-            Ok(_) => panic!("missing Pearl header must fail"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string().contains("--pearl-prev-block"),
-            "unexpected error: {err:#}"
-        );
-    }
-
-    #[test]
-    fn cli_rejects_pearl_merge_missing_timestamp_or_nbits() {
-        let missing_timestamp = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "ai-pow-pearl-merge-missing-timestamp", "--pearl-work-source", "manual",
-            "--pearl-prev-block",
-            "1111111111111111111111111111111111111111111111111111111111111111", "--pearl-nbits",
-            "0x207fffff",
-        ]);
-        let err = match build_puzzle_inputs(&missing_timestamp) {
-            Ok(_) => panic!("missing Pearl timestamp must fail"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string().contains("--pearl-timestamp"),
-            "unexpected error: {err:#}"
-        );
-
-        let missing_nbits = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "ai-pow-pearl-merge-missing-nbits", "--pearl-work-source", "manual",
-            "--pearl-prev-block",
-            "1111111111111111111111111111111111111111111111111111111111111111",
-            "--pearl-timestamp", "1717171717",
-        ]);
-        let err = match build_puzzle_inputs(&missing_nbits) {
-            Ok(_) => panic!("missing Pearl nbits must fail"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string().contains("--pearl-nbits"),
-            "unexpected error: {err:#}"
-        );
-    }
-
-    #[test]
     fn cli_rejects_noncanonical_pearl_aux_template() {
         let args = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "ai-pow-pearl-merge-bad-aux", "--pearl-prev-block",
-            "1111111111111111111111111111111111111111111111111111111111111111",
-            "--pearl-timestamp", "1717171717", "--pearl-nbits", "0x207fffff",
-            "--pearl-nockchain-chain-id", "",
+            "ai-pow-pearl-merge-bad-aux", "--pearl-nockchain-chain-id", "",
         ]);
 
         let err = match build_puzzle_inputs(&args) {
@@ -961,9 +801,6 @@ mod tests {
             "ai-pow-mine", "--mining-pkh",
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
             "ai-pow-pearl-merge-small-pattern-bound", "--pearl-max-pattern-len", "7",
-            "--pearl-prev-block",
-            "1111111111111111111111111111111111111111111111111111111111111111",
-            "--pearl-timestamp", "1717171717", "--pearl-nbits", "0x207fffff",
         ]);
 
         let err = match build_puzzle_inputs(&args) {
@@ -982,9 +819,6 @@ mod tests {
             "ai-pow-mine", "--mining-pkh",
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
             "ai-pow-pearl-merge-bad-params", "--m", "16", "--n", "8", "--spot-checks", "2",
-            "--pearl-prev-block",
-            "1111111111111111111111111111111111111111111111111111111111111111",
-            "--pearl-timestamp", "1717171717", "--pearl-nbits", "0x207fffff",
         ]);
 
         let err = match build_puzzle_inputs(&args) {

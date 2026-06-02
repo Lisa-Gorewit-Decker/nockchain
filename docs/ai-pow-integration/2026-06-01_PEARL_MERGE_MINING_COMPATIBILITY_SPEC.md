@@ -123,9 +123,9 @@ Rust miner default policy for this milestone:
   supplied. Explicit raw matrix paths must be provided as a complete pair.
 - Pearl work headers default to Pearl Gateway miner RPC `getMiningInfo` over
   Unix socket `/tmp/pearlgw.sock`, matching Pearl Gateway's default miner-RPC
-  configuration. TCP gateway mode is available with explicit host/port flags.
-  Manual Pearl header flags are retained only as an explicit development
-  fallback via `--pearl-work-source manual`.
+  configuration. TCP gateway mode is available through the unified
+  `--pearl-gateway` endpoint. Manual Pearl header CLI flags were removed; the
+  production miner obtains Pearl work through Gateway only.
 - Pearl Gateway requests use a bounded request timeout, defaulting to 2000 ms
   and configurable with `--pearl-gateway-timeout-ms`. Zero is rejected so a
   silent, wedged, or malicious local Gateway cannot block candidate processing
@@ -315,9 +315,9 @@ Implemented in this branch:
   small: node private gRPC address, mining key configuration, unified
   `--pearl-gateway` endpoint, and log filter. The legacy split Gateway
   transport/socket/host/port flags were removed; Gateway location is configured
-  through the one endpoint string. Matrix shape, synthetic-matrix, manual Pearl
-  header, Gateway timing, reconnect, and Rust-only Pearl aux metadata flags
-  remain hidden dev/compatibility controls. Gateway fetches use an explicit TCP
+  through the one endpoint string. Matrix shape, synthetic-matrix, Gateway
+  timing, reconnect, and Rust-only Pearl aux metadata flags remain hidden
+  dev/compatibility controls. Gateway fetches use an explicit TCP
   connect timeout plus socket read/write timeouts so local
   Gateway failure is a skipped candidate, not an unbounded miner stall. The
   miner also polls Gateway while a Nockchain candidate is current and
