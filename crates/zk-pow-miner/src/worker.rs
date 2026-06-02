@@ -17,10 +17,9 @@ use nockapp::noun::slab::NounSlab;
 use nockapp::noun::AtomExt;
 use nockapp::save::SaveableCheckpoint;
 use nockapp::utils::NOCK_STACK_SIZE_TINY;
-use nockchain_math::noun_ext::{NounMathExt, NounMathExtHandle};
+use nockchain_math::noun_ext::NounMathExtHandle;
 use nockchain_math::structs::HoonList;
 use nockchain_mining_common::MiningCandidate;
-use nockvm::ext::NounExt;
 use nockvm::interpreter::NockCancelToken;
 use nockvm::jets::hot::HotEntry;
 use nockvm::noun::{Atom, D, T};
@@ -229,6 +228,7 @@ pub(crate) fn decode_mine_result(slab: NounSlab) -> Result<MineResult, WorkerErr
 
 #[cfg(test)]
 mod tests {
+    use nockchain_mining_common::MiningCandidateKind;
     use nockvm_macros::tas;
 
     use super::*;
@@ -321,6 +321,7 @@ mod tests {
         let mut target = NounSlab::new();
         target.set_root(D(0xFFFF_FFFF));
         let candidate = MiningCandidate {
+            kind: MiningCandidateKind::Zk,
             version,
             block_header,
             target,
@@ -474,6 +475,7 @@ mod tests {
         let t = bignum_to_noun(&mut target, &target_value);
         target.set_root(t);
         MiningCandidate {
+            kind: MiningCandidateKind::Zk,
             version,
             block_header,
             target,

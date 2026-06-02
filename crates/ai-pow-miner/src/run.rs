@@ -50,7 +50,9 @@ use ai_pow_zk::{CompositePublicInputs, ZkParams};
 use futures::StreamExt;
 use nockapp::nockapp::wire::Wire;
 use nockapp::noun::slab::NounSlab;
-use nockchain_mining_common::{MiningCandidate, MiningKeyConfig, MiningPkhConfig, NodeClient};
+use nockchain_mining_common::{
+    MiningCandidate, MiningCandidateKind, MiningKeyConfig, MiningPkhConfig, NodeClient,
+};
 use nockvm::noun::{NounAllocator, D, T};
 use nockvm_macros::tas;
 use thiserror::Error;
@@ -559,6 +561,13 @@ fn derive_job_inputs(candidate: &MiningCandidate) -> Result<(DifficultyTarget, [
 }
 
 fn expect_ai_pow_candidate_version(candidate: &MiningCandidate) -> Result<(), String> {
+    if candidate.kind != MiningCandidateKind::Ai {
+        return Err(format!(
+            "AI-PoW miner expected %mine-ai candidate, got {:?}",
+            candidate.kind
+        ));
+    }
+
     let space = candidate.version.noun_space();
     let version = unsafe { *candidate.version.root() }
         .in_space(&space)
@@ -1232,6 +1241,7 @@ mod tests {
         version.set_root(D(AI_POW_MINE_CANDIDATE_VERSION));
         let block_header = synth_block_commitment_slab(commitment_seed);
         MiningCandidate {
+            kind: MiningCandidateKind::Ai,
             version,
             block_header,
             target,
@@ -1249,6 +1259,7 @@ mod tests {
         commitment_seed: u64,
     ) -> MiningCandidate {
         MiningCandidate {
+            kind: MiningCandidateKind::Ai,
             version,
             block_header: synth_block_commitment_slab(commitment_seed),
             target,
@@ -1335,6 +1346,20 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.contains("%3"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn derive_pearl_merge_job_inputs_rejects_wrong_candidate_kind() {
+        let cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let mut candidate =
+            candidate_for_target_and_commitment(bignum_target_slab(&[u64::from(u32::MAX)]), 0xA0FF);
+        candidate.kind = MiningCandidateKind::Zk;
+
+        let err = match derive_pearl_merge_job_inputs(&cfg, &candidate) {
+            Ok(_) => panic!("AI miner must reject non-%mine-ai candidates"),
+            Err(err) => err,
+        };
+        assert!(err.contains("%mine-ai"), "unexpected error: {err}");
     }
 
     #[test]

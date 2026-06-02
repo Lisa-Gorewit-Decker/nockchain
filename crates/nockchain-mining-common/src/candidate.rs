@@ -7,7 +7,8 @@
 //! `block-commitment:page`, not a raw block header. Each miner subscribes via
 //! WatchEffects with its own head filter (`b"mine-zk"` / `b"mine-ai"`).
 //! This decoder is shape-symmetric: same field layout for both heads,
-//! so the same struct holds either kind of candidate.
+//! so the same struct holds either kind of candidate while preserving the
+//! effect kind for puzzle-specific boundary checks.
 
 use nockapp::noun::slab::NounSlab;
 use nockchain_math::noun_ext::NounMathExtHandle;
@@ -17,6 +18,8 @@ use thiserror::Error;
 /// A mining candidate: everything the miner needs to drive one
 /// puzzle-nock attempt.
 pub struct MiningCandidate {
+    /// Which mining effect head produced this candidate.
+    pub kind: MiningCandidateKind,
     /// Block-version atom from the candidate (chain consensus version).
     pub version: NounSlab,
     /// Kernel-emitted `block-commitment:page` noun for the candidate block.
@@ -28,6 +31,12 @@ pub struct MiningCandidate {
     pub target: NounSlab,
     /// `pow-len` parameter (proof length in bytes).
     pub pow_len: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MiningCandidateKind {
+    Zk,
+    Ai,
 }
 
 #[derive(Debug, Error)]
@@ -63,9 +72,13 @@ impl MiningCandidate {
             .as_cell()
             .map_err(|_| CandidateDecodeError::NotACell)?;
         let head = effect_cell.head();
-        if !head.eq_bytes("mine-zk") && !head.eq_bytes("mine-ai") {
+        let kind = if head.eq_bytes("mine-zk") {
+            MiningCandidateKind::Zk
+        } else if head.eq_bytes("mine-ai") {
+            MiningCandidateKind::Ai
+        } else {
             return Ok(None);
-        }
+        };
         let [version_h, commit_h, target_h, pow_len_h] = effect_cell
             .tail()
             .uncell::<4>()
@@ -78,6 +91,7 @@ impl MiningCandidate {
             .map_err(|_| CandidateDecodeError::BadPowLen)?;
 
         Ok(Some(MiningCandidate {
+            kind,
             version: noun_into_owned_slab(version_h.noun(), &space),
             block_header: noun_into_owned_slab(commit_h.noun(), &space),
             target: noun_into_owned_slab(target_h.noun(), &space),
@@ -122,6 +136,7 @@ mod tests {
             .expect("head is %mine-zk");
 
         assert_eq!(candidate.pow_len, 256);
+        assert_eq!(candidate.kind, MiningCandidateKind::Zk);
         // The owned slabs round-trip the values. Post-h-zoon: atom
         // reads must be bound to a NounSpace via in_space.
         let version_space = candidate.version.noun_space();
@@ -159,6 +174,7 @@ mod tests {
         let candidate = MiningCandidate::from_effect_slab(slab)
             .expect("decode")
             .expect("head is %mine-ai");
+        assert_eq!(candidate.kind, MiningCandidateKind::Ai);
         assert_eq!(candidate.pow_len, 64);
     }
 

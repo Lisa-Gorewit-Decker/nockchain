@@ -20,6 +20,6 @@ pub mod candidate;
 pub mod key_config;
 pub mod node_client;
 
-pub use candidate::{CandidateDecodeError, MiningCandidate};
+pub use candidate::{CandidateDecodeError, MiningCandidate, MiningCandidateKind};
 pub use key_config::{MiningKeyConfig, MiningPkhConfig};
 pub use node_client::{NodeClient, NodeClientError};
