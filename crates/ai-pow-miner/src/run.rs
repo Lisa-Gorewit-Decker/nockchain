@@ -3509,6 +3509,135 @@ mod tests {
         node.shutdown().await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn run_loop_dual_hit_submits_pearl_plain_proof_and_nockchain_poke() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind Pearl gateway fixture");
+        listener
+            .set_nonblocking(true)
+            .expect("set Pearl gateway fixture nonblocking");
+        let gateway_port = listener.local_addr().expect("gateway addr").port();
+        let submit_calls = Arc::new(AtomicU64::new(0));
+        let stop_gateway = Arc::new(AtomicBool::new(false));
+        let submit_calls_for_thread = submit_calls.clone();
+        let stop_gateway_for_thread = stop_gateway.clone();
+        let gateway_thread = std::thread::spawn(move || {
+            while !stop_gateway_for_thread.load(Ordering::SeqCst) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(x) => x,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(e) => panic!("accept Pearl gateway client: {e}"),
+                };
+                let mut request_line = String::new();
+                {
+                    let mut reader =
+                        std::io::BufReader::new(stream.try_clone().expect("clone gateway stream"));
+                    std::io::BufRead::read_line(&mut reader, &mut request_line)
+                        .expect("read gateway request");
+                }
+                let request: serde_json::Value =
+                    serde_json::from_str(&request_line).expect("parse gateway request");
+                match request["method"].as_str().expect("method string") {
+                    "getMiningInfo" => {
+                        let (header, encoded_coinbase) =
+                            gateway_aux_header_and_coinbase_from_request(
+                                &request,
+                                pearl_test_header(),
+                            );
+                        let encoded_header = {
+                            use base64::Engine as _;
+                            base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
+                        };
+                        let response = format!(
+                            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":424242,\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
+                            encoded_header, encoded_coinbase
+                        );
+                        std::io::Write::write_all(&mut stream, response.as_bytes())
+                            .expect("write gateway response");
+                    }
+                    "submitPlainProof" => {
+                        assert!(
+                            request["params"]["plain_proof"]
+                                .as_str()
+                                .expect("plain_proof string")
+                                .len()
+                                > 1024
+                        );
+                        assert_eq!(request["params"]["mining_job"]["target"], 424242);
+                        let response = format!(
+                            "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":\"submitted\"}}\n",
+                            request["id"]
+                        );
+                        std::io::Write::write_all(&mut stream, response.as_bytes())
+                            .expect("write Gateway submit response");
+                        submit_calls_for_thread.fetch_add(1, Ordering::SeqCst);
+                    }
+                    other => panic!("unexpected Gateway method: {other}"),
+                }
+            }
+        });
+
+        let node = MockNode::spawn().await;
+        let mut cfg = test_cfg(node.url());
+        let pearl_cfg = cfg
+            .puzzle
+            .pearl_merge
+            .as_mut()
+            .expect("test config has Pearl merge submission");
+        pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+            transport: PearlGatewayTransport::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: gateway_port,
+            },
+            request_timeout: Duration::from_millis(200),
+            refresh_interval: Duration::from_millis(100),
+        });
+        pearl_cfg.mine_opts = PearlMergeMineOptions {
+            max_attempts: Some(1),
+            ..PearlMergeMineOptions::default()
+        };
+
+        let shutdown = CancellationToken::new();
+        let shutdown_clone = shutdown.clone();
+        let mining_task = tokio::spawn(async move { run(cfg, shutdown_clone).await });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        node.publish_synth_mine_effect_with_target_limbs(706, &[u64::from(u32::MAX); 8], 64);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let pearl_submitted = submit_calls.load(Ordering::SeqCst) == 1;
+            let nockchain_submitted = !node.mined_pokes.lock().await.is_empty();
+            if pearl_submitted && nockchain_submitted {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "dual target hit did not submit both Pearl and Nockchain solutions"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        assert_eq!(submit_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            node.mined_pokes.lock().await.len(),
+            1,
+            "dual target hit must produce exactly one Nockchain %ai-pow poke"
+        );
+
+        shutdown.cancel();
+        let r = tokio::time::timeout(Duration::from_secs(5), mining_task)
+            .await
+            .expect("miner task did not exit")
+            .expect("miner panicked");
+        assert!(matches!(r, Ok(())), "unexpected miner result: {r:?}");
+        stop_gateway.store(true, Ordering::SeqCst);
+        gateway_thread.join().expect("gateway fixture exited");
+        node.shutdown().await;
+    }
+
     /// Heavy: runs the real ai-pow prover on TEST_SMALL with a trivial
     /// `FF..FF` target. Should complete in well under 30 s on any
     /// modern machine; marked `#[ignore]` so `cargo test` is fast by
