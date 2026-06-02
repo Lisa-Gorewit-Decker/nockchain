@@ -527,8 +527,6 @@ mod tests {
         );
         assert_eq!(pearl.mining_config().common_dim, 1024);
         assert_eq!(pearl.mining_config().rank, 32);
-        assert_eq!(pearl.max_pattern_len(), 8);
-        assert_eq!(pearl.mine_opts().max_attempts, None);
         assert_eq!(pearl.aux_template().nockchain_chain_id, b"nockchain");
         assert_eq!(pearl.aux_template().nockchain_target_epoch_or_height, 0);
         assert!(pearl.aux_template().extra_domain_data.is_empty());
@@ -563,7 +561,7 @@ mod tests {
             puzzle.a.as_slice(),
             puzzle.b.as_slice(),
             &[0xff; 32],
-            pearl.max_pattern_len(),
+            DEFAULT_MATMUL_PARAMS.tile as usize,
             pearl.aux_template().clone(),
         )
         .expect("evaluate trivial-target Pearl merge ticket");

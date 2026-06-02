@@ -199,14 +199,6 @@ impl PearlMergeSubmissionConfig {
     pub fn aux_template(&self) -> &PearlNockchainAux {
         &self.aux_template
     }
-
-    pub fn max_pattern_len(&self) -> usize {
-        self.max_pattern_len
-    }
-
-    pub fn mine_opts(&self) -> &PearlMergeMineOptions {
-        &self.mine_opts
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -227,17 +219,6 @@ impl PearlGatewayMinerRpcConfig {
         Self {
             transport: PearlGatewayTransport::UnixSocket {
                 path: "/tmp/pearlgw.sock".to_string(),
-            },
-            request_timeout: Duration::from_secs(2),
-            refresh_interval: Duration::from_secs(1),
-        }
-    }
-
-    pub fn default_tcp() -> Self {
-        Self {
-            transport: PearlGatewayTransport::Tcp {
-                host: "localhost".to_string(),
-                port: 8337,
             },
             request_timeout: Duration::from_secs(2),
             refresh_interval: Duration::from_secs(1),
