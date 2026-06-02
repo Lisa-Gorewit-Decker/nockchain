@@ -508,7 +508,7 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                                 ));
                             };
                             if mined.ticket.pearl_target_hit {
-                                if let Err(e) = submit_pearl_solution_if_gateway(&cfg, pearl_cfg, &mined.ticket) {
+                                if let Err(e) = submit_pearl_solution_if_gateway(&cfg, pearl_cfg, &mined) {
                                     warn!(error = %e, "submit Pearl Gateway plain proof failed");
                                 }
                             }
@@ -703,6 +703,7 @@ fn expect_ai_pow_candidate_version(candidate: &MiningCandidate) -> Result<(), St
 
 struct PearlMergeCandidateJob {
     header: PearlIncompleteBlockHeader,
+    gateway_header_template: Option<PearlIncompleteBlockHeader>,
     aux_inclusion: PearlAuxInclusionProof,
     target: DifficultyTarget,
     aux: PearlNockchainAux,
@@ -710,6 +711,7 @@ struct PearlMergeCandidateJob {
 
 struct PearlMergeMinedSubmission {
     ticket: PearlMergeMinedTicket,
+    gateway_header_template: Option<PearlIncompleteBlockHeader>,
     aux_inclusion: PearlAuxInclusionProof,
 }
 
@@ -756,10 +758,15 @@ fn derive_pearl_merge_job_inputs_from_nockchain(
         .header_source
         .resolve_header()
         .map_err(|e| format!("resolve Pearl work header: {e}"))?;
+    let gateway_header_template = match pearl.header_source {
+        PearlMergeHeaderSource::Gateway(_) => Some(header_template),
+        PearlMergeHeaderSource::Static(_) => None,
+    };
     let (header, aux_inclusion) = build_coinbase_only_pearl_aux_inclusion(&header_template, &aux)
         .map_err(|e| format!("build Pearl aux inclusion: {e}"))?;
     Ok(PearlMergeCandidateJob {
         header,
+        gateway_header_template,
         aux_inclusion,
         target: candidate.target,
         aux,
@@ -1168,6 +1175,7 @@ fn spawn_pearl_merge_attempt(
         let ticket = pearl_mining::run(&job, &pearl.mine_opts, cancel)?;
         Ok(PearlMergeMinedSubmission {
             ticket,
+            gateway_header_template: job_inputs.gateway_header_template,
             aux_inclusion: job_inputs.aux_inclusion,
         })
     })
@@ -1176,7 +1184,7 @@ fn spawn_pearl_merge_attempt(
 fn submit_pearl_solution_if_gateway(
     cfg: &MinerConfig,
     pearl_cfg: &PearlMergeSubmissionConfig,
-    mined: &PearlMergeMinedTicket,
+    mined: &PearlMergeMinedSubmission,
 ) -> Result<(), String> {
     let PearlMergeHeaderSource::Gateway(gateway) = &pearl_cfg.header_source else {
         debug!(
@@ -1184,19 +1192,30 @@ fn submit_pearl_solution_if_gateway(
         );
         return Ok(());
     };
+    let mined_header = mined.ticket.attempt.public_params.block_header;
+    let Some(gateway_header) = mined.gateway_header_template else {
+        return Err(
+            "Pearl Gateway submission requested without a Gateway mining-job header".to_string(),
+        );
+    };
+    if gateway_header != mined_header {
+        return Err(
+            "Pearl Gateway mining job header does not match the aux-bearing mined header; \
+             skipping submitPlainProof because Gateway acknowledges before its async stale-header check"
+                .to_string(),
+        );
+    }
     let plain = PearlPlainProof::from_attempt(
-        &cfg.puzzle.params, &mined.attempt, &cfg.puzzle.a, &cfg.puzzle.b,
+        &cfg.puzzle.params, &mined.ticket.attempt, &cfg.puzzle.a, &cfg.puzzle.b,
     )
     .map_err(|e| format!("build Pearl plain proof: {e}"))?;
     let plain_proof_base64 = plain
         .to_base64_bincode1()
         .map_err(|e| format!("serialize Pearl plain proof: {e}"))?;
-    let target = serde_json_uint256_le(&mined.attempt.pearl_target)
+    let target = serde_json_uint256_le(&mined.ticket.attempt.pearl_target)
         .map_err(|e| format!("encode Pearl target: {e}"))?;
-    submit_pearl_gateway_plain_proof(
-        gateway, &plain_proof_base64, &mined.attempt.public_params.block_header, target,
-    )
-    .map_err(|e| e.to_string())
+    submit_pearl_gateway_plain_proof(gateway, &plain_proof_base64, &mined_header, target)
+        .map_err(|e| e.to_string())
 }
 
 fn serde_json_uint256_le(le: &[u8; 32]) -> Result<serde_json::Value, serde_json::Error> {
@@ -1768,6 +1787,67 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn pearl_gateway_submission_rejects_header_mismatch_before_rpc() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        {
+            let pearl_cfg = cfg
+                .puzzle
+                .pearl_merge
+                .as_mut()
+                .expect("test config has Pearl merge submission");
+            pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+                transport: PearlGatewayTransport::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port: 9,
+                },
+                request_timeout: Duration::from_millis(1),
+                refresh_interval: Duration::from_secs(1),
+            });
+        }
+        let pearl_cfg = cfg
+            .puzzle
+            .pearl_merge
+            .as_ref()
+            .expect("test config has Pearl merge submission")
+            .clone();
+
+        let mut aux = pearl_test_aux();
+        aux.nock_block_commitment = [0xaa; 32];
+        let header_template = pearl_test_header();
+        let (mined_header, aux_inclusion) =
+            build_coinbase_only_pearl_aux_inclusion(&header_template, &aux)
+                .expect("build aux-bearing header");
+        assert_ne!(
+            header_template, mined_header,
+            "fixture must model Gateway issuing a header without Nockchain aux"
+        );
+
+        let params = cfg.puzzle.params;
+        let attempt = evaluate_pearl_merge_ticket_attempt(
+            &mined_header, &pearl_cfg.mining_config, &params, 0, 0, &cfg.puzzle.a, &cfg.puzzle.b,
+            &[0xffu8; 32], pearl_cfg.max_pattern_len, aux,
+        )
+        .expect("evaluate Pearl-compatible attempt");
+        let mined = PearlMergeMinedSubmission {
+            ticket: PearlMergeMinedTicket {
+                attempt,
+                pearl_target_hit: true,
+                nockchain_target_hit: false,
+                stats: crate::MiningStats::default(),
+            },
+            gateway_header_template: Some(header_template),
+            aux_inclusion,
+        };
+
+        let err = submit_pearl_solution_if_gateway(&cfg, &pearl_cfg, &mined)
+            .expect_err("header mismatch must fail before Gateway RPC");
+        assert!(
+            err.contains("does not match the aux-bearing mined header"),
+            "unexpected error: {err}"
+        );
+    }
+
     fn pearl_test_coinbase_tx(aux_commitment: &[u8; 32]) -> Vec<u8> {
         let mut script = Vec::from([0x01, 0x00]);
         script.extend_from_slice(ai_pow::pearl_compat::PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG);
@@ -1853,6 +1933,10 @@ mod tests {
         );
         slab.set_root(commit);
         slab
+    }
+
+    fn nock_block_commitment_for_seed(commitment_seed: u64) -> [u8; 32] {
+        *blake3::hash(&synth_block_commitment_slab(commitment_seed).jam()).as_bytes()
     }
 
     fn candidate_for_target_and_commitment(
@@ -3013,7 +3097,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_loop_pearl_only_hit_submits_plain_proof_without_nockchain_poke() {
-        let header = pearl_test_header();
+        let commitment_seed = 705;
+        let mut aux = pearl_test_aux();
+        aux.nock_block_commitment = nock_block_commitment_for_seed(commitment_seed);
+        let (header, _) = build_coinbase_only_pearl_aux_inclusion(&pearl_test_header(), &aux)
+            .expect("build aux-bearing Gateway header");
         let expected_get_header = {
             use base64::Engine as _;
             base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
@@ -3112,7 +3200,7 @@ mod tests {
         let mining_task = tokio::spawn(async move { run(cfg, shutdown_clone).await });
 
         tokio::time::sleep(Duration::from_millis(300)).await;
-        node.publish_synth_mine_effect_with_target_limbs(705, &[0], 64);
+        node.publish_synth_mine_effect_with_target_limbs(commitment_seed, &[0], 64);
 
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while submit_calls.load(Ordering::SeqCst) == 0 {
