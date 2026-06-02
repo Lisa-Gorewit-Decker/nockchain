@@ -577,6 +577,41 @@ mod tests {
     }
 
     #[test]
+    fn cli_rejects_pearl_merge_missing_timestamp_or_nbits() {
+        let missing_timestamp = Args::parse_from([
+            "ai-pow-mine", "--mining-pkh",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
+            "ai-pow-pearl-merge-missing-timestamp", "--pearl-prev-block",
+            "1111111111111111111111111111111111111111111111111111111111111111", "--pearl-nbits",
+            "0x207fffff",
+        ]);
+        let err = match build_puzzle_inputs(&missing_timestamp) {
+            Ok(_) => panic!("missing Pearl timestamp must fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("--pearl-timestamp"),
+            "unexpected error: {err:#}"
+        );
+
+        let missing_nbits = Args::parse_from([
+            "ai-pow-mine", "--mining-pkh",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
+            "ai-pow-pearl-merge-missing-nbits", "--pearl-prev-block",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "--pearl-timestamp", "1717171717",
+        ]);
+        let err = match build_puzzle_inputs(&missing_nbits) {
+            Ok(_) => panic!("missing Pearl nbits must fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("--pearl-nbits"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
     fn cli_rejects_noncanonical_pearl_aux_template() {
         let args = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
@@ -598,6 +633,27 @@ mod tests {
         );
         assert!(
             err.to_string().contains("chain id must not be empty"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn cli_rejects_pattern_bound_smaller_than_tile_before_mining() {
+        let args = Args::parse_from([
+            "ai-pow-mine", "--mining-pkh",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
+            "ai-pow-pearl-merge-small-pattern-bound", "--pearl-max-pattern-len", "7",
+            "--pearl-prev-block",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "--pearl-timestamp", "1717171717", "--pearl-nbits", "0x207fffff",
+        ]);
+
+        let err = match build_puzzle_inputs(&args) {
+            Ok(_) => panic!("pattern bound smaller than tile must fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("--pearl-max-pattern-len"),
             "unexpected error: {err:#}"
         );
     }
