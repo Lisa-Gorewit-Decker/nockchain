@@ -1291,12 +1291,20 @@ mod tests {
 
     #[test]
     fn derive_job_inputs_saturates_targets_above_u256() {
-        let mut limbs = vec![0u64; 10];
-        limbs[9] = 0x8;
-        let candidate = candidate_for_target(bignum_target_slab(&limbs));
+        let exact_u256_max = candidate_for_target(bignum_target_slab(&[u64::from(u32::MAX); 8]));
+        let (target, _) = derive_job_inputs(&exact_u256_max).expect("derive max u256 target");
+        assert_eq!(target, [0xFF; 32]);
 
+        let mut first_overflowing_limb = vec![0u64; 9];
+        first_overflowing_limb[8] = 1;
+        let candidate = candidate_for_target(bignum_target_slab(&first_overflowing_limb));
         let (target, _) = derive_job_inputs(&candidate).expect("derive job inputs");
+        assert_eq!(target, [0xFF; 32]);
 
+        let mut later_overflowing_limb = vec![0u64; 10];
+        later_overflowing_limb[9] = 0x8;
+        let candidate = candidate_for_target(bignum_target_slab(&later_overflowing_limb));
+        let (target, _) = derive_job_inputs(&candidate).expect("derive job inputs");
         assert_eq!(target, [0xFF; 32]);
     }
 
