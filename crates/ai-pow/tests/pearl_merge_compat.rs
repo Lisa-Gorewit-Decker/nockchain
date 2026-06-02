@@ -1639,6 +1639,78 @@ fn pearl_merge_public_statement_with_aux_inclusion_closes_header_binding() {
 }
 
 #[test]
+fn pearl_merge_public_statement_with_aux_inclusion_uses_nockchain_target_only() {
+    let params = pearl_square_params();
+    let config = pearl_square_config();
+    let aux = PearlNockchainAux {
+        nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+        nock_block_commitment: [0x24; 32],
+        nockchain_target_epoch_or_height: 123_456,
+        extra_domain_data: b"ai-pow-target-window".to_vec(),
+    };
+    let aux_commitment = aux.commitment().unwrap();
+    let coinbase = coinbase_tx_with_script(&coinbase_aux_script(&aux_commitment), None);
+    let coinbase_txid_raw = pearl_bitcoin_double_sha256_raw(&coinbase);
+    let mut hard_pearl_header = PearlIncompleteBlockHeader {
+        nbits: 0x0100_0001,
+        ..header()
+    };
+    hard_pearl_header.merkle_root = display_root_from_raw(coinbase_txid_raw);
+    let inclusion_proof = PearlAuxInclusionProof {
+        coinbase_tx: coinbase,
+        merkle_branch: vec![],
+    };
+
+    let (a, b) = synth_matrices(
+        b"pearl-merge-public-statement-nockchain-target-only", &params,
+    );
+    let attempt = evaluate_pearl_merge_ticket_attempt(
+        &hard_pearl_header,
+        &config,
+        &params,
+        0,
+        0,
+        &a,
+        &b,
+        &[0xffu8; 32],
+        16,
+        aux.clone(),
+    )
+    .unwrap();
+    assert!(
+        attempt
+            .public_params
+            .check_pearl_jackpot_difficulty()
+            .is_err(),
+        "fixture must miss Pearl nbits target"
+    );
+
+    verify_pearl_merge_public_statement_bytes_with_aux_inclusion(
+        &aux.nock_block_commitment,
+        &attempt.statement.to_bytes().unwrap(),
+        &a,
+        &b,
+        &[0xffu8; 32],
+        16,
+        &inclusion_proof,
+    )
+    .expect("Nockchain-side merge statement must not require Pearl target satisfaction");
+
+    assert_eq!(
+        verify_pearl_merge_public_statement_bytes_with_aux_inclusion(
+            &aux.nock_block_commitment,
+            &attempt.statement.to_bytes().unwrap(),
+            &a,
+            &b,
+            &[0u8; 32],
+            16,
+            &inclusion_proof,
+        ),
+        Err(PearlCompatError::NockchainTargetNotMet)
+    );
+}
+
+#[test]
 fn pearl_merge_ticket_attempt_builds_statement_for_one_explicit_ticket() {
     let params = pearl_square_params();
     let config = pearl_square_config();
