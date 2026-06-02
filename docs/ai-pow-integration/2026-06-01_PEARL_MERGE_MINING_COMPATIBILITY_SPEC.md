@@ -296,7 +296,9 @@ Implemented in this branch:
   bytes for Gateway `submitPlainProof`. This helper is intentionally not a
   public Nockchain proof API; public Nockchain submission goes through
   `PearlMergeSubmissionConfig::new_recursive` and the recursive `%ai-pow`
-  certificate path.
+  certificate path. The resulting submission config exposes read-only accessors
+  for inspection; callers cannot mutate the Gateway, Pearl mining config, aux
+  template, mining options, or recursive certificate builder fields in place.
 - The connected run loop submits the Nockchain `%ai-pow` command only for
   Nockchain target hits. Pearl-only hits do not build a recursive certificate
   and do not poke Hoon. The Hoon kernel still receives no Pearl-specific fields
@@ -339,7 +341,9 @@ Implemented in this branch:
   callers cannot accidentally treat them as production submission APIs.
 - `AiPuzzleInputs` carries a required `PearlMergeSubmissionConfig`; the missing
   Pearl submission configuration state is no longer representable through the
-  production miner API. There is no mixed-mode branch in the connected run loop.
+  production miner API. There is no mixed-mode branch in the connected run loop,
+  and the submission config is constructor-owned rather than a bag of mutable
+  public fields.
 - Pearl-compatible miner preflight rejects Rust-side submission configs whose
   `common_dim`, `rank`, recursive params, or row/column patterns do not match
   the configured AI params and the current square-contiguous recursive prover
