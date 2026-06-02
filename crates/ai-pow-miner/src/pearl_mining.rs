@@ -509,6 +509,26 @@ mod tests {
     }
 
     #[test]
+    fn pearl_merge_mining_linear_attempts_cross_row_boundaries() {
+        let params = pearl_test_params();
+        let header = pearl_test_header();
+        let config = pearl_test_config();
+        let (a, b) = synth_matrices(b"pearl-ticket-loop-row-boundary", &params);
+        let job = pearl_job(&header, &config, &params, &a, &b, [0xff; 32]);
+        let opts = PearlMergeMineOptions {
+            attempt_start: 16,
+            ..PearlMergeMineOptions::default()
+        };
+
+        let mined = run(&job, &opts, MiningCancel::new())
+            .expect("first ticket in the second row-offset block should mine");
+
+        assert_eq!(mined.stats.matmul_attempts_tried, 1);
+        assert_eq!(mined.attempt.public_params.t_rows, 8);
+        assert_eq!(mined.attempt.public_params.t_cols, 0);
+    }
+
+    #[test]
     fn pearl_merge_mining_rejects_wrong_matrix_shape() {
         let params = pearl_test_params();
         let header = pearl_test_header();
