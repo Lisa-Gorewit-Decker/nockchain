@@ -143,6 +143,11 @@ Rust miner default policy for this milestone:
   cached candidate is cleared and Gateway refresh does not redispatch that
   solved candidate; the miner waits for the node to emit a new candidate.
   Manual/static header mode does not refresh.
+- Pearl Gateway's work cache treats the full incomplete header bytes as the
+  base-template freshness key. Same-parent updates that change timestamp,
+  target bits, transaction merkle root, or version replace the current template
+  and clear derived aux-bearing templates. This prevents stale same-parent
+  Gateway work from surviving until the next previous-block change.
 - Gateway-backed merge work asks `getMiningInfo` for a Pearl block template
   that already contains the Nockchain aux commitment. The request carries
   generic Pearl-side `coinbase_aux_flags`, encoded as standard base64 of
@@ -393,7 +398,8 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
    service during candidate processing.
 7. Done for this milestone: Pearl Gateway work is refreshed while a Nockchain
    candidate remains current, and changed Pearl headers supersede stale ticket
-   loops for that candidate.
+   loops for that candidate. Pearl Gateway itself keys base-template freshness
+   by the full incomplete header bytes, not only the previous block hash.
 8. Done for this milestone: `ai-pow-mine` defaults missing matrix input to the
    `ai-pow-prod-v1` local smoke-profile synth seed while preserving explicit
    complete `--a + --b` matrix input for deployments that supply real matrices.
