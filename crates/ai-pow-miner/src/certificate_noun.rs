@@ -5063,34 +5063,6 @@ mod tests {
     }
 
     #[test]
-    fn pearl_merge_artifact_decoder_rejects_legacy_three_field_shape() {
-        let (statement, _, commitments, pis, _, _) = pearl_merge_statement_fixture();
-        let params = pearl_test_params();
-        let cert_slab = build_ai_pow_certificate_noun_from_node(
-            &zk_params_from_matmul(&params),
-            0,
-            expected_layer0_rows(&params).required_trace_len(),
-            &commitments,
-            &pis,
-            &AiProofNode::Unit,
-        );
-        let cert_space = cert_slab.noun_space();
-        let mut legacy: NounSlab = NounSlab::new();
-        let statement = build_pearl_merge_public_statement_noun(&mut legacy, &statement);
-        let cert = legacy.copy_into(unsafe { *cert_slab.root() }, &cert_space);
-        let root = T(&mut legacy, &[D(tas!(b"ai-pmp")), statement, cert]);
-        legacy.set_root(root);
-
-        let err =
-            decode_ai_pow_pearl_merge_artifact_jam(&legacy.jam(), CertificateNounLimits::default())
-                .expect_err("legacy three-field %ai-pmp artifact must fail closed");
-        assert!(matches!(
-            err,
-            CertificateNounError::Shape("expected %ai-pow artifact")
-        ));
-    }
-
-    #[test]
     fn pearl_merge_artifact_jam_precheck_rejects_oversized_aux_branch_before_proof_node_decode() {
         let (statement, mut aux_inclusion, commitments, pis, a, b) =
             pearl_merge_statement_fixture();
@@ -5623,6 +5595,22 @@ mod tests {
                 CertificateNounLimits::default()
             ),
             Err(CertificateNounError::Shape("expected %pow command"))
+        ));
+
+        let cert_space = cert_slab.noun_space();
+        let mut wrong_artifact: NounSlab = NounSlab::new();
+        let nonce_bytes = build_pearl_merge_nonce_bytes_for_test(&statement, &aux_inclusion);
+        let nonce = build_ai_pow_nonce_noun(&mut wrong_artifact, &nonce_bytes);
+        let cert = wrong_artifact.copy_into(unsafe { *cert_slab.root() }, &cert_space);
+        let root = T(&mut wrong_artifact, &[D(tas!(b"badart")), nonce, cert]);
+        wrong_artifact.set_root(root);
+        let wrong_artifact_command = build_ai_pow_command_slab(&wrong_artifact);
+        assert!(matches!(
+            decode_ai_pow_pearl_merge_command_metadata_slab(
+                &wrong_artifact_command,
+                CertificateNounLimits::default()
+            ),
+            Err(CertificateNounError::Shape("expected %ai-pow artifact"))
         ));
     }
 
