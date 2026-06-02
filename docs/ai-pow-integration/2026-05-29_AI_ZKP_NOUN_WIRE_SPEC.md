@@ -40,7 +40,10 @@ Current Hoon integration:
 - `hoon/apps/dumbnet/lib/types.hoon` admits only `[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]` for the AI-PoW block-submission variant.
 - `hoon/common/tx-engine-1.hoon` keeps `page.pow` as a generic structured `pow-artifact` noun (`*`) so legacy `%dumb-zkpow` pages remain decodable and the Hoon compiler does not recursively expand the AI proof-tree mold in every page consumer. The `%ai-pow` command boundary remains typed as `[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]`, but current consensus rejects it fail-closed until recursive certificate verification is wired. Rust performs bounded certificate shape validation before verifier work.
 - The Rust miner's canonical submission payload is `[%command %pow %ai-pow nonce cert]`. The production binary configures a recursive-certificate noun builder. Library callers that omit that builder must refuse to submit rather than falling back to nonce/tile or plain-proof placeholders.
-- Recursive proving is started only after the plain matmul proof is checked against the chain-derived target used by the winning mining attempt.
+- Recursive proving is started only after the Pearl-compatible ticket/jackpot
+  hash check succeeds against the chain-derived target used by the winning
+  mining attempt. The plain `MatmulProof` remains diagnostic and is not the
+  production proof-construction gate.
 
 Current non-admissible Rust prover internals:
 
@@ -484,7 +487,9 @@ Before accepting `%ai-pow`, consensus must require:
 
 1. Add the Hoon command-boundary types above while keeping the page storage mold generic (`pow-artifact` is `*`) to avoid `hoonc` recursive-mold loops. Until the verifier lands, `%ai-pow` remains fail-closed and must not persist `[%ai-pow nonce cert]` in `page.pow`.
 2. Keep the miner's node-facing API canonical: the only AI-PoW block-submission payload is `[%command %pow %ai-pow nonce cert]`. If no recursive-certificate noun builder is configured, the miner must refuse to submit a legacy nonce/tile or plain `MatmulProof` artifact.
-3. Before recursive proving, require the plain matmul proof to verify against the same chain-derived target that the winning mining attempt used.
+3. Before recursive proving, require the Pearl-compatible ticket/jackpot hash
+   to satisfy the same chain-derived target that the winning mining attempt
+   used; do not build a recursive certificate for target misses.
 4. Add a Rust `AiPowCertificateNoun` mirror type that converts the recursive certificate into the Hoon `ai-proof-node` tree without `MatmulProof`, raw Layer-0 `AiPowBatchProof`, or bincode. Status: implemented as `certificate_noun::AiProofNode` plus typed top-level construction from the opaque `AiPowRecursiveCertificateRun` returned by the recursive prover; downstream crates cannot synthesize that run object directly, the legacy Layer-0 byte-envelope APIs have been removed, and generic serde/node reconstruction is crate-internal with explicit noun-depth, node-count, list-length, packed-vector, atom-byte, and field-canonicality limits.
 5. Implement packed-vector helpers for Goldilocks, extension-field pairs, and Tip5 digest vectors.
 6. Reconstruct `LookupData` metadata from canonical AIR/config rather than serializing strings.

@@ -129,9 +129,10 @@ Rust miner default policy for this milestone:
   indefinitely. Operator timeout tuning is not part of this milestone's CLI
   surface.
 - Pearl Gateway JSON-RPC responses are read as a single bounded line, capped at
-  64 KiB before JSON parsing. This is intentionally far above the expected
-  `getMiningInfo` response size but prevents a local Gateway from forcing
-  unbounded miner allocation by streaming data without a newline.
+  160 KiB before JSON parsing. This covers a base64-encoded maximum-size
+  coinbase aux inclusion plus the Pearl header, target, and JSON-RPC envelope
+  while preventing a local Gateway from forcing unbounded miner allocation by
+  streaming data without a newline.
 - In Gateway mode, the miner refreshes `getMiningInfo` every 1000 ms while a
   Nockchain candidate remains current. Operator refresh tuning is not part of
   this milestone's CLI surface. If the
@@ -171,10 +172,11 @@ Rust miner default policy for this milestone:
   Miners use the adjusted Pearl target for local hit detection, but the
   `submitPlainProof` `mining_job` echoes Gateway's original job target. The
   Rust client rejects Gateway work if that target is not a uint256 decimal JSON
-  integer or if it does not equal the compact target encoded by the returned
-  header's `nbits`. The proof contains the two matrix Merkle proofs for `A`
-  and `B^T`; it is not a Nockchain block artifact and is never serialized into
-  Hoon.
+  integer, if it is encoded as a negative number, float, string, array, object,
+  boolean, or null, or if it does not equal the compact target encoded by the
+  returned header's `nbits`. The proof contains the two matrix Merkle proofs
+  for `A` and `B^T`; it is not a Nockchain block artifact and is never
+  serialized into Hoon.
 - Gateway acceptance is header-template sensitive. Pearl Gateway's async
   handler compares `mining_job.incomplete_header_bytes` with its current block
   template's `serialize_without_proof_commitment()` and silently skips old or
@@ -204,8 +206,14 @@ The current maximum nonce size is pinned by Rust tests at 101,424 bytes
 
 ```text
 4 + 2 + PEARL_MERGE_PUBLIC_STATEMENT_MAX_SIZE
-+ 4 + 100_000 + 1 + 32 * 32
++ 4 + PEARL_AUX_INCLUSION_MAX_COINBASE_TX_BYTES
++ 1 + 32 * PEARL_AUX_INCLUSION_MAX_MERKLE_BRANCH
 ```
+
+In the current production profile `PEARL_AUX_INCLUSION_MAX_MERKLE_BRANCH = 0`,
+so the branch component contributes no bytes. Any Gateway-returned branch and
+any nonce carrying `merkle_branch_len > 0` is rejected before mining or
+verification work.
 
 This is separate from the recursive proof node tree. Hoon sees only `[len data]`
 for the nonce and the structured recursive certificate.
@@ -312,8 +320,9 @@ Implemented in this branch:
   canonical Pearl-format-compatible Nockchain `%ai-pow` submissions. It fetches
   the Pearl incomplete block header from Pearl Gateway miner RPC
   `getMiningInfo`. The visible operator CLI surface is intentionally
-  small: node private gRPC address, mining key configuration, unified
-  `--pearl-gateway` endpoint, and log filter. The legacy split Gateway
+  small: node private gRPC address, required v1 `--mining-pkh` or
+  `--mining-pkh-adv` reward configuration, unified `--pearl-gateway`
+  endpoint, and log filter. The legacy split Gateway
   transport/socket/host/port flags were removed; Gateway location is configured
   through the one endpoint string. Matrix-shape, custom synthetic-seed, Gateway
   timing, and reconnect flags were removed. Gateway fetches use an explicit TCP
@@ -324,8 +333,10 @@ Implemented in this branch:
   the Rust-only Pearl mining config from the canonical recursive AI-PoW params.
   The Rust submission config carries a direct Pearl Gateway RPC config.
   The CLI uses the default `ai-pow-prod-v1` local smoke-profile matrices; the
-  remaining required local operator input is the mining key configuration. Once
-  the miner builds a
+  remaining required local operator input is a v1 pubkey-hash reward
+  configuration. v0 public-key mining configs are not accepted, are not
+  defaulted, and are sent to the node as an empty legacy list. Once the miner
+  builds a
   `%ai-pow` poke for a candidate and attempts to send it to the node, it clears
   the cached candidate so later Pearl Gateway template changes cannot produce
   duplicate submissions for the same Nockchain candidate. Pearl-only Gateway
@@ -339,6 +350,10 @@ Implemented in this branch:
   production miner API. There is no mixed-mode branch in the connected run loop,
   and the submission config is constructor-owned rather than a bag of mutable
   public fields.
+- `ai-pow-miner` and `zk-pow-miner` require v1 mining reward configs. Public
+  constructors and CLIs require at least one nonempty `MiningPkhConfig` with a
+  nonzero share; connected run loops submit `set-mining-key-advanced` with an
+  empty legacy public-key config list and a nonempty PKH config list.
 - Pearl-compatible miner preflight rejects Rust-side submission configs whose
   `common_dim`, `rank`, recursive params, or row/column patterns do not match
   the configured AI params and the current square-contiguous recursive prover
@@ -376,7 +391,8 @@ Implemented in this branch:
   operands, Nockchain target, and Pearl pattern bound, all of which must be
   derived outside the miner-controlled artifact.
 - Size-budget tests pin the maximum `AIP1` nonce envelope at 101,424 bytes,
-  reject nonce bytes above that cap, and assert a worst-case nonce plus small
+  reject nonce bytes above that cap, reject any nonempty aux merkle branch in
+  the current production profile, and assert a worst-case nonce plus small
   structured certificate jams below 110 KiB.
 - The opt-in real recursive certificate harness currently measures a
   representative structured recursive certificate noun at 190,510 jammed bytes
@@ -393,6 +409,7 @@ Release checks run for this state:
 
 ```text
 GNORT_DISABLE=1 cargo test -p ai-pow-miner --release --features node -- --nocapture
+GNORT_DISABLE=1 cargo test -p zk-pow-miner --release -- --nocapture
 GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_compat -- --nocapture
 ```
 
@@ -413,8 +430,9 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
 5. Done for this milestone: `ai-pow-mine` uses Pearl Gateway miner RPC as its
    only Pearl work-header source.
 6. Done for this milestone: Pearl Gateway header fetches have bounded request
-   timeouts and bounded response-line reads to avoid local Gateway denial of
-   service during candidate processing.
+   timeouts, bounded response-line reads, strict uint256 target parsing, header
+   `nbits` target cross-checks, and bounded aux-inclusion decoding to avoid
+   local Gateway denial of service during candidate processing.
 7. Done for this milestone: Pearl Gateway work is refreshed while a Nockchain
    candidate remains current, and changed Pearl headers supersede stale ticket
    loops for that candidate. Pearl Gateway itself keys base-template freshness
@@ -422,21 +440,24 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
 8. Done for this milestone: `ai-pow-mine` uses the fixed recursive profile and
    the `ai-pow-prod-v1` local smoke-profile synth seed. Operator matrix-file
    inputs were removed from this milestone's CLI surface.
-9. Done for this milestone: after a successful Nockchain `%ai-pow` submission,
+9. Done for this milestone: `ai-pow-mine` and `zk-pow-mine` require v1
+   pubkey-hash reward configs and submit an empty legacy public-key config list
+   to the node.
+10. Done for this milestone: after a successful Nockchain `%ai-pow` submission,
    the run loop clears the cached candidate so Pearl Gateway refresh cannot
    redispatch solved work. Only a fresh Nockchain candidate restarts mining.
-10. Done for the Rust client path: Pearl Gateway `submitPlainProof` plumbing,
+11. Done for the Rust client path: Pearl Gateway `submitPlainProof` plumbing,
     Pearl-compatible `PlainProof` serialization, aux-bearing `getMiningInfo`
     requests, and returned `aux_inclusion` verification exist in Rust. Complete
     production Pearl-side acceptance requires deploying a Pearl Gateway server
     with the matching `getMiningInfo` extension so it issues the exact
     aux-bearing incomplete header used by the Nockchain attempt.
-11. Re-run and tighten real recursive certificate size-budget caps after the
+12. Re-run and tighten real recursive certificate size-budget caps after the
    final production proof shape is fixed.
-12. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,
+13. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,
    candidate-block replay, aux inclusion tamper, target miss, metadata drift,
    and proof-node DoS limits without wiring Hoon acceptance.
-13. Extend the recursive prover beyond square-contiguous Pearl row/column
+14. Extend the recursive prover beyond square-contiguous Pearl row/column
    patterns, or keep production admission explicitly restricted to that subset.
 
 ## Non-Negotiable Requirements
