@@ -442,7 +442,7 @@ binding ⇒ **milestone-scale**.
   noise → store → M-S1 sweep → fold → digest), zero gap.
 
 Each stage: commit with the trailer; Route-A +
-debug-assertions-ON; `Plonky3-recursion/` untracked.
+debug-assertions-ON; `crates/plonky3-recursion/` untracked.
 
 ## 5. Risks
 

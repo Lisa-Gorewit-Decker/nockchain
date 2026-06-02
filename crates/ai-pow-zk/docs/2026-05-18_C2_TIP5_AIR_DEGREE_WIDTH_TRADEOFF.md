@@ -61,7 +61,7 @@
 
 ## 1. Current AIR (exact)
 
-`Plonky3-recursion/tip5-circuit-air`, one row per permutation,
+`crates/plonky3-recursion/tip5-circuit-air`, one row per permutation,
 `max_constraint_degree() = Some(3)`. Per-round column group
 (`ROUND_GROUP = 1084`):
 

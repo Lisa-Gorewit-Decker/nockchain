@@ -55,7 +55,7 @@ it does **not** introduce new soundness assumptions.
 ## The exact gap (from Stage 0 survey)
 
 Three dispatch points in
-`Plonky3-recursion/recursion/src/backend/fri.rs` D=2 impl block
+`crates/plonky3-recursion/recursion/src/backend/fri.rs` D=2 impl block
 (lines 444-556), each currently a binary if-poseidon1-else-poseidon2:
 
 1. **`non_primitive_preprocessors`** (lines 512-520) — selects
@@ -100,7 +100,7 @@ logic. If they don't, the invasive edit later would land a broken
 substrate.
 
 **Test:** new file
-`Plonky3-recursion/recursion/tests/test_tip5_npo_recursion_kat.rs`
+`crates/plonky3-recursion/recursion/tests/test_tip5_npo_recursion_kat.rs`
 that:
 
 - Builds the Tip5 NPO trio (`tip5_air_builders<SC,2>`,
@@ -238,15 +238,15 @@ fails L2 verification. We log clearly in either case.
 
 **New:**
 - `crates/ai-pow-zk/docs/2026-05-20_TIP5_NPO_RECURSION_BACKEND_DESIGN.md` (THIS)
-- `Plonky3-recursion/recursion/tests/test_tip5_npo_recursion_kat.rs` (Stage 2)
-- `Plonky3-recursion/recursion/tests/test_tip5_l2_over_l1.rs` (Stage 4)
+- `crates/plonky3-recursion/recursion/tests/test_tip5_npo_recursion_kat.rs` (Stage 2)
+- `crates/plonky3-recursion/recursion/tests/test_tip5_l2_over_l1.rs` (Stage 4)
 
 **Edited (Stage 3):**
-- `Plonky3-recursion/recursion/src/backend/fri.rs` (D=2 impl block;
+- `crates/plonky3-recursion/recursion/src/backend/fri.rs` (D=2 impl block;
   ~15 lines net)
 
 **Edited (Stage 4 + 5):**
-- `Plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs`
+- `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs`
   — DOES NOT add Poseidon2 substrate. May add a Tip5-throughout
   parallel of the `make_outer_cfg` helper using `goldilocks_tip5_params`.
 

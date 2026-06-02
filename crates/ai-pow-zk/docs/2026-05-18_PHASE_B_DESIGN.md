@@ -289,7 +289,7 @@ runtime; the live forward pass is the Phase-D row below.
 Each stage: commit per validated stage; honest status + precise
 residual (R1); the soundness-adjacent B2 mined-integer edge is
 KAT-first and never rushed even though Phase B is a correctness
-(not soundness) gate. `Plonky3-recursion/` untracked.
+(not soundness) gate. `crates/plonky3-recursion/` untracked.
 
 **Definition of done:** for `pearl-ai/Llama-3.1-8B-Instruct-pearl`'s
 group_1 INT7 GEMMs, `ai-pow`'s mineable unit is bit-identical to

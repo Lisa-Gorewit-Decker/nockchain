@@ -60,7 +60,7 @@ floor. Maintainer-targeted ≥60-bit Johnson floor.**
 
 ### Production parameters (2026-05-21, FINAL)
 
-- **Outer-cert L1/L2** `Plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_60bit()`:
+- **Outer-cert L1/L2** `crates/plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_60bit()`:
   `lb=4, nq=15, pow=1+1` ⇒ `4·15 + 1 + 1 = 62` bits Johnson, proven.
 - **Inner Tip5-L0** `crates/ai-pow-zk/src/circuit.rs::CircuitConfig::PROD`:
   `lb=4, nq=15, pow=1+1` ⇒ `4·15 + 1 + 1 = 62` bits Johnson, proven.
@@ -251,7 +251,7 @@ Action items (R1 residuals):
    soundness with appropriate margin.
 3. **Stage 5 re-measure** L1+L2 at the retuned config.
 4. **Update doc-comments** in
-   `Plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_60bit()`
+   `crates/plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_60bit()`
    and `crates/ai-pow-zk/src/circuit.rs::CircuitConfig::PROD`.
 
 ### WHIR integration (post-FRI-retuning)

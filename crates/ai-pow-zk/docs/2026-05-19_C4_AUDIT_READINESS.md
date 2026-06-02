@@ -78,9 +78,9 @@ mining the real shipped `Llama-3.1-8B-Instruct-pearl` model
 |---|---|---|
 | Pearl-byte-equivalent mineable unit | `ai-pow` | the *plain* `TileState` / `keyed_hash` / `compute_tile_*` path the SNARK is *of*; byte-equiv to Pearl spec §4.1/§4.3 on type-0 INT GEMMs |
 | ai-pow-zk soundness stack | `ai-pow-zk` | the Plonky3 STARK AIR + prover/verifier bridge proving the mineable unit |
-| Recursion substrate | `Plonky3-recursion/` (vendored, excluded workspace) | C1: vendored Plonky3-recursion at the C1 fixed-point rev `c2c51fb` (rev-aligned to ai-pow-zk's `6de5cba`) |
-| Tip5 circuit AIR | `Plonky3-recursion/tip5-circuit-air/` | C2: in-circuit Tip5 permutation, KAT-anchored to `nockchain-math::tip5::permute` |
-| C3 / M-S5 outer-recursive cert | `Plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs` + `test_tip5_layer0_compression.rs` | The ≥120-bit vertical-recursion certificate of the inner Tip5 Layer-0 proof |
+| Recursion substrate | `crates/plonky3-recursion/` (vendored, excluded workspace) | C1: vendored Plonky3-recursion at the C1 fixed-point rev `c2c51fb` (rev-aligned to ai-pow-zk's `6de5cba`) |
+| Tip5 circuit AIR | `crates/plonky3-recursion/tip5-circuit-air/` | C2: in-circuit Tip5 permutation, KAT-anchored to `nockchain-math::tip5::permute` |
+| C3 / M-S5 outer-recursive cert | `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs` + `test_tip5_layer0_compression.rs` | The ≥120-bit vertical-recursion certificate of the inner Tip5 Layer-0 proof |
 
 ### 1.2 Out-of-scope
 
@@ -266,7 +266,7 @@ backs it → status)`.
 | **C2.4** | Real Tip5 Layer-0 end-to-end recursion verify + 120-bit FRI sweep | `2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` § 2c.C2.4 | `recursion/tests/test_tip5_layer0_recursion.rs` accept + tamper-reject across the sweep (commit `fb0bd32`) | ✅ landed |
 | **C2.4 R-a** | `WitnessChecks` CTL D=1 byte-identical re-validated; D-aware infrastructure landed | `2026-05-19_C3_OUTER_CERT_DESIGN.md` (the C2.4 R-a tail context) | D=1 byte-identical re-validation; D=5 quintic arbiter (commit `632cb8c`) | ✅ landed |
 | **C3 / M-S5 ≥120-bit cert** | Soundness-correct ≥120-bit vertical-recursion cert (every chain link ≥120 conj. bits ⇒ end-to-end `min ≥ 120` conjectured **= comfortably ≥ 80 unconditional under IACR ePrint 2025/2055 Theorem 1.5 Johnson-radius bound**, the new maintainer floor; see §1.3) | `2026-05-19_C3_OUTER_CERT_DESIGN.md` § 13.2 + § 15 | `test_tip5_layer0_compression.rs::c3_stage_a_l1_120bit_kat` + `c3_stage_b_l2_over_120bit_l1` + `c3_stage_c_sweep_120bit` (accept + 5 inner sweep profiles tamper-reject) | ✅ landed (commits `259cab2`, prior `14116b0`); independently re-validated by orchestrator |
-| **DT-4 duplex binding** | Merkle-swap slot↔idx desync fix: capture pre-swap `bus_state` for `!has_ctl_output` perms; net-0 duplex binding | `2026-05-19_C3_OUTER_CERT_DESIGN.md` § 13 | `Plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs` (commit `14116b0`); tamper-reject via `WitnessConflict` at `runner().run()` | ✅ landed (non-fenced executor edit; zero multiplicity changed; Merkle-root binding bit-for-bit untouched) |
+| **DT-4 duplex binding** | Merkle-swap slot↔idx desync fix: capture pre-swap `bus_state` for `!has_ctl_output` perms; net-0 duplex binding | `2026-05-19_C3_OUTER_CERT_DESIGN.md` § 13 | `crates/plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs` (commit `14116b0`); tamper-reject via `WitnessConflict` at `runner().run()` | ✅ landed (non-fenced executor edit; zero multiplicity changed; Merkle-root binding bit-for-bit untouched) |
 
 ### 3.6 ENV / P-A — production envelope
 
@@ -312,14 +312,14 @@ backs it → status)`.
 | Layer | Crate / file | Vendored rev | Audit anchor |
 |---|---|---|---|
 | Goldilocks field, FRI, MMCS | upstream Plonky3 | rev aligned at `c2c51fb` to ai-pow-zk's `6de5cba` | upstream audited (Plonky3 community) |
-| Recursion frontend | `Plonky3-recursion/` (vendored, **excluded workspace**) | C1 fixed-point `c2c51fb` | `2026-05-18_C1_RECURSION_VENDOR_DESIGN.md` |
-| Tip5 perm AIR (linchpin) | `Plonky3-recursion/tip5-circuit-air/` | included via C1 | C2.1 KAT vs `nockchain_math::tip5::permute` |
-| Tip5 lookup table | `Plonky3-recursion/circuit-prover/.../tip5/` (LogUp arms) | included | C2 L4 bus correctness (`8233a9e`) |
-| In-circuit Tip5 challenger duplexing | `Plonky3-recursion/recursion/src/challenger/circuit.rs` | included | C2 L5 (`259dd6f`) |
-| In-circuit MMCS path | `Plonky3-recursion/recursion/src/mmcs/circuit.rs` | included | C2 L5 |
-| In-circuit batch-STARK verifier | `Plonky3-recursion/circuit-prover/.../batch_stark_prover/` (`verify_p3_batch_proof_circuit`) | included | C2.4 (`fb0bd32`) |
-| `WitnessChecks` CTL D-aware | `Plonky3-recursion/circuit-prover/.../recompose.rs` | included | C2.4 R-a (`632cb8c`) |
-| **DT-4 duplex-binding fix** | `Plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs` | included | C3 DT-4 (`14116b0`) |
+| Recursion frontend | `crates/plonky3-recursion/` (vendored, **excluded workspace**) | C1 fixed-point `c2c51fb` | `2026-05-18_C1_RECURSION_VENDOR_DESIGN.md` |
+| Tip5 perm AIR (linchpin) | `crates/plonky3-recursion/tip5-circuit-air/` | included via C1 | C2.1 KAT vs `nockchain_math::tip5::permute` |
+| Tip5 lookup table | `crates/plonky3-recursion/circuit-prover/.../tip5/` (LogUp arms) | included | C2 L4 bus correctness (`8233a9e`) |
+| In-circuit Tip5 challenger duplexing | `crates/plonky3-recursion/recursion/src/challenger/circuit.rs` | included | C2 L5 (`259dd6f`) |
+| In-circuit MMCS path | `crates/plonky3-recursion/recursion/src/mmcs/circuit.rs` | included | C2 L5 |
+| In-circuit batch-STARK verifier | `crates/plonky3-recursion/circuit-prover/.../batch_stark_prover/` (`verify_p3_batch_proof_circuit`) | included | C2.4 (`fb0bd32`) |
+| `WitnessChecks` CTL D-aware | `crates/plonky3-recursion/circuit-prover/.../recompose.rs` | included | C2.4 R-a (`632cb8c`) |
+| **DT-4 duplex-binding fix** | `crates/plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs` | included | C3 DT-4 (`14116b0`) |
 | Inner mineable-unit AIR | `crates/ai-pow-zk/src/composite/full_air_pinned.rs` (`CompositeFullAirPinned`) | in main workspace | HIGH-2.2 + M-S1 + §4.C.2 |
 
 ### 4.3 Standing decoupling invariant (C1)
@@ -338,7 +338,7 @@ Tip5).
 
 ### 5.1 What is being claimed (precise)
 
-The Tip5 permutation AIR (`Plonky3-recursion/tip5-circuit-air/`)
+The Tip5 permutation AIR (`crates/plonky3-recursion/tip5-circuit-air/`)
 implements a 7-round permutation **identical bit-for-bit** to
 `nockchain_math::tip5::permute` over Goldilocks⁸, instantiated
 per the Tip5 paper (ePrint IACR ePrint 2023/107) §4.3/§4.6.
@@ -386,10 +386,10 @@ frozen oracle is the same code path consensus uses.
 
 | KAT | File | What it verifies |
 |---|---|---|
-| `tip5_air_kat_*` | `Plonky3-recursion/tip5-circuit-air/src/lib.rs` (test mod) | Tip5 7-round AIR per-row vs `nockchain_math::tip5::permute` |
-| `test_tip5_lookups` | `Plonky3-recursion/recursion/tests/test_tip5_lookups.rs` | LogUp bus correctness |
-| `test_tip5_layer0_recursion` | `Plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs` | C2.4: in-circuit Tip5-L0 verifier accept + tamper-reject; 120-bit sweep |
-| `test_tip5_layer0_compression` | `Plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs` | C3 / M-S5: ≥120-bit outer-recursive cert (Stage A/B/C, 5 sweep profiles, accept + tamper) |
+| `tip5_air_kat_*` | `crates/plonky3-recursion/tip5-circuit-air/src/lib.rs` (test mod) | Tip5 7-round AIR per-row vs `nockchain_math::tip5::permute` |
+| `test_tip5_lookups` | `crates/plonky3-recursion/recursion/tests/test_tip5_lookups.rs` | LogUp bus correctness |
+| `test_tip5_layer0_recursion` | `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs` | C2.4: in-circuit Tip5-L0 verifier accept + tamper-reject; 120-bit sweep |
+| `test_tip5_layer0_compression` | `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs` | C3 / M-S5: ≥120-bit outer-recursive cert (Stage A/B/C, 5 sweep profiles, accept + tamper) |
 
 ### 6.2 ai-pow byte-equivalence KATs
 

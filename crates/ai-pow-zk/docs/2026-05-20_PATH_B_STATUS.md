@@ -97,7 +97,7 @@ post-quantum-preserving in-substrate floor for L1 is plausibly
   pre-2026-05-20 baseline ~1011 KB), L2 = 519.18 KB,
   L2/L1 = 1.06×.
 
-Tool: `Plonky3-recursion/recursion/tests/test_path_b_b0_inventory.rs`
+Tool: `crates/plonky3-recursion/recursion/tests/test_path_b_b0_inventory.rs`
 (commit `e8b...` then `11a58d8` refinement).
 
 Doc: [`2026-05-20_PATH_B_STAGE_0_COLUMN_INVENTORY.md`](2026-05-20_PATH_B_STAGE_0_COLUMN_INVENTORY.md)

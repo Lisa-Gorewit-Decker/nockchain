@@ -400,7 +400,7 @@ The inline soundness claims in code:
 - `crates/ai-pow-zk/src/circuit.rs:48–82` claims "~90 bits
   unconditional" for the inner FRI side (per S(−1)). **AIR
   side: 103 bits.** Combined chain MIN: 82 (FRI). ✅
-- `Plonky3-recursion/circuit-prover/src/config.rs:240–294`
+- `crates/plonky3-recursion/circuit-prover/src/config.rs:240–294`
   claims "~85 bits unconditional" for L1/L2 outer-cert FRI.
   **AIR side: 105 bits.** Combined chain MIN: 82 (FRI). ✅
 - S(−1) verdict: "~82 unconditional bits combined" → confirmed

@@ -1,10 +1,10 @@
 # 2026-05-22 — The recursive STARK verifier: how the verifier circuit works and is generated
 
-> Design / orientation doc. Covers the vendored `Plonky3-recursion/`
+> Design / orientation doc. Covers the vendored `crates/plonky3-recursion/`
 > substrate as used by the `ai-pow-zk` proving stack: what the
 > "verifier circuit" is, the primary entrypoints, the generation
 > pipeline, how the inner proof's shape enters, and what is / is not
-> wired today. Written after a code walk of `Plonky3-recursion/`
+> wired today. Written after a code walk of `crates/plonky3-recursion/`
 > (entrypoints verified directly; pipeline cross-checked).
 
 ## 0. TL;DR
@@ -15,10 +15,10 @@
   constraints to a `CircuitBuilder`.
 - **Primary entrypoints:**
   - L1 (verify a uni-STARK proof): `verify_p3_uni_proof_circuit`
-    — `Plonky3-recursion/recursion/src/verifier/stark.rs:59`.
+    — `crates/plonky3-recursion/recursion/src/verifier/stark.rs:59`.
   - L2 (verify a batch-STARK proof, i.e. verify L1):
     `verify_p3_batch_proof_circuit`
-    — `Plonky3-recursion/recursion/src/verifier/batch_stark.rs`.
+    — `crates/plonky3-recursion/recursion/src/verifier/batch_stark.rs`.
 - The inner AIR is a **compile-time generic** (`A: RecursiveAir`);
   the inner proof's *shape* (trace width, opened-values length,
   FRI params) is consumed **dynamically** and validated against
@@ -67,7 +67,7 @@ the **Tip5 permutation** (Merkle/sponge hashing) and `Recompose`
 (base↔extension-field repacking).
 
 It is produced by a **`CircuitBuilder<F>`**
-(`Plonky3-recursion/circuit/src/builder/circuit_builder.rs`):
+(`crates/plonky3-recursion/circuit/src/builder/circuit_builder.rs`):
 
 1. The caller creates a `CircuitBuilder`, enables the NPOs it needs
    (`enable_tip5_perm`, `enable_recompose`).
@@ -79,7 +79,7 @@ It is produced by a **`CircuitBuilder<F>`**
    STARK-proves.
 
 There is **no serialized circuit, no `build.rs` codegen, no
-committed `.bin`/`.ir`**. `Plonky3-recursion/scripts/` holds only
+committed `.bin`/`.ir`**. `crates/plonky3-recursion/scripts/` holds only
 `benchmark.sh` / `profiling.sh` — no regeneration utility, because
 there is nothing static to regenerate.
 
@@ -224,13 +224,13 @@ Heavy tests are `#[ignore]`d; run with `--ignored --nocapture`.
 
 ## 9. Cross-references
 
-- Entrypoints: `Plonky3-recursion/recursion/src/verifier/stark.rs`,
+- Entrypoints: `crates/plonky3-recursion/recursion/src/verifier/stark.rs`,
   `.../verifier/batch_stark.rs`.
-- Circuit IR: `Plonky3-recursion/circuit/`,
+- Circuit IR: `crates/plonky3-recursion/circuit/`,
   `circuit/src/builder/circuit_builder.rs`.
-- Configs: `Plonky3-recursion/circuit-prover/src/config.rs`
+- Configs: `crates/plonky3-recursion/circuit-prover/src/config.rs`
   (`goldilocks_tip5_*`).
 - Inner config replication + residuals:
-  `Plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs`.
+  `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs`.
 - Inner AIR width: `crates/ai-pow-zk/src/composite_layout.rs`
   (`TOTAL_TRACE_WIDTH`).

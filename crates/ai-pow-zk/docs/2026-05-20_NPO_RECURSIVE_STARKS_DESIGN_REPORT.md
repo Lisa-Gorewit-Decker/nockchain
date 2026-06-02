@@ -92,7 +92,7 @@ The NPOs we use:
 
 - `tip5_perm` — Tip5 permutation: a single row of `Tip5PermLookupAir`
   per perm invocation (one Tip5 permute = one NPO table row).
-  Source: `Plonky3-recursion/circuit-prover/src/batch_stark_prover/tip5.rs`.
+  Source: `crates/plonky3-recursion/circuit-prover/src/batch_stark_prover/tip5.rs`.
 - `poseidon1_perm`, `poseidon2_perm_width_8` — analogous Poseidon
   permutations. Retained in upstream Plonky3 for non-nockchain
   consumers; **never used in nockchain's trust surface** per the
@@ -132,7 +132,7 @@ that uses NPO tables for the expensive in-circuit hash work**.
   Johnson.
 - Tip5 sponge: W=16, R=10, capacity=6, digest=5; 7 rounds.
 
-**L1 outer-cert** (`Plonky3-recursion/circuit-prover/src/config.rs`
+**L1 outer-cert** (`crates/plonky3-recursion/circuit-prover/src/config.rs`
 `goldilocks_tip5_60bit`):
 
 - A **multi-table batch STARK** whose AIRs include:
@@ -223,7 +223,7 @@ binds the NPO outputs to the main circuit's consumption.
 In a generic recursion stack (multiple proof systems / multiple
 hash families), the choice of NPO trio per layer is config-driven.
 `FriRecursionBackend::non_primitive_{preprocessors, provers, air_builders}`
-at `Plonky3-recursion/recursion/src/backend/fri.rs:444-555` is the
+at `crates/plonky3-recursion/recursion/src/backend/fri.rs:444-555` is the
 dispatch point. Pre-Stage-3 (commit `6c67e7f`) it routed only
 Poseidon1/Poseidon2. Post-Stage-3, it routes Tip5 as the
 production path:

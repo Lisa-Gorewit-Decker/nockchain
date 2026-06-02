@@ -24,7 +24,7 @@
 > 2026-05-21 directive.
 >
 > **What changed in companion artifacts:**
-> - `Plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs`
+> - `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs`
 >   `tip5_layer0_outer_cert_size_residual` (the `#[ignore]`d size
 >   residual): assert updated to `serialized_len <= 102_400` to
 >   reflect the new bar.
@@ -80,7 +80,7 @@ Produce a verifying **terminal compression** of the LANDED
 
 1. **Size:** the consensus-facing artifact is **≤ 65 536 bytes**
    (the byte-verbatim `assert!(serialized_len <= 65_536, …)` in
-   `Plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs::tip5_layer0_outer_cert_size_residual`
+   `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs::tip5_layer0_outer_cert_size_residual`
    passes — that test currently `#[ignore]`s with a reason
    string pointing at this milestone).
 2. **Soundness:** ≥ **80 unconditional** bits **end to end**,
@@ -103,7 +103,7 @@ Produce a verifying **terminal compression** of the LANDED
    `keyed_hash`; M-S5b changes how the SNARK is *compressed*,
    not what it proves about the mined work. Inner Tip5
    Layer-0 circuit, C3 outer-cert AIR, and DT-4 duplex binding
-   (`Plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs:14116b0`)
+   (`crates/plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs:14116b0`)
    must remain **byte-identical**.
 4. **Recursion-compatible production config.** The packed-MMCS
    `GoldilocksConfig` prerequisite (§14: the landed unpacked
@@ -274,7 +274,7 @@ The argument:
 
 The exact FRI-parameter → unconditional-bits map under the new
 bound depends on the specific FRI variant in
-`Plonky3-recursion/recursion/src/backend/fri.rs` and the
+`crates/plonky3-recursion/recursion/src/backend/fri.rs` and the
 Plonky3 soundness-reduction code path. Pending the audit's
 exact analysis, the ballpark mapping is:
 
@@ -577,7 +577,7 @@ choice empirically.
 
 **Goal.** Concretize the §1.4 abstract bar (≥80 unconditional
 bits under IACR ePrint 2025/2055 Theorem 1.5) into the **exact
-parameter map** for our `Plonky3-recursion/recursion/src/backend/fri.rs`
+parameter map** for our `crates/plonky3-recursion/recursion/src/backend/fri.rs`
 FRI variant. This is analytical / written-out work; no code
 edit.
 
@@ -665,7 +665,7 @@ concrete reduction map.
 - Use S(−1)'s parameter map to determine the smallest FRI
   parameters that hit ≥80 unconditional at the L2 layer
   (expected: `lb=2, nq≈40` or similar — see §1.4.B).
-- Read-only audit of `Plonky3-recursion/recursion/src/verifier/*`
+- Read-only audit of `crates/plonky3-recursion/recursion/src/verifier/*`
   + `circuit/src/ops/tip5_perm/*` + the verifier circuit's
   AIR layout.
 - Column-by-column table: `name → role → is_removable_at_80
@@ -757,7 +757,7 @@ require sign-off).
 ### 3.6 S5 — Acceptance gate
 
 The byte-verbatim test in
-`Plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs::tip5_layer0_outer_cert_size_residual`
+`crates/plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs::tip5_layer0_outer_cert_size_residual`
 un-`#[ignore]`s and passes, **at ≥120-bit soundness**, with
 a *tamper-rejection* gate at the same scale (analogous to the
 DT-4 tamper test).
@@ -791,10 +791,10 @@ green. Fenced linchpin `git diff` empty across the C2/DT-4 set.
    landed M-S5 tree per stage commit.
 2. **Tip5 AIR (C2.1 / 62413ba)** untouched. KAT-anchored to
    `nockchain_math::tip5::permute`.
-3. **DT-4 duplex binding** in `Plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs`
+3. **DT-4 duplex binding** in `crates/plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs`
    (the pre-swap vs post-swap state capture) untouched. The
    tamper test in
-   `Plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs`
+   `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs`
    must continue to reject when M-S5b wraps it.
 4. **WitnessChecks LogUp** producer/consumer multiplicity untouched.
    M-S5b adds a *new outer layer*, not new producers/consumers in

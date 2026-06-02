@@ -128,10 +128,10 @@ property-based variant**. 5 existing tests.
 
 | Side | Test | File:line | Mechanism |
 |---|---|---|---|
-| Inner-side tamper | `tip5_layer0_recursion_prod_tampered_rejects` (+ LB4 variant) | `Plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs:499, 508` | M4 (WitnessConflict) |
+| Inner-side tamper | `tip5_layer0_recursion_prod_tampered_rejects` (+ LB4 variant) | `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs:499, 508` | M4 (WitnessConflict) |
 | Outer-side tamper | `tip5_layer0_outer_cert_prod_tampered_rejects` (+ LB4 variant) | `:780, 793` | M4 |
 | Composite | `c3_stage_a_l1_120bit_kat` | `test_tip5_layer0_compression.rs::c3_stage_a` | M4 + M1 |
-| Inner-side AIR | `adversarial_tamper_rejected` | `Plonky3-recursion/tip5-circuit-air/src/air.rs:417` | M1 |
+| Inner-side AIR | `adversarial_tamper_rejected` | `crates/plonky3-recursion/tip5-circuit-air/src/air.rs:417` | M1 |
 | Inner-side AIR | `lookup_air_adversarial` | `air_lookup.rs:537` | M1 + M2 |
 
 **Verdict.** ✅ B6 is **fully bidirectionally covered**. The
@@ -170,7 +170,7 @@ deliverable.
   satisfied.
 - **For deeper audit (post-M-S6 if requested):** add direct
   per-fold-round tamper tests in
-  `Plonky3-recursion/recursion/tests/fri.rs`. Each tamper
+  `crates/plonky3-recursion/recursion/tests/fri.rs`. Each tamper
   variant would corrupt one FRI fold-round commitment / opening
   / challenge derivation and verify the verifier rejects.
 - **Routed to:** `2026-05-15_GAP_AUDIT.md` as a tracked

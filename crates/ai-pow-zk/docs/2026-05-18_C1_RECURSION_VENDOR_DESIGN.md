@@ -13,7 +13,7 @@
 
 ## 1. Problem & the forced direction
 
-`Plonky3-recursion/` is present (13 MB, a *nested git clone* —
+`crates/plonky3-recursion/` is present (13 MB, a *nested git clone* —
 own `.git`, no `target/`), **untracked, not git-ignored, not a
 nockchain workspace member, referenced by nothing**. It is its
 own 6-member Cargo workspace (`circuit`, `circuit-prover`,
@@ -55,7 +55,7 @@ one Plonky3, not two).
   safe; red ⇒ Plonky3 API/semantic drift `5695250↔6de5cba` — a
   soundness-relevant signal (see §4).
 - **C1.1 — vendor (track it, independently).** Strip the nested
-  `Plonky3-recursion/.git` (vendor as plain in-tree source, not
+  `crates/plonky3-recursion/.git` (vendor as plain in-tree source, not
   a submodule); add `"Plonky3-recursion"` to the nockchain root
   `exclude` (like `pearl`) so it stays an *independent*
   workspace and does not perturb the nockchain build; **force-
@@ -128,7 +128,7 @@ substrate at ai-pow-zk's Plonky3 rev — ready for C2.
 
 ## 5. Cross-references
 
-- `Plonky3-recursion/` (vendored tree); `crates/ai-pow-zk/
+- `crates/plonky3-recursion/` (vendored tree); `crates/ai-pow-zk/
   Cargo.toml` + root `Cargo.lock` (`6de5cba…` fixed point).
 - `2026-05-17_PRODUCTION_ROADMAP.md` §2 Phase C (C1 gates C2/C3/C4).
 - `2026-05-18_PEARL_VLLM_CPU_FORK_DESIGN.md` (vendoring-as-`exclude`d-tree

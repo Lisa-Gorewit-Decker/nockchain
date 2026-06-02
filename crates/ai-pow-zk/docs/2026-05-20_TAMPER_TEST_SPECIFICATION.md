@@ -240,13 +240,13 @@ the audit-readiness label.
 ```
 Spec:                Documentation update; no new test code.
 File(s):
-  - Plonky3-recursion/poseidon2-circuit-air/src/lib.rs (or
+  - crates/plonky3-recursion/poseidon2-circuit-air/src/lib.rs (or
     poseidon1-circuit-air/src/lib.rs equivalent) — add a doc-comment
     explicitly stating: "Tamper coverage for this AIR is upstream
     Plonky3 test suite + indirect via c3_stage_a/b/c via the L1+L2
     composite outer-cert tests. No in-tree tamper test is added;
     the vendoring rev `c2c51fb` is the authoritative test-source."
-  - Plonky3-recursion/README.md or vendoring notes if present.
+  - crates/plonky3-recursion/README.md or vendoring notes if present.
   - crates/ai-pow-zk/docs/2026-05-19_C4_AUDIT_READINESS.md § 3.5 (C)
     or § 7: add an entry cross-linking the upstream Plonky3 Poseidon2/1
     tamper coverage.

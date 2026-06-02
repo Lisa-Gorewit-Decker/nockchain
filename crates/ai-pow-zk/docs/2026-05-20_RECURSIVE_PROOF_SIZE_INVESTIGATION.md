@@ -74,7 +74,7 @@ For each lever, we derive:
 
 ### 1.3 Measurement infrastructure
 
-Two test files in `Plonky3-recursion/recursion/tests/`:
+Two test files in `crates/plonky3-recursion/recursion/tests/`:
 
 - `test_l1_size_reduction_sweep.rs` — broad sweep (per-lever
   variants in isolation). All `#[ignore]`'d (manual
@@ -403,7 +403,7 @@ The 2026-05-20 production config (`config::goldilocks_tip5_60bit`,
 post-Phase-0 cumulative-lever stack: `lb=4 nq=20 mla=3 lfp=2
 cap=3 pow=1+1 d=5`, 82 bits unconditional Johnson) was measured
 at the real L1 + L2 layers via
-`Plonky3-recursion/recursion/tests/test_tip5_l2_over_l1.rs::
+`crates/plonky3-recursion/recursion/tests/test_tip5_l2_over_l1.rs::
 stage5_tip5_l2_over_l1_production_measurement`.
 
 **Substrate correction (2026-05-20):** the original Stage 5 runs
@@ -588,11 +588,11 @@ What this investigation does NOT close:
 - **CSA constraint-side soundness:**
   `2026-05-20_CSA_S7_AUDIT_SIGNOFF.md`
 - **Test files (measurement infrastructure):**
-  - `Plonky3-recursion/recursion/tests/test_l1_outer_cert_tip5_unified.rs`
+  - `crates/plonky3-recursion/recursion/tests/test_l1_outer_cert_tip5_unified.rs`
     (P4 baseline; Tip5-unified vs Poseidon2 vs Tip5-out-4)
-  - `Plonky3-recursion/recursion/tests/test_l1_size_reduction_sweep.rs`
+  - `crates/plonky3-recursion/recursion/tests/test_l1_size_reduction_sweep.rs`
     (broad sweep; all levers in isolation)
-  - `Plonky3-recursion/recursion/tests/test_l1_size_reduction_combined.rs`
+  - `crates/plonky3-recursion/recursion/tests/test_l1_size_reduction_combined.rs`
     (focused combinations; Pareto candidates)
 - **README cryptographic assumptions:**
   `crates/ai-pow-zk/README.md` § "Cryptographic assumptions"

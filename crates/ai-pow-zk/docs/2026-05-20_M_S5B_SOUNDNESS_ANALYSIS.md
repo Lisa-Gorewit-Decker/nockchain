@@ -69,7 +69,7 @@
 >
 > ### Cross-references
 >
-> - `Plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_60bit()` —
+> - `crates/plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_60bit()` —
 >   outer-cert with full doc-comment of the anchored-between
 >   rationale + 2.5-min threat-model paragraph.
 > - `crates/ai-pow-zk/src/circuit.rs::CircuitConfig::PROD` —
@@ -197,7 +197,7 @@ Both the inner Tip5-L0 sweep (ai-pow-zk) and the outer-cert
   with `PaddingFreeSponge` + `TruncatedPermutation`.
 - **Challenger:** `DuplexChallenger<Goldilocks, Perm, WIDTH,
   RATE>`. Inner uses Tip5 perm (`crates/ai-pow-zk/src/circuit.rs:174–212`);
-  outer uses Poseidon2-W8 (`Plonky3-recursion/circuit-prover/src/config.rs:226–294`).
+  outer uses Poseidon2-W8 (`crates/plonky3-recursion/circuit-prover/src/config.rs:226–294`).
 - **Field stack:** Base `Goldilocks` (64-bit prime; `q_base ≈
   2^64`); FRI challenge field `BinomialExtensionField<Goldilocks, 2>`
   (`q_chal ≈ 2^128`).
@@ -252,14 +252,14 @@ unconditional_bits_at_Johnson
 ```
 
 This is the formula our inline code claims (`crates/ai-pow-zk/src/circuit.rs:42–94`,
-`Plonky3-recursion/circuit-prover/src/config.rs:240–294`).
+`crates/plonky3-recursion/circuit-prover/src/config.rs:240–294`).
 The Theorem 1.5 contribution is to *underwrite* the per-query
 contribution at the **Johnson** radius, instead of the prior
 unique-decoding `log_blowup / 2` per query that the classical
 analysis (pre-Theorem 1.5) gave.
 
 **Conservative reading.** The recursion config doc-comment at
-`Plonky3-recursion/circuit-prover/src/config.rs:251` writes
+`crates/plonky3-recursion/circuit-prover/src/config.rs:251` writes
 `log_blowup · num_queries + query_pow_bits = 2 · 42 + 1 = 85`,
 i.e., omits `commit_pow_bits` from the additive total. We use
 this conservative reading in §3's table (gives 85 instead of
@@ -327,7 +327,7 @@ confirms all five accept + tamper-reject at these parameters
 
 ### 3.2 Outer-cert L1 + L2 (Plonky3-recursion `goldilocks_tip5_120bit`)
 
-Source: `Plonky3-recursion/circuit-prover/src/config.rs:268–294`
+Source: `crates/plonky3-recursion/circuit-prover/src/config.rs:268–294`
 (`goldilocks_tip5_120bit()` — the recalibrated outer-cert).
 Both L1 (wrap of inner) and L2 (wrap of L1) use the same
 FRI config; the recursion-verifier circuit varies but the FRI
@@ -338,7 +338,7 @@ parameters are fixed.
 | **L1** | `goldilocks_tip5_120bit` | (2, 42, 1, 1) | 1/4 | 3/4 | **0.5000** | 84 | 1+1 = 2 | **86** (conservative read: **85**) |
 | **L2** | `goldilocks_tip5_120bit` | (2, 42, 1, 1) | 1/4 | 3/4 | **0.5000** | 84 | 1+1 = 2 | **86** (conservative read: **85**) |
 
-Cross-check: `Plonky3-recursion/circuit-prover/src/config.rs:251`
+Cross-check: `crates/plonky3-recursion/circuit-prover/src/config.rs:251`
 states `log_blowup · num_queries + query_pow_bits = 2·42 + 1 =
 85`. Adding `commit_pow_bits = 1` gives the inclusive reading
 of 86. Both are ≥ 80 with ≥5-bit margin. Stage A + B
@@ -563,7 +563,7 @@ flat across the inner sweep) makes this an inert lever.
 This analysis does not edit any FRI parameter. The
 `c3_stage_a_l1_120bit_kat`, `c3_stage_b_l2_over_120bit_l1`,
 and `c3_stage_c_sweep_120bit` tests under
-`Plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs`
+`crates/plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs`
 continue to PASS at the LANDED parameters by inspection of
 the recalibration commit messages (`0334943`, `f54ae81`); no
 re-run is required by S(−1). If §5.1 verdict needs cross-
@@ -678,11 +678,11 @@ about M-S5 soundness.
   `crates/ai-pow-zk/src/circuit.rs:42–168` (the soundness-
   framing doc-comments + the 5 PROD profile constants).
 - **Outer FRI param sites in code.**
-  `Plonky3-recursion/circuit-prover/src/config.rs:210–334`
+  `crates/plonky3-recursion/circuit-prover/src/config.rs:210–334`
   (the three `goldilocks_tip5*` builders + their soundness-
   framing doc-comments).
 - **The gates this analysis underwrites (LANDED).**
-  `Plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs`
+  `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs`
   — `c3_stage_a_l1_120bit_kat`, `c3_stage_b_l2_over_120bit_l1`,
   `c3_stage_c_sweep_120bit`, `s3ii_l3_over_l2_120bit` (all
   PASS at the LANDED parameters; this analysis explains why).

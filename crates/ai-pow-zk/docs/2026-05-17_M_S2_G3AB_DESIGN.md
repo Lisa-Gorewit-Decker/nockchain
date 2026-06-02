@@ -628,7 +628,7 @@ zero-regression-testable:
 
 Each phase: commit with the `Co-Authored-By: Claude Opus 4.7
 (1M context) <noreply@anthropic.com>` trailer; push only when
-asked; `Plonky3-recursion/` stays git-untracked; never bake
+asked; `crates/plonky3-recursion/` stays git-untracked; never bake
 `target-cpu=native` workspace-wide.
 
 After M-S2: **M-S3** (P0 vendor Plonky3-recursion) → **M-S4**

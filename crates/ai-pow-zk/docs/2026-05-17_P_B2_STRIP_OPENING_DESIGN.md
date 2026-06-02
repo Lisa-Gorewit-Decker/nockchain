@@ -500,7 +500,7 @@ pure off-circuit property checkable before any AIR change):
 
 Each stage: commit with the `Co-Authored-By: Claude Opus 4.7
 (1M context) <noreply@anthropic.com>` trailer; push only when
-asked; `Plonky3-recursion/` stays untracked.
+asked; `crates/plonky3-recursion/` stays untracked.
 
 After P-B.2 the only remaining §4.C tie is **§4.C.2**
 (store ↔ plain-strip via in-circuit noise derivation) — then

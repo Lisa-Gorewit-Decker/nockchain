@@ -29,11 +29,11 @@ The **only** hash function in the live SNARK proving path is:
     digest 5) is the MMCS hash + Fiat-Shamir challenger
     permutation (`crates/ai-pow-zk/src/circuit.rs:186, 203`).
     KAT'd against the C2.1 Tip5 perm AIR (the soundness linchpin;
-    `Plonky3-recursion/tip5-circuit-air/src/air_lookup.rs`).
+    `crates/plonky3-recursion/tip5-circuit-air/src/air_lookup.rs`).
   - **Outer-cert L1/L2 (recursion verifier circuit)** — `Tip5Perm`
     everywhere via `config::goldilocks_tip5_60bit()` (post-2026-05-20
     M-S5b S1.B P5 flip; was Poseidon2-Goldilocks<8>).
-    `Plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_60bit`.
+    `crates/plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_60bit`.
 
 - **BLAKE3** (outside the SNARK; in the ai-pow puzzle's plain
   data path). Used by `ai-pow` for the matrix commitment
@@ -70,11 +70,11 @@ The **only** hash function in the live SNARK proving path is:
   outer-cert flipped to Tip5 in P5 of M-S5b S1.B (2026-05-20)
   per maintainer directive "I'm not willing to use Poseidon2".
   Poseidon2 remains in:
-  - `Plonky3-recursion/circuit-prover/src/config.rs::goldilocks()`
+  - `crates/plonky3-recursion/circuit-prover/src/config.rs::goldilocks()`
     — the GENERAL-PURPOSE Goldilocks STARK config; NOT used by
     ai-pow-zk's recursive proving. Kept for non-recursive
     test cases.
-  - `Plonky3-recursion/circuit-prover/src/batch_stark_prover/poseidon2.rs`
+  - `crates/plonky3-recursion/circuit-prover/src/batch_stark_prover/poseidon2.rs`
     — Poseidon2 NPO prover impls; available but unregistered in
     the ai-pow-zk batch-STARK. The ai-pow-zk path registers only
     `Tip5Preprocessor` + `RecomposePreprocessor`.
@@ -130,7 +130,7 @@ heuristic is **not** adopted).
     parameters as of 2026-05-21 (anchored-between)** stack every
     soundness-neutral compression lever — `lb=4, nq=15, mla=3,
     lfp=2, cap=3, pow=1+1, d=5` ⇒ **62 bits** unconditional
-    Johnson (`Plonky3-recursion/circuit-prover/src/config.rs`).
+    Johnson (`crates/plonky3-recursion/circuit-prover/src/config.rs`).
     Historical context: prior `lb=4 nq=20 mla=3 lfp=2 cap=3
     pow=1+1 d=5` ⇒ **82 bits** pre-anchored-between.
     Pre-2026-05-20 baseline (`lb=2 nq=42 mla=1 lfp=0 cap=0`) was
@@ -188,7 +188,7 @@ Full derivations: see
 - **FRI challenge / extension field**: **`BinomialExtensionField<Goldilocks, 2>`**
   (≈ `2^128`). D=2 across the M-S5 chain.
 - **No alternative fields.** No KoalaBear, BabyBear, M31, Mersenne,
-  or other primes. (These exist in `Plonky3-recursion/circuit-prover/src/config.rs`
+  or other primes. (These exist in `crates/plonky3-recursion/circuit-prover/src/config.rs`
   for upstream Plonky3 compatibility — `baby_bear()`, `koala_bear()`
   builders — but are NOT used by ai-pow-zk.)
 
@@ -207,7 +207,7 @@ Full derivations: see
 ### How to find every cryptographic primitive in code
 
 Grep these patterns in `crates/ai-pow-zk/src/` and
-`Plonky3-recursion/`:
+`crates/plonky3-recursion/`:
 
 | Primitive | Where it lives | Grep pattern |
 |---|---|---|

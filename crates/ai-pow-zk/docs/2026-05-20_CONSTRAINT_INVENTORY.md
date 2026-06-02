@@ -336,7 +336,7 @@ documented as design residuals.
 
 ---
 
-## 3. Tip5 circuit AIR (C2.1) — `Plonky3-recursion/tip5-circuit-air/`
+## 3. Tip5 circuit AIR (C2.1) — `crates/plonky3-recursion/tip5-circuit-air/`
 
 The C2.1 soundness linchpin. Native-faithful 7-round Tip5
 permutation AIR, KAT-anchored to `nockchain_math::tip5::permute`.
@@ -406,7 +406,7 @@ LANDED state); this milestone does not edit any of these
 AIRs, only inventories their constraints and verifies tamper
 coverage.
 
-### 4.1 Poseidon2 perm AIR — `Plonky3-recursion/poseidon2-circuit-air/src/air.rs` (upstream Plonky3 wrapper)
+### 4.1 Poseidon2 perm AIR — `crates/plonky3-recursion/poseidon2-circuit-air/src/air.rs` (upstream Plonky3 wrapper)
 
 **Max degree:** 7 (the x⁷ S-box).
 **Constraint families:** ~10 (S-box, full-round / partial-round
@@ -418,12 +418,12 @@ tamper test catalogued** ⇒ ⚠️ **GAP-G2** (upstream tested, but
 no in-tree label for the specific tampers). Action: at audit
 time, route to upstream Plonky3 test inventory.
 
-### 4.2 Poseidon1 perm AIR — `Plonky3-recursion/poseidon1-circuit-air/src/air.rs` (upstream)
+### 4.2 Poseidon1 perm AIR — `crates/plonky3-recursion/poseidon1-circuit-air/src/air.rs` (upstream)
 
 Same shape as 4.1 but D=1-in-D>1 mirror.
 **Coverage:** ⚠️ **GAP-G2** (upstream); same disposition.
 
-### 4.3 Recompose AIR — `Plonky3-recursion/circuit-prover/src/air/recompose_air.rs`
+### 4.3 Recompose AIR — `crates/plonky3-recursion/circuit-prover/src/air/recompose_air.rs`
 
 **Trace columns:** D per lane (base-field coefficients).
 **Constraint families:** ZERO local constraints — all
@@ -436,14 +436,14 @@ correctness via CTL bus.
 
 **Coverage:** ⚠️ R-a tail GAP-G3 (deferred to M12 per memory).
 
-### 4.4 WitnessChecks CTL — `Plonky3-recursion/circuit-prover/src/batch_stark_prover/tip5.rs`
+### 4.4 WitnessChecks CTL — `crates/plonky3-recursion/circuit-prover/src/batch_stark_prover/tip5.rs`
 
 Mirrors §3.3 W1+W2.
 
 **Coverage:** ✅ for D=1 byte-identical (commit `632cb8c`); ⚠️
 **GAP-G3** for D=2 R-a tail.
 
-### 4.5 FRI verifier circuit — `Plonky3-recursion/recursion/src/verifier/**`
+### 4.5 FRI verifier circuit — `crates/plonky3-recursion/recursion/src/verifier/**`
 
 **Max degree:** 7 (verifier-circuit composition).
 **Constraint families:** ~20 (FRI fold round consistency,
@@ -460,7 +460,7 @@ duplexing, opening-set consistency).
 via c3_stage. ⚠️ **GAP-G3** for fine-grained per-fold-round
 constraint-level tamper tests (S5 cross-AIR work).
 
-### 4.6 Batch-STARK verifier — `Plonky3-recursion/recursion/src/verifier/batch.rs`
+### 4.6 Batch-STARK verifier — `crates/plonky3-recursion/recursion/src/verifier/batch.rs`
 
 **Constraint families:** ~10 (PIs binding, common-data layout,
 opening-set composition).
@@ -474,7 +474,7 @@ opening-set composition).
 
 **Coverage:** ✅ ~10 tests covering the major validators.
 
-### 4.7 DT-4 duplex binding executor — `Plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs`
+### 4.7 DT-4 duplex binding executor — `crates/plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs`
 
 Not a constraint family per se, but a soundness-load-bearing
 executor edit. The pre-swap `bus_state` capture (commit

@@ -92,7 +92,7 @@ evaluated against this budget shortfall, not against the prior
 ### 2.1 Setup
 
 A measurement-only `Tip5OuterTier::Lb6Nq10` variant added to
-`Plonky3-recursion/recursion/tests/test_tip5_l2_over_l1.rs`
+`crates/plonky3-recursion/recursion/tests/test_tip5_l2_over_l1.rs`
 (`stage5_tip5_l2_over_l1_lb6_nq10_measurement`). Same paper-proven
 Johnson soundness as `Production` (`lb=4 nq=15 pow=1+1` ⇒
 `4·15 + 1 + 1 = 62` bits; `lb=6 nq=10 pow=1+1` ⇒ `6·10 + 1 + 1 =
@@ -144,7 +144,7 @@ less to do than over a 329 KB L2), but not deployable as-is.
 
 **There is no Tip5-throughout L3-over-L2 test in the codebase.**
 The existing `s3ii_l3_over_l2_120bit` test
-(`Plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs:1056`)
+(`crates/plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs:1056`)
 uses **Poseidon2** for its L2 verifier circuit
 (`enable_poseidon2_perm_width_8`, `Poseidon2Config::GOLDILOCKS_D2_W8`)
 and runs at the legacy `OuterTier::Bit120` (`lb=2 nq=42 = 86 bits`)
@@ -281,7 +281,7 @@ Given that latency (~14 s over budget) is the BINDING constraint:
 
 ## 5. Files added / modified for these measurements
 
-- `Plonky3-recursion/recursion/tests/test_tip5_l2_over_l1.rs`:
+- `crates/plonky3-recursion/recursion/tests/test_tip5_l2_over_l1.rs`:
   added `Tip5OuterTier::Lb6Nq10` variant + corresponding `name`,
   `fri`, `unconditional_bits` arms; added
   `stage5_tip5_l2_over_l1_lb6_nq10_measurement` test (`#[ignore]`).

@@ -49,7 +49,7 @@
 | TEST | (1, 8) | 4 (test-tier) | unchanged | 8 (test-tier) | n/a |
 | TEST_PEARL | (2, 16) | 16 (test-tier) | unchanged | 32 (test-tier) | n/a |
 
-### 1.3 Plonky3-recursion outer-cert configs (`Plonky3-recursion/circuit-prover/src/config.rs`)
+### 1.3 Plonky3-recursion outer-cert configs (`crates/plonky3-recursion/circuit-prover/src/config.rs`)
 
 | Config | Old `(lb, nq, pow)` | Old bits (conj.) | New `(lb, nq, pow)` | New bits (Johnson-unc.) |
 |---|---|---:|---|---:|
@@ -372,7 +372,7 @@ prong mattered. The recalibration solved the first prong with a
   the C3 doc as the audit trail of "what was true before
   2026-05-19."
 - The eprintln status outputs in
-  `Plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs`
+  `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs`
   still contain some `≥120-bit` prose in test-function doc
   comments (the runtime assertions and aggregate eprintln
   outputs were updated; only function-level doc comments

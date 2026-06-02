@@ -143,7 +143,7 @@ composite-trace-builder API to inject the specific tamper).
   *added*; the audit-readiness pointer is sufficient.
 
 **S3 backlog item POS-UPSTREAM-LABEL:**
-- Add a doc-comment in `Plonky3-recursion/poseidon2-circuit-air/src/lib.rs`
+- Add a doc-comment in `crates/plonky3-recursion/poseidon2-circuit-air/src/lib.rs`
   (or the vendoring README) explicitly stating: "Poseidon2 perm
   AIR is vendored upstream; tamper coverage is upstream Plonky3
   test suite + indirect via c3_stage_a/b/c via the L1+L2

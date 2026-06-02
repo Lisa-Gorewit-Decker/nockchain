@@ -4,7 +4,7 @@
 
 > **Status (2026-05-17): AUDIT.** Reviews `2026-05-17_G3_RECURSION_AGGREGATION.md`
 > (my G3 design) against the reference implementation at
-> `Plonky3-recursion/` (origin `github.com/Plonky3/Plonky3-recursion`,
+> `crates/plonky3-recursion/` (origin `github.com/Plonky3/Plonky3-recursion`,
 > a *fixed recursive verifier* for Plonky3 uni-/batch-STARK over
 > FRI). Read-only; nothing in either repo was modified by this
 > review. Verdict + corrections at the end; the G3 spec has been
@@ -50,7 +50,7 @@ audited**, not merely until code-complete.
 - My spec: `crates/ai-pow-zk/2026-05-17_G3_RECURSION_AGGREGATION.md` (all
   sections, esp. §3 recursion primitive, §5 aggregation tree, §6
   `PROGRAM_ROOT`, §8 soundness/error budget, §14 parameters).
-- Reference: `Plonky3-recursion/` — `recursion/src/{verifier,
+- Reference: `crates/plonky3-recursion/` — `recursion/src/{verifier,
   pcs/fri,challenger,public_inputs,recursion}.rs`,
   `poseidon2-circuit-air/`, `book/src/advanced_topics/
   soundness.md`, README, examples; a full soundness-surface map
@@ -128,7 +128,7 @@ spec must stop asserting Tip5-was-chosen-for-recursion; the
 
 **Evidence.** Reference workspace pins every `p3-*` to Plonky3
 rev **`56952503e1401a62982ceaf952c5e4a829b61803`**
-(`Plonky3-recursion/Cargo.toml:46-78`). `ai-pow-zk` pins Plonky3
+(`crates/plonky3-recursion/Cargo.toml:46-78`). `ai-pow-zk` pins Plonky3
 via `git = "https://github.com/Plonky3/Plonky3.git"` with the
 project rev (`6de5cba`, per memory `ai_pow_zk_state`)
 (`crates/ai-pow-zk/Cargo.toml:45-58`). `p3-batch-stark` proof
@@ -404,7 +404,7 @@ setup claims **stand**.
 ## 5. Cross-references
 
 - My spec: `2026-05-17_G3_RECURSION_AGGREGATION.md` (annotated).
-- Reference: `Plonky3-recursion/` —
+- Reference: `crates/plonky3-recursion/` —
   `recursion/src/challenger/circuit.rs:97-129` (hash/panic),
   `pcs/fri/params.rs:8-72` (FRI params / unsafe ctor),
   `pcs/fri/targets.rs:379-382` + `types/proof.rs:168-172`

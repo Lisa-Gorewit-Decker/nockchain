@@ -161,18 +161,18 @@
 - ❌ Does NOT touch the inner ai-pow-zk STARK (fenced
   linchpin: C2.1 keystone byte-identical against `259cab2`).
 - ❌ Does NOT touch the BabyBear / KoalaBear configs in
-  `Plonky3-recursion/circuit-prover/src/config.rs` (they
+  `crates/plonky3-recursion/circuit-prover/src/config.rs` (they
   remain Poseidon2-based; this spec is Goldilocks-only).
 
 ### 0.4 R1 hard invariants
 
 - **Fenced-linchpin byte-identical** against `259cab2`:
-  C2.1 Tip5 perm AIR (`Plonky3-recursion/tip5-circuit-air/src/air.rs`,
+  C2.1 Tip5 perm AIR (`crates/plonky3-recursion/tip5-circuit-air/src/air.rs`,
   `air_lookup.rs`, `air_circuit.rs`); DT-4 duplex binding
-  executor (`Plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs`);
+  executor (`crates/plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs`);
   C2.4-R-a infrastructure; recursion-verifier core
-  (`Plonky3-recursion/recursion/src/verifier/**`); backend
-  (`Plonky3-recursion/recursion/src/backend/fri.rs`).
+  (`crates/plonky3-recursion/recursion/src/verifier/**`); backend
+  (`crates/plonky3-recursion/recursion/src/backend/fri.rs`).
 - **Additive new config** — the new Tip5-unified builder
   is added *alongside* the existing Poseidon2-based
   `goldilocks_tip5_120bit()`; the latter remains compilable
@@ -192,25 +192,25 @@
 
 | File | Lines | Role |
 |---|---|---|
-| `Plonky3-recursion/circuit-prover/src/config.rs` | 21, 206, 226, 271, 316, 346 | `goldilocks()` + `goldilocks_tip5()` + `goldilocks_tip5_120bit()` + `goldilocks_tip5_120bit_higharity()` builders + `GoldilocksConfig` type alias |
-| `Plonky3-recursion/circuit-prover/src/batch_stark_prover.rs` | 16, 58–59, 690–738, 902, 1509–1515 | `Poseidon2Prover` / `Poseidon2ProverD2` / `Poseidon2AirBuilder` registrations; `Poseidon2Config` type id |
-| `Plonky3-recursion/poseidon2-circuit-air/src/{air,columns,public_types}.rs` | (entire crate) | The Poseidon2 perm AIR sub-circuit |
-| `Plonky3-recursion/recursion/src/backend/fri.rs` | (Poseidon2Preprocessor / poseidon2_preprocessor) | FRI backend's Poseidon2 prover registration |
+| `crates/plonky3-recursion/circuit-prover/src/config.rs` | 21, 206, 226, 271, 316, 346 | `goldilocks()` + `goldilocks_tip5()` + `goldilocks_tip5_120bit()` + `goldilocks_tip5_120bit_higharity()` builders + `GoldilocksConfig` type alias |
+| `crates/plonky3-recursion/circuit-prover/src/batch_stark_prover.rs` | 16, 58–59, 690–738, 902, 1509–1515 | `Poseidon2Prover` / `Poseidon2ProverD2` / `Poseidon2AirBuilder` registrations; `Poseidon2Config` type id |
+| `crates/plonky3-recursion/poseidon2-circuit-air/src/{air,columns,public_types}.rs` | (entire crate) | The Poseidon2 perm AIR sub-circuit |
+| `crates/plonky3-recursion/recursion/src/backend/fri.rs` | (Poseidon2Preprocessor / poseidon2_preprocessor) | FRI backend's Poseidon2 prover registration |
 
 ### 1.2 What stays (Plonky3-recursion's Poseidon2 keeps for other consumers)
 
-- `Plonky3-recursion/poseidon2-circuit-air/` — the AIR
+- `crates/plonky3-recursion/poseidon2-circuit-air/` — the AIR
   itself stays vendored (Path G upstream-routing label per
   CSA S2 § 2.3). Other downstream users of Plonky3-recursion
   may use Poseidon2.
-- `Plonky3-recursion/circuit-prover/src/config.rs:140-208`
+- `crates/plonky3-recursion/circuit-prover/src/config.rs:140-208`
   — `baby_bear()`, `koala_bear()`, `goldilocks()` (the
   non-Tip5 variants) keep using Poseidon2 since they're
   not on the M-S5 chain.
 
 ### 1.3 Current outer-cert config (the target of removal)
 
-`Plonky3-recursion/circuit-prover/src/config.rs:268-294` —
+`crates/plonky3-recursion/circuit-prover/src/config.rs:268-294` —
 `goldilocks_tip5_120bit()`:
 
 ```rust
@@ -365,7 +365,7 @@ Two options:
 
 **Option 3.3.A — Resolve R-a tail at D=2** (M12 / `#127`
 work; preferred):
-- File: `Plonky3-recursion/tip5-circuit-air/src/air_circuit.rs:326-357`.
+- File: `crates/plonky3-recursion/tip5-circuit-air/src/air_circuit.rs:326-357`.
 - Add producer multiplicity gating for non-Hint-derived
   coefficient witnesses at the Tip5 input-decompose step.
 - Re-validate against D=1 (which is already byte-identical
@@ -416,9 +416,9 @@ multiplicity imbalance at D=2 so Tip5 can be used in the
 outer-cert verifier.
 
 **Files affected:**
-- `Plonky3-recursion/tip5-circuit-air/src/air_circuit.rs:326-357`
+- `crates/plonky3-recursion/tip5-circuit-air/src/air_circuit.rs:326-357`
   (the WitnessChecks CTL input-send / output-receive).
-- Potentially `Plonky3-recursion/circuit-prover/src/air/recompose_air.rs`
+- Potentially `crates/plonky3-recursion/circuit-prover/src/air/recompose_air.rs`
   (the producer side) — needs analysis.
 
 **Methodology:** per C3 § 13 R-a R1 protocol:
@@ -450,7 +450,7 @@ diagnosis methodology from the C3 outer-cert design doc.
 anything yet.
 
 **Files affected:**
-- `Plonky3-recursion/circuit-prover/src/config.rs` (additive
+- `crates/plonky3-recursion/circuit-prover/src/config.rs` (additive
   at end of file).
 
 **Changes (additive):**
@@ -473,7 +473,7 @@ pub type GoldilocksTipsConfig = Config<
 
 Plus import for `Tip5Perm` (re-export from
 `crates/ai-pow-zk/src/circuit.rs` OR vendor a copy of the
-Tip5 wrapper code into `Plonky3-recursion/circuit-prover/src/tip5_wrapper.rs`
+Tip5 wrapper code into `crates/plonky3-recursion/circuit-prover/src/tip5_wrapper.rs`
 since `Plonky3-recursion` cannot depend on `ai-pow-zk`).
 
 **The Tip5 wrapper question.** The current `Tip5Perm`
@@ -483,14 +483,14 @@ vendored workspace and cannot depend on `ai-pow-zk` (which
 depends on `Plonky3-recursion`, creating a cycle).
 
 **Resolution:** vendor a copy of the Tip5 wrapper code into
-`Plonky3-recursion/circuit-prover/src/tip5_wrapper.rs`:
+`crates/plonky3-recursion/circuit-prover/src/tip5_wrapper.rs`:
 - `Tip5Perm` struct + `Permutation<[Goldilocks; 16]>` impl
   (mirrors `circuit.rs:264-313`).
 - `Tip5Sponge` + `Tip5Compress` type aliases (mirrors
   `circuit.rs:176, 180`).
 - Re-import `nockchain_math::tip5::permute` (this is
   already a dependency for the C2.1 Tip5 perm AIR via
-  `Plonky3-recursion/tip5-circuit-air/src/tip5_spec.rs`).
+  `crates/plonky3-recursion/tip5-circuit-air/src/tip5_spec.rs`).
 
 KAT-anchor the new wrapper against `nockchain_math::tip5::permute`
 on a fixture vector (same one C2.1 uses) to verify
@@ -508,7 +508,7 @@ byte-equivalence.
 end-to-end on a toy proof.
 
 **Files affected:**
-- `Plonky3-recursion/circuit-prover/src/config.rs` (additive).
+- `crates/plonky3-recursion/circuit-prover/src/config.rs` (additive).
 
 **Changes (additive):**
 
@@ -570,9 +570,9 @@ correctly — i.e., L1 + L2 build using the new config and
 verify.
 
 **Files affected:**
-- `Plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs`
+- `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs`
   (additive new test).
-- `Plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs`
+- `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs`
   (additive new test mirroring `c3_stage_a/b` but using
   `goldilocks_tip5_unified_80bit()`).
 
@@ -616,7 +616,7 @@ fn c3_stage_c_sweep_tip5_unified() {
 **Goal.** Confirm the predicted ~18–27 KB savings empirically.
 
 **Files affected:**
-- `Plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs`
+- `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs`
   (additive measurement; non-CI by default; manually
   invocable per the existing pattern).
 
@@ -658,7 +658,7 @@ preserve the Poseidon2-based config under a `_legacy_` name
 for rollback.
 
 **Files affected:**
-- `Plonky3-recursion/circuit-prover/src/config.rs`.
+- `crates/plonky3-recursion/circuit-prover/src/config.rs`.
 - All callers of `goldilocks_tip5_120bit()` (grep across
   repo).
 
@@ -713,11 +713,11 @@ the IDE-style refactor).
 imports.
 
 **Files affected:**
-- `Plonky3-recursion/circuit-prover/src/config.rs`:
+- `crates/plonky3-recursion/circuit-prover/src/config.rs`:
   - Remove `goldilocks_tip5_legacy_poseidon2()`
   - Remove `goldilocks_tip5_120bit_higharity_legacy_poseidon2()`
   - Remove `Poseidon2Goldilocks` import (line 21).
-- `Plonky3-recursion/circuit-prover/src/batch_stark_prover.rs`:
+- `crates/plonky3-recursion/circuit-prover/src/batch_stark_prover.rs`:
   - Inspect: are `Poseidon2ProverD2` registrations still used
     at Goldilocks? (Probably yes, for other code paths.)
   - Conservative: keep Plonky3-recursion's general-purpose
@@ -804,10 +804,10 @@ hash-unification milestone.
 
 | Phase | New tests | File |
 |---|---|---|
-| P0 | C2.4 R-a tail D=2 fix tests (KAT + tamper) | `Plonky3-recursion/tip5-circuit-air/src/air_circuit.rs` |
-| P1 | Tip5Perm-wrapper-at-outer-cert parity test (vs inner Tip5Perm) | `Plonky3-recursion/circuit-prover/src/tip5_wrapper.rs` |
-| P2 | Toy STARK accept + tamper-reject at new config | `Plonky3-recursion/circuit-prover/src/config.rs` tests |
-| P3 | `c3_stage_a/b/c_tip5_unified_kat` + tamper-reject pairs | `Plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs` |
+| P0 | C2.4 R-a tail D=2 fix tests (KAT + tamper) | `crates/plonky3-recursion/tip5-circuit-air/src/air_circuit.rs` |
+| P1 | Tip5Perm-wrapper-at-outer-cert parity test (vs inner Tip5Perm) | `crates/plonky3-recursion/circuit-prover/src/tip5_wrapper.rs` |
+| P2 | Toy STARK accept + tamper-reject at new config | `crates/plonky3-recursion/circuit-prover/src/config.rs` tests |
+| P3 | `c3_stage_a/b/c_tip5_unified_kat` + tamper-reject pairs | `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs` |
 | P4 | L2-size-measurement parity (Tip5-unified vs Poseidon2) | `test_tip5_layer0_compression.rs` (manual `#[ignore]`) |
 | P5 | Production-default smoke (Tip5-unified is now the production-config; existing tests now test the new path) | (existing tests; no new tests) |
 | P6 | Legacy-removed regression (no broken imports / callers) | (existing tests) |
@@ -854,11 +854,11 @@ verifier circuit's hash function). Per R1:
   byte-identical against `259cab2` throughout this spec.
   Only P0 touches `air_circuit.rs` and only at the R-a tail
   fix (single location, line 326–357).
-- ✅ DT-4 duplex binding (`Plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs`):
+- ✅ DT-4 duplex binding (`crates/plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs`):
   byte-identical.
-- ✅ FRI backend (`Plonky3-recursion/recursion/src/backend/fri.rs`):
+- ✅ FRI backend (`crates/plonky3-recursion/recursion/src/backend/fri.rs`):
   byte-identical.
-- ✅ Recursion verifier (`Plonky3-recursion/recursion/src/verifier/**`):
+- ✅ Recursion verifier (`crates/plonky3-recursion/recursion/src/verifier/**`):
   byte-identical.
 
 The changes are *all in the config layer* + the new Tip5
@@ -916,9 +916,9 @@ What this spec does NOT close, deferred:
 - **Inner Tip5 wrapper template:**
   `crates/ai-pow-zk/src/circuit.rs:176-345`.
 - **Current outer-cert config:**
-  `Plonky3-recursion/circuit-prover/src/config.rs:268-334`.
+  `crates/plonky3-recursion/circuit-prover/src/config.rs:268-334`.
 - **Poseidon2 prover registrations:**
-  `Plonky3-recursion/circuit-prover/src/batch_stark_prover.rs:690-738, 902, 1509`.
+  `crates/plonky3-recursion/circuit-prover/src/batch_stark_prover.rs:690-738, 902, 1509`.
 - **C4 audit-readiness:**
   `2026-05-19_C4_AUDIT_READINESS.md` § 8 (where the M12
   prerequisite is tracked) + § 11 (reference doc map).

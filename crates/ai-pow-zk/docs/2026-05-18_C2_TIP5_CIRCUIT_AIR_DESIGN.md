@@ -552,7 +552,7 @@ preprocessed table). Per Tip5 round, AIR columns/constraints:
 
 Wiring (mirrors the closed Poseidon1/2 abstraction):
 
-- **New member `tip5-circuit-air`** (`Plonky3-recursion/
+- **New member `tip5-circuit-air`** (`crates/plonky3-recursion/
   tip5-circuit-air/`) — the above AIR + its preprocessed L-table.
 - **`circuit` member `ops`**: `Tip5Config` next to
   `Poseidon1Config`/`Poseidon2Config`.
@@ -575,7 +575,7 @@ Wiring (mirrors the closed Poseidon1/2 abstraction):
   18 `permute` vectors) with read-only drift detection. 2/2 green.
 - **C2.1 — `tip5-circuit-air` member + native≡in-circuit KAT
   (the soundness linchpin). ✅ DONE + EXHAUSTIVELY TESTED.** New
-  vendored member `Plonky3-recursion/tip5-circuit-air`
+  vendored member `crates/plonky3-recursion/tip5-circuit-air`
   (lookup-free §2b arithmetization: canonical 8-byte split +
   §4.6 `<p` guard + offset-Fermat-cube + x⁷ + const MDS + const
   RC, 7 rounds, one-row-per-permutation; each constraint group
@@ -696,7 +696,7 @@ a blocker; it is a reason to stage.
 - `crates/ai-pow-zk/src/circuit.rs` (`AiPowStarkConfig`,
   `Tip5Perm`/`Tip5Compress`/`DuplexChallenger`, 120-bit
   presets).
-- `Plonky3-recursion/poseidon2-circuit-air/` (AIR template),
+- `crates/plonky3-recursion/poseidon2-circuit-air/` (AIR template),
   `recursion/src/challenger_perm.rs` (the closed abstraction to
   extend); `2026-05-18_C1_RECURSION_VENDOR_DESIGN.md`,
   `c1_recursion_substrate` memory.

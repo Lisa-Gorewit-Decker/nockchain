@@ -23,9 +23,9 @@
 > **Scope.** Every AIR / chip / lookup / bus in the M-S5 chain
 > + the inner ai-pow-zk production AIR. Three crates in scope:
 > `crates/ai-pow-zk/src/**` (~70–90 constraint families across
-> 11 chips + 6 LogUp buses + 4 keystones); `Plonky3-recursion/tip5-circuit-air/**`
+> 11 chips + 6 LogUp buses + 4 keystones); `crates/plonky3-recursion/tip5-circuit-air/**`
 > (the C2.1 soundness linchpin: ~12 constraint families, max
-> degree 4); `Plonky3-recursion/circuit-prover/**` + `Plonky3-recursion/recursion/**`
+> degree 4); `crates/plonky3-recursion/circuit-prover/**` + `crates/plonky3-recursion/recursion/**`
 > (verifier-circuit AIRs: Poseidon2, Poseidon1, recompose, FRI
 > verifier components). 217 existing tamper tests are catalogued
 > in S0; the gap-list against the constraint catalogue drives
@@ -138,7 +138,7 @@
 
 - **No fenced-linchpin edits without re-validation.** The
   C2.1 / C2.4-R-a / DT-4 fenced set
-  (`Plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs`,
+  (`crates/plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs`,
   `tip5-circuit-air/src/air*.rs`, `recursion/src/verifier/**`,
   `backend/fri.rs`, `circuit-prover/src/config.rs`) is byte-
   identical against `259cab2` for S0–S4. S5–S6 may add new
@@ -322,9 +322,9 @@ buses.
 
 | AIR | File | Max degree | Constraint families | Existing tamper coverage |
 |---|---|---:|---:|---|
-| `Tip5PermLookupAir` (lookup-table form, post-L4) | `Plonky3-recursion/tip5-circuit-air/src/air_lookup.rs` | 4 (3 algebraic + 2 LogUp) | ~10 | ✅ `lookup_air_adversarial` (3 tampers); ✅ `lookup_air_equals_native_spec` (315 fixtures + 2048 random); ✅ degree-fix proof @ `:415` |
-| `Tip5PermLookupAir` (pre-L4 standalone) | `Plonky3-recursion/tip5-circuit-air/src/air.rs` | 4 | ~10 | ✅ `adversarial_tamper_rejected` (3 tampers); ✅ `adversarial_noncanonical_split_rejected` (§4.6 forgery vector); ✅ `air_equals_native_spec_exhaustive_random` (4096 random) |
-| Tip5 circuit AIR (C2.3 WitnessChecks CTL) | `Plonky3-recursion/tip5-circuit-air/src/air_circuit.rs` | symbolic (delegated) | 2 (D-aware input-send + output-receive) | ✅ `tip5_layer0_recursion_prod_tampered_rejects` + LB4 variant |
+| `Tip5PermLookupAir` (lookup-table form, post-L4) | `crates/plonky3-recursion/tip5-circuit-air/src/air_lookup.rs` | 4 (3 algebraic + 2 LogUp) | ~10 | ✅ `lookup_air_adversarial` (3 tampers); ✅ `lookup_air_equals_native_spec` (315 fixtures + 2048 random); ✅ degree-fix proof @ `:415` |
+| `Tip5PermLookupAir` (pre-L4 standalone) | `crates/plonky3-recursion/tip5-circuit-air/src/air.rs` | 4 | ~10 | ✅ `adversarial_tamper_rejected` (3 tampers); ✅ `adversarial_noncanonical_split_rejected` (§4.6 forgery vector); ✅ `air_equals_native_spec_exhaustive_random` (4096 random) |
+| Tip5 circuit AIR (C2.3 WitnessChecks CTL) | `crates/plonky3-recursion/tip5-circuit-air/src/air_circuit.rs` | symbolic (delegated) | 2 (D-aware input-send + output-receive) | ✅ `tip5_layer0_recursion_prod_tampered_rejects` + LB4 variant |
 
 **Subtotal: ~12 constraint families, max degree 4, ~10 tamper
 tests** + the C2.0 machine-proved identity (`c2_0_offset_fermat_cube_identity_machine_check`).
@@ -333,14 +333,14 @@ tests** + the C2.0 machine-proved identity (`c2_0_offset_fermat_cube_identity_ma
 
 | AIR | File | Max degree | Constraint families | Existing tamper coverage |
 |---|---|---:|---:|---|
-| `Poseidon2 perm AIR` | `Plonky3-recursion/poseidon2-circuit-air/src/air.rs` (upstream Plonky3 wrapper) | 7 (x⁷ S-box) | ~10 | Upstream tests + indirectly via L1/L2 outer-cert |
-| `Poseidon1 perm AIR` | `Plonky3-recursion/poseidon1-circuit-air/src/air.rs` (upstream Plonky3 wrapper) | 7 | ~10 | Upstream tests |
-| `Recompose AIR` (D-packing) | `Plonky3-recursion/circuit-prover/src/air/recompose_air.rs` | 1 (CTL-only) | 2 CTL interactions | ✅ via outer-cert tampers; ⚠️ C2.4 R-a-tail residual on D=2 |
-| `WitnessChecks CTL` (D-aware) | `Plonky3-recursion/circuit-prover/src/batch_stark_prover/tip5.rs` | 1 | 2 (input-send + output-receive) | ✅ via C2.4 tamper tests + DT-4 fix validation |
-| FRI verifier circuit | `Plonky3-recursion/recursion/src/verifier/**` | 7 (verifier-circuit composition) | ~20 | ✅ `test_fri_verifier_rejects_per_query_schedule_mismatch`, `*_zero_query_proof`; ⚠️ broader constraint-side coverage thin |
-| Batch-STARK verifier (`verify_p3_batch_proof_circuit`) | `Plonky3-recursion/recursion/src/verifier/batch.rs` | 7 | ~10 | ✅ `verify_all_tables_rejects_tampered_serialized_row_counts`; ✅ preprocessing tests (6) |
-| L1/L2 outer-cert composite | `Plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs` | (composition of above) | n/a | ✅ `c3_stage_a_l1_120bit_kat` (accept + tamper); ✅ `c3_stage_b_l2_over_120bit_l1`; ✅ `c3_stage_c_sweep_120bit` (5-profile) |
-| DT-4 duplex binding (executor side) | `Plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs` | n/a (executor, not AIR) | 1 (pre-swap state capture) | ✅ implicit in C3 stage tests (Merkle-swap tamper ⇒ `WitnessConflict`) |
+| `Poseidon2 perm AIR` | `crates/plonky3-recursion/poseidon2-circuit-air/src/air.rs` (upstream Plonky3 wrapper) | 7 (x⁷ S-box) | ~10 | Upstream tests + indirectly via L1/L2 outer-cert |
+| `Poseidon1 perm AIR` | `crates/plonky3-recursion/poseidon1-circuit-air/src/air.rs` (upstream Plonky3 wrapper) | 7 | ~10 | Upstream tests |
+| `Recompose AIR` (D-packing) | `crates/plonky3-recursion/circuit-prover/src/air/recompose_air.rs` | 1 (CTL-only) | 2 CTL interactions | ✅ via outer-cert tampers; ⚠️ C2.4 R-a-tail residual on D=2 |
+| `WitnessChecks CTL` (D-aware) | `crates/plonky3-recursion/circuit-prover/src/batch_stark_prover/tip5.rs` | 1 | 2 (input-send + output-receive) | ✅ via C2.4 tamper tests + DT-4 fix validation |
+| FRI verifier circuit | `crates/plonky3-recursion/recursion/src/verifier/**` | 7 (verifier-circuit composition) | ~20 | ✅ `test_fri_verifier_rejects_per_query_schedule_mismatch`, `*_zero_query_proof`; ⚠️ broader constraint-side coverage thin |
+| Batch-STARK verifier (`verify_p3_batch_proof_circuit`) | `crates/plonky3-recursion/recursion/src/verifier/batch.rs` | 7 | ~10 | ✅ `verify_all_tables_rejects_tampered_serialized_row_counts`; ✅ preprocessing tests (6) |
+| L1/L2 outer-cert composite | `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs` | (composition of above) | n/a | ✅ `c3_stage_a_l1_120bit_kat` (accept + tamper); ✅ `c3_stage_b_l2_over_120bit_l1`; ✅ `c3_stage_c_sweep_120bit` (5-profile) |
+| DT-4 duplex binding (executor side) | `crates/plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs` | n/a (executor, not AIR) | 1 (pre-swap state capture) | ✅ implicit in C3 stage tests (Merkle-swap tamper ⇒ `WitnessConflict`) |
 
 **Subtotal: ~25 constraint families, max degree 7, ~30 tamper
 tests** + the comprehensive C3 stage A/B/C/S3(ii) acceptance
@@ -556,8 +556,8 @@ to C4 §3, existing tamper test (if any) or GAP flag.
 
 **Scope.** All three crates:
 - `crates/ai-pow-zk/src/**` (11 chips + composite keystones + 6 buses)
-- `Plonky3-recursion/tip5-circuit-air/**` (C2.1 keystone)
-- `Plonky3-recursion/circuit-prover/**` + `recursion/**` (verifier-circuit)
+- `crates/plonky3-recursion/tip5-circuit-air/**` (C2.1 keystone)
+- `crates/plonky3-recursion/circuit-prover/**` + `recursion/**` (verifier-circuit)
 
 **Methodology.**
 - Grep every `builder.assert_zero`, `assert_eq`, `assert_one`,

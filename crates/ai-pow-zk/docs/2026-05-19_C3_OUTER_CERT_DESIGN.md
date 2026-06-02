@@ -469,7 +469,7 @@ review + gate re-run before recording. Outcome:
 correctness wall mid-validated-stage. Validated subset already
 landed (C2.0–C2.4-core + R-a, D=1, byte-identical, fenced
 linchpin intact). Candidate reverted to byte-identical baseline
-(`git diff --stat 27b1e9d -- Plonky3-recursion/` empty; orig 7
+(`git diff --stat 27b1e9d -- crates/plonky3-recursion/` empty; orig 7
 re-run 7/7 post-revert). **Nothing landed, no weakening, no
 fake.** DT-2's diagnosis stands as a *partial advance*: the
 prover-label namespace split is real and the fix is necessary;

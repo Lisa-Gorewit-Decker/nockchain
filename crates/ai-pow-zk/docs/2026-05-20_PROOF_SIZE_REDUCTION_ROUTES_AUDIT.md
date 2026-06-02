@@ -231,7 +231,7 @@ hash functions in one circuit**:
 - **Inner ai-pow-zk STARK** (`crates/ai-pow-zk/src/circuit.rs:186, 203`):
   Tip5 (7-round, width 16) for MMCS + Fiat-Shamir
   challenger. **Pearl-faithful; cannot change at the inner.**
-- **Outer-cert L1/L2** (`Plonky3-recursion/circuit-prover/src/config.rs:206-294`,
+- **Outer-cert L1/L2** (`crates/plonky3-recursion/circuit-prover/src/config.rs:206-294`,
   `goldilocks_tip5_120bit` builder): **Poseidon2-Goldilocks<8>**
   (width 8, x⁷ S-box, degree 7) for MMCS + Fiat-Shamir.
 

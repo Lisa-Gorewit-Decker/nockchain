@@ -4,7 +4,7 @@
 **Run:** commit `e2b791b` (post-Phase-0 production FRI:
 `lb=4 nq=20 mla=3 lfp=2 cap=3 d=5`, 82 bits unconditional
 Johnson, Tip5-throughout substrate).
-**Test:** `Plonky3-recursion/recursion/tests/test_path_b_b0_inventory.rs::
+**Test:** `crates/plonky3-recursion/recursion/tests/test_path_b_b0_inventory.rs::
 path_b_stage_0_l1_inventory` (123.20s).
 
 ## Headline numbers (production-faithful)
@@ -176,4 +176,4 @@ mapping.
 - [`2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md`](2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md)
 - [`2026-05-20_NPO_RECURSIVE_STARKS_DESIGN_REPORT.md`](2026-05-20_NPO_RECURSIVE_STARKS_DESIGN_REPORT.md)
 - [`2026-05-20_TIP5_NPO_RECURSION_BACKEND_DESIGN.md`](2026-05-20_TIP5_NPO_RECURSION_BACKEND_DESIGN.md)
-- Inventory tool: `Plonky3-recursion/recursion/tests/test_path_b_b0_inventory.rs`
+- Inventory tool: `crates/plonky3-recursion/recursion/tests/test_path_b_b0_inventory.rs`

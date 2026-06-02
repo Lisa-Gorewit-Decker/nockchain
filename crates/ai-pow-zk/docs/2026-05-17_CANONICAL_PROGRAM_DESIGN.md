@@ -315,7 +315,7 @@ all-green. The actual soundness fix (closes the latent
 reconstruction"; §4.C.2 b2 marked subsumed.
 
 Each stage: commit per validated stage; honest status + precise
-residual (R1); `Plonky3-recursion/` untracked. **CR.6 is the
+residual (R1); `crates/plonky3-recursion/` untracked. **CR.6 is the
 soundness linchpin — full R1 staged discipline (KAT-first,
 Route-A + crit1_* + debug-assertions-ON + adversarial before
 the flip); never rush it to satisfy a hook.**
