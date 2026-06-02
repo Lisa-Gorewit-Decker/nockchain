@@ -280,10 +280,13 @@ Implemented in this branch:
   inclusion, mines Pearl-compatible ticket attempts, submits Pearl hits to
   Gateway when configured, and constructs the recursive proof-node payload only
   after a ticket hits the Nockchain target.
-- `ai_pow_miner::pearl_plain_proof` builds Pearl's `PlainProof` from the mined
-  attempt, the trusted matrices, and Pearl matrix Merkle proofs, then serializes
-  it as standard base64 of Pearl-compatible `bincode 1.3.3` bytes for Gateway
-  `submitPlainProof`.
+- The miner's internal Pearl plain-proof plumbing builds Pearl's `PlainProof`
+  from the mined attempt, the trusted matrices, and Pearl matrix Merkle proofs,
+  then serializes it as standard base64 of Pearl-compatible `bincode 1.3.3`
+  bytes for Gateway `submitPlainProof`. This helper is intentionally not a
+  public Nockchain proof API; public Nockchain submission goes through
+  `PearlMergeSubmissionConfig::new_recursive` and the recursive `%ai-pow`
+  certificate path.
 - The connected run loop submits the Nockchain `%ai-pow` command only for
   Nockchain target hits. Pearl-only hits do not build a recursive certificate
   and do not poke Hoon. The Hoon kernel still receives no Pearl-specific fields

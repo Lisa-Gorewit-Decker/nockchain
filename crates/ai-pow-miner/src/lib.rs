@@ -64,7 +64,11 @@ impl MiningCancel {
 pub mod pearl_mining;
 
 /// Pearl Gateway `submitPlainProof` artifact construction.
-pub mod pearl_plain_proof;
+///
+/// Internal by design: Hoon and external Nockchain callers submit only the
+/// recursive `%ai-pow` certificate. Pearl `PlainProof` is a Gateway wire detail
+/// built by the miner when a Pearl target hits.
+pub(crate) mod pearl_plain_proof;
 
 /// Wire vocabulary (`AiPowMinerWire`, `SOURCE = "ai-pow-miner"`). Behind
 /// the `node` feature because it implements `nockapp::wire::Wire`.
