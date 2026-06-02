@@ -90,8 +90,8 @@ struct Args {
     /// Matmul puzzle rows. Default is the current single-tile Layer-0 smoke profile.
     #[arg(short = 'm', long, default_value_t = 8)]
     m: u32,
-    /// Matmul shared dimension. Default satisfies the production envelope with r=32.
-    #[arg(short = 'k', long, default_value_t = 512)]
+    /// Matmul shared dimension. Default satisfies Pearl's public-parameter envelope with r=32.
+    #[arg(short = 'k', long, default_value_t = 1024)]
     k: u32,
     /// Matmul output columns. Default is one tile for local recursive-proof smoke runs.
     #[arg(short = 'n', long, default_value_t = 8)]
@@ -502,6 +502,8 @@ fn load_matrix(path: &PathBuf, expected_len: usize, label: &str) -> Result<Vec<i
 
 #[cfg(test)]
 mod tests {
+    use ai_pow::pearl_compat::evaluate_pearl_merge_ticket_attempt;
+
     use super::*;
 
     #[test]
@@ -511,7 +513,7 @@ mod tests {
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
             "ai-pow-default-layer0-smoke",
         ]);
-        assert_eq!((args.m, args.k, args.n), (8, 512, 8));
+        assert_eq!((args.m, args.k, args.n), (8, 1024, 8));
         assert_eq!(args.noise_rank, 32);
         assert_eq!(args.spot_checks, 1);
 
@@ -530,7 +532,7 @@ mod tests {
         let args = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "ai-pow-pearl-merge-cli", "--m", "8", "--k", "512", "--n", "8", "--noise-rank", "32",
+            "ai-pow-pearl-merge-cli", "--m", "8", "--k", "1024", "--n", "8", "--noise-rank", "32",
             "--tile", "8", "--spot-checks", "1", "--difficulty-bits", "0", "--pearl-prev-block",
             "1111111111111111111111111111111111111111111111111111111111111111",
             "--pearl-timestamp", "1717171717", "--pearl-nbits", "0x207fffff",
@@ -545,7 +547,7 @@ mod tests {
         assert_eq!(pearl.header_template.prev_block, [0x11; 32]);
         assert_eq!(pearl.header_template.timestamp, 1_717_171_717);
         assert_eq!(pearl.header_template.nbits, 0x207f_ffff);
-        assert_eq!(pearl.mining_config.common_dim, 512);
+        assert_eq!(pearl.mining_config.common_dim, 1024);
         assert_eq!(pearl.mining_config.rank, 32);
         assert_eq!(pearl.max_pattern_len, 256);
         assert_eq!(pearl.mine_opts.max_attempts, Some(16));
@@ -556,6 +558,44 @@ mod tests {
         puzzle
             .validate_canonical_submission_ready()
             .expect("configured pearl merge submission should pass preflight");
+    }
+
+    #[test]
+    fn cli_certificate_builder_rejects_target_miss_before_recursive_proof() {
+        let args = Args::parse_from([
+            "ai-pow-mine", "--mining-pkh",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
+            "ai-pow-pearl-merge-cli-builder-target-miss", "--m", "8", "--k", "1024", "--n", "8",
+            "--noise-rank", "32", "--tile", "8", "--spot-checks", "1", "--difficulty-bits", "0",
+            "--pearl-prev-block",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "--pearl-timestamp", "1717171717", "--pearl-nbits", "0x207fffff",
+        ]);
+
+        let puzzle = build_puzzle_inputs(&args).expect("pearl merge puzzle inputs");
+        let pearl = puzzle.pearl_merge.as_ref().expect("pearl config");
+        let mut attempt = evaluate_pearl_merge_ticket_attempt(
+            &pearl.header_template,
+            &pearl.mining_config,
+            &puzzle.params,
+            0,
+            0,
+            puzzle.a.as_slice(),
+            puzzle.b.as_slice(),
+            &[0xff; 32],
+            pearl.max_pattern_len,
+            pearl.aux_template.clone(),
+        )
+        .expect("evaluate trivial-target Pearl merge ticket");
+        attempt.nockchain_target = [0u8; 32];
+
+        let err = (pearl.certificate_builder)(&attempt)
+            .expect_err("CLI certificate builder must reject target misses before proving");
+        assert!(
+            err.to_string()
+                .contains("before successful Nockchain target check"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

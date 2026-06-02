@@ -560,6 +560,24 @@ fn pearl_recursive_prover_config_preflight_rejects_unsupported_patterns() {
         Err(PearlCompatError::RankMismatch)
     );
 
+    let pearl_invalid_params = MatmulParams {
+        k: 512,
+        noise_rank: 32,
+        ..params
+    };
+    pearl_invalid_params.validate_prod_envelope().unwrap();
+    let pearl_invalid_config = PearlMiningConfig {
+        common_dim: 512,
+        rank: 32,
+        ..supported
+    };
+    assert_eq!(
+        validate_pearl_merge_config_for_recursive_prover(
+            &pearl_invalid_config, &pearl_invalid_params, 16
+        ),
+        Err(PearlCompatError::PublicParamEnvelope)
+    );
+
     let mut noncontiguous = supported;
     noncontiguous.rows_pattern =
         PearlPeriodicPattern::from_list(&[0, 1, 8, 9, 64, 65, 72, 73]).unwrap();

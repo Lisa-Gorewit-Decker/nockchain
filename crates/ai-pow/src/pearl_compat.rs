@@ -759,6 +759,25 @@ pub fn validate_pearl_merge_config_for_recursive_prover(
     if rows != expected || cols != expected {
         return Err(PearlCompatError::UnsupportedRecursivePearlShape);
     }
+
+    PearlPublicProofParams {
+        block_header: PearlIncompleteBlockHeader {
+            version: 0,
+            prev_block: [0u8; 32],
+            merkle_root: [0u8; 32],
+            timestamp: 0,
+            nbits: 0,
+        },
+        mining_config: *config,
+        hash_a: [0u8; 32],
+        hash_b: [0u8; 32],
+        hash_jackpot: [0u8; 32],
+        m: params.m,
+        n: params.n,
+        t_rows: 0,
+        t_cols: 0,
+    }
+    .sanity_check()?;
     Ok(())
 }
 
