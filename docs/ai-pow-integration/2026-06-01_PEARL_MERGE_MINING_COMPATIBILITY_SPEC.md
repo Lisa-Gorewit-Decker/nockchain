@@ -109,15 +109,13 @@ NPA1 =
 
 Rust miner default policy for this milestone:
 
-- `chain_id` defaults to `nockchain` and may be overridden with
-  `--pearl-nockchain-chain-id`. The final protocol network/domain string can be
-  changed centrally in the Rust miner default without changing Hoon types or the
-  `%ai-pow` noun shape.
-- `target_epoch_or_height` defaults to zero and may be overridden with
-  `--pearl-nockchain-target-epoch-or-height`.
-- `extra_domain_data` remains optional bounded bytes for deployments that need
-  additional replay protection beyond chain id, candidate commitment, and target
-  epoch/height.
+- `chain_id` is `nockchain` for this milestone. The final protocol
+  network/domain string can be changed centrally in the Rust miner default
+  without changing Hoon types or the `%ai-pow` noun shape.
+- `target_epoch_or_height` is zero for this milestone.
+- `extra_domain_data` is empty for this milestone. Future replay-protection
+  extensions should be constructor-owned protocol changes, not operator CLI
+  knobs.
 - Matrix inputs default to deterministic local smoke-profile synthesis with
   seed `ai-pow-prod-v1` when neither `--a + --b` nor `--synth-seed` is
   supplied. Explicit raw matrix paths must be provided as a complete pair.
@@ -318,8 +316,8 @@ Implemented in this branch:
   `--pearl-gateway` endpoint, and log filter. The legacy split Gateway
   transport/socket/host/port flags were removed; Gateway location is configured
   through the one endpoint string. Matrix shape, synthetic-matrix, Gateway
-  timing, reconnect, and Rust-only Pearl aux metadata flags remain hidden
-  dev/compatibility controls. Gateway fetches use an explicit TCP
+  timing, and reconnect flags remain hidden dev/compatibility controls.
+  Gateway fetches use an explicit TCP
   connect timeout plus socket read/write timeouts so local
   Gateway failure is a skipped candidate, not an unbounded miner stall. The
   miner also polls Gateway while a Nockchain candidate is current and
@@ -407,9 +405,9 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
    bytes, structured certificate, trusted candidate block commitment, target,
    params, and verifier context flow into Rust when that work is explicitly
    scheduled.
-3. Done for this milestone: `NPA1.chain_id` has an overrideable Rust miner
-   default, `target_epoch_or_height` defaults to zero, and `extra_domain_data`
-   is optional bounded bytes for deployment-specific replay protection.
+3. Done for this milestone: `NPA1.chain_id` is the Rust-owned `nockchain`
+   default, `target_epoch_or_height` is zero, and `extra_domain_data` is empty.
+   These aux metadata fields are not operator CLI knobs.
 4. Done for this milestone: Nockchain production requires coinbase-only
    Pearl-format block templates (`merkle_branch_len = 0`). Revisit only if a
    future milestone deliberately supports Pearl transaction merkle trees.

@@ -126,28 +126,6 @@ struct Args {
     #[arg(long, default_value_t = DEFAULT_PEARL_GATEWAY_REFRESH_MS, hide = true)]
     pearl_gateway_refresh_ms: u64,
 
-    /// Rust-only Nockchain chain id committed into the Pearl aux payload.
-    #[arg(long, default_value = DEFAULT_PEARL_NOCKCHAIN_CHAIN_ID, hide = true)]
-    pearl_nockchain_chain_id: String,
-
-    /// Rust-only Nockchain epoch/height committed into the Pearl aux payload.
-    #[arg(long, default_value_t = 0, hide = true)]
-    pearl_nockchain_target_epoch_or_height: u64,
-
-    /// Extra domain bytes committed into the Pearl aux payload.
-    #[arg(long, default_value = "", hide = true)]
-    pearl_extra_domain_data: String,
-
-    /// Maximum decoded Pearl periodic-pattern list length accepted by the
-    /// Rust-side prechecks and prover.
-    #[arg(long, default_value_t = 256, hide = true)]
-    pearl_max_pattern_len: usize,
-
-    /// Stop Pearl-compatible ticket search after this many attempts
-    /// (None ⇒ scan all valid offsets).
-    #[arg(long, hide = true)]
-    pearl_max_attempts: Option<u64>,
-
     // ── reconnect tuning ───────────────────────────────────────────
     /// Initial reconnect backoff in milliseconds.
     #[arg(long, default_value = "1000", hide = true)]
@@ -275,7 +253,7 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
     params
         .validate()
         .map_err(|e| anyhow!("matmul params invalid: {e}"))?;
-    validate_pearl_recursive_cli_params(args, params)?;
+    validate_pearl_recursive_cli_params(params)?;
 
     let (a, b) = match (&args.a, &args.b, &args.synth_seed) {
         (Some(ap), Some(bp), None) => {
@@ -300,7 +278,7 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
     })
 }
 
-fn validate_pearl_recursive_cli_params(args: &Args, params: MatmulParams) -> Result<()> {
+fn validate_pearl_recursive_cli_params(params: MatmulParams) -> Result<()> {
     if params.difficulty_bits != 0 || params.spot_checks != 1 {
         bail!(
             "Pearl-compatible recursive certificates require --difficulty-bits 0 and --spot-checks 1"
@@ -315,12 +293,6 @@ fn validate_pearl_recursive_cli_params(args: &Args, params: MatmulParams) -> Res
             params.num_tiles()
         );
     }
-    if args.pearl_max_pattern_len < params.tile as usize {
-        bail!(
-            "--pearl-max-pattern-len must be at least --tile ({}), got {}", params.tile,
-            args.pearl_max_pattern_len
-        );
-    }
     Ok(())
 }
 
@@ -330,7 +302,8 @@ fn build_pearl_merge_submission_config(
     a: &Arc<Vec<i8>>,
     b: &Arc<Vec<i8>>,
 ) -> Result<PearlMergeSubmissionConfig> {
-    validate_pearl_recursive_cli_params(args, params)?;
+    validate_pearl_recursive_cli_params(params)?;
+    let max_pattern_len = params.tile as usize;
 
     let rows_pattern = contiguous_pearl_pattern(params.tile)?;
     let cols_pattern = contiguous_pearl_pattern(params.tile)?;
@@ -343,10 +316,8 @@ fn build_pearl_merge_submission_config(
         cols_pattern,
         reserved: [0u8; PEARL_MINING_CONFIG_RESERVED_SIZE],
     };
-    validate_pearl_merge_config_for_recursive_prover(
-        &mining_config, &params, args.pearl_max_pattern_len,
-    )
-    .map_err(|e| anyhow!("Pearl mining config is not supported for recursive proofs: {e}"))?;
+    validate_pearl_merge_config_for_recursive_prover(&mining_config, &params, max_pattern_len)
+        .map_err(|e| anyhow!("Pearl mining config is not supported for recursive proofs: {e}"))?;
 
     let request_timeout = Duration::from_millis(args.pearl_gateway_timeout_ms);
     if request_timeout.is_zero() {
@@ -362,24 +333,22 @@ fn build_pearl_merge_submission_config(
         refresh_interval,
     };
     let aux_template = PearlNockchainAux {
-        nockchain_chain_id: args.pearl_nockchain_chain_id.as_bytes().to_vec(),
+        nockchain_chain_id: DEFAULT_PEARL_NOCKCHAIN_CHAIN_ID.as_bytes().to_vec(),
         nock_block_commitment: [0u8; 32],
-        nockchain_target_epoch_or_height: args.pearl_nockchain_target_epoch_or_height,
-        extra_domain_data: parse_optional_hex_or_utf8(&args.pearl_extra_domain_data)
-            .context("--pearl-extra-domain-data")?,
+        nockchain_target_epoch_or_height: 0,
+        extra_domain_data: Vec::new(),
     };
     aux_template
         .to_bytes()
         .map_err(|e| anyhow!("Pearl aux template is not canonical: {e}"))?;
 
-    let mut mine_opts = PearlMergeMineOptions::default();
-    mine_opts.max_attempts = args.pearl_max_attempts;
+    let mine_opts = PearlMergeMineOptions::default();
 
     Ok(PearlMergeSubmissionConfig::new_recursive(
         gateway,
         mining_config,
         aux_template,
-        args.pearl_max_pattern_len,
+        max_pattern_len,
         mine_opts,
         params,
         a.clone(),
@@ -443,14 +412,6 @@ fn contiguous_pearl_pattern(tile: u32) -> Result<PearlPeriodicPattern> {
     let indices: Vec<u32> = (0..tile).collect();
     PearlPeriodicPattern::from_list(&indices)
         .map_err(|e| anyhow!("contiguous Pearl pattern for tile {tile} is invalid: {e}"))
-}
-
-fn parse_optional_hex_or_utf8(s: &str) -> Result<Vec<u8>> {
-    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        Ok(hex::decode(hex)?)
-    } else {
-        Ok(s.as_bytes().to_vec())
-    }
 }
 
 fn checked_matrix_len(rows: u32, cols: u32, label: &str) -> Result<usize> {
@@ -640,6 +601,9 @@ mod tests {
         assert!(!help.contains("--synth-seed"));
         assert!(!help.contains("--pearl-gateway-timeout-ms"));
         assert!(!help.contains("--pearl-nockchain-chain-id"));
+        assert!(!help.contains("--pearl-nockchain-target-epoch-or-height"));
+        assert!(!help.contains("--pearl-extra-domain-data"));
+        assert!(!help.contains("--pearl-max-pattern-len"));
         assert!(!help.contains("--reconnect-max-attempts"));
     }
 
@@ -700,8 +664,7 @@ mod tests {
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
             "ai-pow-pearl-merge-cli", "--m", "8", "--k", "1024", "--n", "8", "--noise-rank", "32",
             "--tile", "8", "--spot-checks", "1", "--difficulty-bits", "0", "--pearl-gateway",
-            "tcp://127.0.0.1:8337", "--pearl-nockchain-target-epoch-or-height", "42",
-            "--pearl-extra-domain-data", "0xfeed", "--pearl-max-attempts", "16",
+            "tcp://127.0.0.1:8337",
         ]);
 
         let puzzle = build_puzzle_inputs(&args).expect("pearl merge puzzle inputs");
@@ -715,11 +678,11 @@ mod tests {
         );
         assert_eq!(pearl.mining_config().common_dim, 1024);
         assert_eq!(pearl.mining_config().rank, 32);
-        assert_eq!(pearl.max_pattern_len(), 256);
-        assert_eq!(pearl.mine_opts().max_attempts, Some(16));
+        assert_eq!(pearl.max_pattern_len(), 8);
+        assert_eq!(pearl.mine_opts().max_attempts, None);
         assert_eq!(pearl.aux_template().nockchain_chain_id, b"nockchain");
-        assert_eq!(pearl.aux_template().nockchain_target_epoch_or_height, 42);
-        assert_eq!(pearl.aux_template().extra_domain_data, vec![0xfe, 0xed]);
+        assert_eq!(pearl.aux_template().nockchain_target_epoch_or_height, 0);
+        assert!(pearl.aux_template().extra_domain_data.is_empty());
 
         puzzle
             .validate_canonical_submission_ready()
@@ -770,44 +733,21 @@ mod tests {
     }
 
     #[test]
-    fn cli_rejects_noncanonical_pearl_aux_template() {
-        let args = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "ai-pow-pearl-merge-bad-aux", "--pearl-nockchain-chain-id", "",
-        ]);
-
-        let err = match build_puzzle_inputs(&args) {
-            Ok(_) => panic!("noncanonical Pearl aux template must fail"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string()
-                .contains("Pearl aux template is not canonical"),
-            "unexpected error: {err:#}"
-        );
-        assert!(
-            err.to_string().contains("chain id must not be empty"),
-            "unexpected error: {err:#}"
-        );
-    }
-
-    #[test]
-    fn cli_rejects_pattern_bound_smaller_than_tile_before_mining() {
-        let args = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "ai-pow-pearl-merge-small-pattern-bound", "--pearl-max-pattern-len", "7",
-        ]);
-
-        let err = match build_puzzle_inputs(&args) {
-            Ok(_) => panic!("pattern bound smaller than tile must fail"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string().contains("--pearl-max-pattern-len"),
-            "unexpected error: {err:#}"
-        );
+    fn cli_rejects_removed_pearl_aux_and_search_flags() {
+        for removed_flag in [
+            "--pearl-nockchain-chain-id", "--pearl-nockchain-target-epoch-or-height",
+            "--pearl-extra-domain-data", "--pearl-max-pattern-len", "--pearl-max-attempts",
+        ] {
+            let err = Args::try_parse_from([
+                "ai-pow-mine", "--mining-pkh",
+                "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", removed_flag, "1",
+            ])
+            .expect_err("removed Pearl aux/search flag should not parse");
+            assert!(
+                err.to_string().contains(removed_flag),
+                "unexpected error for {removed_flag}: {err}"
+            );
+        }
     }
 
     #[test]
