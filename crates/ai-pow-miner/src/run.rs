@@ -31,9 +31,11 @@
 //! Rust-owned nonce and the recursive AI-PoW certificate noun. The plain
 //! `MatmulProof` and tile index are mining internals; they are not submitted
 //! to the kernel as the block proof. In Pearl-compatible mode the run loop
-//! constructs the Rust-owned `AIP1` nonce and submits only the Nockchain
-//! `%ai-pow` command; it does not submit anything to Pearl. The kernel remains
-//! fail-closed until recursive certificate verification is wired.
+//! constructs the Rust-owned `AIP1` nonce and, when a Pearl Gateway work item
+//! hits Pearl's target, submits Pearl's `PlainProof` wire payload to Gateway.
+//! If the same attempt hits Nockchain's target, the miner separately submits
+//! the Nockchain `%ai-pow` command. The kernel remains fail-closed until
+//! recursive certificate verification is wired.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -1014,7 +1016,6 @@ fn validate_pearl_gateway_target_uint256(
             let digits = number.to_string();
             validate_decimal_uint256(&digits)
         }
-        serde_json::Value::String(digits) => validate_decimal_uint256(digits),
         _ => Err(PearlGatewayError::TargetOverflow),
     }
 }
@@ -1757,6 +1758,53 @@ mod tests {
             validate_pearl_gateway_target_uint256(&target),
             Err(PearlGatewayError::TargetOverflow)
         ));
+    }
+
+    #[test]
+    fn pearl_gateway_header_source_rejects_string_target() {
+        let header = pearl_test_header();
+        let encoded_header = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind gateway fixture");
+        let port = listener.local_addr().expect("gateway fixture addr").port();
+        let gateway = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept gateway client");
+            let mut request_line = String::new();
+            {
+                let mut reader =
+                    std::io::BufReader::new(stream.try_clone().expect("clone gateway stream"));
+                std::io::BufRead::read_line(&mut reader, &mut request_line)
+                    .expect("read gateway request");
+            }
+            let request: serde_json::Value =
+                serde_json::from_str(&request_line).expect("parse gateway request");
+            assert_eq!(request["method"], "getMiningInfo");
+            let response = format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":\"123456\"}}}}\n",
+                encoded_header
+            );
+            std::io::Write::write_all(&mut stream, response.as_bytes())
+                .expect("write gateway response");
+        });
+
+        let source = PearlGatewayMinerRpcConfig {
+            transport: PearlGatewayTransport::Tcp {
+                host: "127.0.0.1".to_string(),
+                port,
+            },
+            request_timeout: Duration::from_secs(2),
+            refresh_interval: Duration::from_secs(1),
+        };
+        let err = fetch_pearl_gateway_mining_job(&source)
+            .expect_err("Pearl Gateway string target must be rejected");
+        gateway.join().expect("gateway fixture exited");
+
+        assert!(
+            matches!(err, PearlGatewayError::TargetOverflow),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
