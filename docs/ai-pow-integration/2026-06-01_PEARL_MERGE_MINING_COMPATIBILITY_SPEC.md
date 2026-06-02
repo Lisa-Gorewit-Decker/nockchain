@@ -157,9 +157,9 @@ Rust miner default policy for this milestone:
   aux-bearing templates at 1024 entries per current base template. A compatible
   Gateway returns an `aux_inclusion` object containing standard-base64
   `coinbase_tx` and a standard-base64 `merkle_branch` list. The Rust miner
-  verifies that returned proof against the returned incomplete header before
-  using the work. Hoon still receives only the opaque nonce and recursive
-  certificate.
+  requires that returned proof in Gateway mode and verifies it against the
+  returned incomplete header before using the work. Hoon still receives only
+  the opaque nonce and recursive certificate.
 - Pearl Gateway submission uses `submitPlainProof` with the Pearl wire format:
   `plain_proof` is standard base64 of Pearl's `bincode 1.3.3`
   `PlainProof`, and `mining_job` contains the base64 incomplete header bytes
@@ -176,10 +176,10 @@ Rust miner default policy for this milestone:
   same aux-bearing Pearl header that the Nockchain attempt used. The Rust miner
   now requests that aux-bearing work through the `getMiningInfo` extension
   above. If a Gateway accepts the request but omits `aux_inclusion`, the miner
-  can still build a coinbase-only aux proof for Nockchain-side
-  self-verification, but Pearl-side `submitPlainProof` remains fail-closed
-  unless the Gateway-issued header equals the mined aux-bearing header. This
-  avoids false success from Gateway's pre-async `"submitted"` acknowledgement.
+  rejects the work before mining. This avoids locally mutating Gateway-issued
+  work into a header that Nockchain can self-verify but Pearl Gateway cannot
+  accept, and avoids false success from Gateway's pre-async `"submitted"`
+  acknowledgement.
 
 The `coinbase_tx` and `merkle_branch` prove that
 `"NOCKCHAIN-AI-POW-AUX" || expected_aux_commitment` appears in the

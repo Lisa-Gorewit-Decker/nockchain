@@ -783,8 +783,12 @@ fn derive_pearl_merge_job_inputs_from_nockchain(
                         .map_err(|e| format!("verify Pearl Gateway aux inclusion: {e}"))?;
                     (job.header, aux_inclusion)
                 }
-                None => build_coinbase_only_pearl_aux_inclusion(&job.header, &aux)
-                    .map_err(|e| format!("build Pearl aux inclusion: {e}"))?,
+                None => {
+                    return Err(
+                        "Pearl Gateway response did not include requested aux_inclusion"
+                            .to_string(),
+                    );
+                }
             };
             (header, Some(job), aux_inclusion)
         }
@@ -1962,6 +1966,38 @@ mod tests {
         tx
     }
 
+    fn gateway_aux_header_and_coinbase_from_request(
+        request: &serde_json::Value,
+        mut header: PearlIncompleteBlockHeader,
+    ) -> (PearlIncompleteBlockHeader, String) {
+        assert_eq!(request["params"]["return_aux_inclusion"], true);
+        let encoded_flags = request["params"]["coinbase_aux_flags"]
+            .as_str()
+            .expect("coinbase_aux_flags string");
+        let flags = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded_flags)
+                .expect("decode coinbase_aux_flags")
+        };
+        assert_eq!(
+            &flags[..PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG.len()],
+            PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG
+        );
+        let aux_commitment: [u8; 32] = flags[PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG.len()..]
+            .try_into()
+            .expect("aux commitment length");
+        let coinbase_tx = pearl_test_coinbase_tx(&aux_commitment);
+        let mut merkle_root = pearl_bitcoin_double_sha256_raw(&coinbase_tx);
+        merkle_root.reverse();
+        header.merkle_root = merkle_root;
+        let encoded_coinbase = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(coinbase_tx)
+        };
+        (header, encoded_coinbase)
+    }
+
     fn pearl_test_aux_inclusion(
         aux_commitment: &[u8; 32],
     ) -> (PearlIncompleteBlockHeader, PearlAuxInclusionProof) {
@@ -2216,6 +2252,63 @@ mod tests {
         verify_pearl_aux_inclusion(&job.header, &aux_commitment, &job.aux_inclusion)
             .expect("Gateway-returned aux inclusion should verify");
         assert_eq!(job.aux_inclusion.coinbase_tx, coinbase_tx);
+    }
+
+    #[test]
+    fn derive_pearl_merge_job_inputs_rejects_gateway_missing_aux_inclusion() {
+        let candidate =
+            candidate_for_target_and_commitment(bignum_target_slab(&[u64::from(u32::MAX)]), 0xD0A2);
+        let encoded_header = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(pearl_test_header().to_bytes())
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind gateway fixture");
+        let port = listener.local_addr().expect("gateway fixture addr").port();
+        let gateway = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept gateway client");
+            let mut request_line = String::new();
+            {
+                let mut reader =
+                    std::io::BufReader::new(stream.try_clone().expect("clone gateway stream"));
+                std::io::BufRead::read_line(&mut reader, &mut request_line)
+                    .expect("read gateway request");
+            }
+            let request: serde_json::Value =
+                serde_json::from_str(&request_line).expect("parse gateway request");
+            assert_eq!(request["method"], "getMiningInfo");
+            assert_eq!(request["params"]["return_aux_inclusion"], true);
+            let response = format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":424242}}}}\n",
+                encoded_header
+            );
+            std::io::Write::write_all(&mut stream, response.as_bytes())
+                .expect("write gateway response");
+        });
+
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.puzzle
+            .pearl_merge
+            .as_mut()
+            .expect("test config has Pearl merge submission")
+            .header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+            transport: PearlGatewayTransport::Tcp {
+                host: "127.0.0.1".to_string(),
+                port,
+            },
+            request_timeout: Duration::from_secs(2),
+            refresh_interval: Duration::from_secs(1),
+        });
+
+        let err = match derive_pearl_merge_job_inputs(&cfg, &candidate) {
+            Ok(_) => panic!("Gateway response without aux_inclusion must be rejected"),
+            Err(err) => err,
+        };
+        gateway.join().expect("gateway fixture exited");
+
+        assert!(
+            err.contains("did not include requested aux_inclusion"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -3084,13 +3177,15 @@ mod tests {
                     continue;
                 }
                 assert_eq!(request["method"], "getMiningInfo");
+                let (header, encoded_coinbase) =
+                    gateway_aux_header_and_coinbase_from_request(&request, headers[served]);
                 let encoded_header = {
                     use base64::Engine as _;
-                    base64::engine::general_purpose::STANDARD.encode(headers[served].to_bytes())
+                    base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
                 };
                 let response = format!(
-                    "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":115792089237316195423570985008687907853269984665640564039457584007913129639935}}}}\n",
-                    encoded_header
+                    "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":115792089237316195423570985008687907853269984665640564039457584007913129639935,\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
+                    encoded_header, encoded_coinbase
                 );
                 std::io::Write::write_all(&mut stream, response.as_bytes())
                     .expect("write gateway response");
@@ -3198,13 +3293,15 @@ mod tests {
                     continue;
                 }
                 assert_eq!(request["method"], "getMiningInfo");
+                let (header, encoded_coinbase) =
+                    gateway_aux_header_and_coinbase_from_request(&request, headers[served]);
                 let encoded_header = {
                     use base64::Engine as _;
-                    base64::engine::general_purpose::STANDARD.encode(headers[served].to_bytes())
+                    base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
                 };
                 let response = format!(
-                    "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":115792089237316195423570985008687907853269984665640564039457584007913129639935}}}}\n",
-                    encoded_header
+                    "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":115792089237316195423570985008687907853269984665640564039457584007913129639935,\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
+                    encoded_header, encoded_coinbase
                 );
                 std::io::Write::write_all(&mut stream, response.as_bytes())
                     .expect("write gateway response");
@@ -3277,14 +3374,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_loop_pearl_only_hit_submits_plain_proof_without_nockchain_poke() {
         let commitment_seed = 705;
-        let mut aux = pearl_test_aux();
-        aux.nock_block_commitment = nock_block_commitment_for_seed(commitment_seed);
-        let (header, _) = build_coinbase_only_pearl_aux_inclusion(&pearl_test_header(), &aux)
-            .expect("build aux-bearing Gateway header");
-        let expected_get_header = {
-            use base64::Engine as _;
-            base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
-        };
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind Pearl gateway fixture");
         listener
             .set_nonblocking(true)
@@ -3317,9 +3406,18 @@ mod tests {
                     serde_json::from_str(&request_line).expect("parse gateway request");
                 match request["method"].as_str().expect("method string") {
                     "getMiningInfo" => {
+                        let (header, encoded_coinbase) =
+                            gateway_aux_header_and_coinbase_from_request(
+                                &request,
+                                pearl_test_header(),
+                            );
+                        let encoded_header = {
+                            use base64::Engine as _;
+                            base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
+                        };
                         let response = format!(
-                            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":424242}}}}\n",
-                            expected_get_header
+                            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":424242,\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
+                            encoded_header, encoded_coinbase
                         );
                         std::io::Write::write_all(&mut stream, response.as_bytes())
                             .expect("write gateway response");
