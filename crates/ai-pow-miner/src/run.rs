@@ -1669,7 +1669,7 @@ mod tests {
             zk_params: parts.zk_params,
             found_idx: parts.found_idx + 1,
             commitments: parts.commitments,
-            public_inputs: parts.public_inputs,
+            public_inputs: parts.public_inputs.clone(),
             trace_height: parts.trace_height,
             certificate: AiProofNode::Unit,
         };
@@ -1680,6 +1680,25 @@ mod tests {
         .expect_err("stale recursive-run metadata must not be submitted");
         assert!(
             err.to_string().contains("recursive-run.found-idx"),
+            "unexpected error: {err}"
+        );
+
+        let mut forged_public_inputs = parts.public_inputs.clone();
+        forged_public_inputs.hash_jackpot[0] ^= 1;
+        let forged = PearlMergeCertificateProof {
+            zk_params: parts.zk_params,
+            found_idx: parts.found_idx,
+            commitments: parts.commitments,
+            public_inputs: forged_public_inputs,
+            trace_height: parts.trace_height,
+            certificate: AiProofNode::Unit,
+        };
+        let err = build_ai_pow_pearl_merge_certificate_poke_from_ticket_proof(
+            &attempt, &aux_inclusion, &a, &b, 16, &forged,
+        )
+        .expect_err("forged recursive-run public inputs must not be submitted");
+        assert!(
+            err.to_string().contains("public-inputs.hash-jackpot"),
             "unexpected error: {err}"
         );
     }
