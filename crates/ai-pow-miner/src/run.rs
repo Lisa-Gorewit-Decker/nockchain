@@ -78,6 +78,7 @@ use crate::pearl_mining::{
 use crate::wire::AiPowMinerWire;
 use crate::{DifficultyTarget, MiningCancel};
 
+const PEARL_GATEWAY_MAX_RESPONSE_LINE_BYTES: usize = 64 * 1024;
 const MAX_CHAIN_TARGET_U32_LIMBS: usize = 10;
 const AI_POW_MINE_CANDIDATE_VERSION: u64 = 3;
 
@@ -775,6 +776,8 @@ enum PearlGatewayError {
     ResponseIdMismatch { expected: u64, actual: String },
     #[error("Pearl gateway mining job target is outside uint256")]
     TargetOverflow,
+    #[error("Pearl gateway response line exceeded {limit} bytes")]
+    ResponseTooLarge { limit: usize },
     #[error("Pearl gateway header: {0}")]
     Header(#[from] PearlCompatError),
     #[cfg(not(unix))]
@@ -822,10 +825,8 @@ fn fetch_pearl_gateway_header(
             stream.write_all(request.as_bytes())?;
             stream.write_all(b"\n")?;
             stream.flush()?;
-            let mut response = String::new();
             let mut reader = BufReader::new(stream);
-            reader.read_line(&mut response)?;
-            response
+            read_bounded_gateway_response_line(&mut reader)?
         }
         PearlGatewayTransport::UnixSocket { path } => {
             #[cfg(unix)]
@@ -836,10 +837,8 @@ fn fetch_pearl_gateway_header(
                 stream.write_all(request.as_bytes())?;
                 stream.write_all(b"\n")?;
                 stream.flush()?;
-                let mut response = String::new();
                 let mut reader = BufReader::new(stream);
-                reader.read_line(&mut response)?;
-                response
+                read_bounded_gateway_response_line(&mut reader)?
             }
             #[cfg(not(unix))]
             {
@@ -874,6 +873,32 @@ fn fetch_pearl_gateway_header(
         base64::engine::general_purpose::STANDARD.decode(job.incomplete_header_bytes)?
     };
     Ok(PearlIncompleteBlockHeader::from_bytes(&header_bytes)?)
+}
+
+fn read_bounded_gateway_response_line<R: BufRead>(
+    reader: &mut R,
+) -> Result<String, PearlGatewayError> {
+    let mut bytes = Vec::new();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            break;
+        }
+        let newline_at = available.iter().position(|&b| b == b'\n');
+        let consume_len = newline_at.map_or(available.len(), |idx| idx + 1);
+        if bytes.len() + consume_len > PEARL_GATEWAY_MAX_RESPONSE_LINE_BYTES {
+            return Err(PearlGatewayError::ResponseTooLarge {
+                limit: PEARL_GATEWAY_MAX_RESPONSE_LINE_BYTES,
+            });
+        }
+        bytes.extend_from_slice(&available[..consume_len]);
+        reader.consume(consume_len);
+        if newline_at.is_some() {
+            break;
+        }
+    }
+    Ok(String::from_utf8(bytes)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?)
 }
 
 fn connect_tcp_with_timeout(
@@ -1529,6 +1554,25 @@ mod tests {
             "unexpected error: {err}"
         );
         gateway.join().expect("silent gateway fixture exited");
+    }
+
+    #[test]
+    fn pearl_gateway_response_reader_rejects_oversized_line() {
+        let exact = vec![b' '; PEARL_GATEWAY_MAX_RESPONSE_LINE_BYTES];
+        let mut exact_reader = std::io::Cursor::new(exact.clone());
+        assert_eq!(
+            read_bounded_gateway_response_line(&mut exact_reader).expect("exact cap is accepted"),
+            String::from_utf8(exact).expect("ascii")
+        );
+
+        let oversized = vec![b' '; PEARL_GATEWAY_MAX_RESPONSE_LINE_BYTES + 1];
+        let mut oversized_reader = std::io::Cursor::new(oversized);
+        assert!(matches!(
+            read_bounded_gateway_response_line(&mut oversized_reader),
+            Err(PearlGatewayError::ResponseTooLarge {
+                limit: PEARL_GATEWAY_MAX_RESPONSE_LINE_BYTES
+            })
+        ));
     }
 
     #[test]

@@ -125,6 +125,10 @@ Rust miner default policy for this milestone:
   and configurable with `--pearl-gateway-timeout-ms`. Zero is rejected so a
   silent, wedged, or malicious local Gateway cannot block candidate processing
   indefinitely.
+- Pearl Gateway JSON-RPC responses are read as a single bounded line, capped at
+  64 KiB before JSON parsing. This is intentionally far above the expected
+  `getMiningInfo` response size but prevents a local Gateway from forcing
+  unbounded miner allocation by streaming data without a newline.
 - In Gateway mode, the miner refreshes `getMiningInfo` while a Nockchain
   candidate remains current. The refresh interval defaults to 1000 ms and is
   configurable with `--pearl-gateway-refresh-ms`; zero is rejected. If the
@@ -335,8 +339,8 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
    as its Pearl work-header source, with manual headers retained only as an
    explicit development fallback.
 6. Done for this milestone: Pearl Gateway header fetches have bounded request
-   timeouts to avoid a local Gateway denial of service during candidate
-   processing.
+   timeouts and bounded response-line reads to avoid local Gateway denial of
+   service during candidate processing.
 7. Done for this milestone: Pearl Gateway work is refreshed while a Nockchain
    candidate remains current, and changed Pearl headers supersede stale ticket
    loops for that candidate.
