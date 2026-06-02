@@ -565,8 +565,8 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                                 }
                             }
                             if !mined.ticket.nockchain_target_hit {
-                                latest_candidate = None;
-                                current_pearl_header = None;
+                                current_pearl_header =
+                                    Some(mined.ticket.attempt.public_params.block_header);
                                 continue;
                             }
                             let proof = match pearl_cfg.build_certificate_for_attempt(&mined.ticket.attempt) {
@@ -3421,7 +3421,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn run_loop_pearl_only_hit_submits_plain_proof_without_nockchain_poke() {
+    async fn run_loop_pearl_only_hit_keeps_nockchain_candidate_for_new_pearl_work() {
         let commitment_seed = 705;
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind Pearl gateway fixture");
         listener
@@ -3435,6 +3435,15 @@ mod tests {
         let submit_calls_for_thread = submit_calls.clone();
         let stop_gateway_for_thread = stop_gateway.clone();
         let gateway_thread = std::thread::spawn(move || {
+            let headers = [
+                pearl_test_header(),
+                pearl_test_header(),
+                PearlIncompleteBlockHeader {
+                    timestamp: pearl_test_header().timestamp + 1,
+                    ..pearl_test_header()
+                },
+            ];
+            let mut served_headers = 0usize;
             while !stop_gateway_for_thread.load(Ordering::SeqCst) {
                 let (mut stream, _) = match listener.accept() {
                     Ok(x) => x,
@@ -3455,11 +3464,11 @@ mod tests {
                     serde_json::from_str(&request_line).expect("parse gateway request");
                 match request["method"].as_str().expect("method string") {
                     "getMiningInfo" => {
+                        let header_template =
+                            headers[served_headers.min(headers.len().saturating_sub(1))];
+                        served_headers += 1;
                         let (header, encoded_coinbase) =
-                            gateway_aux_header_and_coinbase_from_request(
-                                &request,
-                                pearl_test_header(),
-                            );
+                            gateway_aux_header_and_coinbase_from_request(&request, header_template);
                         let encoded_header = {
                             use base64::Engine as _;
                             base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
@@ -3529,19 +3538,19 @@ mod tests {
         node.publish_synth_mine_effect_with_target_limbs(commitment_seed, &[0], 64);
 
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while submit_calls.load(Ordering::SeqCst) == 0 {
+        while submit_calls.load(Ordering::SeqCst) < 2 {
             assert!(
                 std::time::Instant::now() < deadline,
-                "Pearl-only hit did not submit a Gateway plain proof"
+                "Pearl-only hit did not resume for changed Pearl Gateway work"
             );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert!(
-            get_calls.load(Ordering::SeqCst) <= 2,
-            "Pearl-only hit should not keep refreshing Gateway work after submission"
+            get_calls.load(Ordering::SeqCst) >= 3,
+            "Pearl-only hit should keep refreshing Gateway work for the unsolved Nockchain candidate"
         );
-        assert_eq!(submit_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(submit_calls.load(Ordering::SeqCst), 2);
         assert!(
             node.mined_pokes.lock().await.is_empty(),
             "Pearl-only hit must not submit a Nockchain %ai-pow poke"

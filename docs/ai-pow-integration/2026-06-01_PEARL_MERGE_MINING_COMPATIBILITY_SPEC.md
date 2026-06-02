@@ -141,8 +141,11 @@ Rust miner default policy for this milestone:
   ticket loop and restarts work for the same Nockchain candidate using the new
   Pearl header. After a solution is turned into a Nockchain poke attempt, the
   cached candidate is cleared and Gateway refresh does not redispatch that
-  solved candidate; the miner waits for the node to emit a new candidate.
-  Manual/static header mode does not refresh.
+  solved candidate; the miner waits for the node to emit a new candidate. A
+  Pearl-only Gateway hit does not clear the Nockchain candidate: identical
+  refreshed Pearl work is skipped, and a later changed Pearl header restarts
+  ticket search for the same still-unsolved Nockchain candidate. Manual/static
+  header mode does not refresh.
 - Pearl Gateway's work cache treats the full incomplete header bytes as the
   base-template freshness key. Same-parent updates that change timestamp,
   target bits, transaction merkle root, or version replace the current template
@@ -315,9 +318,8 @@ Implemented in this branch:
   `%ai-pow` poke for a candidate and attempts to send it to the node, it clears
   the cached candidate so later Pearl Gateway template changes cannot produce
   duplicate submissions for the same Nockchain candidate. Pearl-only Gateway
-  hits also clear the cached Nockchain candidate for now to avoid resubmitting
-  the same Pearl hit against a Gateway that acknowledges before async stale
-  header checks complete.
+  hits retain the cached Nockchain candidate, remember the solved Pearl header,
+  and resume only after Gateway advertises changed Pearl work.
   The legacy NCMN miner and prover-only smoke CLI were removed so downstream
   callers cannot accidentally treat them as production submission APIs.
 - Miner preflight rejects configurations without Pearl submission config before
