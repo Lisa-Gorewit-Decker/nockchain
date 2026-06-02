@@ -94,12 +94,13 @@ type AiPowPearlMergeCertificateBuilder = dyn Fn(&PearlMergeTicketAttempt) -> Res
 /// Recursive proof data produced only after a Pearl-compatible ticket clears
 /// Nockchain's target.
 ///
-/// Public callers can construct this only from the opaque
-/// [`AiPowRecursiveCertificateRun`] returned by the recursive prover. Tests
-/// inside this crate may still inject synthetic proof nodes to exercise the
-/// surrounding noun and run-loop plumbing without running the prover.
+/// This stays crate-internal so external callers cannot inject synthetic proof
+/// nodes or route around the recursive prover selected by
+/// [`PearlMergeSubmissionConfig::new_recursive`]. Tests inside this crate may
+/// still inject synthetic proof nodes to exercise the surrounding noun and
+/// run-loop plumbing without running the prover.
 #[derive(Debug, Clone)]
-pub struct PearlMergeCertificateProof {
+pub(crate) struct PearlMergeCertificateProof {
     zk_params: ZkParams,
     found_idx: u32,
     commitments: ZkPublicCommitments,
@@ -109,7 +110,7 @@ pub struct PearlMergeCertificateProof {
 }
 
 impl PearlMergeCertificateProof {
-    pub fn from_recursive_run(
+    pub(crate) fn from_recursive_run(
         run: &AiPowRecursiveCertificateRun,
     ) -> Result<Self, AiPowCertificateBuildError> {
         let certificate = crate::certificate_noun::recursive_certificate_to_node(run.certificate())
@@ -181,23 +182,11 @@ impl PearlMergeSubmissionConfig {
         }
     }
 
-    pub fn build_certificate_for_attempt(
+    pub(crate) fn build_certificate_for_attempt(
         &self,
         attempt: &PearlMergeTicketAttempt,
     ) -> Result<PearlMergeCertificateProof, AiPowCertificateBuildError> {
         (self.certificate_builder)(attempt)
-    }
-
-    pub fn gateway(&self) -> &PearlGatewayMinerRpcConfig {
-        &self.gateway
-    }
-
-    pub fn mining_config(&self) -> &PearlMiningConfig {
-        &self.mining_config
-    }
-
-    pub fn aux_template(&self) -> &PearlNockchainAux {
-        &self.aux_template
     }
 }
 
@@ -1343,8 +1332,8 @@ pub(crate) fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_node(
 
 /// Crate-internal poke builder for the run loop after its certificate builder
 /// has produced private-field [`PearlMergeCertificateProof`] data. Tests use it
-/// with synthetic proof nodes; external callers cannot construct that wrapper
-/// except through [`PearlMergeCertificateProof::from_recursive_run`].
+/// with synthetic proof nodes; production code gets that wrapper only through
+/// the recursive prover selected by [`PearlMergeSubmissionConfig::new_recursive`].
 #[cfg(test)]
 pub(crate) fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_public_inputs_node(
     attempt: &PearlMergeTicketAttempt,

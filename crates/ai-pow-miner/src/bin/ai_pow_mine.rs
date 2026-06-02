@@ -350,7 +350,6 @@ fn contiguous_pearl_pattern(tile: u32) -> Result<PearlPeriodicPattern> {
 
 #[cfg(test)]
 mod tests {
-    use ai_pow::pearl_compat::evaluate_pearl_merge_ticket_attempt;
     use clap::CommandFactory;
 
     use super::*;
@@ -361,54 +360,22 @@ mod tests {
             "ai-pow-mine", "--mining-pkh",
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV",
         ]);
+        assert_eq!(args.pearl_gateway, DEFAULT_PEARL_GATEWAY_ENDPOINT);
+        assert_eq!(
+            resolve_pearl_gateway_transport(&args).expect("parse default unix endpoint"),
+            PearlGatewayTransport::UnixSocket {
+                path: "/tmp/pearlgw.sock".to_string()
+            }
+        );
         let puzzle = build_puzzle_inputs(&args).expect("default Pearl gateway config");
         assert_eq!(puzzle.params, DEFAULT_MATMUL_PARAMS);
         let (expected_a, expected_b) =
             ai_pow::synth::synth_matrices(DEFAULT_SYNTH_SEED.as_bytes(), &puzzle.params);
         assert_eq!(puzzle.a.as_slice(), expected_a.as_slice());
         assert_eq!(puzzle.b.as_slice(), expected_b.as_slice());
-        let pearl = &puzzle.pearl_merge;
-        assert_eq!(
-            pearl.gateway().transport,
-            PearlGatewayTransport::UnixSocket {
-                path: "/tmp/pearlgw.sock".to_string()
-            }
-        );
-        assert_eq!(
-            pearl.gateway().request_timeout,
-            Duration::from_millis(DEFAULT_PEARL_GATEWAY_TIMEOUT_MS)
-        );
-        assert_eq!(
-            pearl.gateway().refresh_interval,
-            Duration::from_millis(DEFAULT_PEARL_GATEWAY_REFRESH_MS)
-        );
-    }
-
-    #[test]
-    fn cli_can_configure_pearl_gateway_tcp_source() {
-        let args = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--pearl-gateway",
-            "127.0.0.1:8337",
-        ]);
-
-        let puzzle = build_puzzle_inputs(&args).expect("configured Pearl TCP gateway config");
-        let pearl = &puzzle.pearl_merge;
-        assert_eq!(
-            pearl.gateway().transport,
-            PearlGatewayTransport::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: 8337
-            }
-        );
-        assert_eq!(
-            pearl.gateway().request_timeout,
-            Duration::from_millis(DEFAULT_PEARL_GATEWAY_TIMEOUT_MS)
-        );
-        assert_eq!(
-            pearl.gateway().refresh_interval,
-            Duration::from_millis(DEFAULT_PEARL_GATEWAY_REFRESH_MS)
-        );
+        puzzle
+            .validate_canonical_submission_ready()
+            .expect("default pearl merge submission should pass preflight");
     }
 
     #[test]
@@ -517,64 +484,17 @@ mod tests {
         ]);
 
         let puzzle = build_puzzle_inputs(&args).expect("pearl merge puzzle inputs");
-        let pearl = &puzzle.pearl_merge;
         assert_eq!(
-            pearl.gateway().transport,
+            resolve_pearl_gateway_transport(&args).expect("parse configured tcp endpoint"),
             PearlGatewayTransport::Tcp {
                 host: "127.0.0.1".to_string(),
                 port: 8337
             }
         );
-        assert_eq!(pearl.mining_config().common_dim, 1024);
-        assert_eq!(pearl.mining_config().rank, 32);
-        assert_eq!(pearl.aux_template().nockchain_chain_id, b"nockchain");
-        assert_eq!(pearl.aux_template().nockchain_target_epoch_or_height, 0);
-        assert!(pearl.aux_template().extra_domain_data.is_empty());
 
         puzzle
             .validate_canonical_submission_ready()
             .expect("configured pearl merge submission should pass preflight");
-    }
-
-    #[test]
-    fn cli_certificate_builder_rejects_target_miss_before_recursive_proof() {
-        let args = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV",
-        ]);
-
-        let puzzle = build_puzzle_inputs(&args).expect("pearl merge puzzle inputs");
-        let pearl = &puzzle.pearl_merge;
-        let header = ai_pow::pearl_compat::PearlIncompleteBlockHeader {
-            version: 1,
-            prev_block: [0x11; 32],
-            merkle_root: [0u8; 32],
-            timestamp: 1_717_171_717,
-            nbits: 0x207f_ffff,
-        };
-        let mut attempt = evaluate_pearl_merge_ticket_attempt(
-            &header,
-            pearl.mining_config(),
-            &puzzle.params,
-            0,
-            0,
-            puzzle.a.as_slice(),
-            puzzle.b.as_slice(),
-            &[0xff; 32],
-            DEFAULT_MATMUL_PARAMS.tile as usize,
-            pearl.aux_template().clone(),
-        )
-        .expect("evaluate trivial-target Pearl merge ticket");
-        attempt.nockchain_target = [0u8; 32];
-
-        let err = pearl
-            .build_certificate_for_attempt(&attempt)
-            .expect_err("CLI certificate builder must reject target misses before proving");
-        assert!(
-            err.to_string()
-                .contains("before successful Nockchain target check"),
-            "unexpected error: {err}"
-        );
     }
 
     #[test]
