@@ -1754,6 +1754,8 @@ fn precheck_pearl_merge_certificate_metadata(
     params
         .validate_prod_envelope()
         .map_err(|_| CertificateNounError::PearlMergeUnsupportedTileShape)?;
+    validate_canonical_recursive_certificate_params(&params)
+        .map_err(|_| CertificateNounError::PearlMergeUnsupportedTileShape)?;
     let expected_zk_params = zk_params_from_matmul(&params);
     if metadata.zk_params != expected_zk_params {
         return Err(CertificateNounError::PearlMergePublicInputMismatch(
@@ -5453,6 +5455,51 @@ mod tests {
         assert!(matches!(
             precheck_ai_pow_pearl_merge_artifact_statement(
                 &decoded, &statement.aux.nock_block_commitment, &a, &b, &[0xffu8; 32], 16,
+            ),
+            Err(CertificateNounError::PearlMergeUnsupportedTileShape)
+        ));
+    }
+
+    #[test]
+    fn pearl_merge_artifact_metadata_precheck_rejects_multi_tile_recursive_claim() {
+        let params = MatmulParams {
+            m: 16,
+            ..pearl_test_params()
+        };
+        assert!(params.num_tiles() > 1);
+        let aux = pearl_test_aux();
+        let (header, aux_inclusion) = pearl_test_aux_inclusion(&aux.commitment().unwrap());
+        let config = pearl_test_config();
+        let (a, b) = synth_matrices(b"pearl-metadata-multi-tile", &params);
+        let attempt = evaluate_pearl_merge_ticket_attempt(
+            &header, &config, &params, 0, 0, &a, &b, &[0xff; 32], 16, aux,
+        )
+        .expect("evaluate multi-tile Pearl metadata attempt");
+        let statement =
+            PearlMergePublicStatementShape::from_wire_statement(&attempt.statement).unwrap();
+        let pis =
+            pearl_merge_recursive_public_inputs_from_work(&attempt.commitments, &attempt.ticket);
+        let cert_slab = build_ai_pow_certificate_noun_from_node(
+            &zk_params_from_matmul(&params),
+            0,
+            expected_layer0_rows(&params).required_trace_len(),
+            &ZkPublicCommitments {
+                h_a_chunk: attempt.commitments.h_a,
+                h_b_chunk: attempt.commitments.h_b,
+            },
+            &pis,
+            &AiProofNode::Unit,
+        );
+        let artifact_slab = build_pearl_merge_artifact_slab(&statement, &aux_inclusion, &cert_slab);
+        let metadata = decode_ai_pow_pearl_merge_artifact_metadata_slab(
+            &artifact_slab,
+            CertificateNounLimits::default(),
+        )
+        .expect("decode multi-tile Pearl metadata");
+
+        assert!(matches!(
+            precheck_ai_pow_pearl_merge_artifact_metadata(
+                &metadata, &statement.aux.nock_block_commitment, &a, &b, &[0xffu8; 32], 16,
             ),
             Err(CertificateNounError::PearlMergeUnsupportedTileShape)
         ));
