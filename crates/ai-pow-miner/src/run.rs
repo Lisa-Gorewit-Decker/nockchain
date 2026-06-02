@@ -86,7 +86,7 @@ const PEARL_GATEWAY_MAX_RESPONSE_LINE_BYTES: usize = 64 * 1024;
 const MAX_CHAIN_TARGET_U32_LIMBS: usize = 10;
 const AI_POW_MINE_CANDIDATE_VERSION: u64 = 3;
 
-pub type AiPowPearlMergeCertificateBuilder = dyn Fn(&PearlMergeTicketAttempt) -> Result<PearlMergeCertificateProof, AiPowCertificateBuildError>
+type AiPowPearlMergeCertificateBuilder = dyn Fn(&PearlMergeTicketAttempt) -> Result<PearlMergeCertificateProof, AiPowCertificateBuildError>
     + Send
     + Sync
     + 'static;
@@ -137,7 +137,56 @@ pub struct PearlMergeSubmissionConfig {
     pub aux_template: PearlNockchainAux,
     pub max_pattern_len: usize,
     pub mine_opts: PearlMergeMineOptions,
-    pub certificate_builder: Arc<AiPowPearlMergeCertificateBuilder>,
+    certificate_builder: Arc<AiPowPearlMergeCertificateBuilder>,
+}
+
+impl PearlMergeSubmissionConfig {
+    /// Build the canonical production Pearl-compatible Nockchain submission
+    /// config. The certificate builder is fixed to the recursive prover, so
+    /// external callers cannot accidentally install a plain-proof or synthetic
+    /// certificate path.
+    pub fn new_recursive(
+        header_source: PearlMergeHeaderSource,
+        mining_config: PearlMiningConfig,
+        aux_template: PearlNockchainAux,
+        max_pattern_len: usize,
+        mine_opts: PearlMergeMineOptions,
+        params: MatmulParams,
+        a: Arc<Vec<i8>>,
+        b: Arc<Vec<i8>>,
+    ) -> Self {
+        let certificate_builder = Arc::new(move |attempt: &PearlMergeTicketAttempt| {
+            let run = ai_pow::zk_bridge::prove_pearl_merge_recursive_certificate(
+                attempt,
+                &params,
+                a.as_slice(),
+                b.as_slice(),
+                max_pattern_len,
+            )
+            .map_err(|e| {
+                AiPowCertificateBuildError(format!(
+                    "refusing to build Pearl-compatible recursive certificate before successful Nockchain target check: {e}"
+                ))
+            })?;
+            PearlMergeCertificateProof::from_recursive_run(&run)
+        });
+
+        Self {
+            header_source,
+            mining_config,
+            aux_template,
+            max_pattern_len,
+            mine_opts,
+            certificate_builder,
+        }
+    }
+
+    pub fn build_certificate_for_attempt(
+        &self,
+        attempt: &PearlMergeTicketAttempt,
+    ) -> Result<PearlMergeCertificateProof, AiPowCertificateBuildError> {
+        (self.certificate_builder)(attempt)
+    }
 }
 
 /// Source for Pearl work headers used in the shared ticket transcript.
@@ -520,7 +569,7 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                                 current_pearl_header = None;
                                 continue;
                             }
-                            let proof = match (pearl_cfg.certificate_builder)(&mined.ticket.attempt) {
+                            let proof = match pearl_cfg.build_certificate_for_attempt(&mined.ticket.attempt) {
                                 Ok(proof) => proof,
                                 Err(e) => {
                                     warn!(error = %e, "Pearl-compatible recursive AI-PoW certificate build failed");

@@ -42,15 +42,13 @@ use std::time::Duration;
 use ai_pow::params::MatmulParams;
 use ai_pow::pearl_compat::{
     validate_pearl_merge_config_for_recursive_prover, PearlIncompleteBlockHeader,
-    PearlMergeTicketAttempt, PearlMiningConfig, PearlNockchainAux, PearlPeriodicPattern,
-    PEARL_MINING_CONFIG_RESERVED_SIZE, PEARL_MMA_INT7XINT7_TO_INT32,
+    PearlMiningConfig, PearlNockchainAux, PearlPeriodicPattern, PEARL_MINING_CONFIG_RESERVED_SIZE,
+    PEARL_MMA_INT7XINT7_TO_INT32,
 };
-use ai_pow::zk_bridge::prove_pearl_merge_recursive_certificate;
 use ai_pow_miner::pearl_mining::PearlMergeMineOptions;
 use ai_pow_miner::run::{
-    default_v0_configs, run, AiPowCertificateBuildError, AiPuzzleInputs, MinerConfig, MinerError,
-    PearlGatewayMinerRpcConfig, PearlGatewayTransport, PearlMergeCertificateProof,
-    PearlMergeHeaderSource, PearlMergeSubmissionConfig,
+    default_v0_configs, run, AiPuzzleInputs, MinerConfig, MinerError, PearlGatewayMinerRpcConfig,
+    PearlGatewayTransport, PearlMergeHeaderSource, PearlMergeSubmissionConfig,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, ValueEnum};
@@ -456,37 +454,19 @@ fn build_pearl_merge_submission_config(
         .to_bytes()
         .map_err(|e| anyhow!("Pearl aux template is not canonical: {e}"))?;
 
-    let params_for_builder = params;
-    let a_for_builder = a.clone();
-    let b_for_builder = b.clone();
-    let max_pattern_len = args.pearl_max_pattern_len;
-    let certificate_builder = Arc::new(move |attempt: &PearlMergeTicketAttempt| {
-        let run = prove_pearl_merge_recursive_certificate(
-            attempt,
-            &params_for_builder,
-            a_for_builder.as_slice(),
-            b_for_builder.as_slice(),
-            max_pattern_len,
-        )
-        .map_err(|e| {
-            AiPowCertificateBuildError(format!(
-                "refusing to build Pearl-compatible recursive certificate before successful Nockchain target check: {e}"
-            ))
-        })?;
-        PearlMergeCertificateProof::from_recursive_run(&run)
-    });
-
     let mut mine_opts = PearlMergeMineOptions::default();
     mine_opts.max_attempts = args.pearl_max_attempts;
 
-    Ok(PearlMergeSubmissionConfig {
+    Ok(PearlMergeSubmissionConfig::new_recursive(
         header_source,
         mining_config,
         aux_template,
-        max_pattern_len,
+        args.pearl_max_pattern_len,
         mine_opts,
-        certificate_builder,
-    })
+        params,
+        a.clone(),
+        b.clone(),
+    ))
 }
 
 fn resolve_pearl_gateway_transport(args: &Args) -> Result<PearlGatewayTransport> {
@@ -935,7 +915,8 @@ mod tests {
         .expect("evaluate trivial-target Pearl merge ticket");
         attempt.nockchain_target = [0u8; 32];
 
-        let err = (pearl.certificate_builder)(&attempt)
+        let err = pearl
+            .build_certificate_for_attempt(&attempt)
             .expect_err("CLI certificate builder must reject target misses before proving");
         assert!(
             err.to_string()
