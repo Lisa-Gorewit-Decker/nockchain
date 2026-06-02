@@ -313,10 +313,12 @@ Implemented in this branch:
   default it fetches the Pearl incomplete block header from Pearl Gateway
   miner RPC `getMiningInfo`. The visible operator CLI surface is intentionally
   small: node private gRPC address, mining key configuration, unified
-  `--pearl-gateway` endpoint, and log filter. Matrix shape, synthetic-matrix,
-  manual Pearl header, Gateway timing, reconnect, and Rust-only Pearl aux
-  metadata flags remain hidden dev/compatibility controls. Gateway fetches use
-  an explicit TCP connect timeout plus socket read/write timeouts so local
+  `--pearl-gateway` endpoint, and log filter. The legacy split Gateway
+  transport/socket/host/port flags were removed; Gateway location is configured
+  through the one endpoint string. Matrix shape, synthetic-matrix, manual Pearl
+  header, Gateway timing, reconnect, and Rust-only Pearl aux metadata flags
+  remain hidden dev/compatibility controls. Gateway fetches use an explicit TCP
+  connect timeout plus socket read/write timeouts so local
   Gateway failure is a skipped candidate, not an unbounded miner stall. The
   miner also polls Gateway while a Nockchain candidate is current and
   redispatches the ticket loop if the Pearl header changes. The miner derives

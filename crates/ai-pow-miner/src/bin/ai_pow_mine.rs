@@ -51,7 +51,7 @@ use ai_pow_miner::run::{
     PearlGatewayTransport, PearlMergeHeaderSource, PearlMergeSubmissionConfig,
 };
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use nockchain_mining_common::MiningPkhConfig;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
@@ -59,23 +59,14 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 const DEFAULT_PEARL_NOCKCHAIN_CHAIN_ID: &str = "nockchain";
 const DEFAULT_PEARL_GATEWAY_ENDPOINT: &str = "unix:/tmp/pearlgw.sock";
-const DEFAULT_PEARL_GATEWAY_SOCKET: &str = "/tmp/pearlgw.sock";
-const DEFAULT_PEARL_GATEWAY_HOST: &str = "localhost";
-const DEFAULT_PEARL_GATEWAY_PORT: u16 = 8337;
 const DEFAULT_PEARL_GATEWAY_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_PEARL_GATEWAY_REFRESH_MS: u64 = 1_000;
 const DEFAULT_SYNTH_SEED: &str = "ai-pow-prod-v1";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum PearlWorkSourceArg {
     Gateway,
     Manual,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum PearlGatewayTransportArg {
-    Uds,
-    Tcp,
 }
 
 /// `ai-pow-mine` — standalone AI-PoW block miner.
@@ -136,24 +127,8 @@ struct Args {
 
     /// Pearl Gateway miner RPC endpoint. Accepts `unix:/path/to.sock`, `/path/to.sock`,
     /// `tcp:host:port`, `tcp://host:port`, or `host:port`.
-    #[arg(long, value_name = "ENDPOINT")]
-    pearl_gateway: Option<String>,
-
-    /// Pearl Gateway miner RPC transport. Hidden compatibility shim; prefer --pearl-gateway.
-    #[arg(long, value_enum, hide = true)]
-    pearl_gateway_transport: Option<PearlGatewayTransportArg>,
-
-    /// Pearl Gateway Unix socket path. Hidden compatibility shim; prefer --pearl-gateway.
-    #[arg(long, hide = true)]
-    pearl_gateway_socket: Option<String>,
-
-    /// Pearl Gateway TCP host. Hidden compatibility shim; prefer --pearl-gateway.
-    #[arg(long, hide = true)]
-    pearl_gateway_host: Option<String>,
-
-    /// Pearl Gateway TCP port. Hidden compatibility shim; prefer --pearl-gateway.
-    #[arg(long, hide = true)]
-    pearl_gateway_port: Option<u16>,
+    #[arg(long, value_name = "ENDPOINT", default_value = DEFAULT_PEARL_GATEWAY_ENDPOINT)]
+    pearl_gateway: String,
 
     /// Pearl Gateway request timeout in milliseconds.
     #[arg(long, default_value_t = DEFAULT_PEARL_GATEWAY_TIMEOUT_MS, hide = true)]
@@ -470,38 +445,7 @@ fn build_pearl_merge_submission_config(
 }
 
 fn resolve_pearl_gateway_transport(args: &Args) -> Result<PearlGatewayTransport> {
-    if let Some(endpoint) = args.pearl_gateway.as_deref() {
-        return parse_pearl_gateway_endpoint(endpoint);
-    }
-
-    if args.pearl_gateway_transport.is_none()
-        && args.pearl_gateway_socket.is_none()
-        && args.pearl_gateway_host.is_none()
-        && args.pearl_gateway_port.is_none()
-    {
-        return parse_pearl_gateway_endpoint(DEFAULT_PEARL_GATEWAY_ENDPOINT);
-    }
-
-    match args
-        .pearl_gateway_transport
-        .unwrap_or(PearlGatewayTransportArg::Uds)
-    {
-        PearlGatewayTransportArg::Uds => Ok(PearlGatewayTransport::UnixSocket {
-            path: args
-                .pearl_gateway_socket
-                .clone()
-                .unwrap_or_else(|| DEFAULT_PEARL_GATEWAY_SOCKET.to_string()),
-        }),
-        PearlGatewayTransportArg::Tcp => Ok(PearlGatewayTransport::Tcp {
-            host: args
-                .pearl_gateway_host
-                .clone()
-                .unwrap_or_else(|| DEFAULT_PEARL_GATEWAY_HOST.to_string()),
-            port: args
-                .pearl_gateway_port
-                .unwrap_or(DEFAULT_PEARL_GATEWAY_PORT),
-        }),
-    }
+    parse_pearl_gateway_endpoint(&args.pearl_gateway)
 }
 
 fn parse_pearl_gateway_endpoint(endpoint: &str) -> Result<PearlGatewayTransport> {
@@ -651,7 +595,7 @@ mod tests {
                 assert_eq!(
                     cfg.transport,
                     PearlGatewayTransport::UnixSocket {
-                        path: DEFAULT_PEARL_GATEWAY_SOCKET.to_string()
+                        path: "/tmp/pearlgw.sock".to_string()
                     }
                 );
                 assert_eq!(
@@ -788,6 +732,7 @@ mod tests {
         let help = Args::command().render_long_help().to_string();
 
         assert!(help.contains("--pearl-gateway <ENDPOINT>"));
+        assert!(help.contains("[default: unix:/tmp/pearlgw.sock]"));
         assert!(help.contains("--node-addr <NODE_ADDR>"));
         assert!(help.contains("--mining-pkh <MINING_PKH>"));
         assert!(!help.contains("--pearl-gateway-transport"));
@@ -802,19 +747,16 @@ mod tests {
     }
 
     #[test]
-    fn cli_still_accepts_hidden_legacy_pearl_gateway_split_flags() {
-        let args = Args::parse_from([
+    fn cli_rejects_legacy_pearl_gateway_split_flags() {
+        let err = Args::try_parse_from([
             "ai-pow-mine", "--mining-pkh",
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--pearl-gateway-transport",
             "tcp", "--pearl-gateway-host", "127.0.0.1", "--pearl-gateway-port", "8337",
-        ]);
-
-        assert_eq!(
-            resolve_pearl_gateway_transport(&args).expect("parse hidden legacy split flags"),
-            PearlGatewayTransport::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: 8337
-            }
+        ])
+        .expect_err("legacy split Pearl Gateway flags should not parse");
+        assert!(
+            err.to_string().contains("--pearl-gateway-transport"),
+            "unexpected error: {err}"
         );
     }
 
