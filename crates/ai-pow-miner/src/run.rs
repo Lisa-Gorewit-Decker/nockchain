@@ -203,18 +203,6 @@ pub struct PearlGatewayMinerRpcConfig {
     pub refresh_interval: Duration,
 }
 
-impl PearlGatewayMinerRpcConfig {
-    pub fn default_unix_socket() -> Self {
-        Self {
-            transport: PearlGatewayTransport::UnixSocket {
-                path: "/tmp/pearlgw.sock".to_string(),
-            },
-            request_timeout: Duration::from_secs(2),
-            refresh_interval: Duration::from_secs(1),
-        }
-    }
-}
-
 #[derive(Debug, Error)]
 #[error("AI-PoW recursive certificate build failed: {0}")]
 pub struct AiPowCertificateBuildError(pub String);
@@ -1667,7 +1655,13 @@ mod tests {
 
     fn pearl_submission_cfg() -> PearlMergeSubmissionConfig {
         PearlMergeSubmissionConfig {
-            gateway: PearlGatewayMinerRpcConfig::default_unix_socket(),
+            gateway: PearlGatewayMinerRpcConfig {
+                transport: PearlGatewayTransport::UnixSocket {
+                    path: "/tmp/pearlgw.sock".to_string(),
+                },
+                request_timeout: Duration::from_secs(2),
+                refresh_interval: Duration::from_secs(1),
+            },
             mining_config: pearl_test_config(),
             aux_template: pearl_test_aux(),
             max_pattern_len: 16,
