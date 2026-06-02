@@ -495,17 +495,17 @@ mod tests {
         assert_eq!(puzzle.b.as_slice(), expected_b.as_slice());
         let pearl = &puzzle.pearl_merge;
         assert_eq!(
-            pearl.gateway.transport,
+            pearl.gateway().transport,
             PearlGatewayTransport::UnixSocket {
                 path: "/tmp/pearlgw.sock".to_string()
             }
         );
         assert_eq!(
-            pearl.gateway.request_timeout,
+            pearl.gateway().request_timeout,
             Duration::from_millis(DEFAULT_PEARL_GATEWAY_TIMEOUT_MS)
         );
         assert_eq!(
-            pearl.gateway.refresh_interval,
+            pearl.gateway().refresh_interval,
             Duration::from_millis(DEFAULT_PEARL_GATEWAY_REFRESH_MS)
         );
     }
@@ -553,14 +553,14 @@ mod tests {
         let puzzle = build_puzzle_inputs(&args).expect("configured Pearl TCP gateway config");
         let pearl = &puzzle.pearl_merge;
         assert_eq!(
-            pearl.gateway.transport,
+            pearl.gateway().transport,
             PearlGatewayTransport::Tcp {
                 host: "127.0.0.1".to_string(),
                 port: 8337
             }
         );
-        assert_eq!(pearl.gateway.request_timeout, Duration::from_millis(250));
-        assert_eq!(pearl.gateway.refresh_interval, Duration::from_millis(500));
+        assert_eq!(pearl.gateway().request_timeout, Duration::from_millis(250));
+        assert_eq!(pearl.gateway().refresh_interval, Duration::from_millis(500));
     }
 
     #[test]
@@ -707,19 +707,19 @@ mod tests {
         let puzzle = build_puzzle_inputs(&args).expect("pearl merge puzzle inputs");
         let pearl = &puzzle.pearl_merge;
         assert_eq!(
-            pearl.gateway.transport,
+            pearl.gateway().transport,
             PearlGatewayTransport::Tcp {
                 host: "127.0.0.1".to_string(),
                 port: 8337
             }
         );
-        assert_eq!(pearl.mining_config.common_dim, 1024);
-        assert_eq!(pearl.mining_config.rank, 32);
-        assert_eq!(pearl.max_pattern_len, 256);
-        assert_eq!(pearl.mine_opts.max_attempts, Some(16));
-        assert_eq!(pearl.aux_template.nockchain_chain_id, b"nockchain");
-        assert_eq!(pearl.aux_template.nockchain_target_epoch_or_height, 42);
-        assert_eq!(pearl.aux_template.extra_domain_data, vec![0xfe, 0xed]);
+        assert_eq!(pearl.mining_config().common_dim, 1024);
+        assert_eq!(pearl.mining_config().rank, 32);
+        assert_eq!(pearl.max_pattern_len(), 256);
+        assert_eq!(pearl.mine_opts().max_attempts, Some(16));
+        assert_eq!(pearl.aux_template().nockchain_chain_id, b"nockchain");
+        assert_eq!(pearl.aux_template().nockchain_target_epoch_or_height, 42);
+        assert_eq!(pearl.aux_template().extra_domain_data, vec![0xfe, 0xed]);
 
         puzzle
             .validate_canonical_submission_ready()
@@ -746,15 +746,15 @@ mod tests {
         };
         let mut attempt = evaluate_pearl_merge_ticket_attempt(
             &header,
-            &pearl.mining_config,
+            pearl.mining_config(),
             &puzzle.params,
             0,
             0,
             puzzle.a.as_slice(),
             puzzle.b.as_slice(),
             &[0xff; 32],
-            pearl.max_pattern_len,
-            pearl.aux_template.clone(),
+            pearl.max_pattern_len(),
+            pearl.aux_template().clone(),
         )
         .expect("evaluate trivial-target Pearl merge ticket");
         attempt.nockchain_target = [0u8; 32];

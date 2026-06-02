@@ -132,13 +132,13 @@ impl PearlMergeCertificateProof {
 /// shared attempt transcript and aux commitment.
 #[derive(Clone)]
 pub struct PearlMergeSubmissionConfig {
-    pub gateway: PearlGatewayMinerRpcConfig,
+    gateway: PearlGatewayMinerRpcConfig,
     #[cfg(test)]
     static_header: Option<PearlIncompleteBlockHeader>,
-    pub mining_config: PearlMiningConfig,
-    pub aux_template: PearlNockchainAux,
-    pub max_pattern_len: usize,
-    pub mine_opts: PearlMergeMineOptions,
+    mining_config: PearlMiningConfig,
+    aux_template: PearlNockchainAux,
+    max_pattern_len: usize,
+    mine_opts: PearlMergeMineOptions,
     certificate_builder: Arc<AiPowPearlMergeCertificateBuilder>,
 }
 
@@ -190,6 +190,26 @@ impl PearlMergeSubmissionConfig {
         attempt: &PearlMergeTicketAttempt,
     ) -> Result<PearlMergeCertificateProof, AiPowCertificateBuildError> {
         (self.certificate_builder)(attempt)
+    }
+
+    pub fn gateway(&self) -> &PearlGatewayMinerRpcConfig {
+        &self.gateway
+    }
+
+    pub fn mining_config(&self) -> &PearlMiningConfig {
+        &self.mining_config
+    }
+
+    pub fn aux_template(&self) -> &PearlNockchainAux {
+        &self.aux_template
+    }
+
+    pub fn max_pattern_len(&self) -> usize {
+        self.max_pattern_len
+    }
+
+    pub fn mine_opts(&self) -> &PearlMergeMineOptions {
+        &self.mine_opts
     }
 }
 
