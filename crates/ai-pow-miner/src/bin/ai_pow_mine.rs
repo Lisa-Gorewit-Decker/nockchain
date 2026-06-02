@@ -13,8 +13,7 @@
 //!
 //!   ai-pow-mine \
 //!       --node-addr http://127.0.0.1:5555 \
-//!       --mining-pkh 9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV \
-//!       --synth-seed ai-pow-prod-v1
+//!       --mining-pkh 9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV
 //!
 //! The CLI defaults to Pearl-compatible submission with single-tile,
 //! production-envelope smoke parameters for local Layer-0 development. The
@@ -29,8 +28,10 @@
 //! ## AI puzzle inputs (local config)
 //! The chain's `%mine-ai` effect carries the candidate block commitment,
 //! target, and pow-len. The miner additionally needs matmul `params`, matrices
-//! `a` / `b`, and Rust-only Pearl transcript fields. Hoon still receives only
-//! the opaque `%ai-pow` nonce plus recursive certificate.
+//! `a` / `b`, and Rust-only Pearl transcript fields. If no matrix paths or
+//! seed are supplied, the CLI synthesizes the default local smoke-profile
+//! matrices from `ai-pow-prod-v1`. Hoon still receives only the opaque
+//! `%ai-pow` nonce plus recursive certificate.
 
 use std::fs;
 use std::path::PathBuf;
@@ -64,6 +65,7 @@ const DEFAULT_PEARL_GATEWAY_HOST: &str = "localhost";
 const DEFAULT_PEARL_GATEWAY_PORT: u16 = 8337;
 const DEFAULT_PEARL_GATEWAY_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_PEARL_GATEWAY_REFRESH_MS: u64 = 1_000;
+const DEFAULT_SYNTH_SEED: &str = "ai-pow-prod-v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum PearlWorkSourceArg {
@@ -122,7 +124,9 @@ struct Args {
     /// Path to raw i8 matrix B (length k·n).
     #[arg(long, value_name = "PATH", conflicts_with = "synth_seed")]
     b: Option<PathBuf>,
-    /// Synthesize A + B deterministically from this seed string.
+    /// Synthesize A + B deterministically from this seed string. If no matrix
+    /// input is supplied, defaults to the local smoke-profile seed
+    /// `ai-pow-prod-v1`.
     #[arg(long)]
     synth_seed: Option<String>,
 
@@ -329,7 +333,8 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
             (a, b)
         }
         (None, None, Some(seed)) => ai_pow::synth::synth_matrices(seed.as_bytes(), &params),
-        _ => bail!("provide either --a + --b OR --synth-seed (not both, not neither)"),
+        (None, None, None) => ai_pow::synth::synth_matrices(DEFAULT_SYNTH_SEED.as_bytes(), &params),
+        _ => bail!("provide either both --a + --b, a custom --synth-seed, or neither for the default synth seed"),
     };
 
     let a = Arc::new(a);
@@ -570,14 +575,17 @@ mod tests {
     fn cli_defaults_to_pearl_gateway_source() {
         let args = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "ai-pow-default-layer0-smoke",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV",
         ]);
         assert_eq!((args.m, args.k, args.n), (8, 1024, 8));
         assert_eq!(args.noise_rank, 32);
         assert_eq!(args.spot_checks, 1);
 
         let puzzle = build_puzzle_inputs(&args).expect("default Pearl gateway config");
+        let (expected_a, expected_b) =
+            ai_pow::synth::synth_matrices(DEFAULT_SYNTH_SEED.as_bytes(), &puzzle.params);
+        assert_eq!(puzzle.a.as_slice(), expected_a.as_slice());
+        assert_eq!(puzzle.b.as_slice(), expected_b.as_slice());
         let pearl = puzzle.pearl_merge.as_ref().expect("pearl config");
         match &pearl.header_source {
             PearlMergeHeaderSource::Gateway(cfg) => {
@@ -598,6 +606,37 @@ mod tests {
             }
             got => panic!("expected default Pearl gateway source, got {got:?}"),
         };
+    }
+
+    #[test]
+    fn cli_rejects_partial_explicit_matrix_input() {
+        let only_a = Args::parse_from([
+            "ai-pow-mine", "--mining-pkh",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--a",
+            "/does/not/matter/a.bin",
+        ]);
+        let err = match build_puzzle_inputs(&only_a) {
+            Ok(_) => panic!("partial explicit matrix input must fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("both --a + --b"),
+            "unexpected error: {err:#}"
+        );
+
+        let only_b = Args::parse_from([
+            "ai-pow-mine", "--mining-pkh",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--b",
+            "/does/not/matter/b.bin",
+        ]);
+        let err = match build_puzzle_inputs(&only_b) {
+            Ok(_) => panic!("partial explicit matrix input must fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("both --a + --b"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]

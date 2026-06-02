@@ -113,6 +113,9 @@ Rust miner default policy for this milestone:
 - `extra_domain_data` remains optional bounded bytes for deployments that need
   additional replay protection beyond chain id, candidate commitment, and target
   epoch/height.
+- Matrix inputs default to deterministic local smoke-profile synthesis with
+  seed `ai-pow-prod-v1` when neither `--a + --b` nor `--synth-seed` is
+  supplied. Explicit raw matrix paths must be provided as a complete pair.
 - Pearl work headers default to Pearl Gateway miner RPC `getMiningInfo` over
   Unix socket `/tmp/pearlgw.sock`, matching Pearl Gateway's default miner-RPC
   configuration. TCP gateway mode is available with explicit host/port flags.
@@ -243,7 +246,10 @@ Implemented in this branch:
   failure is a skipped candidate, not an unbounded miner stall. The miner
   also polls Gateway while a Nockchain candidate is current and redispatches
   the ticket loop if the Pearl header changes. The miner derives the Rust-only
-  Pearl mining config from the canonical recursive AI-PoW params.
+  Pearl mining config from the canonical recursive AI-PoW params. If no matrix
+  paths or custom `--synth-seed` are supplied, the CLI uses the default
+  `ai-pow-prod-v1` local smoke-profile matrices; the remaining required local
+  operator input is the mining key configuration.
   The legacy NCMN miner and prover-only smoke CLI were removed so downstream
   callers cannot accidentally treat them as production submission APIs.
 - Miner preflight rejects configurations without Pearl submission config before
@@ -328,12 +334,15 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
 7. Done for this milestone: Pearl Gateway work is refreshed while a Nockchain
    candidate remains current, and changed Pearl headers supersede stale ticket
    loops for that candidate.
-8. Re-run and tighten real recursive certificate size-budget caps after the
+8. Done for this milestone: `ai-pow-mine` defaults missing matrix input to the
+   `ai-pow-prod-v1` local smoke-profile synth seed while preserving explicit
+   complete `--a + --b` matrix input for deployments that supply real matrices.
+9. Re-run and tighten real recursive certificate size-budget caps after the
    final production proof shape is fixed.
-9. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,
+10. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,
    candidate-block replay, aux inclusion tamper, target miss, metadata drift,
    and proof-node DoS limits without wiring Hoon acceptance.
-10. Extend the recursive prover beyond square-contiguous Pearl row/column
+11. Extend the recursive prover beyond square-contiguous Pearl row/column
    patterns, or keep production admission explicitly restricted to that subset.
 
 ## Non-Negotiable Requirements
