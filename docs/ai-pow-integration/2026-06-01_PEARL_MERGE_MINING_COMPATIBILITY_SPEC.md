@@ -147,7 +147,8 @@ Rust miner default policy for this milestone:
   that already contains the Nockchain aux commitment. The request carries
   generic Pearl-side `coinbase_aux_flags`, encoded as standard base64 of
   `NOCKCHAIN-AI-POW-AUX || aux_commitment`, plus
-  `return_aux_inclusion=true`. A compatible Gateway returns an
+  `return_aux_inclusion=true`. Gateway caps decoded aux flags at 256 bytes to
+  keep miner-controlled coinbase rewriting bounded. A compatible Gateway returns an
   `aux_inclusion` object containing standard-base64 `coinbase_tx` and a
   standard-base64 `merkle_branch` list. The Rust miner verifies that returned
   proof against the returned incomplete header before using the work. Hoon
