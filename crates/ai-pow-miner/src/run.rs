@@ -1316,6 +1316,22 @@ mod tests {
             .expect_err("target atom is not a bignum");
         assert!(err.contains("bignum cell"), "unexpected error: {err}");
 
+        let mut wrong_tag_target = NounSlab::new();
+        let limbs = T(&mut wrong_tag_target, &[D(1), D(0)]);
+        let root = T(&mut wrong_tag_target, &[D(tas!(b"not-bn")), limbs]);
+        wrong_tag_target.set_root(root);
+        let err = derive_job_inputs(&candidate_for_target(wrong_tag_target))
+            .expect_err("target with wrong tag is not a bignum");
+        assert!(err.contains("%bn"), "unexpected error: {err}");
+
+        let mut improper_list_target = NounSlab::new();
+        let limbs = T(&mut improper_list_target, &[D(1), D(7)]);
+        let root = T(&mut improper_list_target, &[D(tas!(b"bn")), limbs]);
+        improper_list_target.set_root(root);
+        let err = derive_job_inputs(&candidate_for_target(improper_list_target))
+            .expect_err("target limbs must be a proper list");
+        assert!(err.contains("proper list"), "unexpected error: {err}");
+
         let err = derive_job_inputs(&candidate_for_target(bignum_target_slab(&[u64::from(
             u32::MAX,
         ) + 1])))
