@@ -122,6 +122,12 @@ Rust miner default policy for this milestone:
   and configurable with `--pearl-gateway-timeout-ms`. Zero is rejected so a
   silent, wedged, or malicious local Gateway cannot block candidate processing
   indefinitely.
+- In Gateway mode, the miner refreshes `getMiningInfo` while a Nockchain
+  candidate remains current. The refresh interval defaults to 1000 ms and is
+  configurable with `--pearl-gateway-refresh-ms`; zero is rejected. If the
+  refreshed Pearl incomplete header changes, the miner cancels the current
+  ticket loop and restarts work for the same Nockchain candidate using the new
+  Pearl header. Manual/static header mode does not refresh.
 
 The `coinbase_tx` and `merkle_branch` prove that
 `"NOCKCHAIN-AI-POW-AUX" || expected_aux_commitment` appears in the
@@ -235,8 +241,9 @@ Implemented in this branch:
   header flags for tests and local development. Gateway fetches use an
   explicit TCP connect timeout plus socket read/write timeouts so local Gateway
   failure is a skipped candidate, not an unbounded miner stall. The miner
-  derives the Rust-only Pearl mining config from the canonical recursive
-  AI-PoW params.
+  also polls Gateway while a Nockchain candidate is current and redispatches
+  the ticket loop if the Pearl header changes. The miner derives the Rust-only
+  Pearl mining config from the canonical recursive AI-PoW params.
   The legacy NCMN miner and prover-only smoke CLI were removed so downstream
   callers cannot accidentally treat them as production submission APIs.
 - Miner preflight rejects configurations without Pearl submission config before
@@ -318,12 +325,15 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
 6. Done for this milestone: Pearl Gateway header fetches have bounded request
    timeouts to avoid a local Gateway denial of service during candidate
    processing.
-7. Re-run and tighten real recursive certificate size-budget caps after the
+7. Done for this milestone: Pearl Gateway work is refreshed while a Nockchain
+   candidate remains current, and changed Pearl headers supersede stale ticket
+   loops for that candidate.
+8. Re-run and tighten real recursive certificate size-budget caps after the
    final production proof shape is fixed.
-8. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,
+9. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,
    candidate-block replay, aux inclusion tamper, target miss, metadata drift,
    and proof-node DoS limits without wiring Hoon acceptance.
-9. Extend the recursive prover beyond square-contiguous Pearl row/column
+10. Extend the recursive prover beyond square-contiguous Pearl row/column
    patterns, or keep production admission explicitly restricted to that subset.
 
 ## Non-Negotiable Requirements

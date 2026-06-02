@@ -62,6 +62,7 @@ use serde::Deserialize;
 use serde_json::json;
 use thiserror::Error;
 use tokio::task::JoinHandle;
+use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -155,6 +156,7 @@ pub enum PearlGatewayTransport {
 pub struct PearlGatewayMinerRpcConfig {
     pub transport: PearlGatewayTransport,
     pub request_timeout: Duration,
+    pub refresh_interval: Duration,
 }
 
 impl PearlGatewayMinerRpcConfig {
@@ -164,6 +166,7 @@ impl PearlGatewayMinerRpcConfig {
                 path: "/tmp/pearlgw.sock".to_string(),
             },
             request_timeout: Duration::from_secs(2),
+            refresh_interval: Duration::from_secs(1),
         }
     }
 
@@ -174,6 +177,7 @@ impl PearlGatewayMinerRpcConfig {
                 port: 8337,
             },
             request_timeout: Duration::from_secs(2),
+            refresh_interval: Duration::from_secs(1),
         }
     }
 }
@@ -394,11 +398,19 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
         info!("ai-pow-miner: subscribed + mining enabled; awaiting candidates");
 
         // ── inner loop ──
-        // `worker` is the currently-running spawn-blocking task (if
-        // any). `cancel` is the AI-PoW MiningCancel handle for it.
-        // On a new candidate we cancel the existing attempt + spawn
-        // a fresh one. On shutdown we cancel + drain.
+        // `worker` is the currently-running spawn-blocking task (if any).
+        // `latest_candidate` stores only sendable decoded candidate inputs,
+        // which lets Gateway-backed Pearl work refreshes restart from the same
+        // Nockchain candidate when Pearl emits a newer block template. On
+        // shutdown we cancel + drain.
         let mut worker: Option<MiningWorker> = None;
+        let mut latest_candidate: Option<NockchainCandidateInputs> = None;
+        let mut current_pearl_header: Option<PearlIncompleteBlockHeader> = None;
+        let refresh_interval = pearl_work_refresh_interval(&cfg);
+        let refresh_enabled = refresh_interval.is_some();
+        let mut pearl_refresh =
+            tokio::time::interval(refresh_interval.unwrap_or(Duration::from_secs(24 * 60 * 60)));
+        pearl_refresh.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let inner_result: InnerOutcome = loop {
             tokio::select! {
                 biased;
@@ -412,6 +424,15 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                         Ok(c) => c,
                         Err(e) => break InnerOutcome::Fatal(MinerError::CandidateDecode(format!("{e}"))),
                     };
+                    let candidate_inputs = match derive_nockchain_candidate_inputs(&candidate) {
+                        Ok(x) => x,
+                        Err(e) => {
+                            current_pearl_header = None;
+                            warn!(error = %e, "could not derive Nockchain candidate inputs; skipping");
+                            continue;
+                        }
+                    };
+                    latest_candidate = Some(candidate_inputs);
                     // Cancel any in-flight attempt; await its join so we
                     // don't accumulate handles. Drop the result — we're
                     // moving on.
@@ -421,15 +442,43 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                             debug!(error = %e, "prior worker join error (ignored)");
                         }
                     }
-                    let cancel = MiningCancel::new();
-                    let pearl_job = match derive_pearl_merge_job_inputs(&cfg, &candidate) {
+                    let pearl_job = match derive_pearl_merge_job_inputs_from_nockchain(&cfg, &candidate_inputs) {
                         Ok(x) => x,
                         Err(e) => {
+                            current_pearl_header = None;
                             warn!(error = %e, "could not derive Pearl merge job inputs from candidate; skipping");
                             continue;
                         }
                     };
-                    info!(pow_len = candidate.pow_len, "new candidate; dispatching Pearl-compatible ai-pow attempt");
+                    current_pearl_header = Some(pearl_job.header);
+                    let cancel = MiningCancel::new();
+                    info!(pow_len = candidate_inputs.pow_len, "new candidate; dispatching Pearl-compatible ai-pow attempt");
+                    let h = spawn_pearl_merge_attempt(&cfg, pearl_job, cancel.clone());
+                    worker = Some(MiningWorker::PearlMerge { handle: h, cancel });
+                }
+                _ = pearl_refresh.tick(), if refresh_enabled => {
+                    let Some(candidate_inputs) = latest_candidate else {
+                        continue;
+                    };
+                    let pearl_job = match derive_pearl_merge_job_inputs_from_nockchain(&cfg, &candidate_inputs) {
+                        Ok(x) => x,
+                        Err(e) => {
+                            warn!(error = %e, "could not refresh Pearl Gateway work for current Nockchain candidate");
+                            continue;
+                        }
+                    };
+                    if current_pearl_header == Some(pearl_job.header) {
+                        continue;
+                    }
+                    if let Some(w) = worker.take() {
+                        w.cancel();
+                        if let Err(e) = w.await_join().await {
+                            debug!(error = %e, "prior worker join error after Pearl refresh (ignored)");
+                        }
+                    }
+                    current_pearl_header = Some(pearl_job.header);
+                    let cancel = MiningCancel::new();
+                    info!(pow_len = candidate_inputs.pow_len, "Pearl Gateway work changed; redispatching ai-pow attempt for current Nockchain candidate");
                     let h = spawn_pearl_merge_attempt(&cfg, pearl_job, cancel.clone());
                     worker = Some(MiningWorker::PearlMerge { handle: h, cancel });
                 }
@@ -525,6 +574,14 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
     }
 
     Ok(())
+}
+
+fn pearl_work_refresh_interval(cfg: &MinerConfig) -> Option<Duration> {
+    let pearl = cfg.puzzle.pearl_merge.as_ref()?;
+    match &pearl.header_source {
+        PearlMergeHeaderSource::Gateway(gateway) => Some(gateway.refresh_interval),
+        PearlMergeHeaderSource::Static(_) => None,
+    }
 }
 
 enum InnerOutcome {
@@ -640,19 +697,45 @@ struct PearlMergeMinedSubmission {
     aux_inclusion: PearlAuxInclusionProof,
 }
 
+#[derive(Clone, Copy)]
+struct NockchainCandidateInputs {
+    target: DifficultyTarget,
+    nock_block_commitment: [u8; 32],
+    pow_len: u64,
+}
+
+fn derive_nockchain_candidate_inputs(
+    candidate: &MiningCandidate,
+) -> Result<NockchainCandidateInputs, String> {
+    expect_ai_pow_candidate_version(candidate)?;
+    let (target, nock_block_commitment) = derive_job_inputs(candidate)?;
+    Ok(NockchainCandidateInputs {
+        target,
+        nock_block_commitment,
+        pow_len: candidate.pow_len,
+    })
+}
+
+#[cfg(test)]
 fn derive_pearl_merge_job_inputs(
     cfg: &MinerConfig,
     candidate: &MiningCandidate,
 ) -> Result<PearlMergeCandidateJob, String> {
-    expect_ai_pow_candidate_version(candidate)?;
-    let (target, nck_commitment) = derive_job_inputs(candidate)?;
+    let candidate_inputs = derive_nockchain_candidate_inputs(candidate)?;
+    derive_pearl_merge_job_inputs_from_nockchain(cfg, &candidate_inputs)
+}
+
+fn derive_pearl_merge_job_inputs_from_nockchain(
+    cfg: &MinerConfig,
+    candidate: &NockchainCandidateInputs,
+) -> Result<PearlMergeCandidateJob, String> {
     let pearl = cfg
         .puzzle
         .pearl_merge
         .as_ref()
         .ok_or_else(|| "missing Pearl merge submission config".to_string())?;
     let mut aux = pearl.aux_template.clone();
-    aux.nock_block_commitment = nck_commitment;
+    aux.nock_block_commitment = candidate.nock_block_commitment;
     let header_template = pearl
         .header_source
         .resolve_header()
@@ -662,7 +745,7 @@ fn derive_pearl_merge_job_inputs(
     Ok(PearlMergeCandidateJob {
         header,
         aux_inclusion,
-        target,
+        target: candidate.target,
         aux,
     })
 }
@@ -1403,6 +1486,7 @@ mod tests {
                 port,
             },
             request_timeout: Duration::from_secs(2),
+            refresh_interval: Duration::from_secs(1),
         });
         let fetched = source
             .resolve_header()
@@ -1426,6 +1510,7 @@ mod tests {
                 port,
             },
             request_timeout: Duration::from_millis(50),
+            refresh_interval: Duration::from_secs(1),
         });
 
         let started = std::time::Instant::now();
@@ -2459,6 +2544,92 @@ mod tests {
             .expect("miner task did not exit")
             .expect("miner panicked");
         assert!(matches!(r, Ok(())), "unexpected miner result: {r:?}");
+        node.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn run_loop_refreshes_pearl_gateway_work_for_current_nockchain_candidate() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind Pearl gateway fixture");
+        let gateway_port = listener.local_addr().expect("gateway addr").port();
+        let gateway_calls = Arc::new(AtomicU64::new(0));
+        let gateway_calls_for_thread = gateway_calls.clone();
+        let gateway_thread = std::thread::spawn(move || {
+            let headers = [
+                pearl_test_header(),
+                PearlIncompleteBlockHeader {
+                    timestamp: pearl_test_header().timestamp + 1,
+                    ..pearl_test_header()
+                },
+            ];
+            for header in headers {
+                let (mut stream, _) = listener.accept().expect("accept Pearl gateway client");
+                let mut request_line = String::new();
+                {
+                    let mut reader =
+                        std::io::BufReader::new(stream.try_clone().expect("clone gateway stream"));
+                    std::io::BufRead::read_line(&mut reader, &mut request_line)
+                        .expect("read gateway request");
+                }
+                let request: serde_json::Value =
+                    serde_json::from_str(&request_line).expect("parse gateway request");
+                assert_eq!(request["method"], "getMiningInfo");
+                let encoded_header = {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
+                };
+                let response = format!(
+                    "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":115792089237316195423570985008687907853269984665640564039457584007913129639935}}}}\n",
+                    encoded_header
+                );
+                std::io::Write::write_all(&mut stream, response.as_bytes())
+                    .expect("write gateway response");
+                gateway_calls_for_thread.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        let node = MockNode::spawn().await;
+        let mut cfg = test_cfg(node.url());
+        let pearl_cfg = cfg
+            .puzzle
+            .pearl_merge
+            .as_mut()
+            .expect("test config has Pearl merge submission");
+        pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+            transport: PearlGatewayTransport::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: gateway_port,
+            },
+            request_timeout: Duration::from_millis(200),
+            refresh_interval: Duration::from_millis(50),
+        });
+        pearl_cfg.mine_opts = PearlMergeMineOptions {
+            max_attempts: Some(0),
+            ..PearlMergeMineOptions::default()
+        };
+
+        let shutdown = CancellationToken::new();
+        let shutdown_clone = shutdown.clone();
+        let mining_task = tokio::spawn(async move { run(cfg, shutdown_clone).await });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        node.publish_synth_mine_effect_with_target_limbs(703, &[u64::from(u32::MAX); 8], 64);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while gateway_calls.load(Ordering::SeqCst) < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "miner did not refresh Pearl Gateway work for the current Nockchain candidate"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        shutdown.cancel();
+        let r = tokio::time::timeout(Duration::from_secs(5), mining_task)
+            .await
+            .expect("miner task did not exit")
+            .expect("miner panicked");
+        assert!(matches!(r, Ok(())), "unexpected miner result: {r:?}");
+        gateway_thread.join().expect("gateway fixture exited");
         node.shutdown().await;
     }
 

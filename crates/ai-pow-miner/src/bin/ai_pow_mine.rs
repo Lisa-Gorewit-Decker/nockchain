@@ -63,6 +63,7 @@ const DEFAULT_PEARL_GATEWAY_SOCKET: &str = "/tmp/pearlgw.sock";
 const DEFAULT_PEARL_GATEWAY_HOST: &str = "localhost";
 const DEFAULT_PEARL_GATEWAY_PORT: u16 = 8337;
 const DEFAULT_PEARL_GATEWAY_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_PEARL_GATEWAY_REFRESH_MS: u64 = 1_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum PearlWorkSourceArg {
@@ -149,6 +150,10 @@ struct Args {
     /// Pearl Gateway request timeout in milliseconds.
     #[arg(long, default_value_t = DEFAULT_PEARL_GATEWAY_TIMEOUT_MS)]
     pearl_gateway_timeout_ms: u64,
+
+    /// Pearl Gateway work refresh interval in milliseconds.
+    #[arg(long, default_value_t = DEFAULT_PEARL_GATEWAY_REFRESH_MS)]
+    pearl_gateway_refresh_ms: u64,
 
     /// Manual Pearl header version.
     #[arg(long, default_value_t = 1)]
@@ -393,6 +398,10 @@ fn build_pearl_merge_submission_config(
             if request_timeout.is_zero() {
                 bail!("--pearl-gateway-timeout-ms must be greater than zero");
             }
+            let refresh_interval = Duration::from_millis(args.pearl_gateway_refresh_ms);
+            if refresh_interval.is_zero() {
+                bail!("--pearl-gateway-refresh-ms must be greater than zero");
+            }
             let transport = match args.pearl_gateway_transport {
                 PearlGatewayTransportArg::Uds => PearlGatewayTransport::UnixSocket {
                     path: args.pearl_gateway_socket.clone(),
@@ -405,6 +414,7 @@ fn build_pearl_merge_submission_config(
             PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
                 transport,
                 request_timeout,
+                refresh_interval,
             })
         }
         PearlWorkSourceArg::Manual => {
@@ -581,6 +591,10 @@ mod tests {
                     cfg.request_timeout,
                     Duration::from_millis(DEFAULT_PEARL_GATEWAY_TIMEOUT_MS)
                 );
+                assert_eq!(
+                    cfg.refresh_interval,
+                    Duration::from_millis(DEFAULT_PEARL_GATEWAY_REFRESH_MS)
+                );
             }
             got => panic!("expected default Pearl gateway source, got {got:?}"),
         };
@@ -593,6 +607,7 @@ mod tests {
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
             "ai-pow-gateway-tcp", "--pearl-gateway-transport", "tcp", "--pearl-gateway-host",
             "127.0.0.1", "--pearl-gateway-port", "8337", "--pearl-gateway-timeout-ms", "250",
+            "--pearl-gateway-refresh-ms", "500",
         ]);
 
         let puzzle = build_puzzle_inputs(&args).expect("configured Pearl TCP gateway config");
@@ -607,6 +622,7 @@ mod tests {
                     }
                 );
                 assert_eq!(cfg.request_timeout, Duration::from_millis(250));
+                assert_eq!(cfg.refresh_interval, Duration::from_millis(500));
             }
             got => panic!("expected Pearl TCP gateway source, got {got:?}"),
         };
@@ -626,6 +642,24 @@ mod tests {
         };
         assert!(
             err.to_string().contains("--pearl-gateway-timeout-ms"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn cli_rejects_zero_pearl_gateway_refresh_interval() {
+        let args = Args::parse_from([
+            "ai-pow-mine", "--mining-pkh",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
+            "ai-pow-zero-gateway-refresh", "--pearl-gateway-refresh-ms", "0",
+        ]);
+
+        let err = match build_puzzle_inputs(&args) {
+            Ok(_) => panic!("zero Pearl Gateway refresh interval must fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("--pearl-gateway-refresh-ms"),
             "unexpected error: {err:#}"
         );
     }
