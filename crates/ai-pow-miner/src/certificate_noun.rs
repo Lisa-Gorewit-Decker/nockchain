@@ -1648,13 +1648,52 @@ pub fn verify_decoded_ai_pow_pearl_merge_artifact(
     )
 }
 
+/// Limit-explicit form of [`verify_decoded_ai_pow_pearl_merge_artifact`].
+pub fn verify_decoded_ai_pow_pearl_merge_artifact_with_limits(
+    artifact: &PearlMergeAiPowArtifactShape,
+    limits: CertificateNounLimits,
+    candidate_nock_block_commitment: &[u8; 32],
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    nockchain_target: &[u8; 32],
+    max_pattern_len: usize,
+) -> Result<PearlMergeMiningPrecheck, CertificateNounError> {
+    verify_decoded_ai_pow_pearl_merge_artifact_with_context_and_limits(
+        artifact,
+        PearlMergeAiPowVerifierContext {
+            candidate_nock_block_commitment,
+            a_row_major,
+            b_col_major,
+            nockchain_target,
+            max_pattern_len,
+        },
+        limits,
+    )
+}
+
 /// Context-based form of [`verify_decoded_ai_pow_pearl_merge_artifact`].
 pub fn verify_decoded_ai_pow_pearl_merge_artifact_with_context(
     artifact: &PearlMergeAiPowArtifactShape,
     context: PearlMergeAiPowVerifierContext<'_>,
 ) -> Result<PearlMergeMiningPrecheck, CertificateNounError> {
+    verify_decoded_ai_pow_pearl_merge_artifact_with_context_and_limits(
+        artifact,
+        context,
+        CertificateNounLimits::default(),
+    )
+}
+
+/// Context and limit-explicit form of
+/// [`verify_decoded_ai_pow_pearl_merge_artifact`].
+pub fn verify_decoded_ai_pow_pearl_merge_artifact_with_context_and_limits(
+    artifact: &PearlMergeAiPowArtifactShape,
+    context: PearlMergeAiPowVerifierContext<'_>,
+    limits: CertificateNounLimits,
+) -> Result<PearlMergeMiningPrecheck, CertificateNounError> {
     let precheck = precheck_ai_pow_pearl_merge_artifact_statement_with_context(artifact, context)?;
-    let certificate = ai_pow_recursive_certificate_from_node(&artifact.certificate.certificate)?;
+    let certificate = ai_pow_recursive_certificate_from_node_with_limits(
+        &artifact.certificate.certificate, limits,
+    )?;
     ai_pow_zk::recursion::verify_recursive_certificate(
         &certificate, &artifact.certificate.public_inputs,
     )
@@ -5872,6 +5911,16 @@ mod tests {
                 &decoded, &statement.aux.nock_block_commitment, &a, &b, &[0xffu8; 32], 16,
             ),
             Err(CertificateNounError::Deserialize(_))
+        ));
+
+        let mut proof_node_limits = CertificateNounLimits::default();
+        proof_node_limits.max_total_nodes = 0;
+        assert!(matches!(
+            verify_decoded_ai_pow_pearl_merge_artifact_with_limits(
+                &decoded, proof_node_limits, &statement.aux.nock_block_commitment, &a, &b,
+                &[0xffu8; 32], 16,
+            ),
+            Err(CertificateNounError::LimitExceeded("proof-node count"))
         ));
     }
 
