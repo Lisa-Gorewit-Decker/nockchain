@@ -577,6 +577,32 @@ mod tests {
     }
 
     #[test]
+    fn cli_rejects_noncanonical_pearl_aux_template() {
+        let args = Args::parse_from([
+            "ai-pow-mine", "--mining-pkh",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
+            "ai-pow-pearl-merge-bad-aux", "--pearl-prev-block",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "--pearl-timestamp", "1717171717", "--pearl-nbits", "0x207fffff",
+            "--pearl-nockchain-chain-id", "",
+        ]);
+
+        let err = match build_puzzle_inputs(&args) {
+            Ok(_) => panic!("noncanonical Pearl aux template must fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("Pearl aux template is not canonical"),
+            "unexpected error: {err:#}"
+        );
+        assert!(
+            err.to_string().contains("chain id must not be empty"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
     fn cli_rejects_pearl_merge_noncanonical_recursive_params_before_mining() {
         let args = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
