@@ -389,12 +389,12 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
 9. Done for this milestone: after a successful Nockchain `%ai-pow` submission,
    the run loop clears the cached candidate so Pearl Gateway refresh cannot
    redispatch solved work. Only a fresh Nockchain candidate restarts mining.
-10. In progress: Pearl Gateway `submitPlainProof` client plumbing and
-    Pearl-compatible `PlainProof` serialization exist in Rust. The miner
+10. Done for the Rust client path: Pearl Gateway `submitPlainProof` plumbing
+    and Pearl-compatible `PlainProof` serialization exist in Rust. The miner
     refuses Gateway submission when the issued mining-job header does not equal
-    the aux-bearing mined header, so complete production Pearl-side acceptance
-    by making Pearl Gateway issue or accept the exact aux-bearing incomplete
-    header used by the Nockchain attempt.
+    the aux-bearing mined header. Complete production Pearl-side acceptance
+    still requires Pearl Gateway to issue or accept the exact aux-bearing
+    incomplete header used by the Nockchain attempt.
 11. Re-run and tighten real recursive certificate size-budget caps after the
    final production proof shape is fixed.
 12. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,

@@ -6,14 +6,17 @@ Status: Current compatibility audit, updated after legacy NCMN removal
 > Update, 2026-06-01: this document has been revised after removal of the
 > legacy NCMN miner/verifier path. The current Nockchain-side submission target
 > is Pearl-format-compatible `%ai-pow` with opaque `ai-pow-nonce=[len data]`
-> and no Pearl-specific Hoon molds. See
+> and no Pearl-specific Hoon molds. The Rust miner also submits Pearl target
+> hits to Pearl Gateway via `submitPlainProof`; that payload never enters Hoon.
+> See
 > `2026-06-01_PEARL_MERGE_MINING_COMPATIBILITY_SPEC.md` for the wire-level
 > production shape.
 
 The live implementation mines Pearl-compatible ticket attempts in Rust,
-submits only Nockchain `%ai-pow`, and has no submission-mode switch or native
-NCMN miner fallback. Hoon sees only an opaque AI-PoW nonce envelope plus the
-recursive certificate noun; Pearl-specific construction remains Rust-side.
+submits Nockchain hits as `%ai-pow`, submits Pearl hits as Gateway
+`PlainProof`, and has no submission-mode switch or native NCMN miner fallback.
+Hoon sees only an opaque AI-PoW nonce envelope plus the recursive certificate
+noun; Pearl-specific construction remains Rust-side.
 
 ## Executive Summary
 
@@ -37,9 +40,10 @@ layer:
 - The attempt binds Pearl header fields, mining configuration, Nockchain aux
   commitment, ticket offset, and ticket rows/columns before deriving `kappa`,
   matrix commitments, noise, noised matrices, and matmul-derived tile states.
-- The current Nockchain submission path only submits to Nockchain. A hit may
-  satisfy either chain's target in principle, but the current milestone wires
-  only Nockchain-side `%ai-pow` submission.
+- The Rust miner evaluates each attempt against the Nockchain target and the
+  adjusted Pearl target independently. It submits to Pearl Gateway for Pearl
+  target hits and submits `%ai-pow` to Nockchain for Nockchain target hits. It
+  submits to both only when the same attempt satisfies both targets.
 - The canonical Nockchain block artifact is the recursive ZK certificate noun,
   not Pearl's plain block-opening proof and not a raw Layer-0 STARK blob.
 
