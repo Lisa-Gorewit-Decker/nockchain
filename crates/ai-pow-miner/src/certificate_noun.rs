@@ -439,10 +439,119 @@ fn recursive_certificate_from_node<C: DeserializeOwned>(
         .map_err(|e| CertificateNounError::Deserialize(e.to_string()))
 }
 
-fn canonical_certificate_from_node<C>(node: &AiProofNode) -> Result<C, CertificateNounError>
+fn validate_proof_node_limits(
+    node: &AiProofNode,
+    limits: CertificateNounLimits,
+) -> Result<(), CertificateNounError> {
+    let mut total_nodes = 0usize;
+    let mut stack = vec![(node, 0usize)];
+    while let Some((node, depth)) = stack.pop() {
+        if depth > limits.max_depth {
+            return Err(CertificateNounError::LimitExceeded("proof-node depth"));
+        }
+        total_nodes = total_nodes
+            .checked_add(1)
+            .ok_or(CertificateNounError::LimitExceeded("proof-node count"))?;
+        if total_nodes > limits.max_total_nodes {
+            return Err(CertificateNounError::LimitExceeded("proof-node count"));
+        }
+
+        match node {
+            AiProofNode::Unit
+            | AiProofNode::Bool(_)
+            | AiProofNode::U64(_)
+            | AiProofNode::I64(_)
+            | AiProofNode::None => {}
+            AiProofNode::Ext2(value) => {
+                expect_goldilocks(value[0], "ext2.c0")?;
+                expect_goldilocks(value[1], "ext2.c1")?;
+            }
+            AiProofNode::Ext2s(values) => {
+                if values.len() > limits.max_packed_items {
+                    return Err(CertificateNounError::LimitExceeded("ext2s length"));
+                }
+                values
+                    .len()
+                    .checked_mul(16)
+                    .filter(|bytes| *bytes <= limits.max_atom_bytes)
+                    .ok_or(CertificateNounError::LimitExceeded("atom bytes"))?;
+                for value in values {
+                    expect_goldilocks(value[0], "ext2s.c0")?;
+                    expect_goldilocks(value[1], "ext2s.c1")?;
+                }
+            }
+            AiProofNode::Bytes(bytes) => {
+                if bytes.len() > limits.max_packed_items {
+                    return Err(CertificateNounError::LimitExceeded("bytes length"));
+                }
+                if bytes.len() > limits.max_atom_bytes {
+                    return Err(CertificateNounError::LimitExceeded("atom bytes"));
+                }
+            }
+            AiProofNode::U64s(values) => {
+                if values.len() > limits.max_packed_items {
+                    return Err(CertificateNounError::LimitExceeded("u64s length"));
+                }
+                values
+                    .len()
+                    .checked_mul(8)
+                    .filter(|bytes| *bytes <= limits.max_atom_bytes)
+                    .ok_or(CertificateNounError::LimitExceeded("atom bytes"))?;
+            }
+            AiProofNode::I64s(values) => {
+                if values.len() > limits.max_packed_items {
+                    return Err(CertificateNounError::LimitExceeded("i64s length"));
+                }
+                values
+                    .len()
+                    .checked_mul(8)
+                    .filter(|bytes| *bytes <= limits.max_atom_bytes)
+                    .ok_or(CertificateNounError::LimitExceeded("atom bytes"))?;
+            }
+            AiProofNode::Seq(items) => {
+                if items.len() > limits.max_list_items {
+                    return Err(CertificateNounError::LimitExceeded(
+                        "proof-node list length",
+                    ));
+                }
+                let child_depth = depth
+                    .checked_add(1)
+                    .ok_or(CertificateNounError::LimitExceeded("proof-node depth"))?;
+                for item in items {
+                    stack.push((item, child_depth));
+                }
+            }
+            AiProofNode::Map(items) => {
+                if items.len() > limits.max_list_items {
+                    return Err(CertificateNounError::LimitExceeded("proof-node map length"));
+                }
+                let child_depth = depth
+                    .checked_add(1)
+                    .ok_or(CertificateNounError::LimitExceeded("proof-node depth"))?;
+                for (key, value) in items {
+                    stack.push((key, child_depth));
+                    stack.push((value, child_depth));
+                }
+            }
+            AiProofNode::Some(inner) => {
+                let child_depth = depth
+                    .checked_add(1)
+                    .ok_or(CertificateNounError::LimitExceeded("proof-node depth"))?;
+                stack.push((inner, child_depth));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn canonical_certificate_from_node_with_limits<C>(
+    node: &AiProofNode,
+    limits: CertificateNounLimits,
+) -> Result<C, CertificateNounError>
 where
     C: DeserializeOwned + Serialize,
 {
+    validate_proof_node_limits(node, limits)?;
     let certificate: C = recursive_certificate_from_node(node)?;
     let canonical = recursive_certificate_to_node(&certificate)?;
     if &canonical != node {
@@ -456,7 +565,16 @@ where
 pub fn ai_pow_recursive_certificate_from_node(
     node: &AiProofNode,
 ) -> Result<ai_pow_zk::recursion::AiPowRecursiveCertificate, CertificateNounError> {
-    canonical_certificate_from_node(node)
+    ai_pow_recursive_certificate_from_node_with_limits(node, CertificateNounLimits::default())
+}
+
+/// Reconstruct a recursive certificate after enforcing explicit proof-node
+/// resource limits.
+pub fn ai_pow_recursive_certificate_from_node_with_limits(
+    node: &AiProofNode,
+    limits: CertificateNounLimits,
+) -> Result<ai_pow_zk::recursion::AiPowRecursiveCertificate, CertificateNounError> {
+    canonical_certificate_from_node_with_limits(node, limits)
 }
 
 /// Build the Hoon `ai-pow-certificate` noun:
@@ -1593,7 +1711,8 @@ pub fn verify_ai_pow_pearl_merge_artifact_slab_with_context<J>(
         &space,
         limits,
     )?;
-    let certificate = ai_pow_recursive_certificate_from_node(&certificate_shape.certificate)?;
+    let certificate =
+        ai_pow_recursive_certificate_from_node_with_limits(&certificate_shape.certificate, limits)?;
     ai_pow_zk::recursion::verify_recursive_certificate(&certificate, &public_inputs)
         .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))?;
     Ok(precheck)
@@ -1881,7 +2000,8 @@ pub fn verify_ai_pow_pearl_merge_artifact_jam_with_context(
     )?;
 
     let certificate_shape = decode_ai_pow_certificate_noun(fields[2], &space, limits)?;
-    let certificate = ai_pow_recursive_certificate_from_node(&certificate_shape.certificate)?;
+    let certificate =
+        ai_pow_recursive_certificate_from_node_with_limits(&certificate_shape.certificate, limits)?;
     ai_pow_zk::recursion::verify_recursive_certificate(&certificate, &public_inputs)
         .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))?;
     Ok(precheck)
@@ -4159,7 +4279,10 @@ mod tests {
             recursive_certificate_from_node(&node).expect("serde ignores trailing fields");
         assert_eq!(decoded, cert);
         assert!(matches!(
-            canonical_certificate_from_node::<FakeRecursiveCert>(&node),
+            canonical_certificate_from_node_with_limits::<FakeRecursiveCert>(
+                &node,
+                CertificateNounLimits::default()
+            ),
             Err(CertificateNounError::NonCanonicalProofNode)
         ));
 
@@ -4171,7 +4294,10 @@ mod tests {
             _ => panic!("fake certificate struct should encode as seq"),
         }
         assert!(matches!(
-            canonical_certificate_from_node::<FakeRecursiveCert>(&node),
+            canonical_certificate_from_node_with_limits::<FakeRecursiveCert>(
+                &node,
+                CertificateNounLimits::default()
+            ),
             Err(CertificateNounError::NonCanonicalProofNode)
         ));
     }
@@ -5915,6 +6041,37 @@ mod tests {
         assert!(matches!(
             err,
             CertificateNounError::LimitExceeded("proof-node list length")
+        ));
+    }
+
+    #[test]
+    fn recursive_certificate_from_node_enforces_direct_node_limits() {
+        let oversized = AiProofNode::Seq(vec![AiProofNode::Unit, AiProofNode::Unit]);
+        let count_limits = CertificateNounLimits {
+            max_total_nodes: 1,
+            ..CertificateNounLimits::default()
+        };
+        let err = match ai_pow_recursive_certificate_from_node_with_limits(&oversized, count_limits)
+        {
+            Ok(_) => panic!("oversized direct proof node should be rejected"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err,
+            CertificateNounError::LimitExceeded("proof-node count")
+        ));
+
+        let noncanonical = AiProofNode::Ext2([GOLDILOCKS_MODULUS, 1]);
+        let err = match ai_pow_recursive_certificate_from_node_with_limits(
+            &noncanonical,
+            CertificateNounLimits::default(),
+        ) {
+            Ok(_) => panic!("non-canonical direct proof node should be rejected"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err,
+            CertificateNounError::NonCanonicalField { field: "ext2.c0" }
         ));
     }
 
