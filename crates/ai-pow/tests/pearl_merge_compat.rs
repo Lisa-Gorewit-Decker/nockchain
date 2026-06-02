@@ -1356,6 +1356,23 @@ fn pearl_nockchain_aux_bytes_reject_malformed_encodings() {
         Err(PearlCompatError::NockchainAuxChainIdEmpty)
     );
 
+    let mut long_chain = Vec::new();
+    long_chain.extend_from_slice(&PEARL_NOCKCHAIN_AUX_MAGIC);
+    long_chain.push((PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX + 1) as u8);
+    long_chain.extend(std::iter::repeat_n(
+        b'n',
+        PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX + 1,
+    ));
+    long_chain.extend_from_slice(&[0x42; 32]);
+    long_chain.extend_from_slice(&123_456u64.to_le_bytes());
+    long_chain.extend_from_slice(&0u16.to_le_bytes());
+    assert_eq!(
+        PearlNockchainAux::from_bytes(&long_chain),
+        Err(PearlCompatError::NockchainAuxChainIdTooLarge(
+            PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX + 1
+        ))
+    );
+
     let mut trailing = bytes.clone();
     trailing.push(0);
     assert_eq!(
