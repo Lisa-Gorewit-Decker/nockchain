@@ -530,6 +530,8 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                             {
                                 warn!(error = %e, "submit Pearl-compatible ai-pow certificate poke failed (likely stale candidate)");
                             }
+                            latest_candidate = None;
+                            current_pearl_header = None;
                         }
                         WorkerOutcome::PearlJoined(Ok(Err(PearlMergeMiningError::Cancelled))) => {
                             debug!("Pearl-compatible worker cancelled (expected on candidate supersede / shutdown)");
@@ -1219,7 +1221,7 @@ mod tests {
     //! `FF..FF` target so the real ai-pow prover wins on extranonce 0.
 
     use std::net::{SocketAddr, TcpListener};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -2550,9 +2552,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_loop_refreshes_pearl_gateway_work_for_current_nockchain_candidate() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind Pearl gateway fixture");
+        listener
+            .set_nonblocking(true)
+            .expect("set Pearl gateway fixture nonblocking");
         let gateway_port = listener.local_addr().expect("gateway addr").port();
         let gateway_calls = Arc::new(AtomicU64::new(0));
+        let stop_gateway = Arc::new(AtomicBool::new(false));
         let gateway_calls_for_thread = gateway_calls.clone();
+        let stop_gateway_for_thread = stop_gateway.clone();
         let gateway_thread = std::thread::spawn(move || {
             let headers = [
                 pearl_test_header(),
@@ -2561,8 +2568,16 @@ mod tests {
                     ..pearl_test_header()
                 },
             ];
-            for header in headers {
-                let (mut stream, _) = listener.accept().expect("accept Pearl gateway client");
+            let mut served = 0usize;
+            while served < headers.len() && !stop_gateway_for_thread.load(Ordering::SeqCst) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(x) => x,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(e) => panic!("accept Pearl gateway client: {e}"),
+                };
                 let mut request_line = String::new();
                 {
                     let mut reader =
@@ -2575,7 +2590,7 @@ mod tests {
                 assert_eq!(request["method"], "getMiningInfo");
                 let encoded_header = {
                     use base64::Engine as _;
-                    base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
+                    base64::engine::general_purpose::STANDARD.encode(headers[served].to_bytes())
                 };
                 let response = format!(
                     "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":115792089237316195423570985008687907853269984665640564039457584007913129639935}}}}\n",
@@ -2583,6 +2598,7 @@ mod tests {
                 );
                 std::io::Write::write_all(&mut stream, response.as_bytes())
                     .expect("write gateway response");
+                served += 1;
                 gateway_calls_for_thread.fetch_add(1, Ordering::SeqCst);
             }
         });
@@ -2600,7 +2616,7 @@ mod tests {
                 port: gateway_port,
             },
             request_timeout: Duration::from_millis(200),
-            refresh_interval: Duration::from_millis(50),
+            refresh_interval: Duration::from_millis(100),
         });
         pearl_cfg.mine_opts = PearlMergeMineOptions {
             max_attempts: Some(0),
@@ -2629,6 +2645,126 @@ mod tests {
             .expect("miner task did not exit")
             .expect("miner panicked");
         assert!(matches!(r, Ok(())), "unexpected miner result: {r:?}");
+        stop_gateway.store(true, Ordering::SeqCst);
+        gateway_thread.join().expect("gateway fixture exited");
+        node.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn run_loop_does_not_redispatch_solved_candidate_on_pearl_gateway_refresh() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind Pearl gateway fixture");
+        listener
+            .set_nonblocking(true)
+            .expect("set Pearl gateway fixture nonblocking");
+        let gateway_port = listener.local_addr().expect("gateway addr").port();
+        let gateway_calls = Arc::new(AtomicU64::new(0));
+        let stop_gateway = Arc::new(AtomicBool::new(false));
+        let gateway_calls_for_thread = gateway_calls.clone();
+        let stop_gateway_for_thread = stop_gateway.clone();
+        let gateway_thread = std::thread::spawn(move || {
+            let headers = [
+                pearl_test_header(),
+                PearlIncompleteBlockHeader {
+                    timestamp: pearl_test_header().timestamp + 1,
+                    ..pearl_test_header()
+                },
+                PearlIncompleteBlockHeader {
+                    timestamp: pearl_test_header().timestamp + 2,
+                    ..pearl_test_header()
+                },
+            ];
+            let mut served = 0usize;
+            while served < headers.len() && !stop_gateway_for_thread.load(Ordering::SeqCst) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(x) => x,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(e) => panic!("accept Pearl gateway client: {e}"),
+                };
+                let mut request_line = String::new();
+                {
+                    let mut reader =
+                        std::io::BufReader::new(stream.try_clone().expect("clone gateway stream"));
+                    std::io::BufRead::read_line(&mut reader, &mut request_line)
+                        .expect("read gateway request");
+                }
+                let request: serde_json::Value =
+                    serde_json::from_str(&request_line).expect("parse gateway request");
+                assert_eq!(request["method"], "getMiningInfo");
+                let encoded_header = {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD.encode(headers[served].to_bytes())
+                };
+                let response = format!(
+                    "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":115792089237316195423570985008687907853269984665640564039457584007913129639935}}}}\n",
+                    encoded_header
+                );
+                std::io::Write::write_all(&mut stream, response.as_bytes())
+                    .expect("write gateway response");
+                served += 1;
+                gateway_calls_for_thread.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        let node = MockNode::spawn().await;
+        let mut cfg = test_cfg(node.url());
+        let pearl_cfg = cfg
+            .puzzle
+            .pearl_merge
+            .as_mut()
+            .expect("test config has Pearl merge submission");
+        pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+            transport: PearlGatewayTransport::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: gateway_port,
+            },
+            request_timeout: Duration::from_millis(200),
+            refresh_interval: Duration::from_millis(100),
+        });
+        pearl_cfg.mine_opts = PearlMergeMineOptions {
+            max_attempts: Some(1),
+            ..PearlMergeMineOptions::default()
+        };
+
+        let shutdown = CancellationToken::new();
+        let shutdown_clone = shutdown.clone();
+        let mining_task = tokio::spawn(async move { run(cfg, shutdown_clone).await });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        node.publish_synth_mine_effect_with_target_limbs(704, &[u64::from(u32::MAX); 8], 64);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if !node.mined_pokes.lock().await.is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Pearl merge miner did not submit the first %ai-pow poke"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert!(
+            gateway_calls.load(Ordering::SeqCst) <= 2,
+            "a solved Nockchain candidate must not keep fetching Pearl Gateway work after submission"
+        );
+        assert_eq!(
+            node.mined_pokes.lock().await.len(),
+            1,
+            "a solved Nockchain candidate must produce at most one %ai-pow poke"
+        );
+
+        shutdown.cancel();
+        let r = tokio::time::timeout(Duration::from_secs(5), mining_task)
+            .await
+            .expect("miner task did not exit")
+            .expect("miner panicked");
+        assert!(matches!(r, Ok(())), "unexpected miner result: {r:?}");
+        stop_gateway.store(true, Ordering::SeqCst);
         gateway_thread.join().expect("gateway fixture exited");
         node.shutdown().await;
     }

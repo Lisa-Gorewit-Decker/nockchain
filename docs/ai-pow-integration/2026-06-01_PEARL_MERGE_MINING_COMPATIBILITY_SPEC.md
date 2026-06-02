@@ -130,7 +130,10 @@ Rust miner default policy for this milestone:
   configurable with `--pearl-gateway-refresh-ms`; zero is rejected. If the
   refreshed Pearl incomplete header changes, the miner cancels the current
   ticket loop and restarts work for the same Nockchain candidate using the new
-  Pearl header. Manual/static header mode does not refresh.
+  Pearl header. After a solution is turned into a Nockchain poke attempt, the
+  cached candidate is cleared and Gateway refresh does not redispatch that
+  solved candidate; the miner waits for the node to emit a new candidate.
+  Manual/static header mode does not refresh.
 
 The `coinbase_tx` and `merkle_branch` prove that
 `"NOCKCHAIN-AI-POW-AUX" || expected_aux_commitment` appears in the
@@ -249,7 +252,10 @@ Implemented in this branch:
   Pearl mining config from the canonical recursive AI-PoW params. If no matrix
   paths or custom `--synth-seed` are supplied, the CLI uses the default
   `ai-pow-prod-v1` local smoke-profile matrices; the remaining required local
-  operator input is the mining key configuration.
+  operator input is the mining key configuration. Once the miner builds a
+  `%ai-pow` poke for a candidate and attempts to send it to the node, it clears
+  the cached candidate so later Pearl Gateway template changes cannot produce
+  duplicate submissions for the same Nockchain candidate.
   The legacy NCMN miner and prover-only smoke CLI were removed so downstream
   callers cannot accidentally treat them as production submission APIs.
 - Miner preflight rejects configurations without Pearl submission config before
@@ -337,12 +343,15 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
 8. Done for this milestone: `ai-pow-mine` defaults missing matrix input to the
    `ai-pow-prod-v1` local smoke-profile synth seed while preserving explicit
    complete `--a + --b` matrix input for deployments that supply real matrices.
-9. Re-run and tighten real recursive certificate size-budget caps after the
+9. Done for this milestone: after a successful Nockchain `%ai-pow` submission,
+   the run loop clears the cached candidate so Pearl Gateway refresh cannot
+   redispatch solved work. Only a fresh Nockchain candidate restarts mining.
+10. Re-run and tighten real recursive certificate size-budget caps after the
    final production proof shape is fixed.
-10. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,
+11. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,
    candidate-block replay, aux inclusion tamper, target miss, metadata drift,
    and proof-node DoS limits without wiring Hoon acceptance.
-11. Extend the recursive prover beyond square-contiguous Pearl row/column
+12. Extend the recursive prover beyond square-contiguous Pearl row/column
    patterns, or keep production admission explicitly restricted to that subset.
 
 ## Non-Negotiable Requirements
