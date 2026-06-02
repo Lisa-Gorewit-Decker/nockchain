@@ -9,10 +9,10 @@
 //! fails closed for multi-tile configurations until the recursive statement
 //! binds a full-matrix aggregate.
 //!
-//! Quick start (assuming a fakenet node on `127.0.0.1:5555`):
+//! Quick start (assuming a fakenet node on `127.0.0.1:5555` and Pearl Gateway
+//! on `/tmp/pearlgw.sock`):
 //!
 //!   ai-pow-mine \
-//!       --node-addr http://127.0.0.1:5555 \
 //!       --mining-pkh 9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV
 //!
 //! The CLI defaults to Pearl-compatible submission with single-tile,
@@ -20,6 +20,8 @@
 //! Pearl work source is Pearl Gateway miner RPC; the endpoint defaults to the
 //! Unix socket `/tmp/pearlgw.sock`. Use `--pearl-gateway tcp://host:port` for a
 //! TCP gateway or `--pearl-gateway /path/to.sock` for a different Unix socket.
+//! Rewards must be configured with v1 pubkey-hash configs via `--mining-pkh`
+//! or `--mining-pkh-adv`.
 //! The production profile
 //! derives canonical seeds from the nonce-keyed chunk commitments bound by the
 //! recursive proof as `HASH_A` / `HASH_B`; larger production shapes remain
@@ -43,7 +45,7 @@ use ai_pow::pearl_compat::{
 };
 use ai_pow_miner::pearl_mining::PearlMergeMineOptions;
 use ai_pow_miner::run::{
-    default_v0_configs, run, AiPuzzleInputs, MinerConfig, MinerError, PearlGatewayMinerRpcConfig,
+    run, AiPuzzleInputs, MinerConfig, MinerError, PearlGatewayMinerRpcConfig,
     PearlGatewayTransport, PearlMergeSubmissionConfig,
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -83,11 +85,11 @@ struct Args {
     #[arg(long, default_value = "http://127.0.0.1:5555")]
     node_addr: String,
 
-    /// Single-recipient mining pubkey hash. Mutually exclusive with --mining-pkh-adv.
+    /// Single-recipient v1 mining pubkey hash. Mutually exclusive with --mining-pkh-adv.
     #[arg(long, conflicts_with = "mining_pkh_adv")]
     mining_pkh: Option<String>,
 
-    /// Multi-recipient mining pkh configs. Each entry is `share,pkh`.
+    /// Multi-recipient v1 mining pkh configs. Each entry is `share,pkh`.
     #[arg(long, value_parser = clap::value_parser!(MiningPkhConfig), num_args = 1..)]
     mining_pkh_adv: Option<Vec<MiningPkhConfig>>,
 
@@ -123,7 +125,6 @@ fn main() -> ExitCode {
 
     let cfg = MinerConfig {
         node_addr: args.node_addr,
-        mining_configs: default_v0_configs(),
         mining_pkh_configs: pkh_configs,
         puzzle,
         reconnect_backoff_initial: Duration::from_millis(DEFAULT_RECONNECT_BACKOFF_INITIAL_MS),
@@ -192,8 +193,10 @@ fn build_pkh_configs(args: &Args) -> Option<Vec<MiningPkhConfig>> {
             share: 1,
             pkh: pkh.clone(),
         }])
+    } else if let Some(adv) = &args.mining_pkh_adv {
+        Some(adv.clone())
     } else {
-        args.mining_pkh_adv.clone()
+        None
     }
 }
 
@@ -360,6 +363,7 @@ mod tests {
             "ai-pow-mine", "--mining-pkh",
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV",
         ]);
+        assert!(build_pkh_configs(&args).is_some());
         assert_eq!(args.pearl_gateway, DEFAULT_PEARL_GATEWAY_ENDPOINT);
         assert_eq!(
             resolve_pearl_gateway_transport(&args).expect("parse default unix endpoint"),
@@ -379,12 +383,38 @@ mod tests {
     }
 
     #[test]
-    fn cli_accepts_unified_pearl_gateway_endpoint_forms() {
-        let unix = Args::parse_from([
+    fn cli_requires_v1_reward_configs() {
+        let args = Args::parse_from(["ai-pow-mine"]);
+        assert!(build_pkh_configs(&args).is_none());
+    }
+
+    #[test]
+    fn cli_accepts_v1_reward_configs() {
+        let single = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--pearl-gateway",
-            "unix:/var/run/pearlgw.sock",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV",
         ]);
+        let single_configs = build_pkh_configs(&single).expect("single v1 pkh config");
+        assert_eq!(single_configs.len(), 1);
+        assert_eq!(single_configs[0].share, 1);
+        assert_eq!(
+            single_configs[0].pkh,
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV"
+        );
+
+        let advanced = Args::parse_from(["ai-pow-mine", "--mining-pkh-adv", "2,first", "3,second"]);
+        let advanced_configs = build_pkh_configs(&advanced).expect("advanced v1 pkh configs");
+        assert_eq!(advanced_configs.len(), 2);
+        assert_eq!(advanced_configs[0].share, 2);
+        assert_eq!(advanced_configs[0].pkh, "first");
+        assert_eq!(advanced_configs[1].share, 3);
+        assert_eq!(advanced_configs[1].pkh, "second");
+    }
+
+    #[test]
+    fn cli_accepts_unified_pearl_gateway_endpoint_forms() {
+        let unix =
+            Args::parse_from(["ai-pow-mine", "--pearl-gateway", "unix:/var/run/pearlgw.sock"]);
         assert_eq!(
             resolve_pearl_gateway_transport(&unix).expect("parse unix endpoint"),
             PearlGatewayTransport::UnixSocket {
@@ -392,11 +422,8 @@ mod tests {
             }
         );
 
-        let bare_unix = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--pearl-gateway",
-            "/var/run/pearlgw.sock",
-        ]);
+        let bare_unix =
+            Args::parse_from(["ai-pow-mine", "--pearl-gateway", "/var/run/pearlgw.sock"]);
         assert_eq!(
             resolve_pearl_gateway_transport(&bare_unix).expect("parse bare unix endpoint"),
             PearlGatewayTransport::UnixSocket {
@@ -404,11 +431,7 @@ mod tests {
             }
         );
 
-        let tcp = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--pearl-gateway",
-            "tcp://pearl.example:18443",
-        ]);
+        let tcp = Args::parse_from(["ai-pow-mine", "--pearl-gateway", "tcp://pearl.example:18443"]);
         assert_eq!(
             resolve_pearl_gateway_transport(&tcp).expect("parse tcp endpoint"),
             PearlGatewayTransport::Tcp {
@@ -420,11 +443,8 @@ mod tests {
 
     #[test]
     fn cli_rejects_malformed_unified_pearl_gateway_endpoint() {
-        let args = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--pearl-gateway",
-            "tcp://localhost:not-a-port",
-        ]);
+        let args =
+            Args::parse_from(["ai-pow-mine", "--pearl-gateway", "tcp://localhost:not-a-port"]);
 
         let err = match build_puzzle_inputs(&args) {
             Ok(_) => panic!("malformed Pearl Gateway endpoint must fail"),
@@ -464,9 +484,8 @@ mod tests {
     #[test]
     fn cli_rejects_legacy_pearl_gateway_split_flags() {
         let err = Args::try_parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--pearl-gateway-transport",
-            "tcp", "--pearl-gateway-host", "127.0.0.1", "--pearl-gateway-port", "8337",
+            "ai-pow-mine", "--pearl-gateway-transport", "tcp", "--pearl-gateway-host", "127.0.0.1",
+            "--pearl-gateway-port", "8337",
         ])
         .expect_err("legacy split Pearl Gateway flags should not parse");
         assert!(
@@ -477,11 +496,7 @@ mod tests {
 
     #[test]
     fn cli_can_build_configured_pearl_merge_submission_inputs() {
-        let args = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--pearl-gateway",
-            "tcp://127.0.0.1:8337",
-        ]);
+        let args = Args::parse_from(["ai-pow-mine", "--pearl-gateway", "tcp://127.0.0.1:8337"]);
 
         let puzzle = build_puzzle_inputs(&args).expect("pearl merge puzzle inputs");
         assert_eq!(
@@ -507,11 +522,8 @@ mod tests {
             "--pearl-gateway-refresh-ms", "--reconnect-backoff-initial-ms",
             "--reconnect-backoff-max-ms", "--reconnect-max-attempts",
         ] {
-            let err = Args::try_parse_from([
-                "ai-pow-mine", "--mining-pkh",
-                "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", removed_flag, "1",
-            ])
-            .expect_err("removed Pearl aux/search/shape flag should not parse");
+            let err = Args::try_parse_from(["ai-pow-mine", removed_flag, "1"])
+                .expect_err("removed Pearl aux/search/shape flag should not parse");
             assert!(
                 err.to_string().contains(removed_flag),
                 "unexpected error for {removed_flag}: {err}"

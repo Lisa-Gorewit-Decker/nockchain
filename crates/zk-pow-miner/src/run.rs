@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use nockapp::nockapp::wire::Wire;
-use nockchain_mining_common::{MiningCandidate, MiningKeyConfig, MiningPkhConfig, NodeClient};
+use nockchain_mining_common::{MiningCandidate, MiningPkhConfig, NodeClient};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -33,31 +33,11 @@ use crate::pool::Pool;
 use crate::wire::ZkPowMinerWire;
 use crate::worker::{build_candidate_poke, random_nonce, MineResult, SerfWorker, Worker};
 
-/// Default v0 mining key — pass-through for the kernel's v0 pubkey
-/// infrastructure (the kernel insists on a v0 share-config even though
-/// real payouts route through v1 PKH configs). Matches the hard-coded
-/// default the old in-process driver used at
-/// `crates/nockchain/src/mining.rs:124-129` (now deleted).
-pub const DEFAULT_V0_PUBKEY: &str = "2cPnE4Z9RevhTv9is9Hmc1amFubEFbUxzCV2Fxb9GxevJstV5VG92oYt6Sai3d3NjLFcsuVXSLx9hikMbD1agv9M267TVw3hV9MCpMfEnGo5LYtjJ7jPyHg8SERPjJRCWTgZ";
-
-/// Build the default v0 `MiningKeyConfig` list — a single
-/// `[share=1 m=1 keys=[DEFAULT_V0_PUBKEY]]` entry.
-pub fn default_v0_configs() -> Vec<MiningKeyConfig> {
-    vec![MiningKeyConfig {
-        share: 1,
-        m: 1,
-        keys: vec![DEFAULT_V0_PUBKEY.to_string()],
-    }]
-}
-
 #[derive(Debug, Clone)]
 pub struct MinerConfig {
     /// `http://127.0.0.1:5555` by default.
     pub node_addr: String,
-    /// v0 (pubkey) reward configs. Default: a single hard-coded pass-through key.
-    pub mining_configs: Vec<MiningKeyConfig>,
-    /// v1 (pubkey-hash) reward configs. **Required** — empty list means
-    /// the kernel won't pay out coinbases.
+    /// v1 pubkey-hash reward configs. Required.
     pub mining_pkh_configs: Vec<MiningPkhConfig>,
     /// Worker pool size.
     pub num_threads: u64,
@@ -67,13 +47,12 @@ pub struct MinerConfig {
 }
 
 impl MinerConfig {
-    /// Convenience builder with safe defaults: localhost:5555, default
-    /// v0 key, num_cpus-1 threads (min 1), 1s→30s backoff, 5 retries.
+    /// Convenience builder with safe defaults: required v1 mining-pkh configs,
+    /// num_cpus-1 threads (min 1), 1s→30s backoff, 5 retries.
     pub fn new(node_addr: String, mining_pkh_configs: Vec<MiningPkhConfig>) -> Self {
         let num_threads = num_cpus::get().saturating_sub(1).max(1) as u64;
         Self {
             node_addr,
-            mining_configs: default_v0_configs(),
             mining_pkh_configs,
             num_threads,
             reconnect_backoff_initial: Duration::from_secs(1),
@@ -81,10 +60,37 @@ impl MinerConfig {
             reconnect_max_attempts: 5,
         }
     }
+
+    pub fn validate(&self) -> Result<(), MinerError> {
+        validate_mining_pkh_configs(&self.mining_pkh_configs)?;
+        if self.num_threads == 0 {
+            return Err(MinerError::InvalidConfig(
+                "num_threads must be nonzero".to_string(),
+            ));
+        }
+        if self.reconnect_max_attempts == 0 {
+            return Err(MinerError::InvalidConfig(
+                "reconnect_max_attempts must be nonzero".to_string(),
+            ));
+        }
+        if self.reconnect_backoff_initial.is_zero() {
+            return Err(MinerError::InvalidConfig(
+                "reconnect_backoff_initial must be nonzero".to_string(),
+            ));
+        }
+        if self.reconnect_backoff_max.is_zero() {
+            return Err(MinerError::InvalidConfig(
+                "reconnect_backoff_max must be nonzero".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Error)]
 pub enum MinerError {
+    #[error("invalid miner configuration: {0}")]
+    InvalidConfig(String),
     #[error("worker spawn failed: {0}")]
     WorkerSpawn(String),
     #[error("kernel configuration failed: {0}")]
@@ -99,6 +105,7 @@ pub enum MinerError {
 /// loop. Returns `Ok(())` on clean shutdown, `Err` on unrecoverable
 /// failure.
 pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), MinerError> {
+    cfg.validate()?;
     info!(
         node = %cfg.node_addr,
         threads = cfg.num_threads,
@@ -128,6 +135,7 @@ pub async fn run_with_pool(
     mut pool: Pool,
     shutdown: CancellationToken,
 ) -> Result<(), MinerError> {
+    cfg.validate()?;
     let mut consecutive_failures: u32 = 0;
     let mut backoff = cfg.reconnect_backoff_initial;
 
@@ -172,7 +180,7 @@ pub async fn run_with_pool(
         if let Err(e) = client
             .set_mining_key(
                 ZkPowMinerWire::SetPubKey.to_wire(),
-                cfg.mining_configs.clone(),
+                Vec::new(),
                 cfg.mining_pkh_configs.clone(),
             )
             .await
@@ -284,6 +292,27 @@ pub async fn run_with_pool(
     Ok(())
 }
 
+fn validate_mining_pkh_configs(configs: &[MiningPkhConfig]) -> Result<(), MinerError> {
+    if configs.is_empty() {
+        return Err(MinerError::InvalidConfig(
+            "at least one mining PKH config is required".to_string(),
+        ));
+    }
+    for (idx, config) in configs.iter().enumerate() {
+        if config.share == 0 {
+            return Err(MinerError::InvalidConfig(format!(
+                "mining PKH config {idx} share must be nonzero"
+            )));
+        }
+        if config.pkh.trim().is_empty() {
+            return Err(MinerError::InvalidConfig(format!(
+                "mining PKH config {idx} pkh must not be empty"
+            )));
+        }
+    }
+    Ok(())
+}
+
 enum InnerOutcome {
     Shutdown,
     StreamLost,
@@ -313,7 +342,7 @@ mod tests {
     use nockapp::noun::slab::NounSlab;
     use nockapp::NockAppExit;
     use nockapp_grpc::services::private_nockapp::server::PrivateNockAppGrpcServer;
-    use nockvm::noun::{D, T};
+    use nockvm::noun::{NounAllocator, D, T};
     use nockvm_macros::tas;
     use once_cell::sync::Lazy;
     use tokio::sync::{broadcast, mpsc, Mutex as TMutex};
@@ -337,6 +366,7 @@ mod tests {
         effect_tx: Arc<broadcast::Sender<NounSlab>>,
         pokes_observed: Arc<AtomicU64>,
         mined_pokes: Arc<TMutex<Vec<NounSlab>>>,
+        set_key_pokes: Arc<TMutex<Vec<NounSlab>>>,
         server_task: tokio::task::JoinHandle<nockapp_grpc::error::Result<()>>,
         action_drainer: tokio::task::JoinHandle<()>,
     }
@@ -363,8 +393,10 @@ mod tests {
             // Drain actions; collect ZkPowMinerWire::Mined slabs.
             let pokes_observed = Arc::new(AtomicU64::new(0));
             let mined_pokes: Arc<TMutex<Vec<NounSlab>>> = Arc::new(TMutex::new(Vec::new()));
+            let set_key_pokes: Arc<TMutex<Vec<NounSlab>>> = Arc::new(TMutex::new(Vec::new()));
             let pokes_clone = pokes_observed.clone();
             let mined_clone = mined_pokes.clone();
+            let set_key_clone = set_key_pokes.clone();
             let action_drainer = tokio::spawn(async move {
                 while let Some(action) = action_rx.recv().await {
                     match action {
@@ -375,13 +407,18 @@ mod tests {
                             ..
                         } => {
                             pokes_clone.fetch_add(1, Ordering::SeqCst);
-                            if wire.source == ZkPowMinerWire::SOURCE
-                                && wire.tags.iter().any(|t| match t {
+                            if wire.source == ZkPowMinerWire::SOURCE {
+                                if wire.tags.iter().any(|t| match t {
                                     nockapp::wire::WireTag::String(s) => s == "mined",
                                     _ => false,
-                                })
-                            {
-                                mined_clone.lock().await.push(poke);
+                                }) {
+                                    mined_clone.lock().await.push(poke);
+                                } else if wire.tags.iter().any(|t| match t {
+                                    nockapp::wire::WireTag::String(s) => s == "setpubkey",
+                                    _ => false,
+                                }) {
+                                    set_key_clone.lock().await.push(poke);
+                                }
                             }
                             use nockapp::driver::PokeResult;
                             let _ = ack_channel.send(PokeResult::Ack);
@@ -402,6 +439,7 @@ mod tests {
                 effect_tx,
                 pokes_observed,
                 mined_pokes,
+                set_key_pokes,
                 server_task,
                 action_drainer,
             }
@@ -513,7 +551,6 @@ mod tests {
         use nockchain_mining_common::MiningPkhConfig;
         MinerConfig {
             node_addr,
-            mining_configs: default_v0_configs(),
             mining_pkh_configs: vec![MiningPkhConfig {
                 share: 1,
                 pkh: "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV".to_string(),
@@ -523,6 +560,134 @@ mod tests {
             reconnect_backoff_max: Duration::from_millis(200),
             reconnect_max_attempts: 3,
         }
+    }
+
+    fn assert_set_key_poke_is_pkh_only(poke: &NounSlab) {
+        let space = poke.noun_space();
+        let root = unsafe { *poke.root() };
+        let command_cell = root.in_space(&space).as_cell().expect("poke cell");
+        assert!(command_cell.head().eq_bytes("command"));
+
+        let verb_cell = command_cell
+            .tail()
+            .noun()
+            .in_space(&space)
+            .as_cell()
+            .expect("set key verb cell");
+        assert!(verb_cell.head().eq_bytes("set-mining-key-advanced"));
+
+        let lists_cell = verb_cell
+            .tail()
+            .noun()
+            .in_space(&space)
+            .as_cell()
+            .expect("set key lists cell");
+        assert_eq!(
+            lists_cell
+                .head()
+                .as_atom()
+                .expect("legacy key list atom")
+                .as_u64()
+                .expect("legacy key list atom fits u64"),
+            0,
+            "miner must send an empty legacy mining-key list"
+        );
+        lists_cell
+            .tail()
+            .noun()
+            .in_space(&space)
+            .as_cell()
+            .expect("PKH config list must be nonempty");
+    }
+
+    async fn assert_node_received_pkh_only_set_key(node: &MockNode) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(poke) = node.set_key_pokes.lock().await.first() {
+                assert_set_key_poke_is_pkh_only(poke);
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "miner did not submit set-mining-key poke within 2s"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[test]
+    fn miner_config_preflight_rejects_missing_pkh_configs() {
+        let mut cfg = test_config("http://127.0.0.1:1".to_string());
+        cfg.mining_pkh_configs.clear();
+
+        let err = cfg
+            .validate()
+            .expect_err("miner config must require at least one PKH config");
+        assert!(
+            err.to_string().contains("at least one mining PKH"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn miner_config_preflight_rejects_bad_pkh_configs() {
+        let mut cfg = test_config("http://127.0.0.1:1".to_string());
+        cfg.mining_pkh_configs[0].share = 0;
+        let err = cfg
+            .validate()
+            .expect_err("miner config must reject zero-share PKH config");
+        assert!(
+            err.to_string().contains("share must be nonzero"),
+            "unexpected error: {err}"
+        );
+
+        let mut cfg = test_config("http://127.0.0.1:1".to_string());
+        cfg.mining_pkh_configs[0].pkh = "  ".to_string();
+        let err = cfg
+            .validate()
+            .expect_err("miner config must reject empty PKH string");
+        assert!(
+            err.to_string().contains("pkh must not be empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn miner_config_preflight_rejects_zero_worker_or_reconnect_settings() {
+        let mut cfg = test_config("http://127.0.0.1:1".to_string());
+        cfg.num_threads = 0;
+        let err = cfg
+            .validate()
+            .expect_err("miner config must reject zero worker count");
+        assert!(
+            err.to_string().contains("num_threads must be nonzero"),
+            "unexpected error: {err}"
+        );
+
+        let mut cfg = test_config("http://127.0.0.1:1".to_string());
+        cfg.reconnect_backoff_initial = Duration::ZERO;
+        let err = cfg
+            .validate()
+            .expect_err("miner config must reject zero reconnect backoff");
+        assert!(
+            err.to_string()
+                .contains("reconnect_backoff_initial must be nonzero"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_with_pool_rejects_invalid_config_before_connecting() {
+        let mut cfg = test_config("http://127.0.0.1:1".to_string());
+        cfg.mining_pkh_configs.clear();
+        let pool = Pool::new(Vec::new());
+        let err = run_with_pool(cfg, pool, CancellationToken::new())
+            .await
+            .expect_err("invalid config should fail before connect");
+        assert!(
+            err.to_string().contains("at least one mining PKH"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -543,6 +708,7 @@ mod tests {
 
         // Brief pause for the miner to connect + configure + subscribe.
         tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_node_received_pkh_only_set_key(&node).await;
         // Publish one synthetic %mine effect.
         node.publish_synth_mine_effect(100, 0xFFFF_FFFF, 2);
 
@@ -577,7 +743,6 @@ mod tests {
         drop(listener);
         let cfg = MinerConfig {
             node_addr: format!("http://{addr}"),
-            mining_configs: default_v0_configs(),
             mining_pkh_configs: vec![nockchain_mining_common::MiningPkhConfig {
                 share: 1,
                 pkh: "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV".to_string(),

@@ -42,14 +42,13 @@ use nockapp::noun::AtomExt;
 use nockapp::NockAppExit;
 use nockapp_grpc::services::private_nockapp::server::PrivateNockAppGrpcServer;
 use nockchain_mining_common::MiningPkhConfig;
-use nockvm::ext::NounExt;
 use nockvm::noun::{Atom, D, T};
 use nockvm_macros::tas;
 use once_cell::sync::Lazy;
 use tokio::sync::{broadcast, mpsc, Mutex as TMutex};
 use tokio_util::sync::CancellationToken;
 use zk_pow_miner::pool::Pool;
-use zk_pow_miner::run::{default_v0_configs, run_with_pool, MinerConfig};
+use zk_pow_miner::run::{run_with_pool, MinerConfig};
 use zk_pow_miner::wire::ZkPowMinerWire;
 use zk_pow_miner::worker::{SerfWorker, Worker};
 
@@ -140,7 +139,6 @@ async fn miner_finds_and_submits_block_against_mock_node() {
     // ── 3. Run the miner against the mock node.
     let cfg = MinerConfig {
         node_addr: server_url,
-        mining_configs: default_v0_configs(),
         mining_pkh_configs: vec![MiningPkhConfig {
             share: 1,
             pkh: "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV".to_string(),

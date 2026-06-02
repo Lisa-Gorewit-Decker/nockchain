@@ -21,7 +21,7 @@ use nockchain_mining_common::MiningPkhConfig;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use tracing_subscriber::{fmt, EnvFilter};
-use zk_pow_miner::run::{default_v0_configs, run, MinerConfig, MinerError};
+use zk_pow_miner::run::{run, MinerConfig, MinerError};
 
 /// `zk-pow-mine` — standalone ZK PoW block miner.
 #[derive(Parser, Debug)]
@@ -35,11 +35,11 @@ struct Args {
     #[arg(long, default_value = "http://127.0.0.1:5555")]
     node_addr: String,
 
-    /// Single-recipient mining pubkey hash. Mutually exclusive with --mining-pkh-adv.
+    /// Single-recipient v1 mining pubkey hash. Mutually exclusive with --mining-pkh-adv.
     #[arg(long, conflicts_with = "mining_pkh_adv")]
     mining_pkh: Option<String>,
 
-    /// Multi-recipient mining pkh configs. Each entry is `share,pkh`.
+    /// Multi-recipient v1 mining pkh configs. Each entry is `share,pkh`.
     #[arg(long, value_parser = clap::value_parser!(MiningPkhConfig), num_args = 1..)]
     mining_pkh_adv: Option<Vec<MiningPkhConfig>>,
 
@@ -85,7 +85,6 @@ fn main() -> ExitCode {
 
     let cfg = MinerConfig {
         node_addr: args.node_addr,
-        mining_configs: default_v0_configs(),
         mining_pkh_configs: pkh_configs,
         num_threads,
         reconnect_backoff_initial: Duration::from_millis(args.reconnect_backoff_initial_ms),
@@ -155,5 +154,51 @@ fn build_pkh_configs(args: &Args) -> Option<Vec<MiningPkhConfig>> {
         Some(adv.clone())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_requires_v1_reward_configs() {
+        let args = Args::parse_from(["zk-pow-mine"]);
+        assert!(build_pkh_configs(&args).is_none());
+    }
+
+    #[test]
+    fn cli_accepts_v1_reward_configs() {
+        let single = Args::parse_from([
+            "zk-pow-mine", "--mining-pkh",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV",
+        ]);
+        let single_configs = build_pkh_configs(&single).expect("single v1 pkh config");
+        assert_eq!(single_configs.len(), 1);
+        assert_eq!(single_configs[0].share, 1);
+        assert_eq!(
+            single_configs[0].pkh,
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV"
+        );
+
+        let advanced = Args::parse_from(["zk-pow-mine", "--mining-pkh-adv", "2,first", "3,second"]);
+        let advanced_configs = build_pkh_configs(&advanced).expect("advanced v1 pkh configs");
+        assert_eq!(advanced_configs.len(), 2);
+        assert_eq!(advanced_configs[0].share, 2);
+        assert_eq!(advanced_configs[0].pkh, "first");
+        assert_eq!(advanced_configs[1].share, 3);
+        assert_eq!(advanced_configs[1].pkh, "second");
+    }
+
+    #[test]
+    fn cli_rejects_both_reward_config_forms_together() {
+        let err = Args::try_parse_from([
+            "zk-pow-mine", "--mining-pkh", "single", "--mining-pkh-adv", "1,advanced",
+        ])
+        .expect_err("single and advanced reward configs are mutually exclusive");
+        assert!(
+            err.to_string().contains("--mining-pkh-adv"),
+            "unexpected error: {err}"
+        );
     }
 }

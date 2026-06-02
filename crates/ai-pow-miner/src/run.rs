@@ -49,6 +49,7 @@ use ai_pow::pearl_compat::{
     pearl_nbits_to_target_le, validate_pearl_merge_config_for_recursive_prover,
     verify_pearl_aux_inclusion, PearlAuxInclusionProof, PearlCompatError,
     PearlIncompleteBlockHeader, PearlMergeTicketAttempt, PearlMiningConfig, PearlNockchainAux,
+    PEARL_AUX_INCLUSION_MAX_COINBASE_TX_BYTES, PEARL_AUX_INCLUSION_MAX_MERKLE_BRANCH,
     PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG,
 };
 use ai_pow::zk_bridge::{AiPowRecursiveCertificateRun, ZkPublicCommitments};
@@ -56,9 +57,7 @@ use ai_pow_zk::{CompositePublicInputs, ZkParams};
 use futures::StreamExt;
 use nockapp::nockapp::wire::Wire;
 use nockapp::noun::slab::NounSlab;
-use nockchain_mining_common::{
-    MiningCandidate, MiningCandidateKind, MiningKeyConfig, MiningPkhConfig, NodeClient,
-};
+use nockchain_mining_common::{MiningCandidate, MiningCandidateKind, MiningPkhConfig, NodeClient};
 use nockvm::noun::{NounAllocator, D, T};
 use nockvm_macros::tas;
 use serde::Deserialize;
@@ -82,7 +81,9 @@ use crate::pearl_plain_proof::PearlPlainProof;
 use crate::wire::AiPowMinerWire;
 use crate::{DifficultyTarget, MiningCancel};
 
-const PEARL_GATEWAY_MAX_RESPONSE_LINE_BYTES: usize = 64 * 1024;
+// Covers a base64-encoded max-size coinbase inclusion plus the Pearl header,
+// target, and JSON-RPC envelope while still bounding untrusted Gateway input.
+const PEARL_GATEWAY_MAX_RESPONSE_LINE_BYTES: usize = 160 * 1024;
 const MAX_CHAIN_TARGET_U32_LIMBS: usize = 10;
 const AI_POW_MINE_CANDIDATE_VERSION: u64 = 3;
 
@@ -225,20 +226,6 @@ impl From<&str> for AiPowCertificateBuildError {
     }
 }
 
-/// Default v0 mining key — pass-through for the kernel's v0 pubkey
-/// infrastructure (matches `zk-pow-miner`'s default).
-pub const DEFAULT_V0_PUBKEY: &str = "2cPnE4Z9RevhTv9is9Hmc1amFubEFbUxzCV2Fxb9GxevJstV5VG92oYt6Sai3d3NjLFcsuVXSLx9hikMbD1agv9M267TVw3hV9MCpMfEnGo5LYtjJ7jPyHg8SERPjJRCWTgZ";
-
-/// Build the default v0 `MiningKeyConfig` list (single
-/// `[share=1 m=1 keys=[DEFAULT_V0_PUBKEY]]` entry).
-pub fn default_v0_configs() -> Vec<MiningKeyConfig> {
-    vec![MiningKeyConfig {
-        share: 1,
-        m: 1,
-        keys: vec![DEFAULT_V0_PUBKEY.to_string()],
-    }]
-}
-
 /// AI puzzle inputs: the Rust-owned local state required for Pearl-compatible
 /// ticket search. The chain's `%mine-ai` effect supplies the candidate block
 /// commitment, target, and pow-len; the miner combines that with these matrices
@@ -289,9 +276,7 @@ impl AiPuzzleInputs {
 pub struct MinerConfig {
     /// Node's private gRPC URL, e.g. `http://127.0.0.1:5555`.
     pub node_addr: String,
-    /// v0 (pubkey) reward configs. Default: hard-coded pass-through key.
-    pub mining_configs: Vec<MiningKeyConfig>,
-    /// v1 (pubkey-hash) reward configs.
+    /// v1 pubkey-hash reward configs. Required.
     pub mining_pkh_configs: Vec<MiningPkhConfig>,
     /// AI puzzle local-state inputs (matrices, params, Pearl work source).
     pub puzzle: AiPuzzleInputs,
@@ -301,8 +286,8 @@ pub struct MinerConfig {
 }
 
 impl MinerConfig {
-    /// Convenience builder for the common case: single mining-pkh,
-    /// default v0 key, default backoff (1s→30s, 5 retries).
+    /// Convenience builder for the common case: required v1 mining-pkh
+    /// configs, default backoff (1s→30s, 5 retries).
     pub fn new(
         node_addr: String,
         mining_pkh_configs: Vec<MiningPkhConfig>,
@@ -310,7 +295,6 @@ impl MinerConfig {
     ) -> Self {
         Self {
             node_addr,
-            mining_configs: default_v0_configs(),
             mining_pkh_configs,
             puzzle,
             reconnect_backoff_initial: Duration::from_secs(1),
@@ -318,10 +302,44 @@ impl MinerConfig {
             reconnect_max_attempts: 5,
         }
     }
+
+    pub fn validate(&self) -> Result<(), MinerError> {
+        validate_mining_pkh_configs(&self.mining_pkh_configs)?;
+        if self.reconnect_max_attempts == 0 {
+            return Err(MinerError::InvalidConfig(
+                "reconnect_max_attempts must be nonzero".to_string(),
+            ));
+        }
+        if self.reconnect_backoff_initial.is_zero() {
+            return Err(MinerError::InvalidConfig(
+                "reconnect_backoff_initial must be nonzero".to_string(),
+            ));
+        }
+        if self.reconnect_backoff_max.is_zero() {
+            return Err(MinerError::InvalidConfig(
+                "reconnect_backoff_max must be nonzero".to_string(),
+            ));
+        }
+
+        let gateway = &self.puzzle.pearl_merge.gateway;
+        if gateway.request_timeout.is_zero() {
+            return Err(MinerError::InvalidConfig(
+                "Pearl Gateway request_timeout must be nonzero".to_string(),
+            ));
+        }
+        if gateway.refresh_interval.is_zero() {
+            return Err(MinerError::InvalidConfig(
+                "Pearl Gateway refresh_interval must be nonzero".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Error)]
 pub enum MinerError {
+    #[error("invalid miner configuration: {0}")]
+    InvalidConfig(String),
     #[error("kernel configuration failed: {0}")]
     Configure(String),
     #[error("gave up after {count} consecutive connect attempts")]
@@ -339,6 +357,7 @@ pub enum MinerError {
 /// Production entry point. Returns `Ok(())` on clean shutdown, `Err` on
 /// unrecoverable failure.
 pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), MinerError> {
+    cfg.validate()?;
     cfg.puzzle.validate_canonical_submission_ready()?;
     info!(
         node = %cfg.node_addr,
@@ -390,7 +409,7 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
         if let Err(e) = client
             .set_mining_key(
                 AiPowMinerWire::SetPubKey.to_wire(),
-                cfg.mining_configs.clone(),
+                Vec::new(),
                 cfg.mining_pkh_configs.clone(),
             )
             .await
@@ -422,6 +441,7 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
         let mut worker: Option<MiningWorker> = None;
         let mut latest_candidate: Option<NockchainCandidateInputs> = None;
         let mut current_pearl_header: Option<PearlIncompleteBlockHeader> = None;
+        let mut next_pearl_attempt_start = cfg.puzzle.pearl_merge.mine_opts.attempt_start;
         let mut pearl_refresh = tokio::time::interval(pearl_work_refresh_interval(&cfg));
         pearl_refresh.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let inner_result: InnerOutcome = loop {
@@ -446,6 +466,7 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                         }
                     };
                     latest_candidate = Some(candidate_inputs);
+                    next_pearl_attempt_start = cfg.puzzle.pearl_merge.mine_opts.attempt_start;
                     // Cancel any in-flight attempt; await its join so we
                     // don't accumulate handles. Drop the result — we're
                     // moving on.
@@ -466,7 +487,12 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                     current_pearl_header = Some(pearl_job.header);
                     let cancel = MiningCancel::new();
                     info!(pow_len = candidate_inputs.pow_len, "new candidate; dispatching Pearl-compatible ai-pow attempt");
-                    let h = spawn_pearl_merge_attempt(&cfg, pearl_job, cancel.clone());
+                    let h = spawn_pearl_merge_attempt(
+                        &cfg,
+                        pearl_job,
+                        pearl_mine_opts_with_attempt_start(&cfg, next_pearl_attempt_start),
+                        cancel.clone(),
+                    );
                     worker = Some(MiningWorker::PearlMerge { handle: h, cancel });
                 }
                 _ = pearl_refresh.tick() => {
@@ -490,9 +516,15 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                         }
                     }
                     current_pearl_header = Some(pearl_job.header);
+                    next_pearl_attempt_start = cfg.puzzle.pearl_merge.mine_opts.attempt_start;
                     let cancel = MiningCancel::new();
                     info!(pow_len = candidate_inputs.pow_len, "Pearl Gateway work changed; redispatching ai-pow attempt for current Nockchain candidate");
-                    let h = spawn_pearl_merge_attempt(&cfg, pearl_job, cancel.clone());
+                    let h = spawn_pearl_merge_attempt(
+                        &cfg,
+                        pearl_job,
+                        pearl_mine_opts_with_attempt_start(&cfg, next_pearl_attempt_start),
+                        cancel.clone(),
+                    );
                     worker = Some(MiningWorker::PearlMerge { handle: h, cancel });
                 }
                 done = await_worker(&mut worker) => {
@@ -522,11 +554,47 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                                 }
                             }
                             if !mined.ticket.nockchain_target_hit {
-                                current_pearl_header = if pearl_submit_failed {
-                                    None
+                                if pearl_submit_failed {
+                                    current_pearl_header = None;
                                 } else {
-                                    Some(mined.ticket.attempt.public_params.block_header)
-                                };
+                                    next_pearl_attempt_start = match next_pearl_attempt_start
+                                        .checked_add(mined.ticket.stats.matmul_attempts_tried)
+                                    {
+                                        Some(next) => next,
+                                        None => {
+                                            warn!(
+                                                attempt_start = next_pearl_attempt_start,
+                                                attempts_tried = mined.ticket.stats.matmul_attempts_tried,
+                                                "Pearl-compatible attempt offset overflow; waiting for refreshed work"
+                                            );
+                                            current_pearl_header = None;
+                                            continue;
+                                        }
+                                    };
+                                    let pearl_job = PearlMergeCandidateJob {
+                                        header: mined.ticket.attempt.public_params.block_header,
+                                        gateway_mining_job: mined.gateway_mining_job.clone(),
+                                        aux_inclusion: mined.aux_inclusion.clone(),
+                                        target: mined.ticket.attempt.nockchain_target,
+                                        aux: mined.ticket.attempt.aux.clone(),
+                                    };
+                                    current_pearl_header = Some(pearl_job.header);
+                                    let cancel = MiningCancel::new();
+                                    info!(
+                                        attempt_start = next_pearl_attempt_start,
+                                        "Pearl-only solution submitted; continuing Nockchain search on same Pearl work"
+                                    );
+                                    let h = spawn_pearl_merge_attempt(
+                                        &cfg,
+                                        pearl_job,
+                                        pearl_mine_opts_with_attempt_start(
+                                            &cfg,
+                                            next_pearl_attempt_start,
+                                        ),
+                                        cancel.clone(),
+                                    );
+                                    worker = Some(MiningWorker::PearlMerge { handle: h, cancel });
+                                }
                                 continue;
                             }
                             let proof = match pearl_cfg.build_certificate_for_attempt(&mined.ticket.attempt) {
@@ -601,6 +669,27 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
         }
     }
 
+    Ok(())
+}
+
+fn validate_mining_pkh_configs(configs: &[MiningPkhConfig]) -> Result<(), MinerError> {
+    if configs.is_empty() {
+        return Err(MinerError::InvalidConfig(
+            "at least one mining PKH config is required".to_string(),
+        ));
+    }
+    for (idx, config) in configs.iter().enumerate() {
+        if config.share == 0 {
+            return Err(MinerError::InvalidConfig(format!(
+                "mining PKH config {idx} share must be nonzero"
+            )));
+        }
+        if config.pkh.trim().is_empty() {
+            return Err(MinerError::InvalidConfig(format!(
+                "mining PKH config {idx} pkh must not be empty"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -814,6 +903,10 @@ enum PearlGatewayError {
     ResponseTooLarge { limit: usize },
     #[error("Pearl gateway aux inclusion merkle branch digest has wrong length: got {0}")]
     AuxInclusionDigestLen(usize),
+    #[error("Pearl gateway aux inclusion coinbase tx exceeded {limit} bytes: got {actual}")]
+    AuxInclusionCoinbaseTooLarge { actual: usize, limit: usize },
+    #[error("Pearl gateway aux inclusion merkle branch exceeded {limit} entries: got {actual}")]
+    AuxInclusionMerkleBranchTooDeep { actual: usize, limit: usize },
     #[error("Pearl gateway header: {0}")]
     Header(#[from] PearlCompatError),
     #[cfg(not(unix))]
@@ -929,7 +1022,19 @@ fn decode_pearl_gateway_aux_inclusion(
     value: PearlGatewayAuxInclusion,
 ) -> Result<PearlAuxInclusionProof, PearlGatewayError> {
     use base64::Engine as _;
+    if value.merkle_branch.len() > PEARL_AUX_INCLUSION_MAX_MERKLE_BRANCH {
+        return Err(PearlGatewayError::AuxInclusionMerkleBranchTooDeep {
+            actual: value.merkle_branch.len(),
+            limit: PEARL_AUX_INCLUSION_MAX_MERKLE_BRANCH,
+        });
+    }
     let coinbase_tx = base64::engine::general_purpose::STANDARD.decode(value.coinbase_tx)?;
+    if coinbase_tx.len() > PEARL_AUX_INCLUSION_MAX_COINBASE_TX_BYTES {
+        return Err(PearlGatewayError::AuxInclusionCoinbaseTooLarge {
+            actual: coinbase_tx.len(),
+            limit: PEARL_AUX_INCLUSION_MAX_COINBASE_TX_BYTES,
+        });
+    }
     let mut merkle_branch = Vec::with_capacity(value.merkle_branch.len());
     for encoded in value.merkle_branch {
         let digest = base64::engine::general_purpose::STANDARD.decode(encoded)?;
@@ -1211,6 +1316,7 @@ fn noun_is_zero_atom(
 fn spawn_pearl_merge_attempt(
     cfg: &MinerConfig,
     job_inputs: PearlMergeCandidateJob,
+    mine_opts: PearlMergeMineOptions,
     cancel: MiningCancel,
 ) -> JoinHandle<Result<PearlMergeMinedSubmission, PearlMergeMiningError>> {
     let params = cfg.puzzle.params;
@@ -1228,13 +1334,22 @@ fn spawn_pearl_merge_attempt(
             max_pattern_len: pearl.max_pattern_len,
             aux: job_inputs.aux,
         };
-        let ticket = pearl_mining::run(&job, &pearl.mine_opts, cancel)?;
+        let ticket = pearl_mining::run(&job, &mine_opts, cancel)?;
         Ok(PearlMergeMinedSubmission {
             ticket,
             gateway_mining_job: job_inputs.gateway_mining_job,
             aux_inclusion: job_inputs.aux_inclusion,
         })
     })
+}
+
+fn pearl_mine_opts_with_attempt_start(
+    cfg: &MinerConfig,
+    attempt_start: u64,
+) -> PearlMergeMineOptions {
+    let mut opts = cfg.puzzle.pearl_merge.mine_opts.clone();
+    opts.attempt_start = attempt_start;
+    opts
 }
 
 fn submit_pearl_solution_to_gateway(
@@ -1434,7 +1549,7 @@ mod tests {
     use nockapp::NockAppExit;
     use nockapp_grpc::services::private_nockapp::server::PrivateNockAppGrpcServer;
     use nockchain_mining_common::MiningPkhConfig;
-    use nockvm::noun::{D, T};
+    use nockvm::noun::{NounAllocator, D, T};
     use nockvm_macros::tas;
     use once_cell::sync::Lazy;
     use tokio::sync::{broadcast, mpsc, Mutex as TMutex};
@@ -1463,6 +1578,7 @@ mod tests {
         effect_tx: Arc<broadcast::Sender<NounSlab>>,
         pokes_observed: Arc<AtomicU64>,
         mined_pokes: Arc<TMutex<Vec<NounSlab>>>,
+        set_key_pokes: Arc<TMutex<Vec<NounSlab>>>,
         server_task: tokio::task::JoinHandle<nockapp_grpc::error::Result<()>>,
         action_drainer: tokio::task::JoinHandle<()>,
     }
@@ -1486,8 +1602,10 @@ mod tests {
             };
             let pokes_observed = Arc::new(AtomicU64::new(0));
             let mined_pokes: Arc<TMutex<Vec<NounSlab>>> = Arc::new(TMutex::new(Vec::new()));
+            let set_key_pokes: Arc<TMutex<Vec<NounSlab>>> = Arc::new(TMutex::new(Vec::new()));
             let pokes_clone = pokes_observed.clone();
             let mined_clone = mined_pokes.clone();
+            let set_key_clone = set_key_pokes.clone();
             let action_drainer = tokio::spawn(async move {
                 while let Some(action) = action_rx.recv().await {
                     match action {
@@ -1498,13 +1616,18 @@ mod tests {
                             ..
                         } => {
                             pokes_clone.fetch_add(1, Ordering::SeqCst);
-                            if wire.source == <AiPowMinerWire as nockapp::wire::Wire>::SOURCE
-                                && wire.tags.iter().any(|t| match t {
+                            if wire.source == <AiPowMinerWire as nockapp::wire::Wire>::SOURCE {
+                                if wire.tags.iter().any(|t| match t {
                                     nockapp::wire::WireTag::String(s) => s == "mined",
                                     _ => false,
-                                })
-                            {
-                                mined_clone.lock().await.push(poke);
+                                }) {
+                                    mined_clone.lock().await.push(poke);
+                                } else if wire.tags.iter().any(|t| match t {
+                                    nockapp::wire::WireTag::String(s) => s == "setpubkey",
+                                    _ => false,
+                                }) {
+                                    set_key_clone.lock().await.push(poke);
+                                }
                             }
                             use nockapp::driver::PokeResult;
                             let _ = ack_channel.send(PokeResult::Ack);
@@ -1521,6 +1644,7 @@ mod tests {
                 effect_tx,
                 pokes_observed,
                 mined_pokes,
+                set_key_pokes,
                 server_task,
                 action_drainer,
             }
@@ -1574,6 +1698,59 @@ mod tests {
     fn pearl_test_pattern(length: u32) -> PearlPeriodicPattern {
         PearlPeriodicPattern {
             shape: [(1, length), (length, 1), (length, 1)],
+        }
+    }
+
+    fn assert_set_key_poke_is_pkh_only(poke: &NounSlab) {
+        let space = poke.noun_space();
+        let root = unsafe { *poke.root() };
+        let command_cell = root.in_space(&space).as_cell().expect("poke cell");
+        assert!(command_cell.head().eq_bytes("command"));
+
+        let verb_cell = command_cell
+            .tail()
+            .noun()
+            .in_space(&space)
+            .as_cell()
+            .expect("set key verb cell");
+        assert!(verb_cell.head().eq_bytes("set-mining-key-advanced"));
+
+        let lists_cell = verb_cell
+            .tail()
+            .noun()
+            .in_space(&space)
+            .as_cell()
+            .expect("set key lists cell");
+        assert_eq!(
+            lists_cell
+                .head()
+                .as_atom()
+                .expect("legacy key list atom")
+                .as_u64()
+                .expect("legacy key list atom fits u64"),
+            0,
+            "miner must send an empty legacy mining-key list"
+        );
+        lists_cell
+            .tail()
+            .noun()
+            .in_space(&space)
+            .as_cell()
+            .expect("PKH config list must be nonempty");
+    }
+
+    async fn assert_node_received_pkh_only_set_key(node: &MockNode) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(poke) = node.set_key_pokes.lock().await.first() {
+                assert_set_key_poke_is_pkh_only(poke);
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "miner did not submit set-mining-key poke within 2s"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
 
@@ -1848,6 +2025,28 @@ mod tests {
     }
 
     #[test]
+    fn pearl_gateway_target_rejects_non_integer_json_values() {
+        for target in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!(1e6),
+            serde_json::json!(null),
+            serde_json::json!(true),
+            serde_json::json!("123"),
+            serde_json::json!([123]),
+            serde_json::json!({"target": 123}),
+        ] {
+            assert!(
+                matches!(
+                    validate_pearl_gateway_target_uint256(&target),
+                    Err(PearlGatewayError::TargetOverflow)
+                ),
+                "target must reject non-uint256 integer JSON value: {target}"
+            );
+        }
+    }
+
+    #[test]
     fn pearl_gateway_target_must_match_header_nbits() {
         let header = pearl_test_header();
         let matching_target: serde_json::Value =
@@ -1860,6 +2059,53 @@ mod tests {
         assert!(matches!(
             validate_pearl_gateway_target_matches_header_nbits(&mismatched_target, header.nbits),
             Err(PearlGatewayError::TargetNbitsMismatch)
+        ));
+    }
+
+    #[test]
+    fn pearl_gateway_aux_inclusion_decoder_rejects_oversized_coinbase() {
+        let oversized = vec![0u8; PEARL_AUX_INCLUSION_MAX_COINBASE_TX_BYTES + 1];
+        let encoded = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(oversized)
+        };
+        let err = decode_pearl_gateway_aux_inclusion(PearlGatewayAuxInclusion {
+            coinbase_tx: encoded,
+            merkle_branch: Vec::new(),
+        })
+        .expect_err("Gateway aux inclusion must reject oversized coinbase payload");
+
+        assert!(matches!(
+            err,
+            PearlGatewayError::AuxInclusionCoinbaseTooLarge {
+                actual,
+                limit: PEARL_AUX_INCLUSION_MAX_COINBASE_TX_BYTES
+            } if actual == PEARL_AUX_INCLUSION_MAX_COINBASE_TX_BYTES + 1
+        ));
+    }
+
+    #[test]
+    fn pearl_gateway_aux_inclusion_decoder_rejects_merkle_branch() {
+        let encoded_coinbase = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode([0u8; 1])
+        };
+        let encoded_digest = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode([0u8; 32])
+        };
+        let err = decode_pearl_gateway_aux_inclusion(PearlGatewayAuxInclusion {
+            coinbase_tx: encoded_coinbase,
+            merkle_branch: vec![encoded_digest],
+        })
+        .expect_err("production Gateway aux inclusion must reject merkle branches");
+
+        assert!(matches!(
+            err,
+            PearlGatewayError::AuxInclusionMerkleBranchTooDeep {
+                actual: 1,
+                limit: PEARL_AUX_INCLUSION_MAX_MERKLE_BRANCH
+            }
         ));
     }
 
@@ -2121,7 +2367,6 @@ mod tests {
         };
         MinerConfig {
             node_addr,
-            mining_configs: default_v0_configs(),
             mining_pkh_configs: vec![MiningPkhConfig {
                 share: 1,
                 pkh: "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV".to_string(),
@@ -2498,8 +2743,84 @@ mod tests {
     #[test]
     fn production_preflight_accepts_configured_pearl_merge_submission() {
         let cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.validate()
+            .expect("configured miner should pass config preflight");
         cfg.puzzle.validate_canonical_submission_ready().expect(
             "configured Pearl mode should mine ticket attempts before Nockchain submission",
+        );
+    }
+
+    #[test]
+    fn miner_config_preflight_rejects_missing_pkh_configs() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.mining_pkh_configs.clear();
+
+        let err = cfg
+            .validate()
+            .expect_err("miner config must require at least one PKH config");
+        assert!(
+            err.to_string().contains("at least one mining PKH"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn miner_config_preflight_rejects_bad_pkh_configs() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.mining_pkh_configs[0].share = 0;
+        let err = cfg
+            .validate()
+            .expect_err("miner config must reject zero-share PKH config");
+        assert!(
+            err.to_string().contains("share must be nonzero"),
+            "unexpected error: {err}"
+        );
+
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.mining_pkh_configs[0].pkh = "  ".to_string();
+        let err = cfg
+            .validate()
+            .expect_err("miner config must reject empty PKH string");
+        assert!(
+            err.to_string().contains("pkh must not be empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn miner_config_preflight_rejects_zero_gateway_timing_before_timer_setup() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.puzzle.pearl_merge.gateway.refresh_interval = Duration::ZERO;
+
+        let err = cfg
+            .validate()
+            .expect_err("zero Pearl Gateway refresh interval would panic tokio interval");
+        assert!(
+            err.to_string().contains("refresh_interval must be nonzero"),
+            "unexpected error: {err}"
+        );
+
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.puzzle.pearl_merge.gateway.request_timeout = Duration::ZERO;
+        let err = cfg
+            .validate()
+            .expect_err("zero Pearl Gateway timeout is invalid");
+        assert!(
+            err.to_string().contains("request_timeout must be nonzero"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_rejects_invalid_config_before_connecting() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.mining_pkh_configs.clear();
+        let err = run(cfg, CancellationToken::new())
+            .await
+            .expect_err("invalid config should fail before connect");
+        assert!(
+            err.to_string().contains("at least one mining PKH"),
+            "unexpected error: {err}"
         );
     }
 
@@ -3043,6 +3364,7 @@ mod tests {
         let mining_task = tokio::spawn(async move { run(cfg, shutdown_clone).await });
 
         tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_node_received_pkh_only_set_key(&node).await;
         let header_seed = 700;
         node.publish_synth_mine_effect_with_target_limbs(
             header_seed,
