@@ -703,7 +703,7 @@ fn expect_ai_pow_candidate_version(candidate: &MiningCandidate) -> Result<(), St
 
 struct PearlMergeCandidateJob {
     header: PearlIncompleteBlockHeader,
-    gateway_header_template: Option<PearlIncompleteBlockHeader>,
+    gateway_mining_job: Option<PearlGatewayResolvedMiningJob>,
     aux_inclusion: PearlAuxInclusionProof,
     target: DifficultyTarget,
     aux: PearlNockchainAux,
@@ -711,8 +711,14 @@ struct PearlMergeCandidateJob {
 
 struct PearlMergeMinedSubmission {
     ticket: PearlMergeMinedTicket,
-    gateway_header_template: Option<PearlIncompleteBlockHeader>,
+    gateway_mining_job: Option<PearlGatewayResolvedMiningJob>,
     aux_inclusion: PearlAuxInclusionProof,
+}
+
+#[derive(Clone, Debug)]
+struct PearlGatewayResolvedMiningJob {
+    header: PearlIncompleteBlockHeader,
+    target: serde_json::Value,
 }
 
 #[derive(Clone, Copy)]
@@ -754,32 +760,23 @@ fn derive_pearl_merge_job_inputs_from_nockchain(
         .ok_or_else(|| "missing Pearl merge submission config".to_string())?;
     let mut aux = pearl.aux_template.clone();
     aux.nock_block_commitment = candidate.nock_block_commitment;
-    let header_template = pearl
-        .header_source
-        .resolve_header()
-        .map_err(|e| format!("resolve Pearl work header: {e}"))?;
-    let gateway_header_template = match pearl.header_source {
-        PearlMergeHeaderSource::Gateway(_) => Some(header_template),
-        PearlMergeHeaderSource::Static(_) => None,
+    let (header_template, gateway_mining_job) = match &pearl.header_source {
+        PearlMergeHeaderSource::Static(header) => (*header, None),
+        PearlMergeHeaderSource::Gateway(config) => {
+            let job = fetch_pearl_gateway_mining_job(config)
+                .map_err(|e| format!("resolve Pearl work header: {e}"))?;
+            (job.header, Some(job))
+        }
     };
     let (header, aux_inclusion) = build_coinbase_only_pearl_aux_inclusion(&header_template, &aux)
         .map_err(|e| format!("build Pearl aux inclusion: {e}"))?;
     Ok(PearlMergeCandidateJob {
         header,
-        gateway_header_template,
+        gateway_mining_job,
         aux_inclusion,
         target: candidate.target,
         aux,
     })
-}
-
-impl PearlMergeHeaderSource {
-    fn resolve_header(&self) -> Result<PearlIncompleteBlockHeader, PearlGatewayError> {
-        match self {
-            Self::Static(header) => Ok(*header),
-            Self::Gateway(config) => fetch_pearl_gateway_header(config),
-        }
-    }
 }
 
 #[derive(Debug, Error)]
@@ -833,9 +830,9 @@ struct PearlGatewaySubmitRpcResponse {
     error: Option<PearlGatewayRpcError>,
 }
 
-fn fetch_pearl_gateway_header(
+fn fetch_pearl_gateway_mining_job(
     config: &PearlGatewayMinerRpcConfig,
-) -> Result<PearlIncompleteBlockHeader, PearlGatewayError> {
+) -> Result<PearlGatewayResolvedMiningJob, PearlGatewayError> {
     let request_id = 1u64;
     let request = json!({
         "jsonrpc": "2.0",
@@ -870,7 +867,10 @@ fn fetch_pearl_gateway_header(
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.decode(job.incomplete_header_bytes)?
     };
-    Ok(PearlIncompleteBlockHeader::from_bytes(&header_bytes)?)
+    Ok(PearlGatewayResolvedMiningJob {
+        header: PearlIncompleteBlockHeader::from_bytes(&header_bytes)?,
+        target: job.target,
+    })
 }
 
 fn submit_pearl_gateway_plain_proof(
@@ -1175,7 +1175,7 @@ fn spawn_pearl_merge_attempt(
         let ticket = pearl_mining::run(&job, &pearl.mine_opts, cancel)?;
         Ok(PearlMergeMinedSubmission {
             ticket,
-            gateway_header_template: job_inputs.gateway_header_template,
+            gateway_mining_job: job_inputs.gateway_mining_job,
             aux_inclusion: job_inputs.aux_inclusion,
         })
     })
@@ -1193,12 +1193,12 @@ fn submit_pearl_solution_if_gateway(
         return Ok(());
     };
     let mined_header = mined.ticket.attempt.public_params.block_header;
-    let Some(gateway_header) = mined.gateway_header_template else {
+    let Some(gateway_job) = mined.gateway_mining_job.as_ref() else {
         return Err(
             "Pearl Gateway submission requested without a Gateway mining-job header".to_string(),
         );
     };
-    if gateway_header != mined_header {
+    if gateway_job.header != mined_header {
         return Err(
             "Pearl Gateway mining job header does not match the aux-bearing mined header; \
              skipping submitPlainProof because Gateway acknowledges before its async stale-header check"
@@ -1212,38 +1212,11 @@ fn submit_pearl_solution_if_gateway(
     let plain_proof_base64 = plain
         .to_base64_bincode1()
         .map_err(|e| format!("serialize Pearl plain proof: {e}"))?;
-    let target = serde_json_uint256_le(&mined.ticket.attempt.pearl_target)
-        .map_err(|e| format!("encode Pearl target: {e}"))?;
+    let target = gateway_job.target.clone();
+    validate_pearl_gateway_target_uint256(&target)
+        .map_err(|e| format!("Gateway mining job target became invalid before submit: {e}"))?;
     submit_pearl_gateway_plain_proof(gateway, &plain_proof_base64, &mined_header, target)
         .map_err(|e| e.to_string())
-}
-
-fn serde_json_uint256_le(le: &[u8; 32]) -> Result<serde_json::Value, serde_json::Error> {
-    let digits = uint256_le_to_decimal_string(le);
-    serde_json::from_str(&digits)
-}
-
-fn uint256_le_to_decimal_string(le: &[u8; 32]) -> String {
-    let mut be = le.to_vec();
-    be.reverse();
-    if be.iter().all(|&b| b == 0) {
-        return "0".to_string();
-    }
-
-    let mut digits = Vec::new();
-    while be.iter().any(|&b| b != 0) {
-        let mut carry = 0u16;
-        for byte in &mut be {
-            let value = (carry << 8) | u16::from(*byte);
-            *byte = (value / 10) as u8;
-            carry = value % 10;
-        }
-        digits.push((b'0' + carry as u8) as char);
-        while be.first().copied() == Some(0) {
-            be.remove(0);
-        }
-    }
-    digits.iter().rev().collect()
 }
 
 /// Internal wrapper for a prebuilt Pearl-format-compatible `%ai-pow` artifact:
@@ -1657,17 +1630,17 @@ mod tests {
                 .expect("write gateway response");
         });
 
-        let source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+        let source = PearlGatewayMinerRpcConfig {
             transport: PearlGatewayTransport::Tcp {
                 host: "127.0.0.1".to_string(),
                 port,
             },
             request_timeout: Duration::from_secs(2),
             refresh_interval: Duration::from_secs(1),
-        });
-        let fetched = source
-            .resolve_header()
-            .expect("fetch Pearl gateway mining header");
+        };
+        let fetched = fetch_pearl_gateway_mining_job(&source)
+            .expect("fetch Pearl gateway mining header")
+            .header;
         gateway.join().expect("gateway fixture exited");
 
         assert_eq!(fetched, header);
@@ -1730,18 +1703,17 @@ mod tests {
             let (_stream, _) = listener.accept().expect("accept silent gateway client");
             std::thread::sleep(Duration::from_millis(250));
         });
-        let source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+        let source = PearlGatewayMinerRpcConfig {
             transport: PearlGatewayTransport::Tcp {
                 host: "127.0.0.1".to_string(),
                 port,
             },
             request_timeout: Duration::from_millis(50),
             refresh_interval: Duration::from_secs(1),
-        });
+        };
 
         let started = std::time::Instant::now();
-        let err = source
-            .resolve_header()
+        let err = fetch_pearl_gateway_mining_job(&source)
             .expect_err("silent Pearl gateway must not block indefinitely");
         assert!(
             started.elapsed() < Duration::from_secs(1),
@@ -1836,7 +1808,10 @@ mod tests {
                 nockchain_target_hit: false,
                 stats: crate::MiningStats::default(),
             },
-            gateway_header_template: Some(header_template),
+            gateway_mining_job: Some(PearlGatewayResolvedMiningJob {
+                header: header_template,
+                target: serde_json::Value::from(123_456u64),
+            }),
             aux_inclusion,
         };
 
@@ -3139,7 +3114,7 @@ mod tests {
                 match request["method"].as_str().expect("method string") {
                     "getMiningInfo" => {
                         let response = format!(
-                            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":115792089237316195423570985008687907853269984665640564039457584007913129639935}}}}\n",
+                            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":424242}}}}\n",
                             expected_get_header
                         );
                         std::io::Write::write_all(&mut stream, response.as_bytes())
@@ -3161,7 +3136,7 @@ mod tests {
                                 .len()
                                 > 32
                         );
-                        assert!(request["params"]["mining_job"]["target"].is_number());
+                        assert_eq!(request["params"]["mining_job"]["target"], 424242);
                         let response = format!(
                             "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":\"submitted\"}}\n",
                             request["id"]

@@ -146,9 +146,11 @@ Rust miner default policy for this milestone:
 - Pearl Gateway submission uses `submitPlainProof` with the Pearl wire format:
   `plain_proof` is standard base64 of Pearl's `bincode 1.3.3`
   `PlainProof`, and `mining_job` contains the base64 incomplete header bytes
-  plus the adjusted Pearl target as a JSON integer. The proof contains the two
-  matrix Merkle proofs for `A` and `B^T`; it is not a Nockchain block artifact
-  and is never serialized into Hoon.
+  plus the exact target JSON integer returned by Gateway's `getMiningInfo`.
+  Miners use the adjusted Pearl target for local hit detection, but the
+  `submitPlainProof` `mining_job` echoes Gateway's original job target. The
+  proof contains the two matrix Merkle proofs for `A` and `B^T`; it is not a
+  Nockchain block artifact and is never serialized into Hoon.
 - Gateway acceptance is header-template sensitive. Pearl Gateway's async
   handler compares `mining_job.incomplete_header_bytes` with its current block
   template's `serialize_without_proof_commitment()` and silently skips old or
