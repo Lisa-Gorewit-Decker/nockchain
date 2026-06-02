@@ -62,6 +62,7 @@ const DEFAULT_PEARL_NOCKCHAIN_CHAIN_ID: &str = "nockchain";
 const DEFAULT_PEARL_GATEWAY_SOCKET: &str = "/tmp/pearlgw.sock";
 const DEFAULT_PEARL_GATEWAY_HOST: &str = "localhost";
 const DEFAULT_PEARL_GATEWAY_PORT: u16 = 8337;
+const DEFAULT_PEARL_GATEWAY_TIMEOUT_MS: u64 = 2_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum PearlWorkSourceArg {
@@ -144,6 +145,10 @@ struct Args {
     /// Pearl Gateway TCP port.
     #[arg(long, default_value_t = DEFAULT_PEARL_GATEWAY_PORT)]
     pearl_gateway_port: u16,
+
+    /// Pearl Gateway request timeout in milliseconds.
+    #[arg(long, default_value_t = DEFAULT_PEARL_GATEWAY_TIMEOUT_MS)]
+    pearl_gateway_timeout_ms: u64,
 
     /// Manual Pearl header version.
     #[arg(long, default_value_t = 1)]
@@ -384,6 +389,10 @@ fn build_pearl_merge_submission_config(
 
     let header_source = match args.pearl_work_source {
         PearlWorkSourceArg::Gateway => {
+            let request_timeout = Duration::from_millis(args.pearl_gateway_timeout_ms);
+            if request_timeout.is_zero() {
+                bail!("--pearl-gateway-timeout-ms must be greater than zero");
+            }
             let transport = match args.pearl_gateway_transport {
                 PearlGatewayTransportArg::Uds => PearlGatewayTransport::UnixSocket {
                     path: args.pearl_gateway_socket.clone(),
@@ -393,7 +402,10 @@ fn build_pearl_merge_submission_config(
                     port: args.pearl_gateway_port,
                 },
             };
-            PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig { transport })
+            PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+                transport,
+                request_timeout,
+            })
         }
         PearlWorkSourceArg::Manual => {
             let prev_block = parse_required_hex_32(
@@ -558,12 +570,18 @@ mod tests {
         let puzzle = build_puzzle_inputs(&args).expect("default Pearl gateway config");
         let pearl = puzzle.pearl_merge.as_ref().expect("pearl config");
         match &pearl.header_source {
-            PearlMergeHeaderSource::Gateway(cfg) => assert_eq!(
-                cfg.transport,
-                PearlGatewayTransport::UnixSocket {
-                    path: DEFAULT_PEARL_GATEWAY_SOCKET.to_string()
-                }
-            ),
+            PearlMergeHeaderSource::Gateway(cfg) => {
+                assert_eq!(
+                    cfg.transport,
+                    PearlGatewayTransport::UnixSocket {
+                        path: DEFAULT_PEARL_GATEWAY_SOCKET.to_string()
+                    }
+                );
+                assert_eq!(
+                    cfg.request_timeout,
+                    Duration::from_millis(DEFAULT_PEARL_GATEWAY_TIMEOUT_MS)
+                );
+            }
             got => panic!("expected default Pearl gateway source, got {got:?}"),
         };
     }
@@ -574,21 +592,42 @@ mod tests {
             "ai-pow-mine", "--mining-pkh",
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
             "ai-pow-gateway-tcp", "--pearl-gateway-transport", "tcp", "--pearl-gateway-host",
-            "127.0.0.1", "--pearl-gateway-port", "8337",
+            "127.0.0.1", "--pearl-gateway-port", "8337", "--pearl-gateway-timeout-ms", "250",
         ]);
 
         let puzzle = build_puzzle_inputs(&args).expect("configured Pearl TCP gateway config");
         let pearl = puzzle.pearl_merge.as_ref().expect("pearl config");
         match &pearl.header_source {
-            PearlMergeHeaderSource::Gateway(cfg) => assert_eq!(
-                cfg.transport,
-                PearlGatewayTransport::Tcp {
-                    host: "127.0.0.1".to_string(),
-                    port: 8337
-                }
-            ),
+            PearlMergeHeaderSource::Gateway(cfg) => {
+                assert_eq!(
+                    cfg.transport,
+                    PearlGatewayTransport::Tcp {
+                        host: "127.0.0.1".to_string(),
+                        port: 8337
+                    }
+                );
+                assert_eq!(cfg.request_timeout, Duration::from_millis(250));
+            }
             got => panic!("expected Pearl TCP gateway source, got {got:?}"),
         };
+    }
+
+    #[test]
+    fn cli_rejects_zero_pearl_gateway_timeout() {
+        let args = Args::parse_from([
+            "ai-pow-mine", "--mining-pkh",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
+            "ai-pow-zero-gateway-timeout", "--pearl-gateway-timeout-ms", "0",
+        ]);
+
+        let err = match build_puzzle_inputs(&args) {
+            Ok(_) => panic!("zero Pearl Gateway timeout must fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("--pearl-gateway-timeout-ms"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]

@@ -36,7 +36,7 @@
 //! fail-closed until recursive certificate verification is wired.
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
@@ -154,6 +154,7 @@ pub enum PearlGatewayTransport {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PearlGatewayMinerRpcConfig {
     pub transport: PearlGatewayTransport,
+    pub request_timeout: Duration,
 }
 
 impl PearlGatewayMinerRpcConfig {
@@ -162,6 +163,7 @@ impl PearlGatewayMinerRpcConfig {
             transport: PearlGatewayTransport::UnixSocket {
                 path: "/tmp/pearlgw.sock".to_string(),
             },
+            request_timeout: Duration::from_secs(2),
         }
     }
 
@@ -171,6 +173,7 @@ impl PearlGatewayMinerRpcConfig {
                 host: "localhost".to_string(),
                 port: 8337,
             },
+            request_timeout: Duration::from_secs(2),
         }
     }
 }
@@ -728,7 +731,9 @@ fn fetch_pearl_gateway_header(
     .to_string();
     let response_line = match &config.transport {
         PearlGatewayTransport::Tcp { host, port } => {
-            let mut stream = TcpStream::connect((host.as_str(), *port))?;
+            let mut stream = connect_tcp_with_timeout(host, *port, config.request_timeout)?;
+            stream.set_read_timeout(Some(config.request_timeout))?;
+            stream.set_write_timeout(Some(config.request_timeout))?;
             stream.write_all(request.as_bytes())?;
             stream.write_all(b"\n")?;
             stream.flush()?;
@@ -741,6 +746,8 @@ fn fetch_pearl_gateway_header(
             #[cfg(unix)]
             {
                 let mut stream = UnixStream::connect(path)?;
+                stream.set_read_timeout(Some(config.request_timeout))?;
+                stream.set_write_timeout(Some(config.request_timeout))?;
                 stream.write_all(request.as_bytes())?;
                 stream.write_all(b"\n")?;
                 stream.flush()?;
@@ -782,6 +789,27 @@ fn fetch_pearl_gateway_header(
         base64::engine::general_purpose::STANDARD.decode(job.incomplete_header_bytes)?
     };
     Ok(PearlIncompleteBlockHeader::from_bytes(&header_bytes)?)
+}
+
+fn connect_tcp_with_timeout(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> Result<TcpStream, std::io::Error> {
+    let addrs = (host, port).to_socket_addrs()?;
+    let mut last_error = None;
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, timeout) {
+            Ok(stream) => return Ok(stream),
+            Err(err) => last_error = Some(err),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "Pearl gateway host resolved to no socket addresses",
+        )
+    }))
 }
 
 fn validate_pearl_gateway_target_uint256(
@@ -1374,6 +1402,7 @@ mod tests {
                 host: "127.0.0.1".to_string(),
                 port,
             },
+            request_timeout: Duration::from_secs(2),
         });
         let fetched = source
             .resolve_header()
@@ -1381,6 +1410,38 @@ mod tests {
         gateway.join().expect("gateway fixture exited");
 
         assert_eq!(fetched, header);
+    }
+
+    #[test]
+    fn pearl_gateway_header_source_times_out_silent_tcp_peer() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind silent gateway fixture");
+        let port = listener.local_addr().expect("silent gateway addr").port();
+        let gateway = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept silent gateway client");
+            std::thread::sleep(Duration::from_millis(250));
+        });
+        let source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+            transport: PearlGatewayTransport::Tcp {
+                host: "127.0.0.1".to_string(),
+                port,
+            },
+            request_timeout: Duration::from_millis(50),
+        });
+
+        let started = std::time::Instant::now();
+        let err = source
+            .resolve_header()
+            .expect_err("silent Pearl gateway must not block indefinitely");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "timeout took too long: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            matches!(err, PearlGatewayError::Io(_)),
+            "unexpected error: {err}"
+        );
+        gateway.join().expect("silent gateway fixture exited");
     }
 
     #[test]
