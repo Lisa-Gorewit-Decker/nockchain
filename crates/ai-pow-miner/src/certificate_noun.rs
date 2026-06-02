@@ -140,14 +140,6 @@ pub struct AiPowCertificateShape {
     pub certificate: AiProofNode,
 }
 
-/// Decoded `%ai-pow` block artifact shape.
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AiPowArtifactShape {
-    pub nonce: Vec<u8>,
-    pub certificate: AiPowCertificateShape,
-}
-
 /// Metadata-only view of a decoded `%ai-pow` artifact.
 ///
 /// This intentionally stops before the recursive proof-node tail. Verifier and
@@ -949,43 +941,6 @@ fn decode_ai_pow_certificate_metadata_fields(
     })
 }
 
-/// Decode and validate a generic Hoon `%ai-pow` block artifact in a slab.
-///
-/// The expected noun shape is:
-///
-/// ```hoon
-/// [%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]
-/// ```
-///
-/// This is a crate-internal parser shared by the Pearl-compatible artifact
-/// decoders. Public callers should use the `%ai-pow` Pearl-merge APIs, which
-/// additionally parse the Rust-owned `AIP1` nonce and run the Nockchain/Pearl
-/// statement prechecks before proof traversal.
-#[cfg(test)]
-fn decode_ai_pow_artifact_slab<J>(
-    slab: &NounSlab<J>,
-    limits: CertificateNounLimits,
-) -> Result<AiPowArtifactShape, CertificateNounError> {
-    let space = slab.noun_space();
-    let root = unsafe { *slab.root() };
-    decode_ai_pow_artifact_noun(root, &space, limits)
-}
-
-/// Decode and validate a jammed generic Hoon `%ai-pow` block artifact.
-///
-/// This is crate-internal. Consensus-facing callers should use
-/// [`precheck_ai_pow_pearl_merge_artifact_jam`] or
-/// [`verify_ai_pow_pearl_merge_artifact_jam`], which enforce the `AIP1` nonce,
-/// aux binding, target, and recursive metadata before proof traversal.
-#[cfg(test)]
-fn decode_ai_pow_artifact_jam(
-    jammed: &[u8],
-    limits: CertificateNounLimits,
-) -> Result<AiPowArtifactShape, CertificateNounError> {
-    let slab = cue_canonical_artifact_jam(jammed, limits)?;
-    decode_ai_pow_artifact_slab(&slab, limits)
-}
-
 fn cue_canonical_artifact_jam(
     jammed: &[u8],
     limits: CertificateNounLimits,
@@ -1126,27 +1081,6 @@ fn first_one(jammed: &[u8], start: usize, total_bits: usize) -> Option<usize> {
 fn bit_at(jammed: &[u8], bit: usize) -> Option<bool> {
     let byte = *jammed.get(bit / 8)?;
     Some(((byte >> (bit % 8)) & 1) == 1)
-}
-
-/// Decode and validate a full generic Hoon `%ai-pow` block artifact noun.
-#[cfg(test)]
-fn decode_ai_pow_artifact_noun(
-    root: Noun,
-    space: &NounSpace,
-    limits: CertificateNounLimits,
-) -> Result<AiPowArtifactShape, CertificateNounError> {
-    let fields = tuple3(root, space, "ai-pow artifact")?;
-    let tag = expect_u64(fields[0], space, "ai-pow artifact tag")?;
-    if tag != tas!(b"ai-pow") {
-        return Err(CertificateNounError::Shape("expected %ai-pow artifact"));
-    }
-    let nonce = expect_declared_bounded_bytes(
-        fields[1], space, 1, AI_POW_NONCE_MAX_SIZE, "ai-pow nonce", limits,
-    )?;
-    Ok(AiPowArtifactShape {
-        nonce,
-        certificate: decode_ai_pow_certificate_noun(fields[2], space, limits)?,
-    })
 }
 
 /// Decode only the top-level generic `%ai-pow` nonce and certificate metadata.
@@ -4437,35 +4371,6 @@ mod tests {
     }
 
     #[test]
-    fn ai_pow_artifact_decoder_binds_nonce_and_certificate_shape() {
-        let puzzle_id = b"artifact-puzzle-id";
-        let nonce = b"opaque-ai-pow-nonce".to_vec();
-        let (params, commitments, pis, trace_height, found_idx) =
-            production_statement_fixture(puzzle_id, &nonce);
-        let certificate = AiProofNode::Seq(vec![AiProofNode::U64(42)]);
-        let cert_slab = build_ai_pow_certificate_noun_from_node(
-            &zk_params_from_matmul(&params),
-            found_idx,
-            trace_height,
-            &commitments,
-            &pis,
-            &certificate,
-        );
-        let artifact_slab = build_ai_pow_artifact_slab(&nonce, &cert_slab);
-
-        let decoded = decode_ai_pow_artifact_slab(&artifact_slab, CertificateNounLimits::default())
-            .expect("decode ai-pow artifact");
-        assert_eq!(decoded.nonce, nonce);
-        assert_eq!(decoded.certificate.found_idx, found_idx);
-        assert_eq!(
-            decoded.certificate.commitments,
-            noun_commitments(commitments)
-        );
-        assert_eq!(decoded.certificate.public_inputs, pis);
-        assert_eq!(decoded.certificate.certificate, certificate);
-    }
-
-    #[test]
     fn pearl_merge_artifact_decoder_keeps_statement_structured_and_prechecks_public_inputs() {
         let (statement, aux_inclusion, commitments, pis, a, b) = pearl_merge_statement_fixture();
         let params = pearl_test_params();
@@ -5822,69 +5727,73 @@ mod tests {
     }
 
     #[test]
-    fn ai_pow_artifact_jam_decoder_enforces_byte_limit_before_cue() {
-        let params = sample_params();
-        let commitments = sample_commitments();
-        let pis = sample_pis();
+    fn pearl_merge_artifact_jam_decoder_enforces_byte_limit_before_cue() {
+        let (statement, aux_inclusion, commitments, pis, _, _) = pearl_merge_statement_fixture();
+        let params = pearl_test_params();
         let cert_slab = build_ai_pow_certificate_noun_from_node(
-            &params,
+            &zk_params_from_matmul(&params),
             0,
-            16_384,
+            expected_layer0_rows(&params).required_trace_len(),
             &commitments,
             &pis,
             &AiProofNode::Unit,
         );
-        let nonce = b"bounded-opaque-ai-pow-nonce".to_vec();
-        let artifact_slab = build_ai_pow_artifact_slab(&nonce, &cert_slab);
+        let artifact_slab = build_pearl_merge_artifact_slab(&statement, &aux_inclusion, &cert_slab);
         let jammed = artifact_slab.jam();
 
-        let decoded = decode_ai_pow_artifact_jam(&jammed, CertificateNounLimits::default())
-            .expect("decode artifact jam");
-        assert_eq!(decoded.nonce, nonce);
+        let decoded =
+            decode_ai_pow_pearl_merge_artifact_jam(&jammed, CertificateNounLimits::default())
+                .expect("decode production Pearl merge artifact jam");
+        assert_eq!(decoded.statement, statement);
+        assert_eq!(decoded.aux_inclusion, aux_inclusion);
+        assert_eq!(decoded.certificate.public_inputs, pis);
 
         let mut non_canonical = jammed.to_vec();
         non_canonical.push(0xff);
         assert!(matches!(
-            decode_ai_pow_artifact_jam(&non_canonical, CertificateNounLimits::default()),
+            decode_ai_pow_pearl_merge_artifact_jam(
+                &non_canonical,
+                CertificateNounLimits::default()
+            ),
             Err(CertificateNounError::NonCanonicalJam)
         ));
 
         let mut node_limits = CertificateNounLimits::default();
         node_limits.max_total_nodes = 1;
         assert!(matches!(
-            decode_ai_pow_artifact_jam(&jammed, node_limits),
+            decode_ai_pow_pearl_merge_artifact_jam(&jammed, node_limits),
             Err(CertificateNounError::LimitExceeded("jam noun count"))
         ));
 
         let mut depth_limits = CertificateNounLimits::default();
         depth_limits.max_depth = 1;
         assert!(matches!(
-            decode_ai_pow_artifact_jam(&jammed, depth_limits),
+            decode_ai_pow_pearl_merge_artifact_jam(&jammed, depth_limits),
             Err(CertificateNounError::LimitExceeded("jam noun depth"))
         ));
 
         let mut atom_limits = CertificateNounLimits::default();
         atom_limits.max_atom_bytes = 0;
         assert!(matches!(
-            decode_ai_pow_artifact_jam(&jammed, atom_limits),
+            decode_ai_pow_pearl_merge_artifact_jam(&jammed, atom_limits),
             Err(CertificateNounError::LimitExceeded("jam atom bytes"))
         ));
 
         let mut limits = CertificateNounLimits::default();
         limits.max_jam_bytes = jammed.len() - 1;
         assert!(matches!(
-            decode_ai_pow_artifact_jam(&jammed, limits),
+            decode_ai_pow_pearl_merge_artifact_jam(&jammed, limits),
             Err(CertificateNounError::JammedLengthExceeded { limit, actual })
                 if limit == jammed.len() - 1 && actual == jammed.len()
         ));
 
-        let err = decode_ai_pow_artifact_jam(&[], CertificateNounLimits::default())
+        let err = decode_ai_pow_pearl_merge_artifact_jam(&[], CertificateNounLimits::default())
             .expect_err("malformed jam must reject");
         assert!(matches!(err, CertificateNounError::Cue(_)));
     }
 
     #[test]
-    fn ai_pow_artifact_decoder_rejects_malformed_nonce_shape_and_tag() {
+    fn pearl_merge_artifact_decoder_rejects_malformed_nonce_shape_and_tag() {
         let params = sample_params();
         let commitments = sample_commitments();
         let pis = sample_pis();
@@ -5905,7 +5814,10 @@ mod tests {
         let root = T(&mut bad_len_slab, &[D(tas!(b"ai-pow")), bad_nonce, cert]);
         bad_len_slab.set_root(root);
         assert!(matches!(
-            decode_ai_pow_artifact_slab(&bad_len_slab, CertificateNounLimits::default()),
+            decode_ai_pow_pearl_merge_artifact_slab(
+                &bad_len_slab,
+                CertificateNounLimits::default()
+            ),
             Err(CertificateNounError::PackedLengthMismatch {
                 tag: "ai-pow nonce",
                 declared: 10,
@@ -5920,7 +5832,10 @@ mod tests {
         let root = T(&mut wrong_tag_slab, &[D(tas!(b"not-ai")), nonce, cert]);
         wrong_tag_slab.set_root(root);
         assert!(matches!(
-            decode_ai_pow_artifact_slab(&wrong_tag_slab, CertificateNounLimits::default()),
+            decode_ai_pow_pearl_merge_artifact_slab(
+                &wrong_tag_slab,
+                CertificateNounLimits::default()
+            ),
             Err(CertificateNounError::Shape("expected %ai-pow artifact"))
         ));
     }
