@@ -57,6 +57,9 @@ const DEFAULT_PEARL_NOCKCHAIN_CHAIN_ID: &str = "nockchain";
 const DEFAULT_PEARL_GATEWAY_ENDPOINT: &str = "unix:/tmp/pearlgw.sock";
 const DEFAULT_PEARL_GATEWAY_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_PEARL_GATEWAY_REFRESH_MS: u64 = 1_000;
+const DEFAULT_RECONNECT_BACKOFF_INITIAL_MS: u64 = 1_000;
+const DEFAULT_RECONNECT_BACKOFF_MAX_MS: u64 = 30_000;
+const DEFAULT_RECONNECT_MAX_ATTEMPTS: u32 = 5;
 const DEFAULT_SYNTH_SEED: &str = "ai-pow-prod-v1";
 const DEFAULT_MATMUL_PARAMS: MatmulParams = MatmulParams {
     m: 8,
@@ -93,27 +96,6 @@ struct Args {
     #[arg(long, value_name = "ENDPOINT", default_value = DEFAULT_PEARL_GATEWAY_ENDPOINT)]
     pearl_gateway: String,
 
-    /// Pearl Gateway request timeout in milliseconds.
-    #[arg(long, default_value_t = DEFAULT_PEARL_GATEWAY_TIMEOUT_MS, hide = true)]
-    pearl_gateway_timeout_ms: u64,
-
-    /// Pearl Gateway work refresh interval in milliseconds.
-    #[arg(long, default_value_t = DEFAULT_PEARL_GATEWAY_REFRESH_MS, hide = true)]
-    pearl_gateway_refresh_ms: u64,
-
-    // ── reconnect tuning ───────────────────────────────────────────
-    /// Initial reconnect backoff in milliseconds.
-    #[arg(long, default_value = "1000", hide = true)]
-    reconnect_backoff_initial_ms: u64,
-
-    /// Maximum reconnect backoff in milliseconds (cap).
-    #[arg(long, default_value = "30000", hide = true)]
-    reconnect_backoff_max_ms: u64,
-
-    /// Consecutive reconnect attempts before giving up.
-    #[arg(long, default_value = "5", hide = true)]
-    reconnect_max_attempts: u32,
-
     /// Log filter (env-filter syntax). Override with the `RUST_LOG` env var.
     #[arg(
         long,
@@ -144,9 +126,9 @@ fn main() -> ExitCode {
         mining_configs: default_v0_configs(),
         mining_pkh_configs: pkh_configs,
         puzzle,
-        reconnect_backoff_initial: Duration::from_millis(args.reconnect_backoff_initial_ms),
-        reconnect_backoff_max: Duration::from_millis(args.reconnect_backoff_max_ms),
-        reconnect_max_attempts: args.reconnect_max_attempts,
+        reconnect_backoff_initial: Duration::from_millis(DEFAULT_RECONNECT_BACKOFF_INITIAL_MS),
+        reconnect_backoff_max: Duration::from_millis(DEFAULT_RECONNECT_BACKOFF_MAX_MS),
+        reconnect_max_attempts: DEFAULT_RECONNECT_MAX_ATTEMPTS,
     };
 
     let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -277,14 +259,8 @@ fn build_pearl_merge_submission_config(
     validate_pearl_merge_config_for_recursive_prover(&mining_config, &params, max_pattern_len)
         .map_err(|e| anyhow!("Pearl mining config is not supported for recursive proofs: {e}"))?;
 
-    let request_timeout = Duration::from_millis(args.pearl_gateway_timeout_ms);
-    if request_timeout.is_zero() {
-        bail!("--pearl-gateway-timeout-ms must be greater than zero");
-    };
-    let refresh_interval = Duration::from_millis(args.pearl_gateway_refresh_ms);
-    if refresh_interval.is_zero() {
-        bail!("--pearl-gateway-refresh-ms must be greater than zero");
-    }
+    let request_timeout = Duration::from_millis(DEFAULT_PEARL_GATEWAY_TIMEOUT_MS);
+    let refresh_interval = Duration::from_millis(DEFAULT_PEARL_GATEWAY_REFRESH_MS);
     let gateway = PearlGatewayMinerRpcConfig {
         transport: resolve_pearl_gateway_transport(args)?,
         request_timeout,
@@ -413,8 +389,7 @@ mod tests {
         let args = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--pearl-gateway",
-            "127.0.0.1:8337", "--pearl-gateway-timeout-ms", "250", "--pearl-gateway-refresh-ms",
-            "500",
+            "127.0.0.1:8337",
         ]);
 
         let puzzle = build_puzzle_inputs(&args).expect("configured Pearl TCP gateway config");
@@ -426,8 +401,14 @@ mod tests {
                 port: 8337
             }
         );
-        assert_eq!(pearl.gateway().request_timeout, Duration::from_millis(250));
-        assert_eq!(pearl.gateway().refresh_interval, Duration::from_millis(500));
+        assert_eq!(
+            pearl.gateway().request_timeout,
+            Duration::from_millis(DEFAULT_PEARL_GATEWAY_TIMEOUT_MS)
+        );
+        assert_eq!(
+            pearl.gateway().refresh_interval,
+            Duration::from_millis(DEFAULT_PEARL_GATEWAY_REFRESH_MS)
+        );
     }
 
     #[test]
@@ -528,42 +509,6 @@ mod tests {
     }
 
     #[test]
-    fn cli_rejects_zero_pearl_gateway_timeout() {
-        let args = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV",
-            "--pearl-gateway-timeout-ms", "0",
-        ]);
-
-        let err = match build_puzzle_inputs(&args) {
-            Ok(_) => panic!("zero Pearl Gateway timeout must fail"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string().contains("--pearl-gateway-timeout-ms"),
-            "unexpected error: {err:#}"
-        );
-    }
-
-    #[test]
-    fn cli_rejects_zero_pearl_gateway_refresh_interval() {
-        let args = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV",
-            "--pearl-gateway-refresh-ms", "0",
-        ]);
-
-        let err = match build_puzzle_inputs(&args) {
-            Ok(_) => panic!("zero Pearl Gateway refresh interval must fail"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string().contains("--pearl-gateway-refresh-ms"),
-            "unexpected error: {err:#}"
-        );
-    }
-
-    #[test]
     fn cli_can_build_configured_pearl_merge_submission_inputs() {
         let args = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
@@ -640,7 +585,9 @@ mod tests {
             "--pearl-nockchain-chain-id", "--pearl-nockchain-target-epoch-or-height",
             "--pearl-extra-domain-data", "--pearl-max-pattern-len", "--pearl-max-attempts",
             "--synth-seed", "--a", "--b", "--m", "--k", "--n", "--noise-rank", "--tile",
-            "--spot-checks", "--difficulty-bits",
+            "--spot-checks", "--difficulty-bits", "--pearl-gateway-timeout-ms",
+            "--pearl-gateway-refresh-ms", "--reconnect-backoff-initial-ms",
+            "--reconnect-backoff-max-ms", "--reconnect-max-attempts",
         ] {
             let err = Args::try_parse_from([
                 "ai-pow-mine", "--mining-pkh",

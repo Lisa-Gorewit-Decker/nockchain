@@ -124,17 +124,17 @@ Rust miner default policy for this milestone:
   configuration. TCP gateway mode is available through the unified
   `--pearl-gateway` endpoint. Manual Pearl header CLI flags were removed; the
   production miner obtains Pearl work through Gateway only.
-- Pearl Gateway requests use a bounded request timeout, defaulting to 2000 ms
-  and configurable with `--pearl-gateway-timeout-ms`. Zero is rejected so a
-  silent, wedged, or malicious local Gateway cannot block candidate processing
-  indefinitely.
+- Pearl Gateway requests use a bounded 2000 ms request timeout so a silent,
+  wedged, or malicious local Gateway cannot block candidate processing
+  indefinitely. Operator timeout tuning is not part of this milestone's CLI
+  surface.
 - Pearl Gateway JSON-RPC responses are read as a single bounded line, capped at
   64 KiB before JSON parsing. This is intentionally far above the expected
   `getMiningInfo` response size but prevents a local Gateway from forcing
   unbounded miner allocation by streaming data without a newline.
-- In Gateway mode, the miner refreshes `getMiningInfo` while a Nockchain
-  candidate remains current. The refresh interval defaults to 1000 ms and is
-  configurable with `--pearl-gateway-refresh-ms`; zero is rejected. If the
+- In Gateway mode, the miner refreshes `getMiningInfo` every 1000 ms while a
+  Nockchain candidate remains current. Operator refresh tuning is not part of
+  this milestone's CLI surface. If the
   refreshed Pearl incomplete header changes, the miner cancels the current
   ticket loop and restarts work for the same Nockchain candidate using the new
   Pearl header. After a solution is turned into a Nockchain poke attempt, the
@@ -315,9 +315,8 @@ Implemented in this branch:
   small: node private gRPC address, mining key configuration, unified
   `--pearl-gateway` endpoint, and log filter. The legacy split Gateway
   transport/socket/host/port flags were removed; Gateway location is configured
-  through the one endpoint string. Matrix-shape and custom synthetic-seed flags
-  were removed; Gateway timing and reconnect flags remain hidden
-  dev/compatibility controls. Gateway fetches use an explicit TCP
+  through the one endpoint string. Matrix-shape, custom synthetic-seed, Gateway
+  timing, and reconnect flags were removed. Gateway fetches use an explicit TCP
   connect timeout plus socket read/write timeouts so local
   Gateway failure is a skipped candidate, not an unbounded miner stall. The
   miner also polls Gateway while a Nockchain candidate is current and
