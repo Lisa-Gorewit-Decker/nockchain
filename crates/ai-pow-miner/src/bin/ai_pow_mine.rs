@@ -61,6 +61,15 @@ const DEFAULT_PEARL_GATEWAY_ENDPOINT: &str = "unix:/tmp/pearlgw.sock";
 const DEFAULT_PEARL_GATEWAY_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_PEARL_GATEWAY_REFRESH_MS: u64 = 1_000;
 const DEFAULT_SYNTH_SEED: &str = "ai-pow-prod-v1";
+const DEFAULT_MATMUL_PARAMS: MatmulParams = MatmulParams {
+    m: 8,
+    k: 1024,
+    n: 8,
+    noise_rank: 32,
+    tile: 8,
+    spot_checks: 1,
+    difficulty_bits: 0,
+};
 
 /// `ai-pow-mine` — standalone AI-PoW block miner.
 #[derive(Parser, Debug)]
@@ -83,35 +92,12 @@ struct Args {
     mining_pkh_adv: Option<Vec<MiningPkhConfig>>,
 
     // ── AI puzzle config ───────────────────────────────────────────
-    /// Matmul puzzle rows. Default is the current single-tile Layer-0 smoke profile.
-    #[arg(short = 'm', long, default_value_t = 8, hide = true)]
-    m: u32,
-    /// Matmul shared dimension. Default satisfies Pearl's public-parameter envelope with r=32.
-    #[arg(short = 'k', long, default_value_t = 1024, hide = true)]
-    k: u32,
-    /// Matmul output columns. Default is one tile for local recursive-proof smoke runs.
-    #[arg(short = 'n', long, default_value_t = 8, hide = true)]
-    n: u32,
-    #[arg(long, default_value_t = 32, hide = true)]
-    noise_rank: u32,
-    #[arg(long, default_value_t = 8, hide = true)]
-    tile: u32,
-    #[arg(long, default_value_t = 1, hide = true)]
-    spot_checks: u32,
-    #[arg(long, default_value_t = 0, hide = true)]
-    difficulty_bits: u32,
-
-    /// Path to raw i8 matrix A (length m·k). Mutually exclusive with --synth-seed.
-    #[arg(long, value_name = "PATH", conflicts_with = "synth_seed", hide = true)]
+    /// Path to raw i8 matrix A for the fixed recursive profile.
+    #[arg(long, value_name = "PATH", hide = true)]
     a: Option<PathBuf>,
-    /// Path to raw i8 matrix B (length k·n).
-    #[arg(long, value_name = "PATH", conflicts_with = "synth_seed", hide = true)]
+    /// Path to raw i8 matrix B for the fixed recursive profile.
+    #[arg(long, value_name = "PATH", hide = true)]
     b: Option<PathBuf>,
-    /// Synthesize A + B deterministically from this seed string. If no matrix
-    /// input is supplied, defaults to the local smoke-profile seed
-    /// `ai-pow-prod-v1`.
-    #[arg(long, hide = true)]
-    synth_seed: Option<String>,
 
     /// Pearl Gateway miner RPC endpoint. Accepts `unix:/path/to.sock`, `/path/to.sock`,
     /// `tcp:host:port`, `tcp://host:port`, or `host:port`.
@@ -241,29 +227,20 @@ fn build_pkh_configs(args: &Args) -> Option<Vec<MiningPkhConfig>> {
 }
 
 fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
-    let params = MatmulParams {
-        m: args.m,
-        k: args.k,
-        n: args.n,
-        noise_rank: args.noise_rank,
-        tile: args.tile,
-        spot_checks: args.spot_checks,
-        difficulty_bits: args.difficulty_bits,
-    };
+    let params = DEFAULT_MATMUL_PARAMS;
     params
         .validate()
         .map_err(|e| anyhow!("matmul params invalid: {e}"))?;
     validate_pearl_recursive_cli_params(params)?;
 
-    let (a, b) = match (&args.a, &args.b, &args.synth_seed) {
-        (Some(ap), Some(bp), None) => {
-            let a = load_matrix(ap, checked_matrix_len(args.m, args.k, "A")?, "A")?;
-            let b = load_matrix(bp, checked_matrix_len(args.n, args.k, "B")?, "B")?;
+    let (a, b) = match (&args.a, &args.b) {
+        (Some(ap), Some(bp)) => {
+            let a = load_matrix(ap, checked_matrix_len(params.m, params.k, "A")?, "A")?;
+            let b = load_matrix(bp, checked_matrix_len(params.n, params.k, "B")?, "B")?;
             (a, b)
         }
-        (None, None, Some(seed)) => ai_pow::synth::synth_matrices(seed.as_bytes(), &params),
-        (None, None, None) => ai_pow::synth::synth_matrices(DEFAULT_SYNTH_SEED.as_bytes(), &params),
-        _ => bail!("provide either both --a + --b, a custom --synth-seed, or neither for the default synth seed"),
+        (None, None) => ai_pow::synth::synth_matrices(DEFAULT_SYNTH_SEED.as_bytes(), &params),
+        _ => bail!("provide both --a + --b, or neither for the default fixed-profile matrices"),
     };
 
     let a = Arc::new(a);
@@ -281,7 +258,7 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
 fn validate_pearl_recursive_cli_params(params: MatmulParams) -> Result<()> {
     if params.difficulty_bits != 0 || params.spot_checks != 1 {
         bail!(
-            "Pearl-compatible recursive certificates require --difficulty-bits 0 and --spot-checks 1"
+            "Pearl-compatible recursive certificates require difficulty_bits 0 and spot_checks 1"
         );
     }
     params
@@ -310,7 +287,7 @@ fn build_pearl_merge_submission_config(
     let mining_config = PearlMiningConfig {
         common_dim: params.k,
         rank: u16::try_from(params.noise_rank)
-            .map_err(|_| anyhow!("--noise-rank does not fit Pearl mining config u16"))?,
+            .map_err(|_| anyhow!("fixed noise_rank does not fit Pearl mining config u16"))?,
         mma_type: PEARL_MMA_INT7XINT7_TO_INT32,
         rows_pattern,
         cols_pattern,
@@ -407,7 +384,7 @@ fn parse_pearl_gateway_endpoint(endpoint: &str) -> Result<PearlGatewayTransport>
 
 fn contiguous_pearl_pattern(tile: u32) -> Result<PearlPeriodicPattern> {
     if tile == 0 {
-        bail!("--tile must be nonzero");
+        bail!("fixed tile must be nonzero");
     }
     let indices: Vec<u32> = (0..tile).collect();
     PearlPeriodicPattern::from_list(&indices)
@@ -445,11 +422,8 @@ mod tests {
             "ai-pow-mine", "--mining-pkh",
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV",
         ]);
-        assert_eq!((args.m, args.k, args.n), (8, 1024, 8));
-        assert_eq!(args.noise_rank, 32);
-        assert_eq!(args.spot_checks, 1);
-
         let puzzle = build_puzzle_inputs(&args).expect("default Pearl gateway config");
+        assert_eq!(puzzle.params, DEFAULT_MATMUL_PARAMS);
         let (expected_a, expected_b) =
             ai_pow::synth::synth_matrices(DEFAULT_SYNTH_SEED.as_bytes(), &puzzle.params);
         assert_eq!(puzzle.a.as_slice(), expected_a.as_slice());
@@ -625,8 +599,8 @@ mod tests {
     fn cli_rejects_zero_pearl_gateway_timeout() {
         let args = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "ai-pow-zero-gateway-timeout", "--pearl-gateway-timeout-ms", "0",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV",
+            "--pearl-gateway-timeout-ms", "0",
         ]);
 
         let err = match build_puzzle_inputs(&args) {
@@ -643,8 +617,8 @@ mod tests {
     fn cli_rejects_zero_pearl_gateway_refresh_interval() {
         let args = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "ai-pow-zero-gateway-refresh", "--pearl-gateway-refresh-ms", "0",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV",
+            "--pearl-gateway-refresh-ms", "0",
         ]);
 
         let err = match build_puzzle_inputs(&args) {
@@ -661,9 +635,7 @@ mod tests {
     fn cli_can_build_configured_pearl_merge_submission_inputs() {
         let args = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "ai-pow-pearl-merge-cli", "--m", "8", "--k", "1024", "--n", "8", "--noise-rank", "32",
-            "--tile", "8", "--spot-checks", "1", "--difficulty-bits", "0", "--pearl-gateway",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--pearl-gateway",
             "tcp://127.0.0.1:8337",
         ]);
 
@@ -693,9 +665,7 @@ mod tests {
     fn cli_certificate_builder_rejects_target_miss_before_recursive_proof() {
         let args = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "ai-pow-pearl-merge-cli-builder-target-miss", "--m", "8", "--k", "1024", "--n", "8",
-            "--noise-rank", "32", "--tile", "8", "--spot-checks", "1", "--difficulty-bits", "0",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV",
         ]);
 
         let puzzle = build_puzzle_inputs(&args).expect("pearl merge puzzle inputs");
@@ -733,78 +703,22 @@ mod tests {
     }
 
     #[test]
-    fn cli_rejects_removed_pearl_aux_and_search_flags() {
+    fn cli_rejects_removed_pearl_aux_search_and_shape_flags() {
         for removed_flag in [
             "--pearl-nockchain-chain-id", "--pearl-nockchain-target-epoch-or-height",
             "--pearl-extra-domain-data", "--pearl-max-pattern-len", "--pearl-max-attempts",
+            "--synth-seed", "--m", "--k", "--n", "--noise-rank", "--tile", "--spot-checks",
+            "--difficulty-bits",
         ] {
             let err = Args::try_parse_from([
                 "ai-pow-mine", "--mining-pkh",
                 "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", removed_flag, "1",
             ])
-            .expect_err("removed Pearl aux/search flag should not parse");
+            .expect_err("removed Pearl aux/search/shape flag should not parse");
             assert!(
                 err.to_string().contains(removed_flag),
                 "unexpected error for {removed_flag}: {err}"
             );
         }
-    }
-
-    #[test]
-    fn cli_rejects_pearl_merge_noncanonical_recursive_params_before_mining() {
-        let args = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "ai-pow-pearl-merge-bad-params", "--m", "16", "--n", "8", "--spot-checks", "2",
-        ]);
-
-        let err = match build_puzzle_inputs(&args) {
-            Ok(_) => panic!("bad Pearl recursive params must fail"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string()
-                .contains("require --difficulty-bits 0 and --spot-checks 1"),
-            "unexpected error: {err:#}"
-        );
-    }
-
-    #[test]
-    fn cli_rejects_pearl_merge_multi_tile_before_matrix_synthesis() {
-        let args = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "must-not-materialize-multi-tile", "--m", "16", "--k", "512", "--n", "8",
-            "--noise-rank", "32", "--tile", "8", "--spot-checks", "1", "--difficulty-bits", "0",
-        ]);
-
-        let err = match build_puzzle_inputs(&args) {
-            Ok(_) => panic!("multi-tile Pearl recursive params must fail before matrix synthesis"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string().contains("require exactly one tile"),
-            "unexpected error: {err:#}"
-        );
-    }
-
-    #[test]
-    fn cli_rejects_nonproduction_shape_before_matrix_synthesis() {
-        let args = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "must-not-materialize-matrix", "--m", "16777224", "--k", "512", "--n", "8",
-            "--noise-rank", "32", "--tile", "8", "--spot-checks", "1", "--difficulty-bits", "0",
-        ]);
-
-        let err = match build_puzzle_inputs(&args) {
-            Ok(_) => panic!("nonproduction Pearl shape must fail before matrix synthesis"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string()
-                .contains("Pearl-compatible params are not production-admissible"),
-            "unexpected error: {err:#}"
-        );
     }
 }
