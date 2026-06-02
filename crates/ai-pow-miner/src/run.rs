@@ -545,7 +545,7 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                             let pearl_cfg = &cfg.puzzle.pearl_merge;
                             let mut pearl_submit_failed = false;
                             if mined.ticket.pearl_target_hit {
-                                if let Err(e) = submit_pearl_solution_if_gateway(&cfg, pearl_cfg, &mined) {
+                                if let Err(e) = submit_pearl_solution_to_gateway(&cfg, pearl_cfg, &mined) {
                                     pearl_submit_failed = true;
                                     warn!(error = %e, "submit Pearl Gateway plain proof failed");
                                 }
@@ -1329,7 +1329,7 @@ fn spawn_pearl_merge_attempt(
     })
 }
 
-fn submit_pearl_solution_if_gateway(
+fn submit_pearl_solution_to_gateway(
     cfg: &MinerConfig,
     pearl_cfg: &PearlMergeSubmissionConfig,
     mined: &PearlMergeMinedSubmission,
@@ -2051,7 +2051,7 @@ mod tests {
             aux_inclusion,
         };
 
-        let err = submit_pearl_solution_if_gateway(&cfg, &pearl_cfg, &mined)
+        let err = submit_pearl_solution_to_gateway(&cfg, &pearl_cfg, &mined)
             .expect_err("header mismatch must fail before Gateway RPC");
         assert!(
             err.contains("does not match the aux-bearing mined header"),
