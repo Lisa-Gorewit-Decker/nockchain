@@ -323,6 +323,8 @@ Implemented in this branch:
   miner also polls Gateway while a Nockchain candidate is current and
   redispatches the ticket loop if the Pearl header changes. The miner derives
   the Rust-only Pearl mining config from the canonical recursive AI-PoW params.
+  The Rust submission config carries a direct Pearl Gateway RPC config; the
+  removed manual/static header source is not part of the production API.
   If no matrix paths or custom `--synth-seed` are supplied, the CLI uses the
   default `ai-pow-prod-v1` local smoke-profile matrices; the remaining required
   local operator input is the mining key configuration. Once the miner builds a

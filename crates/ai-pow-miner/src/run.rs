@@ -132,7 +132,9 @@ impl PearlMergeCertificateProof {
 /// shared attempt transcript and aux commitment.
 #[derive(Clone)]
 pub struct PearlMergeSubmissionConfig {
-    pub header_source: PearlMergeHeaderSource,
+    pub gateway: PearlGatewayMinerRpcConfig,
+    #[cfg(test)]
+    static_header: Option<PearlIncompleteBlockHeader>,
     pub mining_config: PearlMiningConfig,
     pub aux_template: PearlNockchainAux,
     pub max_pattern_len: usize,
@@ -146,7 +148,7 @@ impl PearlMergeSubmissionConfig {
     /// external callers cannot accidentally install a plain-proof or synthetic
     /// certificate path.
     pub fn new_recursive(
-        header_source: PearlMergeHeaderSource,
+        gateway: PearlGatewayMinerRpcConfig,
         mining_config: PearlMiningConfig,
         aux_template: PearlNockchainAux,
         max_pattern_len: usize,
@@ -172,7 +174,9 @@ impl PearlMergeSubmissionConfig {
         });
 
         Self {
-            header_source,
+            gateway,
+            #[cfg(test)]
+            static_header: None,
             mining_config,
             aux_template,
             max_pattern_len,
@@ -187,19 +191,6 @@ impl PearlMergeSubmissionConfig {
     ) -> Result<PearlMergeCertificateProof, AiPowCertificateBuildError> {
         (self.certificate_builder)(attempt)
     }
-}
-
-/// Source for Pearl work headers used in the shared ticket transcript.
-///
-/// The production-oriented default is Pearl Gateway's miner RPC `getMiningInfo`
-/// endpoint. Test builds also expose a static header source for local run-loop
-/// harnesses; it is not part of the production API or the Hoon `%ai-pow`
-/// artifact.
-#[derive(Clone, Debug)]
-pub enum PearlMergeHeaderSource {
-    #[cfg(test)]
-    Static(PearlIncompleteBlockHeader),
-    Gateway(PearlGatewayMinerRpcConfig),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -644,11 +635,13 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
 
 fn pearl_work_refresh_interval(cfg: &MinerConfig) -> Option<Duration> {
     let pearl = &cfg.puzzle.pearl_merge;
-    match &pearl.header_source {
-        PearlMergeHeaderSource::Gateway(gateway) => Some(gateway.refresh_interval),
-        #[cfg(test)]
-        PearlMergeHeaderSource::Static(_) => None,
+    #[cfg(test)]
+    {
+        if pearl.static_header.is_some() {
+            return None;
+        }
     }
+    Some(pearl.gateway.refresh_interval)
 }
 
 enum InnerOutcome {
@@ -811,32 +804,36 @@ fn derive_pearl_merge_job_inputs_from_nockchain(
     let aux_commitment = aux
         .commitment()
         .map_err(|e| format!("build Nockchain aux commitment: {e}"))?;
-    let (header, gateway_mining_job, aux_inclusion) = match &pearl.header_source {
-        #[cfg(test)]
-        PearlMergeHeaderSource::Static(header_template) => {
-            let (header, aux_inclusion) =
-                build_coinbase_only_pearl_aux_inclusion(header_template, &aux)
-                    .map_err(|e| format!("build Pearl aux inclusion: {e}"))?;
-            (header, None, aux_inclusion)
-        }
-        PearlMergeHeaderSource::Gateway(config) => {
-            let job = fetch_pearl_gateway_mining_job(config, Some(&aux_commitment))
-                .map_err(|e| format!("resolve Pearl work header: {e}"))?;
-            let (header, aux_inclusion) = match job.aux_inclusion.clone() {
-                Some(aux_inclusion) => {
-                    verify_pearl_aux_inclusion(&job.header, &aux_commitment, &aux_inclusion)
-                        .map_err(|e| format!("verify Pearl Gateway aux inclusion: {e}"))?;
-                    (job.header, aux_inclusion)
-                }
-                None => {
-                    return Err(
-                        "Pearl Gateway response did not include requested aux_inclusion"
-                            .to_string(),
-                    );
-                }
-            };
-            (header, Some(job), aux_inclusion)
-        }
+    #[cfg(test)]
+    if let Some(header_template) = &pearl.static_header {
+        let (header, aux_inclusion) =
+            build_coinbase_only_pearl_aux_inclusion(header_template, &aux)
+                .map_err(|e| format!("build Pearl aux inclusion: {e}"))?;
+        return Ok(PearlMergeCandidateJob {
+            header,
+            gateway_mining_job: None,
+            aux_inclusion,
+            target: candidate.target,
+            aux,
+        });
+    }
+
+    let (header, gateway_mining_job, aux_inclusion) = {
+        let job = fetch_pearl_gateway_mining_job(&pearl.gateway, Some(&aux_commitment))
+            .map_err(|e| format!("resolve Pearl work header: {e}"))?;
+        let (header, aux_inclusion) = match job.aux_inclusion.clone() {
+            Some(aux_inclusion) => {
+                verify_pearl_aux_inclusion(&job.header, &aux_commitment, &aux_inclusion)
+                    .map_err(|e| format!("verify Pearl Gateway aux inclusion: {e}"))?;
+                (job.header, aux_inclusion)
+            }
+            None => {
+                return Err(
+                    "Pearl Gateway response did not include requested aux_inclusion".to_string(),
+                );
+            }
+        };
+        (header, Some(job), aux_inclusion)
     };
     Ok(PearlMergeCandidateJob {
         header,
@@ -1338,17 +1335,13 @@ fn submit_pearl_solution_if_gateway(
     mined: &PearlMergeMinedSubmission,
 ) -> Result<(), String> {
     #[cfg(test)]
-    let gateway = match &pearl_cfg.header_source {
-        PearlMergeHeaderSource::Gateway(gateway) => gateway,
-        PearlMergeHeaderSource::Static(_) => {
-            debug!(
-                "Pearl target hit with static Pearl header source; no Gateway submission configured"
-            );
-            return Ok(());
-        }
-    };
-    #[cfg(not(test))]
-    let PearlMergeHeaderSource::Gateway(gateway) = &pearl_cfg.header_source;
+    if pearl_cfg.static_header.is_some() {
+        debug!(
+            "Pearl target hit with static Pearl header source; no Gateway submission configured"
+        );
+        return Ok(());
+    }
+    let gateway = &pearl_cfg.gateway;
     let mined_header = mined.ticket.attempt.public_params.block_header;
     let Some(gateway_job) = mined.gateway_mining_job.as_ref() else {
         return Err(
@@ -1748,9 +1741,25 @@ mod tests {
         }
     }
 
+    fn pearl_tcp_gateway(
+        port: u16,
+        request_timeout: Duration,
+        refresh_interval: Duration,
+    ) -> PearlGatewayMinerRpcConfig {
+        PearlGatewayMinerRpcConfig {
+            transport: PearlGatewayTransport::Tcp {
+                host: "127.0.0.1".to_string(),
+                port,
+            },
+            request_timeout,
+            refresh_interval,
+        }
+    }
+
     fn pearl_submission_cfg() -> PearlMergeSubmissionConfig {
         PearlMergeSubmissionConfig {
-            header_source: PearlMergeHeaderSource::Static(pearl_test_header()),
+            gateway: PearlGatewayMinerRpcConfig::default_unix_socket(),
+            static_header: Some(pearl_test_header()),
             mining_config: pearl_test_config(),
             aux_template: pearl_test_aux(),
             max_pattern_len: 16,
@@ -1777,7 +1786,7 @@ mod tests {
     }
 
     #[test]
-    fn pearl_gateway_header_source_fetches_tcp_mining_info() {
+    fn pearl_gateway_fetches_tcp_mining_info() {
         let header = pearl_test_header();
         let header_bytes = header.to_bytes();
         let target = pearl_target_decimal_for_header(&header);
@@ -1873,7 +1882,7 @@ mod tests {
     }
 
     #[test]
-    fn pearl_gateway_header_source_times_out_silent_tcp_peer() {
+    fn pearl_gateway_times_out_silent_tcp_peer() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind silent gateway fixture");
         let port = listener.local_addr().expect("silent gateway addr").port();
         let gateway = std::thread::spawn(move || {
@@ -1953,7 +1962,7 @@ mod tests {
     }
 
     #[test]
-    fn pearl_gateway_header_source_rejects_string_target() {
+    fn pearl_gateway_rejects_string_target() {
         let header = pearl_test_header();
         let encoded_header = {
             use base64::Engine as _;
@@ -2004,14 +2013,9 @@ mod tests {
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
         {
             let pearl_cfg = &mut cfg.puzzle.pearl_merge;
-            pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
-                transport: PearlGatewayTransport::Tcp {
-                    host: "127.0.0.1".to_string(),
-                    port: 9,
-                },
-                request_timeout: Duration::from_millis(1),
-                refresh_interval: Duration::from_secs(1),
-            });
+            pearl_cfg.static_header = None;
+            pearl_cfg.gateway =
+                pearl_tcp_gateway(9, Duration::from_millis(1), Duration::from_secs(1));
         }
         let pearl_cfg = cfg.puzzle.pearl_merge.clone();
 
@@ -2333,15 +2337,9 @@ mod tests {
         });
 
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
-        cfg.puzzle.pearl_merge.header_source =
-            PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
-                transport: PearlGatewayTransport::Tcp {
-                    host: "127.0.0.1".to_string(),
-                    port,
-                },
-                request_timeout: Duration::from_secs(2),
-                refresh_interval: Duration::from_secs(1),
-            });
+        cfg.puzzle.pearl_merge.static_header = None;
+        cfg.puzzle.pearl_merge.gateway =
+            pearl_tcp_gateway(port, Duration::from_secs(2), Duration::from_secs(1));
 
         let job = derive_pearl_merge_job_inputs(&cfg, &candidate)
             .expect("derive Gateway aux-bearing Pearl job");
@@ -2391,15 +2389,9 @@ mod tests {
         });
 
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
-        cfg.puzzle.pearl_merge.header_source =
-            PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
-                transport: PearlGatewayTransport::Tcp {
-                    host: "127.0.0.1".to_string(),
-                    port,
-                },
-                request_timeout: Duration::from_secs(2),
-                refresh_interval: Duration::from_secs(1),
-            });
+        cfg.puzzle.pearl_merge.static_header = None;
+        cfg.puzzle.pearl_merge.gateway =
+            pearl_tcp_gateway(port, Duration::from_secs(2), Duration::from_secs(1));
 
         let err = match derive_pearl_merge_job_inputs(&cfg, &candidate) {
             Ok(_) => panic!("Gateway response without aux_inclusion must be rejected"),
@@ -3233,6 +3225,9 @@ mod tests {
                     }
                     Err(e) => panic!("accept Pearl gateway client: {e}"),
                 };
+                stream
+                    .set_nonblocking(false)
+                    .expect("set Pearl gateway stream blocking");
                 let mut request_line = String::new();
                 {
                     let mut reader =
@@ -3273,14 +3268,12 @@ mod tests {
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
         let pearl_cfg = &mut cfg.puzzle.pearl_merge;
-        pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
-            transport: PearlGatewayTransport::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: gateway_port,
-            },
-            request_timeout: Duration::from_millis(200),
-            refresh_interval: Duration::from_millis(100),
-        });
+        pearl_cfg.static_header = None;
+        pearl_cfg.gateway = pearl_tcp_gateway(
+            gateway_port,
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+        );
         pearl_cfg.mine_opts = PearlMergeMineOptions {
             max_attempts: Some(0),
             ..PearlMergeMineOptions::default()
@@ -3346,6 +3339,9 @@ mod tests {
                     }
                     Err(e) => panic!("accept Pearl gateway client: {e}"),
                 };
+                stream
+                    .set_nonblocking(false)
+                    .expect("set Pearl gateway stream blocking");
                 let mut request_line = String::new();
                 {
                     let mut reader =
@@ -3386,14 +3382,12 @@ mod tests {
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
         let pearl_cfg = &mut cfg.puzzle.pearl_merge;
-        pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
-            transport: PearlGatewayTransport::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: gateway_port,
-            },
-            request_timeout: Duration::from_millis(200),
-            refresh_interval: Duration::from_millis(100),
-        });
+        pearl_cfg.static_header = None;
+        pearl_cfg.gateway = pearl_tcp_gateway(
+            gateway_port,
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+        );
         pearl_cfg.mine_opts = PearlMergeMineOptions {
             max_attempts: Some(1),
             ..PearlMergeMineOptions::default()
@@ -3473,6 +3467,9 @@ mod tests {
                     }
                     Err(e) => panic!("accept Pearl gateway client: {e}"),
                 };
+                stream
+                    .set_nonblocking(false)
+                    .expect("set Pearl gateway stream blocking");
                 let mut request_line = String::new();
                 {
                     let mut reader =
@@ -3538,14 +3535,12 @@ mod tests {
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
         let pearl_cfg = &mut cfg.puzzle.pearl_merge;
-        pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
-            transport: PearlGatewayTransport::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: gateway_port,
-            },
-            request_timeout: Duration::from_millis(200),
-            refresh_interval: Duration::from_millis(100),
-        });
+        pearl_cfg.static_header = None;
+        pearl_cfg.gateway = pearl_tcp_gateway(
+            gateway_port,
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+        );
         pearl_cfg.mine_opts = PearlMergeMineOptions {
             max_attempts: Some(1),
             ..PearlMergeMineOptions::default()
@@ -3610,6 +3605,9 @@ mod tests {
                     }
                     Err(e) => panic!("accept Pearl gateway client: {e}"),
                 };
+                stream
+                    .set_nonblocking(false)
+                    .expect("set Pearl gateway stream blocking");
                 let mut request_line = String::new();
                 {
                     let mut reader =
@@ -3662,14 +3660,12 @@ mod tests {
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
         let pearl_cfg = &mut cfg.puzzle.pearl_merge;
-        pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
-            transport: PearlGatewayTransport::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: gateway_port,
-            },
-            request_timeout: Duration::from_millis(200),
-            refresh_interval: Duration::from_millis(100),
-        });
+        pearl_cfg.static_header = None;
+        pearl_cfg.gateway = pearl_tcp_gateway(
+            gateway_port,
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+        );
         pearl_cfg.mine_opts = PearlMergeMineOptions {
             max_attempts: Some(1),
             ..PearlMergeMineOptions::default()
@@ -3727,6 +3723,9 @@ mod tests {
                     }
                     Err(e) => panic!("accept Pearl gateway client: {e}"),
                 };
+                stream
+                    .set_nonblocking(false)
+                    .expect("set Pearl gateway stream blocking");
                 let mut request_line = String::new();
                 {
                     let mut reader =
@@ -3784,14 +3783,12 @@ mod tests {
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
         let pearl_cfg = &mut cfg.puzzle.pearl_merge;
-        pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
-            transport: PearlGatewayTransport::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: gateway_port,
-            },
-            request_timeout: Duration::from_millis(200),
-            refresh_interval: Duration::from_millis(100),
-        });
+        pearl_cfg.static_header = None;
+        pearl_cfg.gateway = pearl_tcp_gateway(
+            gateway_port,
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+        );
         pearl_cfg.mine_opts = PearlMergeMineOptions {
             max_attempts: Some(1),
             ..PearlMergeMineOptions::default()

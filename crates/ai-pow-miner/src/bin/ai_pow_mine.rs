@@ -47,7 +47,7 @@ use ai_pow::pearl_compat::{
 use ai_pow_miner::pearl_mining::PearlMergeMineOptions;
 use ai_pow_miner::run::{
     default_v0_configs, run, AiPuzzleInputs, MinerConfig, MinerError, PearlGatewayMinerRpcConfig,
-    PearlGatewayTransport, PearlMergeHeaderSource, PearlMergeSubmissionConfig,
+    PearlGatewayTransport, PearlMergeSubmissionConfig,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
@@ -356,11 +356,11 @@ fn build_pearl_merge_submission_config(
     if refresh_interval.is_zero() {
         bail!("--pearl-gateway-refresh-ms must be greater than zero");
     }
-    let header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+    let gateway = PearlGatewayMinerRpcConfig {
         transport: resolve_pearl_gateway_transport(args)?,
         request_timeout,
         refresh_interval,
-    });
+    };
     let aux_template = PearlNockchainAux {
         nockchain_chain_id: args.pearl_nockchain_chain_id.as_bytes().to_vec(),
         nock_block_commitment: [0u8; 32],
@@ -376,7 +376,7 @@ fn build_pearl_merge_submission_config(
     mine_opts.max_attempts = args.pearl_max_attempts;
 
     Ok(PearlMergeSubmissionConfig::new_recursive(
-        header_source,
+        gateway,
         mining_config,
         aux_template,
         args.pearl_max_pattern_len,
@@ -494,19 +494,18 @@ mod tests {
         assert_eq!(puzzle.a.as_slice(), expected_a.as_slice());
         assert_eq!(puzzle.b.as_slice(), expected_b.as_slice());
         let pearl = &puzzle.pearl_merge;
-        let PearlMergeHeaderSource::Gateway(cfg) = &pearl.header_source;
         assert_eq!(
-            cfg.transport,
+            pearl.gateway.transport,
             PearlGatewayTransport::UnixSocket {
                 path: "/tmp/pearlgw.sock".to_string()
             }
         );
         assert_eq!(
-            cfg.request_timeout,
+            pearl.gateway.request_timeout,
             Duration::from_millis(DEFAULT_PEARL_GATEWAY_TIMEOUT_MS)
         );
         assert_eq!(
-            cfg.refresh_interval,
+            pearl.gateway.refresh_interval,
             Duration::from_millis(DEFAULT_PEARL_GATEWAY_REFRESH_MS)
         );
     }
@@ -553,16 +552,15 @@ mod tests {
 
         let puzzle = build_puzzle_inputs(&args).expect("configured Pearl TCP gateway config");
         let pearl = &puzzle.pearl_merge;
-        let PearlMergeHeaderSource::Gateway(cfg) = &pearl.header_source;
         assert_eq!(
-            cfg.transport,
+            pearl.gateway.transport,
             PearlGatewayTransport::Tcp {
                 host: "127.0.0.1".to_string(),
                 port: 8337
             }
         );
-        assert_eq!(cfg.request_timeout, Duration::from_millis(250));
-        assert_eq!(cfg.refresh_interval, Duration::from_millis(500));
+        assert_eq!(pearl.gateway.request_timeout, Duration::from_millis(250));
+        assert_eq!(pearl.gateway.refresh_interval, Duration::from_millis(500));
     }
 
     #[test]
@@ -708,9 +706,8 @@ mod tests {
 
         let puzzle = build_puzzle_inputs(&args).expect("pearl merge puzzle inputs");
         let pearl = &puzzle.pearl_merge;
-        let PearlMergeHeaderSource::Gateway(gateway) = &pearl.header_source;
         assert_eq!(
-            gateway.transport,
+            pearl.gateway.transport,
             PearlGatewayTransport::Tcp {
                 host: "127.0.0.1".to_string(),
                 port: 8337
