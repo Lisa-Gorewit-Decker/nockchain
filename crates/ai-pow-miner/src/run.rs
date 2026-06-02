@@ -71,6 +71,7 @@ use crate::wire::AiPowMinerWire;
 use crate::{DifficultyTarget, MiningCancel};
 
 const MAX_CHAIN_TARGET_U32_LIMBS: usize = 10;
+const AI_POW_MINE_CANDIDATE_VERSION: u64 = 3;
 
 pub type AiPowPearlMergeCertificateBuilder = dyn Fn(&PearlMergeTicketAttempt) -> Result<PearlMergeCertificateProof, AiPowCertificateBuildError>
     + Send
@@ -557,6 +558,24 @@ fn derive_job_inputs(candidate: &MiningCandidate) -> Result<(DifficultyTarget, [
     Ok((target, nck))
 }
 
+fn expect_ai_pow_candidate_version(candidate: &MiningCandidate) -> Result<(), String> {
+    let space = candidate.version.noun_space();
+    let version = unsafe { *candidate.version.root() }
+        .in_space(&space)
+        .as_atom()
+        .map_err(|_| "AI-PoW mining candidate version must be an atom".to_string())?
+        .as_u64()
+        .map_err(|_| "AI-PoW mining candidate version must fit in u64".to_string())?;
+
+    if version != AI_POW_MINE_CANDIDATE_VERSION {
+        return Err(format!(
+            "AI-PoW miner expected %mine-ai version %{AI_POW_MINE_CANDIDATE_VERSION}, got %{version}"
+        ));
+    }
+
+    Ok(())
+}
+
 struct PearlMergeCandidateJob {
     header: PearlIncompleteBlockHeader,
     aux_inclusion: PearlAuxInclusionProof,
@@ -573,6 +592,7 @@ fn derive_pearl_merge_job_inputs(
     cfg: &MinerConfig,
     candidate: &MiningCandidate,
 ) -> Result<PearlMergeCandidateJob, String> {
+    expect_ai_pow_candidate_version(candidate)?;
     let (target, nck_commitment) = derive_job_inputs(candidate)?;
     let pearl = cfg
         .puzzle
@@ -1016,7 +1036,7 @@ mod tests {
         ) {
             let mut slab = NounSlab::new();
             let head = D(tas!(b"mine-ai"));
-            let version = D(0);
+            let version = D(AI_POW_MINE_CANDIDATE_VERSION);
             let commit_source = synth_block_commitment_slab(commitment_seed);
             let commit_space = commit_source.noun_space();
             let commit = slab.copy_into(unsafe { *commit_source.root() }, &commit_space);
@@ -1209,7 +1229,7 @@ mod tests {
         commitment_seed: u64,
     ) -> MiningCandidate {
         let mut version = NounSlab::new();
-        version.set_root(D(0));
+        version.set_root(D(AI_POW_MINE_CANDIDATE_VERSION));
         let block_header = synth_block_commitment_slab(commitment_seed);
         MiningCandidate {
             version,
@@ -1221,6 +1241,19 @@ mod tests {
 
     fn candidate_for_target(target: NounSlab) -> MiningCandidate {
         candidate_for_target_and_commitment(target, 0xCAFE)
+    }
+
+    fn candidate_with_version(
+        version: NounSlab,
+        target: NounSlab,
+        commitment_seed: u64,
+    ) -> MiningCandidate {
+        MiningCandidate {
+            version,
+            block_header: synth_block_commitment_slab(commitment_seed),
+            target,
+            pow_len: 64,
+        }
     }
 
     fn expected_aux_commitment_bridge(candidate: &MiningCandidate) -> [u8; 32] {
@@ -1287,6 +1320,37 @@ mod tests {
                 .is_err(),
             "aux inclusion must bind the candidate-derived Nockchain block commitment"
         );
+    }
+
+    #[test]
+    fn derive_pearl_merge_job_inputs_rejects_non_ai_candidate_version() {
+        let cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let mut version = NounSlab::new();
+        version.set_root(D(0));
+        let candidate =
+            candidate_with_version(version, bignum_target_slab(&[u64::from(u32::MAX)]), 0xA100);
+
+        let err = match derive_pearl_merge_job_inputs(&cfg, &candidate) {
+            Ok(_) => panic!("AI miner must reject non-%3 mine-ai candidates"),
+            Err(err) => err,
+        };
+        assert!(err.contains("%3"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn derive_pearl_merge_job_inputs_rejects_malformed_candidate_version() {
+        let cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let mut version = NounSlab::new();
+        let pair = T(&mut version, &[D(3), D(0)]);
+        version.set_root(pair);
+        let candidate =
+            candidate_with_version(version, bignum_target_slab(&[u64::from(u32::MAX)]), 0xA101);
+
+        let err = match derive_pearl_merge_job_inputs(&cfg, &candidate) {
+            Ok(_) => panic!("AI miner must reject non-atom mine-ai candidate versions"),
+            Err(err) => err,
+        };
+        assert!(err.contains("version"), "unexpected error: {err}");
     }
 
     #[test]
