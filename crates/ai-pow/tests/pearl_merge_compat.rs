@@ -1932,6 +1932,13 @@ fn pearl_merge_public_statement_bytes_reject_malformed_envelopes() {
         PearlMergePublicStatement::from_bytes(&bad_aux),
         Err(PearlCompatError::BadNockchainAuxMagic(*b"XPA1"))
     );
+
+    let mut malformed_aux_statement = statement;
+    malformed_aux_statement.aux_bytes[0] = b'X';
+    assert_eq!(
+        malformed_aux_statement.to_bytes(),
+        Err(PearlCompatError::BadNockchainAuxMagic(*b"XPA1"))
+    );
 }
 
 #[test]
