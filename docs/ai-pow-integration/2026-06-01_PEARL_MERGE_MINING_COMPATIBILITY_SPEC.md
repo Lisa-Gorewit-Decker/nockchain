@@ -148,11 +148,13 @@ Rust miner default policy for this milestone:
   generic Pearl-side `coinbase_aux_flags`, encoded as standard base64 of
   `NOCKCHAIN-AI-POW-AUX || aux_commitment`, plus
   `return_aux_inclusion=true`. Gateway caps decoded aux flags at 256 bytes to
-  keep miner-controlled coinbase rewriting bounded. A compatible Gateway returns an
-  `aux_inclusion` object containing standard-base64 `coinbase_tx` and a
-  standard-base64 `merkle_branch` list. The Rust miner verifies that returned
-  proof against the returned incomplete header before using the work. Hoon
-  still receives only the opaque nonce and recursive certificate.
+  keep miner-controlled coinbase rewriting bounded and caps cached derived
+  aux-bearing templates at 1024 entries per current base template. A compatible
+  Gateway returns an `aux_inclusion` object containing standard-base64
+  `coinbase_tx` and a standard-base64 `merkle_branch` list. The Rust miner
+  verifies that returned proof against the returned incomplete header before
+  using the work. Hoon still receives only the opaque nonce and recursive
+  certificate.
 - Pearl Gateway submission uses `submitPlainProof` with the Pearl wire format:
   `plain_proof` is standard base64 of Pearl's `bincode 1.3.3`
   `PlainProof`, and `mining_job` contains the base64 incomplete header bytes
