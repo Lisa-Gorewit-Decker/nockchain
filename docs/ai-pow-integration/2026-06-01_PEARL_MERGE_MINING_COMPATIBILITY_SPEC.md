@@ -172,8 +172,11 @@ Rust miner default policy for this milestone:
   plus the exact target JSON integer returned by Gateway's `getMiningInfo`.
   Miners use the adjusted Pearl target for local hit detection, but the
   `submitPlainProof` `mining_job` echoes Gateway's original job target. The
-  proof contains the two matrix Merkle proofs for `A` and `B^T`; it is not a
-  Nockchain block artifact and is never serialized into Hoon.
+  Rust client rejects Gateway work if that target is not a uint256 decimal JSON
+  integer or if it does not equal the compact target encoded by the returned
+  header's `nbits`. The proof contains the two matrix Merkle proofs for `A`
+  and `B^T`; it is not a Nockchain block artifact and is never serialized into
+  Hoon.
 - Gateway acceptance is header-template sensitive. Pearl Gateway's async
   handler compares `mining_job.incomplete_header_bytes` with its current block
   template's `serialize_without_proof_commitment()` and silently skips old or
@@ -308,16 +311,19 @@ Implemented in this branch:
 - `ai-pow-mine` no longer has a submission-mode switch. It always builds
   canonical Pearl-format-compatible Nockchain `%ai-pow` submissions. By
   default it fetches the Pearl incomplete block header from Pearl Gateway
-  miner RPC `getMiningInfo`; `--pearl-work-source manual` keeps explicit
-  header flags for tests and local development. Gateway fetches use an
-  explicit TCP connect timeout plus socket read/write timeouts so local Gateway
-  failure is a skipped candidate, not an unbounded miner stall. The miner
-  also polls Gateway while a Nockchain candidate is current and redispatches
-  the ticket loop if the Pearl header changes. The miner derives the Rust-only
-  Pearl mining config from the canonical recursive AI-PoW params. If no matrix
-  paths or custom `--synth-seed` are supplied, the CLI uses the default
-  `ai-pow-prod-v1` local smoke-profile matrices; the remaining required local
-  operator input is the mining key configuration. Once the miner builds a
+  miner RPC `getMiningInfo`. The visible operator CLI surface is intentionally
+  small: node private gRPC address, mining key configuration, unified
+  `--pearl-gateway` endpoint, and log filter. Matrix shape, synthetic-matrix,
+  manual Pearl header, Gateway timing, reconnect, and Rust-only Pearl aux
+  metadata flags remain hidden dev/compatibility controls. Gateway fetches use
+  an explicit TCP connect timeout plus socket read/write timeouts so local
+  Gateway failure is a skipped candidate, not an unbounded miner stall. The
+  miner also polls Gateway while a Nockchain candidate is current and
+  redispatches the ticket loop if the Pearl header changes. The miner derives
+  the Rust-only Pearl mining config from the canonical recursive AI-PoW params.
+  If no matrix paths or custom `--synth-seed` are supplied, the CLI uses the
+  default `ai-pow-prod-v1` local smoke-profile matrices; the remaining required
+  local operator input is the mining key configuration. Once the miner builds a
   `%ai-pow` poke for a candidate and attempts to send it to the node, it clears
   the cached candidate so later Pearl Gateway template changes cannot produce
   duplicate submissions for the same Nockchain candidate. Pearl-only Gateway
@@ -326,8 +332,9 @@ Implemented in this branch:
   Gateway submit RPC/transport failures are retried on the next refresh.
   The legacy NCMN miner and prover-only smoke CLI were removed so downstream
   callers cannot accidentally treat them as production submission APIs.
-- Miner preflight rejects configurations without Pearl submission config before
-  enabling mining. There is no mixed-mode branch in the connected run loop.
+- `AiPuzzleInputs` carries a required `PearlMergeSubmissionConfig`; the missing
+  Pearl submission configuration state is no longer representable through the
+  production miner API. There is no mixed-mode branch in the connected run loop.
 - Pearl-compatible miner preflight rejects Rust-side submission configs whose
   `common_dim`, `rank`, recursive params, or row/column patterns do not match
   the configured AI params and the current square-contiguous recursive prover

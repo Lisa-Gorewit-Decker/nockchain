@@ -46,10 +46,10 @@ use std::time::Duration;
 
 use ai_pow::params::MatmulParams;
 use ai_pow::pearl_compat::{
-    pearl_bitcoin_double_sha256_raw, validate_pearl_merge_config_for_recursive_prover,
-    verify_pearl_aux_inclusion, PearlAuxInclusionProof, PearlCompatError,
-    PearlIncompleteBlockHeader, PearlMergeTicketAttempt, PearlMiningConfig, PearlNockchainAux,
-    PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG,
+    pearl_bitcoin_double_sha256_raw, pearl_nbits_to_target_le,
+    validate_pearl_merge_config_for_recursive_prover, verify_pearl_aux_inclusion,
+    PearlAuxInclusionProof, PearlCompatError, PearlIncompleteBlockHeader, PearlMergeTicketAttempt,
+    PearlMiningConfig, PearlNockchainAux, PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG,
 };
 use ai_pow::zk_bridge::{AiPowRecursiveCertificateRun, ZkPublicCommitments};
 use ai_pow_zk::{CompositePublicInputs, ZkParams};
@@ -288,9 +288,9 @@ pub struct AiPuzzleInputs {
     /// hold a cheap clone without copying the bytes.
     pub a: Arc<Vec<i8>>,
     pub b: Arc<Vec<i8>>,
-    /// Pearl-format-compatible Nockchain submission configuration. Required:
-    /// this is the only production submission path.
-    pub pearl_merge: Option<PearlMergeSubmissionConfig>,
+    /// Pearl-format-compatible Nockchain submission configuration. This is the
+    /// only production submission path.
+    pub pearl_merge: PearlMergeSubmissionConfig,
 }
 
 impl AiPuzzleInputs {
@@ -298,12 +298,7 @@ impl AiPuzzleInputs {
     /// configured puzzle can be converted into the canonical recursive
     /// certificate accepted at the block boundary.
     pub fn validate_canonical_submission_ready(&self) -> Result<(), MinerError> {
-        let Some(pearl) = self.pearl_merge.as_ref() else {
-            return Err(MinerError::CanonicalCertificateUnavailable(
-                "Pearl-format-compatible Nockchain submission requires Pearl merge submission config"
-                    .to_string(),
-            ));
-        };
+        let pearl = &self.pearl_merge;
         validate_pearl_merge_config_for_recursive_prover(
             &pearl.mining_config,
             &self.params,
@@ -554,11 +549,7 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                                 nockchain_target_hit = mined.ticket.nockchain_target_hit,
                                 "ai-pow-miner: Pearl-compatible solution found"
                             );
-                            let Some(pearl_cfg) = cfg.puzzle.pearl_merge.as_ref() else {
-                                break InnerOutcome::Fatal(MinerError::CertificateBuild(
-                                    "Pearl merge solution found without Pearl config".to_string(),
-                                ));
-                            };
+                            let pearl_cfg = &cfg.puzzle.pearl_merge;
                             let mut pearl_submit_failed = false;
                             if mined.ticket.pearl_target_hit {
                                 if let Err(e) = submit_pearl_solution_if_gateway(&cfg, pearl_cfg, &mined) {
@@ -650,7 +641,7 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
 }
 
 fn pearl_work_refresh_interval(cfg: &MinerConfig) -> Option<Duration> {
-    let pearl = cfg.puzzle.pearl_merge.as_ref()?;
+    let pearl = &cfg.puzzle.pearl_merge;
     match &pearl.header_source {
         PearlMergeHeaderSource::Gateway(gateway) => Some(gateway.refresh_interval),
         PearlMergeHeaderSource::Static(_) => None,
@@ -811,11 +802,7 @@ fn derive_pearl_merge_job_inputs_from_nockchain(
     cfg: &MinerConfig,
     candidate: &NockchainCandidateInputs,
 ) -> Result<PearlMergeCandidateJob, String> {
-    let pearl = cfg
-        .puzzle
-        .pearl_merge
-        .as_ref()
-        .ok_or_else(|| "missing Pearl merge submission config".to_string())?;
+    let pearl = &cfg.puzzle.pearl_merge;
     let mut aux = pearl.aux_template.clone();
     aux.nock_block_commitment = candidate.nock_block_commitment;
     let aux_commitment = aux
@@ -870,6 +857,8 @@ enum PearlGatewayError {
     ResponseIdMismatch { expected: u64, actual: String },
     #[error("Pearl gateway mining job target is outside uint256")]
     TargetOverflow,
+    #[error("Pearl gateway mining job target does not match header nbits")]
+    TargetNbitsMismatch,
     #[error("Pearl gateway response line exceeded {limit} bytes")]
     ResponseTooLarge { limit: usize },
     #[error("Pearl gateway aux inclusion merkle branch digest has wrong length: got {0}")]
@@ -973,8 +962,10 @@ fn fetch_pearl_gateway_mining_job(
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.decode(job.incomplete_header_bytes)?
     };
+    let header = PearlIncompleteBlockHeader::from_bytes(&header_bytes)?;
+    validate_pearl_gateway_target_matches_header_nbits(&job.target, header.nbits)?;
     Ok(PearlGatewayResolvedMiningJob {
-        header: PearlIncompleteBlockHeader::from_bytes(&header_bytes)?,
+        header,
         target: job.target,
         aux_inclusion: job
             .aux_inclusion
@@ -1142,13 +1133,29 @@ fn validate_pearl_gateway_target_uint256(
     match target {
         serde_json::Value::Number(number) => {
             let digits = number.to_string();
-            validate_decimal_uint256(&digits)
+            parse_decimal_uint256_le(&digits).map(|_| ())
         }
         _ => Err(PearlGatewayError::TargetOverflow),
     }
 }
 
-fn validate_decimal_uint256(digits: &str) -> Result<(), PearlGatewayError> {
+fn validate_pearl_gateway_target_matches_header_nbits(
+    target: &serde_json::Value,
+    nbits: u32,
+) -> Result<(), PearlGatewayError> {
+    let serde_json::Value::Number(number) = target else {
+        return Err(PearlGatewayError::TargetOverflow);
+    };
+    let target = parse_decimal_uint256_le(&number.to_string())?;
+    let expected = pearl_nbits_to_target_le(nbits);
+    if target == expected {
+        Ok(())
+    } else {
+        Err(PearlGatewayError::TargetNbitsMismatch)
+    }
+}
+
+fn parse_decimal_uint256_le(digits: &str) -> Result<[u8; 32], PearlGatewayError> {
     let trimmed = digits.trim();
     if trimmed.is_empty() || !trimmed.bytes().all(|b| b.is_ascii_digit()) {
         return Err(PearlGatewayError::TargetOverflow);
@@ -1157,14 +1164,28 @@ fn validate_decimal_uint256(digits: &str) -> Result<(), PearlGatewayError> {
         "115792089237316195423570985008687907853269984665640564039457584007913129639935";
     let normalized = trimmed.trim_start_matches('0');
     if normalized.is_empty() {
-        return Ok(());
+        return Ok([0u8; 32]);
     }
     if normalized.len() > MAX_UINT256_DECIMAL.len()
         || (normalized.len() == MAX_UINT256_DECIMAL.len() && normalized > MAX_UINT256_DECIMAL)
     {
         return Err(PearlGatewayError::TargetOverflow);
     }
-    Ok(())
+
+    let mut out = [0u8; 32];
+    for digit in normalized.bytes() {
+        let digit = digit - b'0';
+        let mut carry = u16::from(digit);
+        for byte in &mut out {
+            let v = u16::from(*byte) * 10 + carry;
+            *byte = v as u8;
+            carry = v >> 8;
+        }
+        if carry != 0 {
+            return Err(PearlGatewayError::TargetOverflow);
+        }
+    }
+    Ok(out)
 }
 
 fn build_coinbase_only_pearl_aux_inclusion(
@@ -1284,12 +1305,7 @@ fn spawn_pearl_merge_attempt(
     let params = cfg.puzzle.params;
     let a = cfg.puzzle.a.clone();
     let b = cfg.puzzle.b.clone();
-    let pearl = cfg
-        .puzzle
-        .pearl_merge
-        .as_ref()
-        .expect("Pearl merge config prechecked")
-        .clone();
+    let pearl = cfg.puzzle.pearl_merge.clone();
     tokio::task::spawn_blocking(move || {
         let job = PearlMergeMiningJob {
             header: &job_inputs.header,
@@ -1669,6 +1685,25 @@ mod tests {
         }
     }
 
+    fn pearl_target_decimal_for_header(header: &PearlIncompleteBlockHeader) -> String {
+        let mut value = pearl_nbits_to_target_le(header.nbits);
+        if value.iter().all(|&byte| byte == 0) {
+            return "0".to_string();
+        }
+
+        let mut digits = Vec::new();
+        while value.iter().any(|&byte| byte != 0) {
+            let mut rem = 0u16;
+            for byte in value.iter_mut().rev() {
+                let cur = (rem << 8) + u16::from(*byte);
+                *byte = (cur / 10) as u8;
+                rem = cur % 10;
+            }
+            digits.push((b'0' + rem as u8) as char);
+        }
+        digits.iter().rev().collect()
+    }
+
     fn pearl_test_config() -> PearlMiningConfig {
         PearlMiningConfig {
             common_dim: 1024,
@@ -1733,6 +1768,7 @@ mod tests {
     fn pearl_gateway_header_source_fetches_tcp_mining_info() {
         let header = pearl_test_header();
         let header_bytes = header.to_bytes();
+        let target = pearl_target_decimal_for_header(&header);
         let encoded_header = {
             use base64::Engine as _;
             base64::engine::general_purpose::STANDARD.encode(header_bytes)
@@ -1752,8 +1788,8 @@ mod tests {
                 serde_json::from_str(&request_line).expect("parse gateway request");
             assert_eq!(request["method"], "getMiningInfo");
             let response = format!(
-                "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":115792089237316195423570985008687907853269984665640564039457584007913129639935}}}}\n",
-                encoded_header
+                "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":{}}}}}\n",
+                encoded_header, target
             );
             std::io::Write::write_all(&mut stream, response.as_bytes())
                 .expect("write gateway response");
@@ -1889,6 +1925,22 @@ mod tests {
     }
 
     #[test]
+    fn pearl_gateway_target_must_match_header_nbits() {
+        let header = pearl_test_header();
+        let matching_target: serde_json::Value =
+            serde_json::from_str(&pearl_target_decimal_for_header(&header))
+                .expect("parse matching Pearl target");
+        validate_pearl_gateway_target_matches_header_nbits(&matching_target, header.nbits)
+            .expect("matching Gateway target and header nbits should be accepted");
+
+        let mismatched_target = serde_json::Value::from(0u64);
+        assert!(matches!(
+            validate_pearl_gateway_target_matches_header_nbits(&mismatched_target, header.nbits),
+            Err(PearlGatewayError::TargetNbitsMismatch)
+        ));
+    }
+
+    #[test]
     fn pearl_gateway_header_source_rejects_string_target() {
         let header = pearl_test_header();
         let encoded_header = {
@@ -1939,11 +1991,7 @@ mod tests {
     fn pearl_gateway_submission_rejects_header_mismatch_before_rpc() {
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
         {
-            let pearl_cfg = cfg
-                .puzzle
-                .pearl_merge
-                .as_mut()
-                .expect("test config has Pearl merge submission");
+            let pearl_cfg = &mut cfg.puzzle.pearl_merge;
             pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
                 transport: PearlGatewayTransport::Tcp {
                     host: "127.0.0.1".to_string(),
@@ -1953,12 +2001,7 @@ mod tests {
                 refresh_interval: Duration::from_secs(1),
             });
         }
-        let pearl_cfg = cfg
-            .puzzle
-            .pearl_merge
-            .as_ref()
-            .expect("test config has Pearl merge submission")
-            .clone();
+        let pearl_cfg = cfg.puzzle.pearl_merge.clone();
 
         let mut aux = pearl_test_aux();
         aux.nock_block_commitment = [0xaa; 32];
@@ -2076,7 +2119,7 @@ mod tests {
             params,
             a: Arc::new(a),
             b: Arc::new(b),
-            pearl_merge: Some(pearl_submission_cfg()),
+            pearl_merge: pearl_submission_cfg(),
         };
         MinerConfig {
             node_addr,
@@ -2235,6 +2278,7 @@ mod tests {
         merkle_root.reverse();
         let mut gateway_header = pearl_test_header();
         gateway_header.merkle_root = merkle_root;
+        let gateway_target = pearl_target_decimal_for_header(&gateway_header);
 
         let encoded_header = {
             use base64::Engine as _;
@@ -2273,26 +2317,23 @@ mod tests {
             );
             assert_eq!(request["params"]["return_aux_inclusion"], true);
             let response = format!(
-                "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":424242,\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
-                encoded_header, encoded_coinbase
+                "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":{},\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
+                encoded_header, gateway_target, encoded_coinbase
             );
             std::io::Write::write_all(&mut stream, response.as_bytes())
                 .expect("write gateway response");
         });
 
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
-        cfg.puzzle
-            .pearl_merge
-            .as_mut()
-            .expect("test config has Pearl merge submission")
-            .header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
-            transport: PearlGatewayTransport::Tcp {
-                host: "127.0.0.1".to_string(),
-                port,
-            },
-            request_timeout: Duration::from_secs(2),
-            refresh_interval: Duration::from_secs(1),
-        });
+        cfg.puzzle.pearl_merge.header_source =
+            PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+                transport: PearlGatewayTransport::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port,
+                },
+                request_timeout: Duration::from_secs(2),
+                refresh_interval: Duration::from_secs(1),
+            });
 
         let job = derive_pearl_merge_job_inputs(&cfg, &candidate)
             .expect("derive Gateway aux-bearing Pearl job");
@@ -2312,9 +2353,11 @@ mod tests {
     fn derive_pearl_merge_job_inputs_rejects_gateway_missing_aux_inclusion() {
         let candidate =
             candidate_for_target_and_commitment(bignum_target_slab(&[u64::from(u32::MAX)]), 0xD0A2);
+        let header = pearl_test_header();
+        let target = pearl_target_decimal_for_header(&header);
         let encoded_header = {
             use base64::Engine as _;
-            base64::engine::general_purpose::STANDARD.encode(pearl_test_header().to_bytes())
+            base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
         };
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind gateway fixture");
         let port = listener.local_addr().expect("gateway fixture addr").port();
@@ -2332,26 +2375,23 @@ mod tests {
             assert_eq!(request["method"], "getMiningInfo");
             assert_eq!(request["params"]["return_aux_inclusion"], true);
             let response = format!(
-                "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":424242}}}}\n",
-                encoded_header
+                "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":{}}}}}\n",
+                encoded_header, target
             );
             std::io::Write::write_all(&mut stream, response.as_bytes())
                 .expect("write gateway response");
         });
 
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
-        cfg.puzzle
-            .pearl_merge
-            .as_mut()
-            .expect("test config has Pearl merge submission")
-            .header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
-            transport: PearlGatewayTransport::Tcp {
-                host: "127.0.0.1".to_string(),
-                port,
-            },
-            request_timeout: Duration::from_secs(2),
-            refresh_interval: Duration::from_secs(1),
-        });
+        cfg.puzzle.pearl_merge.header_source =
+            PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
+                transport: PearlGatewayTransport::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port,
+                },
+                request_timeout: Duration::from_secs(2),
+                refresh_interval: Duration::from_secs(1),
+            });
 
         let err = match derive_pearl_merge_job_inputs(&cfg, &candidate) {
             Ok(_) => panic!("Gateway response without aux_inclusion must be rejected"),
@@ -2473,27 +2513,11 @@ mod tests {
     }
 
     #[test]
-    fn production_preflight_rejects_missing_pearl_merge_submission_config() {
-        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
-        cfg.puzzle.pearl_merge = None;
-
-        let err = cfg
-            .puzzle
-            .validate_canonical_submission_ready()
-            .expect_err("node miner must not mine without Pearl merge submission config");
-        assert!(
-            err.to_string()
-                .contains("requires Pearl merge submission config"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
     fn production_preflight_rejects_pearl_merge_config_param_mismatch() {
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
         let mut pearl = pearl_submission_cfg();
         pearl.mining_config.rank = 32;
-        cfg.puzzle.pearl_merge = Some(pearl);
+        cfg.puzzle.pearl_merge = pearl;
 
         let err = cfg
             .puzzle
@@ -2541,7 +2565,7 @@ mod tests {
         let mut pearl = pearl_submission_cfg();
         pearl.mining_config.rows_pattern =
             PearlPeriodicPattern::from_list(&[0, 1, 8, 9, 64, 65, 72, 73]).unwrap();
-        cfg.puzzle.pearl_merge = Some(pearl);
+        cfg.puzzle.pearl_merge = pearl;
 
         let err = cfg
             .puzzle
@@ -2557,11 +2581,7 @@ mod tests {
     #[test]
     fn production_preflight_rejects_noncanonical_pearl_aux_template() {
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
-        let pearl = cfg
-            .puzzle
-            .pearl_merge
-            .as_mut()
-            .expect("test config has Pearl merge submission");
+        let pearl = &mut cfg.puzzle.pearl_merge;
         pearl.aux_template.nockchain_chain_id.clear();
 
         let err = cfg
@@ -2940,7 +2960,8 @@ mod tests {
     fn pearl_ticket_loop_miss_cannot_build_ai_pow_poke() {
         let params = pearl_test_params();
         let (a, b) = synth_matrices(b"pearl-run-loop-miss-no-poke", &params);
-        let header = pearl_test_header();
+        let mut header = pearl_test_header();
+        header.nbits = 0;
         let config = pearl_test_config();
         let job = PearlMergeMiningJob {
             header: &header,
@@ -3085,11 +3106,7 @@ mod tests {
     async fn run_loop_rejects_stale_recursive_metadata_without_submitting_poke() {
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
-        let pearl_cfg = cfg
-            .puzzle
-            .pearl_merge
-            .as_mut()
-            .expect("test config has Pearl merge submission");
+        let pearl_cfg = &mut cfg.puzzle.pearl_merge;
         pearl_cfg.certificate_builder = Arc::new(|attempt: &PearlMergeTicketAttempt| {
             let params = pearl_test_params();
             let (a, b) = synth_matrices(b"pearl-node-run-submit", &params);
@@ -3140,11 +3157,7 @@ mod tests {
         let mut cfg = test_cfg(node.url());
         let builder_calls = Arc::new(AtomicU64::new(0));
         let builder_calls_for_cfg = builder_calls.clone();
-        let pearl_cfg = cfg
-            .puzzle
-            .pearl_merge
-            .as_mut()
-            .expect("test config has Pearl merge submission");
+        let pearl_cfg = &mut cfg.puzzle.pearl_merge;
         pearl_cfg.mine_opts = PearlMergeMineOptions {
             max_attempts: Some(1),
             ..PearlMergeMineOptions::default()
@@ -3237,9 +3250,10 @@ mod tests {
                     use base64::Engine as _;
                     base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
                 };
+                let target = pearl_target_decimal_for_header(&header);
                 let response = format!(
-                    "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":115792089237316195423570985008687907853269984665640564039457584007913129639935,\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
-                    encoded_header, encoded_coinbase
+                    "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":{},\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
+                    encoded_header, target, encoded_coinbase
                 );
                 std::io::Write::write_all(&mut stream, response.as_bytes())
                     .expect("write gateway response");
@@ -3250,11 +3264,7 @@ mod tests {
 
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
-        let pearl_cfg = cfg
-            .puzzle
-            .pearl_merge
-            .as_mut()
-            .expect("test config has Pearl merge submission");
+        let pearl_cfg = &mut cfg.puzzle.pearl_merge;
         pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
             transport: PearlGatewayTransport::Tcp {
                 host: "127.0.0.1".to_string(),
@@ -3353,9 +3363,10 @@ mod tests {
                     use base64::Engine as _;
                     base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
                 };
+                let target = pearl_target_decimal_for_header(&header);
                 let response = format!(
-                    "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":115792089237316195423570985008687907853269984665640564039457584007913129639935,\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
-                    encoded_header, encoded_coinbase
+                    "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":{},\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
+                    encoded_header, target, encoded_coinbase
                 );
                 std::io::Write::write_all(&mut stream, response.as_bytes())
                     .expect("write gateway response");
@@ -3366,11 +3377,7 @@ mod tests {
 
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
-        let pearl_cfg = cfg
-            .puzzle
-            .pearl_merge
-            .as_mut()
-            .expect("test config has Pearl merge submission");
+        let pearl_cfg = &mut cfg.puzzle.pearl_merge;
         pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
             transport: PearlGatewayTransport::Tcp {
                 host: "127.0.0.1".to_string(),
@@ -3478,9 +3485,10 @@ mod tests {
                             use base64::Engine as _;
                             base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
                         };
+                        let target = pearl_target_decimal_for_header(&header);
                         let response = format!(
-                            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":424242,\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
-                            encoded_header, encoded_coinbase
+                            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":{},\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
+                            encoded_header, target, encoded_coinbase
                         );
                         std::io::Write::write_all(&mut stream, response.as_bytes())
                             .expect("write gateway response");
@@ -3501,7 +3509,11 @@ mod tests {
                                 .len()
                                 > 32
                         );
-                        assert_eq!(request["params"]["mining_job"]["target"], 424242);
+                        let expected_target: serde_json::Value = serde_json::from_str(
+                            &pearl_target_decimal_for_header(&pearl_test_header()),
+                        )
+                        .expect("parse expected Pearl target");
+                        assert_eq!(request["params"]["mining_job"]["target"], expected_target);
                         let response = format!(
                             "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":\"submitted\"}}\n",
                             request["id"]
@@ -3517,11 +3529,7 @@ mod tests {
 
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
-        let pearl_cfg = cfg
-            .puzzle
-            .pearl_merge
-            .as_mut()
-            .expect("test config has Pearl merge submission");
+        let pearl_cfg = &mut cfg.puzzle.pearl_merge;
         pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
             transport: PearlGatewayTransport::Tcp {
                 host: "127.0.0.1".to_string(),
@@ -3614,9 +3622,10 @@ mod tests {
                             use base64::Engine as _;
                             base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
                         };
+                        let target = pearl_target_decimal_for_header(&header);
                         let response = format!(
-                            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":424242,\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
-                            encoded_header, encoded_coinbase
+                            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":{},\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
+                            encoded_header, target, encoded_coinbase
                         );
                         std::io::Write::write_all(&mut stream, response.as_bytes())
                             .expect("write gateway response");
@@ -3644,11 +3653,7 @@ mod tests {
 
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
-        let pearl_cfg = cfg
-            .puzzle
-            .pearl_merge
-            .as_mut()
-            .expect("test config has Pearl merge submission");
+        let pearl_cfg = &mut cfg.puzzle.pearl_merge;
         pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
             transport: PearlGatewayTransport::Tcp {
                 host: "127.0.0.1".to_string(),
@@ -3734,9 +3739,10 @@ mod tests {
                             use base64::Engine as _;
                             base64::engine::general_purpose::STANDARD.encode(header.to_bytes())
                         };
+                        let target = pearl_target_decimal_for_header(&header);
                         let response = format!(
-                            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":424242,\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
-                            encoded_header, encoded_coinbase
+                            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"incomplete_header_bytes\":\"{}\",\"target\":{},\"aux_inclusion\":{{\"coinbase_tx\":\"{}\",\"merkle_branch\":[]}}}}}}\n",
+                            encoded_header, target, encoded_coinbase
                         );
                         std::io::Write::write_all(&mut stream, response.as_bytes())
                             .expect("write gateway response");
@@ -3749,7 +3755,11 @@ mod tests {
                                 .len()
                                 > 1024
                         );
-                        assert_eq!(request["params"]["mining_job"]["target"], 424242);
+                        let expected_target: serde_json::Value = serde_json::from_str(
+                            &pearl_target_decimal_for_header(&pearl_test_header()),
+                        )
+                        .expect("parse expected Pearl target");
+                        assert_eq!(request["params"]["mining_job"]["target"], expected_target);
                         let response = format!(
                             "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":\"submitted\"}}\n",
                             request["id"]
@@ -3765,11 +3775,7 @@ mod tests {
 
         let node = MockNode::spawn().await;
         let mut cfg = test_cfg(node.url());
-        let pearl_cfg = cfg
-            .puzzle
-            .pearl_merge
-            .as_mut()
-            .expect("test config has Pearl merge submission");
+        let pearl_cfg = &mut cfg.puzzle.pearl_merge;
         pearl_cfg.header_source = PearlMergeHeaderSource::Gateway(PearlGatewayMinerRpcConfig {
             transport: PearlGatewayTransport::Tcp {
                 host: "127.0.0.1".to_string(),

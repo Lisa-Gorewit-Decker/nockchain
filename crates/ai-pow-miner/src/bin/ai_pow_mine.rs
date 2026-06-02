@@ -100,33 +100,33 @@ struct Args {
 
     // ── AI puzzle config ───────────────────────────────────────────
     /// Matmul puzzle rows. Default is the current single-tile Layer-0 smoke profile.
-    #[arg(short = 'm', long, default_value_t = 8)]
+    #[arg(short = 'm', long, default_value_t = 8, hide = true)]
     m: u32,
     /// Matmul shared dimension. Default satisfies Pearl's public-parameter envelope with r=32.
-    #[arg(short = 'k', long, default_value_t = 1024)]
+    #[arg(short = 'k', long, default_value_t = 1024, hide = true)]
     k: u32,
     /// Matmul output columns. Default is one tile for local recursive-proof smoke runs.
-    #[arg(short = 'n', long, default_value_t = 8)]
+    #[arg(short = 'n', long, default_value_t = 8, hide = true)]
     n: u32,
-    #[arg(long, default_value_t = 32)]
+    #[arg(long, default_value_t = 32, hide = true)]
     noise_rank: u32,
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 8, hide = true)]
     tile: u32,
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 1, hide = true)]
     spot_checks: u32,
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 0, hide = true)]
     difficulty_bits: u32,
 
     /// Path to raw i8 matrix A (length m·k). Mutually exclusive with --synth-seed.
-    #[arg(long, value_name = "PATH", conflicts_with = "synth_seed")]
+    #[arg(long, value_name = "PATH", conflicts_with = "synth_seed", hide = true)]
     a: Option<PathBuf>,
     /// Path to raw i8 matrix B (length k·n).
-    #[arg(long, value_name = "PATH", conflicts_with = "synth_seed")]
+    #[arg(long, value_name = "PATH", conflicts_with = "synth_seed", hide = true)]
     b: Option<PathBuf>,
     /// Synthesize A + B deterministically from this seed string. If no matrix
     /// input is supplied, defaults to the local smoke-profile seed
     /// `ai-pow-prod-v1`.
-    #[arg(long)]
+    #[arg(long, hide = true)]
     synth_seed: Option<String>,
 
     // ── Pearl-compatible Rust-only transcript config ───────────────
@@ -156,11 +156,11 @@ struct Args {
     pearl_gateway_port: Option<u16>,
 
     /// Pearl Gateway request timeout in milliseconds.
-    #[arg(long, default_value_t = DEFAULT_PEARL_GATEWAY_TIMEOUT_MS)]
+    #[arg(long, default_value_t = DEFAULT_PEARL_GATEWAY_TIMEOUT_MS, hide = true)]
     pearl_gateway_timeout_ms: u64,
 
     /// Pearl Gateway work refresh interval in milliseconds.
-    #[arg(long, default_value_t = DEFAULT_PEARL_GATEWAY_REFRESH_MS)]
+    #[arg(long, default_value_t = DEFAULT_PEARL_GATEWAY_REFRESH_MS, hide = true)]
     pearl_gateway_refresh_ms: u64,
 
     /// Manual Pearl header version.
@@ -180,15 +180,15 @@ struct Args {
     pearl_nbits: Option<String>,
 
     /// Rust-only Nockchain chain id committed into the Pearl aux payload.
-    #[arg(long, default_value = DEFAULT_PEARL_NOCKCHAIN_CHAIN_ID)]
+    #[arg(long, default_value = DEFAULT_PEARL_NOCKCHAIN_CHAIN_ID, hide = true)]
     pearl_nockchain_chain_id: String,
 
     /// Rust-only Nockchain epoch/height committed into the Pearl aux payload.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 0, hide = true)]
     pearl_nockchain_target_epoch_or_height: u64,
 
     /// Extra domain bytes committed into the Pearl aux payload.
-    #[arg(long, default_value = "")]
+    #[arg(long, default_value = "", hide = true)]
     pearl_extra_domain_data: String,
 
     /// Maximum decoded Pearl periodic-pattern list length accepted by the
@@ -203,15 +203,15 @@ struct Args {
 
     // ── reconnect tuning ───────────────────────────────────────────
     /// Initial reconnect backoff in milliseconds.
-    #[arg(long, default_value = "1000")]
+    #[arg(long, default_value = "1000", hide = true)]
     reconnect_backoff_initial_ms: u64,
 
     /// Maximum reconnect backoff in milliseconds (cap).
-    #[arg(long, default_value = "30000")]
+    #[arg(long, default_value = "30000", hide = true)]
     reconnect_backoff_max_ms: u64,
 
     /// Consecutive reconnect attempts before giving up.
-    #[arg(long, default_value = "5")]
+    #[arg(long, default_value = "5", hide = true)]
     reconnect_max_attempts: u32,
 
     /// Log filter (env-filter syntax). Override with the `RUST_LOG` env var.
@@ -349,7 +349,7 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
         params,
         a,
         b,
-        pearl_merge: Some(pearl_merge),
+        pearl_merge,
     })
 }
 
@@ -645,7 +645,7 @@ mod tests {
             ai_pow::synth::synth_matrices(DEFAULT_SYNTH_SEED.as_bytes(), &puzzle.params);
         assert_eq!(puzzle.a.as_slice(), expected_a.as_slice());
         assert_eq!(puzzle.b.as_slice(), expected_b.as_slice());
-        let pearl = puzzle.pearl_merge.as_ref().expect("pearl config");
+        let pearl = &puzzle.pearl_merge;
         match &pearl.header_source {
             PearlMergeHeaderSource::Gateway(cfg) => {
                 assert_eq!(
@@ -708,7 +708,7 @@ mod tests {
         ]);
 
         let puzzle = build_puzzle_inputs(&args).expect("configured Pearl TCP gateway config");
-        let pearl = puzzle.pearl_merge.as_ref().expect("pearl config");
+        let pearl = &puzzle.pearl_merge;
         match &pearl.header_source {
             PearlMergeHeaderSource::Gateway(cfg) => {
                 assert_eq!(
@@ -788,10 +788,17 @@ mod tests {
         let help = Args::command().render_long_help().to_string();
 
         assert!(help.contains("--pearl-gateway <ENDPOINT>"));
+        assert!(help.contains("--node-addr <NODE_ADDR>"));
+        assert!(help.contains("--mining-pkh <MINING_PKH>"));
         assert!(!help.contains("--pearl-gateway-transport"));
         assert!(!help.contains("--pearl-gateway-socket"));
         assert!(!help.contains("--pearl-prev-block"));
         assert!(!help.contains("--pearl-max-attempts"));
+        assert!(!help.contains("--noise-rank"));
+        assert!(!help.contains("--synth-seed"));
+        assert!(!help.contains("--pearl-gateway-timeout-ms"));
+        assert!(!help.contains("--pearl-nockchain-chain-id"));
+        assert!(!help.contains("--reconnect-max-attempts"));
     }
 
     #[test]
@@ -862,7 +869,7 @@ mod tests {
         ]);
 
         let puzzle = build_puzzle_inputs(&args).expect("pearl merge puzzle inputs");
-        let pearl = puzzle.pearl_merge.as_ref().expect("pearl config");
+        let pearl = &puzzle.pearl_merge;
         let PearlMergeHeaderSource::Static(header) = &pearl.header_source else {
             panic!("expected manual Pearl header source");
         };
@@ -896,7 +903,7 @@ mod tests {
         ]);
 
         let puzzle = build_puzzle_inputs(&args).expect("pearl merge puzzle inputs");
-        let pearl = puzzle.pearl_merge.as_ref().expect("pearl config");
+        let pearl = &puzzle.pearl_merge;
         let PearlMergeHeaderSource::Static(header) = &pearl.header_source else {
             panic!("expected manual Pearl header source");
         };
