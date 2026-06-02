@@ -44,7 +44,6 @@ use ai_pow::pearl_compat::{
     PearlAuxInclusionProof, PearlIncompleteBlockHeader, PearlMergeTicketAttempt, PearlMiningConfig,
     PearlNockchainAux, PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG,
 };
-use ai_pow::prover::ProverOptions;
 use ai_pow::zk_bridge::{AiPowRecursiveCertificateRun, ZkPublicCommitments};
 use ai_pow_zk::{CompositePublicInputs, ZkParams};
 use futures::StreamExt;
@@ -165,9 +164,10 @@ pub fn default_v0_configs() -> Vec<MiningKeyConfig> {
     }]
 }
 
-/// AI puzzle inputs — the local-state portion of the mining config
-/// that isn't carried in the chain's `%mine` effect (the chain only
-/// supplies header + target + pow-len).
+/// AI puzzle inputs: the Rust-owned local state required for Pearl-compatible
+/// ticket search. The chain's `%mine-ai` effect supplies the candidate block
+/// commitment, target, and pow-len; the miner combines that with these matrices
+/// and the Pearl submission config to build the shared attempt transcript.
 ///
 /// These come from operator config (CLI / config file). In a future
 /// chain-AI integration these may be derived from chain state (e.g.
@@ -175,17 +175,11 @@ pub fn default_v0_configs() -> Vec<MiningKeyConfig> {
 /// swap the derivation in without changing the run loop.
 #[derive(Clone)]
 pub struct AiPuzzleInputs {
-    /// Stable puzzle identity bound into `κ` (`ai_pow::BlockContext`'s
-    /// `block_commitment` argument). Convention:
-    /// `BLAKE3("ai-pow-puzzle-id-v1" ‖ layer_id ‖ epoch_id ‖ params_tag)`.
-    pub puzzle_id: Vec<u8>,
     pub params: MatmulParams,
     /// Reference matmul inputs. `Arc` so the spawn-blocking worker can
     /// hold a cheap clone without copying the bytes.
     pub a: Arc<Vec<i8>>,
     pub b: Arc<Vec<i8>>,
-    /// Forwarded to the per-attempt prover (mostly defaults).
-    pub prover_opts: ProverOptions,
     /// Pearl-format-compatible Nockchain submission configuration. Required:
     /// this is the only production submission path.
     pub pearl_merge: Option<PearlMergeSubmissionConfig>,
@@ -278,7 +272,6 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
     cfg.puzzle.validate_canonical_submission_ready()?;
     info!(
         node = %cfg.node_addr,
-        puzzle_id_len = cfg.puzzle.puzzle_id.len(),
         params = ?cfg.puzzle.params,
         "ai-pow-miner: entering main loop"
     );
@@ -1185,11 +1178,9 @@ mod tests {
         let params = pearl_test_params();
         let (a, b) = synth_matrices(b"pearl-node-run-submit", &params);
         let puzzle = AiPuzzleInputs {
-            puzzle_id: b"ai-pow-node-run-test-pid".to_vec(),
             params,
             a: Arc::new(a),
             b: Arc::new(b),
-            prover_opts: ProverOptions::default(),
             pearl_merge: Some(pearl_submission_cfg()),
         };
         MinerConfig {

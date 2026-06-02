@@ -28,12 +28,10 @@
 //! aggregation is implemented.
 //!
 //! ## AI puzzle inputs (local config)
-//! The chain's `%mine` effect carries only the block header + target +
-//! pow-len. The AI puzzle additionally needs `puzzle_id` + matmul
-//! `params` + matrices `a` / `b`. For now these come from CLI config
-//! (operator-supplied or synth-derived); a future chain-AI integration
-//! may derive them from chain state (layer/epoch). The substrate is
-//! structured so the run loop is unchanged when that swap lands.
+//! The chain's `%mine-ai` effect carries the candidate block commitment,
+//! target, and pow-len. The miner additionally needs matmul `params`, matrices
+//! `a` / `b`, and Rust-only Pearl transcript fields. Hoon still receives only
+//! the opaque `%ai-pow` nonce plus recursive certificate.
 
 use std::fs;
 use std::path::PathBuf;
@@ -47,7 +45,6 @@ use ai_pow::pearl_compat::{
     PearlMergeTicketAttempt, PearlMiningConfig, PearlNockchainAux, PearlPeriodicPattern,
     PEARL_MINING_CONFIG_RESERVED_SIZE, PEARL_MMA_INT7XINT7_TO_INT32,
 };
-use ai_pow::prover::ProverOptions;
 use ai_pow::zk_bridge::prove_pearl_merge_recursive_certificate;
 use ai_pow_miner::pearl_mining::PearlMergeMineOptions;
 use ai_pow_miner::run::{
@@ -82,11 +79,6 @@ struct Args {
     mining_pkh_adv: Option<Vec<MiningPkhConfig>>,
 
     // ── AI puzzle config ───────────────────────────────────────────
-    /// Stable puzzle id bound into κ (32-byte hex; defaults to BLAKE3
-    /// of the matmul params if omitted).
-    #[arg(long)]
-    puzzle_id: Option<String>,
-
     /// Matmul puzzle rows. Default is the current single-tile Layer-0 smoke profile.
     #[arg(short = 'm', long, default_value_t = 8)]
     m: u32,
@@ -293,23 +285,14 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
         _ => bail!("provide either --a + --b OR --synth-seed (not both, not neither)"),
     };
 
-    let puzzle_id = match &args.puzzle_id {
-        Some(s) => parse_hex_32(s, "--puzzle-id")?.to_vec(),
-        None => blake3::hash(ai_pow::prover::params_tag(&params).as_slice())
-            .as_bytes()
-            .to_vec(),
-    };
-
     let a = Arc::new(a);
     let b = Arc::new(b);
 
     let pearl_merge = build_pearl_merge_submission_config(args, params, &a, &b)?;
     Ok(AiPuzzleInputs {
-        puzzle_id,
         params,
         a,
         b,
-        prover_opts: ProverOptions::default(),
         pearl_merge: Some(pearl_merge),
     })
 }
