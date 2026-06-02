@@ -341,6 +341,36 @@ fn pearl_aux_inclusion_rejects_malformed_segwit_flag() {
 }
 
 #[test]
+fn pearl_aux_inclusion_rejects_noncanonical_varint_lengths() {
+    let aux_commitment = [0x42; 32];
+    let script = coinbase_aux_script(&aux_commitment);
+    let mut coinbase = Vec::new();
+    coinbase.extend_from_slice(&1u32.to_le_bytes());
+    coinbase.push(1);
+    coinbase.extend_from_slice(&[0u8; 32]);
+    coinbase.extend_from_slice(&u32::MAX.to_le_bytes());
+    coinbase.push(0xfd);
+    coinbase.extend_from_slice(&(script.len() as u16).to_le_bytes());
+    coinbase.extend_from_slice(&script);
+    coinbase.extend_from_slice(&u32::MAX.to_le_bytes());
+    coinbase.push(1);
+    coinbase.extend_from_slice(&0u64.to_le_bytes());
+    coinbase.push(1);
+    coinbase.push(0x51);
+    coinbase.extend_from_slice(&0u32.to_le_bytes());
+
+    let proof = PearlAuxInclusionProof {
+        coinbase_tx: coinbase,
+        merkle_branch: vec![],
+    };
+
+    assert_eq!(
+        verify_pearl_aux_inclusion(&header(), &aux_commitment, &proof),
+        Err(PearlCompatError::PearlAuxMalformedCoinbaseTx)
+    );
+}
+
+#[test]
 fn pearl_aux_inclusion_rejects_huge_varint_lengths_without_truncation() {
     let aux_commitment = [0x42; 32];
     let mut coinbase = Vec::new();
