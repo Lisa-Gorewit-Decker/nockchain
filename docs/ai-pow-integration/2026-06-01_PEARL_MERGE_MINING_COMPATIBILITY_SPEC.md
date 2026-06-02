@@ -116,10 +116,9 @@ Rust miner default policy for this milestone:
 - `extra_domain_data` is empty for this milestone. Future replay-protection
   extensions should be constructor-owned protocol changes, not operator CLI
   knobs.
-- Matrix inputs use the fixed recursive profile. They default to deterministic
-  local smoke-profile synthesis with seed `ai-pow-prod-v1` when explicit
-  `--a + --b` files are not supplied. Explicit raw matrix paths must be
-  provided as a complete pair.
+- Matrix inputs use the fixed recursive profile and deterministic local
+  smoke-profile synthesis with seed `ai-pow-prod-v1`. Operator matrix-file
+  inputs are not part of this milestone's CLI surface.
 - Pearl work headers come from Pearl Gateway miner RPC `getMiningInfo` over
   Unix socket `/tmp/pearlgw.sock`, matching Pearl Gateway's default miner-RPC
   configuration. TCP gateway mode is available through the unified
@@ -325,9 +324,9 @@ Implemented in this branch:
   redispatches the ticket loop if the Pearl header changes. The miner derives
   the Rust-only Pearl mining config from the canonical recursive AI-PoW params.
   The Rust submission config carries a direct Pearl Gateway RPC config.
-  If no matrix paths are supplied, the CLI uses the default `ai-pow-prod-v1`
-  local smoke-profile matrices; the remaining required local operator input is
-  the mining key configuration. Once the miner builds a
+  The CLI uses the default `ai-pow-prod-v1` local smoke-profile matrices; the
+  remaining required local operator input is the mining key configuration. Once
+  the miner builds a
   `%ai-pow` poke for a candidate and attempts to send it to the node, it clears
   the cached candidate so later Pearl Gateway template changes cannot produce
   duplicate submissions for the same Nockchain candidate. Pearl-only Gateway
@@ -421,9 +420,9 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
    candidate remains current, and changed Pearl headers supersede stale ticket
    loops for that candidate. Pearl Gateway itself keys base-template freshness
    by the full incomplete header bytes, not only the previous block hash.
-8. Done for this milestone: `ai-pow-mine` defaults missing matrix input to the
-   `ai-pow-prod-v1` local smoke-profile synth seed while preserving explicit
-   complete `--a + --b` matrix input for deployments that supply real matrices.
+8. Done for this milestone: `ai-pow-mine` uses the fixed recursive profile and
+   the `ai-pow-prod-v1` local smoke-profile synth seed. Operator matrix-file
+   inputs were removed from this milestone's CLI surface.
 9. Done for this milestone: after a successful Nockchain `%ai-pow` submission,
    the run loop clears the cached candidate so Pearl Gateway refresh cannot
    redispatch solved work. Only a fresh Nockchain candidate restarts mining.

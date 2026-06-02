@@ -27,14 +27,11 @@
 //!
 //! ## AI puzzle inputs (local config)
 //! The chain's `%mine-ai` effect carries the candidate block commitment,
-//! target, and pow-len. The miner additionally needs matmul `params`, matrices
-//! `a` / `b`, and Rust-only Pearl transcript fields. If no matrix paths or
-//! seed are supplied, the CLI synthesizes the default local smoke-profile
-//! matrices from `ai-pow-prod-v1`. Hoon still receives only the opaque
-//! `%ai-pow` nonce plus recursive certificate.
+//! target, and pow-len. The miner additionally owns fixed matmul `params`,
+//! fixed local smoke-profile matrices, and Rust-only Pearl transcript fields.
+//! Hoon still receives only the opaque `%ai-pow` nonce plus recursive
+//! certificate.
 
-use std::fs;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -90,14 +87,6 @@ struct Args {
     /// Multi-recipient mining pkh configs. Each entry is `share,pkh`.
     #[arg(long, value_parser = clap::value_parser!(MiningPkhConfig), num_args = 1..)]
     mining_pkh_adv: Option<Vec<MiningPkhConfig>>,
-
-    // ── AI puzzle config ───────────────────────────────────────────
-    /// Path to raw i8 matrix A for the fixed recursive profile.
-    #[arg(long, value_name = "PATH", hide = true)]
-    a: Option<PathBuf>,
-    /// Path to raw i8 matrix B for the fixed recursive profile.
-    #[arg(long, value_name = "PATH", hide = true)]
-    b: Option<PathBuf>,
 
     /// Pearl Gateway miner RPC endpoint. Accepts `unix:/path/to.sock`, `/path/to.sock`,
     /// `tcp:host:port`, `tcp://host:port`, or `host:port`.
@@ -233,15 +222,7 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
         .map_err(|e| anyhow!("matmul params invalid: {e}"))?;
     validate_pearl_recursive_cli_params(params)?;
 
-    let (a, b) = match (&args.a, &args.b) {
-        (Some(ap), Some(bp)) => {
-            let a = load_matrix(ap, checked_matrix_len(params.m, params.k, "A")?, "A")?;
-            let b = load_matrix(bp, checked_matrix_len(params.n, params.k, "B")?, "B")?;
-            (a, b)
-        }
-        (None, None) => ai_pow::synth::synth_matrices(DEFAULT_SYNTH_SEED.as_bytes(), &params),
-        _ => bail!("provide both --a + --b, or neither for the default fixed-profile matrices"),
-    };
+    let (a, b) = ai_pow::synth::synth_matrices(DEFAULT_SYNTH_SEED.as_bytes(), &params);
 
     let a = Arc::new(a);
     let b = Arc::new(b);
@@ -391,24 +372,6 @@ fn contiguous_pearl_pattern(tile: u32) -> Result<PearlPeriodicPattern> {
         .map_err(|e| anyhow!("contiguous Pearl pattern for tile {tile} is invalid: {e}"))
 }
 
-fn checked_matrix_len(rows: u32, cols: u32, label: &str) -> Result<usize> {
-    let len = u64::from(rows)
-        .checked_mul(u64::from(cols))
-        .ok_or_else(|| anyhow!("{label}: matrix length overflows u64"))?;
-    usize::try_from(len).map_err(|_| anyhow!("{label}: matrix length does not fit usize"))
-}
-
-fn load_matrix(path: &PathBuf, expected_len: usize, label: &str) -> Result<Vec<i8>> {
-    let bytes = fs::read(path).with_context(|| format!("{label}: read {}", path.display()))?;
-    if bytes.len() != expected_len {
-        bail!(
-            "{label}: expected {expected_len} bytes (i8 entries), got {}",
-            bytes.len()
-        );
-    }
-    Ok(bytes.into_iter().map(|b| b as i8).collect())
-}
-
 #[cfg(test)]
 mod tests {
     use ai_pow::pearl_compat::evaluate_pearl_merge_ticket_attempt;
@@ -442,37 +405,6 @@ mod tests {
         assert_eq!(
             pearl.gateway().refresh_interval,
             Duration::from_millis(DEFAULT_PEARL_GATEWAY_REFRESH_MS)
-        );
-    }
-
-    #[test]
-    fn cli_rejects_partial_explicit_matrix_input() {
-        let only_a = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--a",
-            "/does/not/matter/a.bin",
-        ]);
-        let err = match build_puzzle_inputs(&only_a) {
-            Ok(_) => panic!("partial explicit matrix input must fail"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string().contains("both --a + --b"),
-            "unexpected error: {err:#}"
-        );
-
-        let only_b = Args::parse_from([
-            "ai-pow-mine", "--mining-pkh",
-            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--b",
-            "/does/not/matter/b.bin",
-        ]);
-        let err = match build_puzzle_inputs(&only_b) {
-            Ok(_) => panic!("partial explicit matrix input must fail"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string().contains("both --a + --b"),
-            "unexpected error: {err:#}"
         );
     }
 
@@ -707,8 +639,8 @@ mod tests {
         for removed_flag in [
             "--pearl-nockchain-chain-id", "--pearl-nockchain-target-epoch-or-height",
             "--pearl-extra-domain-data", "--pearl-max-pattern-len", "--pearl-max-attempts",
-            "--synth-seed", "--m", "--k", "--n", "--noise-rank", "--tile", "--spot-checks",
-            "--difficulty-bits",
+            "--synth-seed", "--a", "--b", "--m", "--k", "--n", "--noise-rank", "--tile",
+            "--spot-checks", "--difficulty-bits",
         ] {
             let err = Args::try_parse_from([
                 "ai-pow-mine", "--mining-pkh",
