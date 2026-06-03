@@ -12,11 +12,11 @@
 //!
 //! Per row, the chip consumes (from `composite_layout`):
 //!
-//!   * `MAT_UNPACK[0..8]`      — 8 × i7 matrix bytes (range-checked by IRange7P1).
-//!   * `UINT8_DATA[0..8]`      — 8 × u8 message-input bytes (range-checked by URange8).
+//!   * `MAT_UNPACK[0..64]`     — 64 × i8 matrix bytes (range-checked by IRange8).
+//!   * `UINT8_DATA[0..64]`     — 64 × u8 message-input bytes (range-checked by URange8).
 //!   * `NOISE_PACKED_PREP`     — preprocessed noise, packed via base 129.
-//!   * `NOISE_UNPACK[0..8]`    — 8 × i7 noise bytes (range-checked by IRange7P1).
-//!   * `NOISED_PACKED[0..2]`   — 2 cells holding (matrix + noise) packed 4 i8/Goldilocks via base 256.
+//!   * `NOISE_UNPACK[0..64]`   — 64 × i7+1 noise bytes (range-checked by IRange7P1).
+//!   * `NOISED_PACKED[0..16]`  — 16 cells holding (matrix + noise) packed 4 i8/Goldilocks via base 256.
 //!
 //! ## Property enforced
 //!
@@ -26,7 +26,7 @@
 //! ```text
 //!   NOISE_PACKED_PREP == polyval(NOISE_UNPACK, base=NOISE_PACKING_BASE=129)
 //!
-//!   for i in 0..NOISED_PACKED_LEN (= 2):
+//!   for i in 0..NOISED_PACKED_LEN (= 16):
 //!     NOISED_PACKED[i] == polyval(MAT_UNPACK[i*4..(i+1)*4], base=256)
 //!                       + polyval(NOISE_UNPACK[i*4..(i+1)*4], base=256)
 //! ```
@@ -51,9 +51,8 @@ use p3_air::{AirBuilder, WindowAccess};
 use p3_field::PrimeCharacteristicRing;
 
 use crate::composite_layout::{
-    BYTES_PER_GOLDILOCKS, MAT_UNPACK_LEN, MAT_UNPACK_START, MAT_UNPACK_WIN, NOISED_PACKED_LEN,
-    NOISED_PACKED_START, NOISED_PACKED_WIN, NOISE_PACKED_PREP, NOISE_PACKED_PREP_LEN,
-    NOISE_UNPACK_LEN, NOISE_UNPACK_START, NOISE_UNPACK_WIN,
+    BYTES_PER_GOLDILOCKS, MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_LEN, NOISED_PACKED_START,
+    NOISE_PACKED_PREP, NOISE_PACKED_PREP_LEN, NOISE_UNPACK_LEN, NOISE_UNPACK_START,
 };
 
 /// Noise-element range: `[-64, 64]` has 129 values, so the packing
@@ -133,23 +132,22 @@ impl InputChip {
         }
     }
 
-    /// Fill the input chip's trace cells for one matrix row of
-    /// `BYTES_PER_GOLDILOCKS * NOISED_PACKED_LEN = 8` bytes.
+    /// Fill the input chip's trace cells for one legacy 8-byte
+    /// matrix row. cx.2 rows that carry a full 64-byte block are
+    /// filled by the composite trace co-location path; this helper
+    /// keeps tests and pure store rows on the first sub-slice and
+    /// leaves the remaining sub-slices at zero.
     /// `mat_bytes` and `noise_bytes` are i7 values in `[-64, 64]`.
     pub fn fill_row(&self, mat_bytes: &[i8; 8], noise_bytes: &[i8; 8], row: &mut [crate::Val]) {
         use p3_field::integers::QuotientMap;
 
-        // MAT_UNPACK: the 8-byte window (cx.2/X1 widened the
-        // block to 64; fill_row writes the window — the added
-        // cols are 0 until co-location, zero-blast).
-        for i in 0..MAT_UNPACK_WIN {
+        // MAT_UNPACK: legacy helpers write one 8-byte sub-slice.
+        for i in 0..mat_bytes.len() {
             row[MAT_UNPACK_START + i] =
                 <crate::Val as QuotientMap<i32>>::from_int(mat_bytes[i] as i32);
         }
-        // NOISE_UNPACK: 8 i7 values (the active window; cx.2/X1
-        // widened the block to 64 but fill_row writes the 8-byte
-        // window — zero-blast until activation).
-        for i in 0..NOISE_UNPACK_WIN {
+        // NOISE_UNPACK: legacy helpers write one 8-byte sub-slice.
+        for i in 0..noise_bytes.len() {
             row[NOISE_UNPACK_START + i] =
                 <crate::Val as QuotientMap<i32>>::from_int(noise_bytes[i] as i32);
         }
@@ -164,7 +162,7 @@ impl InputChip {
 
         // NOISED_PACKED: per-chunk sum of polyval(mat_chunk, 256) +
         // polyval(noise_chunk, 256).
-        for i in 0..NOISED_PACKED_WIN {
+        for i in 0..(mat_bytes.len() / BYTES_PER_GOLDILOCKS) {
             let mut mat_packed: i64 = 0;
             let mut noise_p: i64 = 0;
             let mut p256: i64 = 1;

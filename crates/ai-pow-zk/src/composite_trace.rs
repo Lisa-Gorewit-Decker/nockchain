@@ -63,17 +63,17 @@ use crate::chips::jackpot::compute::{apply_jackpot_step, bit_decompose_u32, one_
 use crate::chips::matmul::compute::{compute_row, CUMSUM_LEN};
 use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange8Chip};
 use crate::composite_layout::{
-    AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_NOISED_LEN, A_NOISED_START, A_NOISED_UNPACK_LEN,
-    A_NOISED_UNPACK_START, BIT_REG_START, BLAKE3_CV_START, BLAKE3_MSG_START, BLAKE3_ROUND_START,
-    B_ID, B_NOISED_LEN, B_NOISED_START, B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START, CONTROL_PREP,
-    CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START, CV_OR_TWEAK_PREP, CV_OUT_FREQ, CV_OUT_LEN,
-    CV_OUT_START, FOLD_IS_FOLD, FOLD_MCUR_BITS_START, FOLD_SLOT_SEL_START, FOLD_STATE_START,
-    FOLD_STRIPE_SEL_START, FOLD_XOR_OUT, FOLD_XSTEP, FOLD_XSTEP_BITS_START, I8U8_FREQ,
-    IRANGE7P1_FREQ, IRANGE8_FREQ, IS_CV_IN, IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM,
-    JACKPOT_MSG_START, JACKPOT_SIZE, JACKPOT_SLOT_SEL_START, JACKPOT_X_BITS_START, MAT_FREQ,
-    MAT_ID, MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START, MAT_UNPACK_START, MAT_UNPACK_WIN,
-    NOISED_PACKED_START, NOISE_UNPACK_START, NOISE_UNPACK_WIN, STARK_ROW_IDX, STRIPE_MAX,
-    SX_IN_BITS_START, SX_IN_START, SX_IS_ACTIVE, SX_LANE_SEL_START, SX_NEW_SEL,
+    AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_ID_LEN, A_NOISED_LEN, A_NOISED_START,
+    A_NOISED_UNPACK_LEN, A_NOISED_UNPACK_START, BIT_REG_START, BLAKE3_CV_START, BLAKE3_MSG_START,
+    BLAKE3_ROUND_START, B_ID, B_ID_LEN, B_NOISED_LEN, B_NOISED_START, B_NOISED_UNPACK_LEN,
+    B_NOISED_UNPACK_START, CONTROL_PREP, CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START,
+    CV_OR_TWEAK_PREP, CV_OUT_FREQ, CV_OUT_LEN, CV_OUT_START, FOLD_IS_FOLD, FOLD_MCUR_BITS_START,
+    FOLD_SLOT_SEL_START, FOLD_STATE_START, FOLD_STRIPE_SEL_START, FOLD_XOR_OUT, FOLD_XSTEP,
+    FOLD_XSTEP_BITS_START, I8U8_FREQ, IRANGE7P1_FREQ, IRANGE8_FREQ, IS_CV_IN, IS_MSG_MAT,
+    IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, JACKPOT_MSG_START, JACKPOT_SIZE, JACKPOT_SLOT_SEL_START,
+    JACKPOT_X_BITS_START, MAT_FREQ, MAT_ID, MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START, MAT_UNPACK_START,
+    MAT_UNPACK_WIN, NOISED_PACKED_START, NOISE_UNPACK_START, NOISE_UNPACK_WIN, STARK_ROW_IDX,
+    STRIPE_MAX, SX_IN_BITS_START, SX_IN_START, SX_IS_ACTIVE, SX_LANE_SEL_START, SX_NEW_SEL,
     SX_NEW_SEL_BITS_START, SX_Q_START, SX_XR_SEL_BITS_START, SX_XR_START, TILE_D, TILE_H,
     TOTAL_TRACE_WIDTH, UINT8_DATA_START, UINT8_DATA_WIN, URANGE13_FREQ, URANGE8_FREQ,
 };
@@ -109,6 +109,19 @@ pub struct NoisedChunkSrc {
     pub src: [Option<(u32, u32)>; 8],
 }
 
+/// Reserve low chunk IDs for all-zero padding rows. Real matrix
+/// producer IDs start here so `(0..8, 0, 0)` padding table entries
+/// cannot satisfy a malicious zero-substitution query.
+pub const NOISED_CHUNK_ID_BASE: u64 = 8;
+
+pub fn noised_chunk_id(id_base: u64, k: usize, src: &[Option<(u32, u32)>; 8]) -> u64 {
+    if let Some((lane, l)) = src.iter().flatten().next().copied() {
+        id_base + (((lane as usize) * k + l as usize) / 8) as u64
+    } else {
+        0
+    }
+}
+
 /// A composite trace ready for proving by
 /// [`crate::composite_full_air::CompositeFullAir`].
 #[derive(Clone, Debug)]
@@ -119,6 +132,31 @@ pub struct CompositeTrace {
 }
 
 impl CompositeTrace {
+    fn pack_ab_id(a_id: u64, b_id: u64) -> u64 {
+        crate::composite_preprocess::pack_ab_id(a_id, b_id)
+    }
+
+    fn fill_ab_ids(row: &mut [Val], a_ids: &[u64; A_ID_LEN], b_ids: &[u64; B_ID_LEN]) {
+        use p3_field::integers::QuotientMap;
+
+        debug_assert_eq!(A_ID_LEN, 4);
+        debug_assert_eq!(B_ID_LEN, 4);
+        let ab = Self::pack_ab_id(a_ids[0], b_ids[0]);
+        row[crate::composite_layout::AB_ID_PREP] = <Val as QuotientMap<u64>>::from_int(ab);
+        let mask = (1u64 << crate::composite_layout::BITS_PER_LIMB) - 1;
+        for i in 0..AB_ID_LIMBS_LEN {
+            row[AB_ID_LIMBS_START + i] = <Val as QuotientMap<u64>>::from_int(
+                (ab >> (i * crate::composite_layout::BITS_PER_LIMB)) & mask,
+            );
+        }
+        for i in 0..A_ID_LEN {
+            row[A_ID + i] = <Val as QuotientMap<u64>>::from_int(a_ids[i]);
+        }
+        for i in 0..B_ID_LEN {
+            row[B_ID + i] = <Val as QuotientMap<u64>>::from_int(b_ids[i]);
+        }
+    }
+
     /// Number of rows.
     pub fn height(&self) -> usize {
         self.matrix.values.len() / TOTAL_TRACE_WIDTH
@@ -200,6 +238,23 @@ impl CompositeTrace {
         is_update: bool,
         cumsum_old: &[i32; CUMSUM_LEN],
     ) -> [i32; CUMSUM_LEN] {
+        self.place_matmul_step_with_ids(
+            row_idx, a, b, &[0; A_ID_LEN], &[0; B_ID_LEN], is_reset, is_update, cumsum_old,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn place_matmul_step_with_ids(
+        &mut self,
+        row_idx: usize,
+        a: &[[i8; TILE_D]; TILE_H],
+        b: &[[i8; TILE_D]; TILE_H],
+        a_ids: &[u64; A_ID_LEN],
+        b_ids: &[u64; B_ID_LEN],
+        is_reset: bool,
+        is_update: bool,
+        cumsum_old: &[i32; CUMSUM_LEN],
+    ) -> [i32; CUMSUM_LEN] {
         use p3_field::integers::QuotientMap;
 
         assert!(row_idx < self.height(), "row {row_idx} out of bounds");
@@ -221,6 +276,7 @@ impl CompositeTrace {
         // MAT_ID = 0 (we're not using NOISED_PACKED RAM-lookup yet
         // — that's Phase 14b's LogUp wiring).
         ControlChip.fill_row(&selectors, 0, row);
+        Self::fill_ab_ids(row, a_ids, b_ids);
 
         // Write A / B unpack cells.
         for i in 0..TILE_H {
@@ -708,6 +764,7 @@ impl CompositeTrace {
         // for its block (SEC_4C2 §8.9). `None` ⇒ pre-cx.2
         // hash-only behaviour (g=0, zero-blast).
         noise_strip: Option<&[i8]>,
+        mat_id_base: Option<u64>,
     ) -> (usize, [u32; 8]) {
         assert!(
             c0 < c1 && c1 <= num_chunks,
@@ -742,13 +799,15 @@ impl CompositeTrace {
                 true,
                 selector_idx,
                 noise_strip.map(|n| &n[0..1024]),
+                mat_id_base,
+                c0,
             );
             return (row, cv);
         }
         let mut si = 0usize;
         let root = self.fold_strip(
             &mut row, 0, num_chunks, c0, c1, strip_bytes, auth_siblings, &mut si, &key_words, true,
-            selector_idx, noise_strip,
+            selector_idx, noise_strip, mat_id_base, c0,
         );
         assert_eq!(
             si,
@@ -779,6 +838,8 @@ impl CompositeTrace {
         // `noised_packed` producer for its 64-byte block's 8
         // sub-slices (the X1 design, SEC_4C2 §8.6/§8.9).
         noise_chunk: Option<&[i8]>,
+        mat_id_base: Option<u64>,
+        strip_c0: usize,
     ) -> [u32; 8] {
         use p3_field::integers::QuotientMap;
 
@@ -873,14 +934,21 @@ impl CompositeTrace {
                     }
                 }
                 // IS_MSG_MAT (idx 10) + IS_NEW_BLAKE (idx 8) +
-                // CONTROL_PREP(msg_pair=0, MAT_ID=0). Re-fill the
+                // CONTROL_PREP(msg_pair=0, MAT_ID = first 8-byte
+                // sub-slice ID for this 64-byte block). Re-fill the
                 // control cells (disjoint from the blake3 block).
                 let mut sel = [false; 21];
                 sel[8] = true; // IS_NEW_BLAKE (preserve the blake3 selector)
                 sel[10] = true; // IS_MSG_MAT ⇒ g = 1
                 ControlChip.fill_row(
                     &sel,
-                    0,
+                    mat_id_base
+                        .map(|base_id| {
+                            base_id + ((chunk_index as usize - strip_c0) * 128 + b * 8) as u64
+                        })
+                        .unwrap_or(0)
+                        .try_into()
+                        .expect("co-located MAT_ID must fit 26 bits"),
                     &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH],
                 );
                 self.matrix.values[base + MSG_PAIR_SEL_START] =
@@ -950,6 +1018,8 @@ impl CompositeTrace {
         is_root: bool,
         selector_idx: usize,
         noise_strip: Option<&[i8]>,
+        mat_id_base: Option<u64>,
+        strip_c0: usize,
     ) -> [u32; 8] {
         if hi <= c0 || lo >= c1 {
             let s = &sibs[*si];
@@ -967,16 +1037,17 @@ impl CompositeTrace {
         if c0 <= lo && hi <= c1 {
             return self.subtree_inside(
                 row, lo, hi, c0, strip_bytes, key_words, is_root, selector_idx, noise_strip,
+                mat_id_base, strip_c0,
             );
         }
         let mid = lo + crate::blake3_tree::left_len((hi - lo) as u64) as usize;
         let l = self.fold_strip(
             row, lo, mid, c0, c1, strip_bytes, sibs, si, key_words, false, selector_idx,
-            noise_strip,
+            noise_strip, mat_id_base, strip_c0,
         );
         let r = self.fold_strip(
             row, mid, hi, c0, c1, strip_bytes, sibs, si, key_words, false, selector_idx,
-            noise_strip,
+            noise_strip, mat_id_base, strip_c0,
         );
         self.place_parent(row, &l, &r, key_words, is_root, selector_idx)
     }
@@ -995,6 +1066,8 @@ impl CompositeTrace {
         is_root: bool,
         selector_idx: usize,
         noise_strip: Option<&[i8]>,
+        mat_id_base: Option<u64>,
+        strip_c0: usize,
     ) -> [u32; 8] {
         if hi - lo == 1 {
             let off = (lo - c0) * 1024;
@@ -1008,14 +1081,18 @@ impl CompositeTrace {
                 false,
                 selector_idx,
                 noise_strip.map(|n| &n[off..off + 1024]),
+                mat_id_base,
+                strip_c0,
             );
         }
         let mid = lo + crate::blake3_tree::left_len((hi - lo) as u64) as usize;
         let l = self.subtree_inside(
             row, lo, mid, c0, strip_bytes, key_words, false, selector_idx, noise_strip,
+            mat_id_base, strip_c0,
         );
         let r = self.subtree_inside(
             row, mid, hi, c0, strip_bytes, key_words, false, selector_idx, noise_strip,
+            mat_id_base, strip_c0,
         );
         self.place_parent(row, &l, &r, key_words, is_root, selector_idx)
     }
@@ -1073,8 +1150,8 @@ impl CompositeTrace {
     ///
     /// Constraints satisfied by this write (all are existing
     /// per-row chip constraints, no new AIR work in this helper):
-    /// - URange8 on UINT8_DATA[0..8] when IS_MSG_MAT=1 (bytes ∈ [0, 256))
-    /// - IRange8 on MAT_UNPACK[0..8] (signed bytes ∈ [-128, 127])
+    /// - URange8 on UINT8_DATA[0..64] when IS_MSG_MAT=1 (bytes ∈ [0, 256))
+    /// - IRange8 on MAT_UNPACK[0..64] (signed bytes ∈ [-128, 127])
     /// - i8u8 bus: MAT_UNPACK[i] (i8) ↔ UINT8_DATA[i] (u8) when IS_MSG_MAT=1
     /// - Input chip: NOISED_PACKED[i] = polyval(MAT_UNPACK[..]) + polyval(NOISE_UNPACK[..])
     /// - noised_packed bus self-query (step 4.1): MAT_FREQ on this row balances the query
@@ -1131,11 +1208,9 @@ impl CompositeTrace {
     /// polyval(NOISE_UNPACK,129)` so the prover cannot deviate).
     /// `NOISED_PACKED = polyval(plain) + polyval(noise) = a′`
     /// (since `a′ = plain + noise` fits i8 with **no wrap**,
-    /// `|A+E| ≤ 127`) — i.e. **the same `NOISED_PACKED` value the
-    /// value-keyed M-S1 store published**, so M-S1's
-    /// `noised_packed` LogUp balances unchanged; only the
-    /// MAT/NOISE split + `NOISE_PACKED_PREP` change. Returns the
-    /// 2 packed `NOISED_PACKED` cells.
+    /// `|A+E| ≤ 127`). Together with the caller-supplied `mat_id`,
+    /// this publishes the position-keyed M-S1 store entry consumed by
+    /// matmul reads. Returns the 2 packed `NOISED_PACKED` cells.
     pub fn place_noised_store_row_split(
         &mut self,
         row_idx: usize,
@@ -1183,9 +1258,8 @@ impl CompositeTrace {
         use p3_field::integers::QuotientMap;
 
         use crate::composite_layout::{
-            MAT_UNPACK_START, MAT_UNPACK_WIN, NOISED_PACKED_START, NOISED_PACKED_WIN,
-            NOISE_PACKED_PREP, NOISE_UNPACK_START, NOISE_UNPACK_WIN, UINT8_DATA_START,
-            UINT8_DATA_WIN,
+            MAT_UNPACK_START, NOISED_PACKED_START, NOISE_PACKED_PREP, NOISE_UNPACK_START,
+            UINT8_DATA_START,
         };
 
         assert!(
@@ -1193,27 +1267,18 @@ impl CompositeTrace {
             "row_idx {row_idx} out of bounds (height = {})",
             self.height()
         );
-        // §4.C.2 cx.2/X1: the blocks are widened (UINT8_DATA/
-        // NOISE_UNPACK 8→64, NOISED_PACKED 2→16); the split-store
-        // writer operates on the 8-byte window / 2-cell (`*_WIN`)
-        // until the cx.2 atomic activation ⇒ byte-identical.
-        assert_eq!(MAT_UNPACK_WIN, 8);
-        assert_eq!(UINT8_DATA_WIN, 8);
-        assert_eq!(NOISE_UNPACK_WIN, 8);
-        assert_eq!(NOISED_PACKED_WIN, 2);
-
         let base = row_idx * TOTAL_TRACE_WIDTH;
         let row = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
 
         // MAT_UNPACK: the committed-plain i8 bytes (B1/C3 ties
         // these to HASH_A); UINT8_DATA: their u8 view.
-        for i in 0..MAT_UNPACK_WIN {
+        for i in 0..plain.len() {
             row[MAT_UNPACK_START + i] = <Val as QuotientMap<i64>>::from_int(plain[i] as i64);
             row[UINT8_DATA_START + i] =
                 <Val as QuotientMap<u64>>::from_int((plain[i] as u8) as u64);
         }
         // NOISE_UNPACK: the Pearl `noise_ref` bytes.
-        for i in 0..NOISE_UNPACK_WIN {
+        for i in 0..noise.len() {
             row[NOISE_UNPACK_START + i] = <Val as QuotientMap<i64>>::from_int(noise[i] as i64);
         }
         // NOISE_PACKED_PREP = polyval(NOISE_UNPACK, base=129) — the
@@ -1228,8 +1293,8 @@ impl CompositeTrace {
         row[NOISE_PACKED_PREP] = <Val as QuotientMap<i64>>::from_int(npp);
         // NOISED_PACKED[cell] = polyval(plain[4c..],256)
         //                     + polyval(noise[4c..],256)  (= a′).
-        let mut packs = [0i64; NOISED_PACKED_WIN];
-        for cell in 0..NOISED_PACKED_WIN {
+        let mut packs = [0i64; 2];
+        for cell in 0..packs.len() {
             let mut acc: i64 = 0;
             let mut mult: i64 = 1;
             for j in 0..4 {
@@ -1580,6 +1645,8 @@ impl CompositeTrace {
         assert_eq!(b_prime_cols.len(), w_tile * k, "b_prime_cols must be w*k");
         let n_sbi = h_tile / TILE_H;
         let n_sbj = w_tile / TILE_H;
+        let a_id_base = NOISED_CHUNK_ID_BASE;
+        let b_id_base = a_id_base + ((h_tile * k).div_ceil(8)) as u64;
         let trace_h = self.height();
         assert!(
             row_start + n_sbi * n_sbj * num_stripes * chunks < trace_h,
@@ -1615,6 +1682,22 @@ impl CompositeTrace {
                             let cc = (sbj * TILE_H + dj) * k + lo + c0;
                             b_blk[dj][..w].copy_from_slice(&b_prime_cols[cc..cc + w]);
                         }
+                        let ids_for = |side_a: bool, lane_base: usize| -> [u64; A_ID_LEN] {
+                            core::array::from_fn(|jc| {
+                                let mut src = [None; 8];
+                                for m in 0..8 {
+                                    let f = jc * 8 + m;
+                                    let (di, col) = (f / TILE_D, f % TILE_D);
+                                    if col < w {
+                                        src[m] =
+                                            Some(((lane_base + di) as u32, (lo + c0 + col) as u32));
+                                    }
+                                }
+                                noised_chunk_id(if side_a { a_id_base } else { b_id_base }, k, &src)
+                            })
+                        };
+                        let a_ids = ids_for(true, sbi * TILE_H);
+                        let b_ids = ids_for(false, sbj * TILE_H);
                         // is_reset only on the sub-block's very first
                         // micro-step; all chunks (within a stripe and
                         // across stripes) accumulate into the same
@@ -1622,8 +1705,9 @@ impl CompositeTrace {
                         // `compute_tile_trace`'s `c_blk[idx] += Σδ`).
                         let is_reset = step == 0 && chunk == 0;
                         let is_update = !is_reset;
-                        let cumsum_new = self
-                            .place_matmul_step(row, &a_blk, &b_blk, is_reset, is_update, &carry);
+                        let cumsum_new = self.place_matmul_step_with_ids(
+                            row, &a_blk, &b_blk, &a_ids, &b_ids, is_reset, is_update, &carry,
+                        );
 
                         let base = row * TOTAL_TRACE_WIDTH;
                         let rs = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
@@ -2014,10 +2098,10 @@ impl CompositeTrace {
 
     /// M-S1 (§4.C.11) — place the `noised_packed` producer store:
     /// one pure table row ([`place_noised_store_row`], `MAT_ID =
-    /// mat_id`, no `IS_MSG_MAT`) per distinct swept chunk from
-    /// [`enumerate_noised_chunks`]. `mat_id` MUST equal the
-    /// `A_ID`/`B_ID` the matmul rows carry (currently `0`, the
-    /// value-as-key namespace). Call AFTER `place_useful_work_chain`
+    /// mat_id`, no `IS_MSG_MAT`) per caller-supplied chunk. Modern
+    /// production traces use exact per-sub-slice IDs; this helper is
+    /// retained for focused fixtures where every supplied chunk shares
+    /// the same caller-assigned ID. Call AFTER `place_useful_work_chain`
     /// (so the SX/CUMSUM passthrough on `[row_start, h)` is already
     /// written — this only adds the disjoint MAT_UNPACK /
     /// NOISED_PACKED / CONTROL columns on top) and BEFORE the fold
@@ -2056,12 +2140,12 @@ impl CompositeTrace {
     /// holds that value.
     ///
     /// The current implementation handles four range buses:
-    ///   * `urange8` — UINT8_DATA[0..8] gated by IS_MSG_MAT.
+    ///   * `urange8` — UINT8_DATA[0..64] gated by IS_MSG_MAT.
     ///   * `urange13` — MAT_ID_LIMBS[0..2] + AB_ID_LIMBS[0..4]
     ///     unconditionally.
-    ///   * `irange7p1` — NOISE_UNPACK[0..8] unconditionally.
+    ///   * `irange7p1` — NOISE_UNPACK[0..64] unconditionally.
     ///   * `irange8` — A_NOISED_UNPACK[0..32] +
-    ///     B_NOISED_UNPACK[0..32] + MAT_UNPACK[0..8]
+    ///     B_NOISED_UNPACK[0..32] + MAT_UNPACK[0..64]
     ///     unconditionally.
     ///
     /// Call this after constructing a trace (baseline + any
@@ -2076,7 +2160,7 @@ impl CompositeTrace {
         let n = self.height();
 
         // ---- URange8 (u8 ∈ [0, 256)) ----
-        // Queries: UINT8_DATA[0..8] when IS_MSG_MAT = 1.
+        // Queries: UINT8_DATA[0..64] when IS_MSG_MAT = 1.
         let mut u8_count = [0u64; 256];
         for r in 0..n {
             let base = r * TOTAL_TRACE_WIDTH;
@@ -2131,7 +2215,7 @@ impl CompositeTrace {
         }
 
         // ---- IRange7P1 (i7+1 ∈ [-64, 64], 129 values) ----
-        // Queries: NOISE_UNPACK[0..8] every row.
+        // Queries: NOISE_UNPACK[0..64] every row.
         // Map signed value v → table-row index (v + 64).
         let mut i7p1_count = [0u64; 129];
         for r in 0..n {
@@ -2154,7 +2238,7 @@ impl CompositeTrace {
 
         // ---- IRange8 (i8 ∈ [-128, 127], 256 values) ----
         // Queries: A_NOISED_UNPACK[0..32] + B_NOISED_UNPACK[0..32]
-        // + MAT_UNPACK[0..8] every row.
+        // + MAT_UNPACK[0..64] every row.
         let mut i8_count = [0u64; 256];
         let scan_i8_cells = |start: usize, len: usize, dst: &mut [u64; 256], values: &[Val]| {
             for r in 0..n {
@@ -2257,9 +2341,13 @@ impl CompositeTrace {
         for r in 0..n {
             let base = r * TOTAL_TRACE_WIDTH;
             let mat_id = self.matrix.values[base + MAT_ID].as_canonical_u64();
+            let is_msg_mat = self.matrix.values[base + IS_MSG_MAT].as_canonical_u64();
             for s in 0..fl {
+                if s > 0 && is_msg_mat != 1 {
+                    continue;
+                }
                 let key = (
-                    mat_id,
+                    mat_id + s as u64,
                     self.matrix.values[base + NOISED_PACKED_START + 2 * s].as_canonical_u64(),
                     self.matrix.values[base + NOISED_PACKED_START + 2 * s + 1].as_canonical_u64(),
                 );
@@ -2275,8 +2363,8 @@ impl CompositeTrace {
                 // M-S1 (§4.C.11) — one query per 2-cell chunk so
                 // the WHOLE micro-tile A/B input is bound (mirrors
                 // the `bus_emit::noised_packed` chunked emission).
-                let a_id = self.matrix.values[base + A_ID].as_canonical_u64();
-                for j in 0..(A_NOISED_LEN / 2) {
+                for j in 0..A_ID_LEN {
+                    let a_id = self.matrix.values[base + A_ID + j].as_canonical_u64();
                     let a_key = (
                         a_id,
                         self.matrix.values[base + A_NOISED_START + 2 * j].as_canonical_u64(),
@@ -2286,8 +2374,8 @@ impl CompositeTrace {
                         mat_freq[tr * fl + ts] += active;
                     }
                 }
-                let b_id = self.matrix.values[base + B_ID].as_canonical_u64();
-                for j in 0..(B_NOISED_LEN / 2) {
+                for j in 0..B_ID_LEN {
+                    let b_id = self.matrix.values[base + B_ID + j].as_canonical_u64();
                     let b_key = (
                         b_id,
                         self.matrix.values[base + B_NOISED_START + 2 * j].as_canonical_u64(),
@@ -2302,19 +2390,21 @@ impl CompositeTrace {
                 // rejects at proof time.
             }
 
-            // M52 step 4-B: BLAKE3-side query (gated by IS_MSG_MAT).
-            // The row's own (MAT_ID, NOISED_PACKED) is the lookup
-            // key — self-referential, so the matching table row is
-            // this same row.
+            // M52 step 4-B / cx.2: BLAKE3-side self-queries
+            // (gated by IS_MSG_MAT). The row's own eight
+            // sub-slice keys are self-referential.
             let is_msg_mat = self.matrix.values[base + IS_MSG_MAT].as_canonical_u64();
             if is_msg_mat == 1 {
-                let key = (
-                    self.matrix.values[base + MAT_ID].as_canonical_u64(),
-                    self.matrix.values[base + NOISED_PACKED_START].as_canonical_u64(),
-                    self.matrix.values[base + NOISED_PACKED_START + 1].as_canonical_u64(),
-                );
-                if let Some(&(tr, ts)) = key_to_first_row.get(&key) {
-                    mat_freq[tr * fl + ts] += 1;
+                for s in 0..fl {
+                    let key = (
+                        self.matrix.values[base + MAT_ID].as_canonical_u64() + s as u64,
+                        self.matrix.values[base + NOISED_PACKED_START + 2 * s].as_canonical_u64(),
+                        self.matrix.values[base + NOISED_PACKED_START + 2 * s + 1]
+                            .as_canonical_u64(),
+                    );
+                    if let Some(&(tr, ts)) = key_to_first_row.get(&key) {
+                        mat_freq[tr * fl + ts] += 1;
+                    }
                 }
             }
         }
@@ -3545,6 +3635,7 @@ mod tests {
                     let (n, strip_root) = t.place_matrix_strip_opening(
                         0, strip_bytes, c0, c1, nc, &sibs, &key, 4,    // IS_HASH_A
                         None, // hash-only (pre-cx.2; g=0)
+                        None,
                     );
                     assert_eq!(
                         strip_root, full_root,
@@ -3588,6 +3679,7 @@ mod tests {
             &key,
             4,
             None, // hash-only (pre-cx.2; g=0)
+            None,
         );
         let committed = b32_to_words(
             blake3::Hasher::new_keyed(&key)
@@ -3631,7 +3723,7 @@ mod tests {
             let mut strip = raw[c0 * 1024..c1 * 1024].to_vec();
             strip[10] ^= 1;
             let mut trace = CompositeTrace::baseline_min();
-            trace.place_matrix_strip_opening(0, &strip, c0, c1, nc, &sibs, &key, 4, None);
+            trace.place_matrix_strip_opening(0, &strip, c0, c1, nc, &sibs, &key, 4, None, None);
             let mut pis =
                 crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
             pis.hash_a = committed; // verifier holds the true commitment
@@ -3658,6 +3750,7 @@ mod tests {
                 &sibs,
                 &key,
                 4,
+                None,
                 None,
             );
             let mut pis =

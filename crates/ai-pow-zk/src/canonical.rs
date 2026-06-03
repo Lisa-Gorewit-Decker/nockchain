@@ -613,6 +613,11 @@ fn strip_blocks(c0: usize, c1: usize, num_chunks: usize) -> Vec<StripBlock> {
 /// region's `IS_HASH_A/B` finalize selector (4 = `IS_HASH_A`
 /// A-side, 5 = `IS_HASH_B` B-side — `place_matrix_hash_a/b`).
 struct StripPlan {
+    ca0: usize,
+    cb0: usize,
+    w_tile: usize,
+    a_id_base: u64,
+    b_id_base: u64,
     blocks_a: Vec<StripBlock>,
     blocks_b: Vec<StripBlock>,
 }
@@ -622,7 +627,16 @@ impl StripPlan {
         let ((ca0, ca1, a_nc), (cb0, cb1, b_nc)) = strip_schedule
             .chunk_ranges(params)
             .expect("StripPlan requires valid strip chunk ranges");
+        let h_tile = strip_schedule.a_indices.len();
+        let w_tile = strip_schedule.b_indices.len();
+        let a_id_base = crate::composite_trace::NOISED_CHUNK_ID_BASE;
+        let b_id_base = a_id_base + ((h_tile * params.k as usize).div_ceil(8)) as u64;
         StripPlan {
+            ca0,
+            cb0,
+            w_tile,
+            a_id_base,
+            b_id_base,
             blocks_a: strip_blocks(ca0, ca1, a_nc),
             blocks_b: strip_blocks(cb0, cb1, b_nc),
         }
@@ -642,7 +656,8 @@ const F_KEYED_HASH: u32 = 1 << 4;
 /// *leaf* block's round-0 row (`j==0`) is additionally the M-S1
 /// `noised_packed` producer — `place_leaf_chunk` re-fills its
 /// control cells with `{IS_NEW_BLAKE, IS_MSG_MAT}` (SELECTOR_COLS
-/// idx 8 + 10), `mat_id=0`, `msg_pair=0` (the cx.1c pin). The 8
+/// idx 8 + 10), `mat_id = first addressed 8-byte sub-slice ID`,
+/// `msg_pair=0` (the cx.1c pin). The 8
 /// `NOISE_PACKED_PREP` pins on those rows are CR.4c. Parent
 /// blocks are never co-located. The tweak/flags are params-pure
 /// (`place_leaf_chunk`/`place_parent`): leaf → `counter =
@@ -706,7 +721,9 @@ fn strip_row_descriptor(spec: StripBlock, j: usize, selector_idx: usize) -> RowD
     // co-locates every leaf block's round-0 row when noise is
     // present). Adds IS_MSG_MAT (idx 10) on top of the round-0
     // IS_NEW_BLAKE (idx 8) already set by `blake3_block_descriptor`;
-    // mat_id/msg_pair stay 0. Parent blocks are never co-located.
+    // msg_pair stays 0; mat_id is layered in row_descriptor from
+    // the strip side and chunk offset. Parent blocks are never
+    // co-located.
     if matches!(spec, StripBlock::Leaf { .. }) && j == 0 {
         desc.selectors[10] = true; // IS_MSG_MAT ⇒ g = 1
     }
@@ -811,6 +828,13 @@ fn row_descriptor(
                     let pins = coloc_leaf_noise_pins(side_a, chunk_index, b, params, bp);
                     desc.noise_packed = pins[0];
                     desc.noise_packed_hi.copy_from_slice(&pins[1..8]);
+                    let (base, c0) = if side_a {
+                        (sp.a_id_base, sp.ca0)
+                    } else {
+                        (sp.b_id_base, sp.cb0)
+                    };
+                    desc.mat_id =
+                        (base + ((chunk_index as usize - c0) * 128 + b * 8) as u64) as u32;
                 }
             }
             desc
@@ -856,14 +880,44 @@ fn row_descriptor(
             let num_stripes = params.k as usize / r;
             let chunks = r.div_ceil(TILE_D).max(1);
             let per = num_stripes * chunks;
-            let within = (row_idx - layout.sweep_start) % per;
+            let sweep_offset = row_idx - layout.sweep_start;
+            let subblock = sweep_offset / per;
+            let within = sweep_offset % per;
             let step = within / chunks;
             let chunk = within % chunks;
+            let n_sbj = sp.w_tile / TILE_H;
+            let sbi = subblock / n_sbj;
+            let sbj = subblock % n_sbj;
+            let lo = step * r;
+            let c0 = chunk * TILE_D;
+            let w = (r - c0).min(TILE_D);
+            let ids_for = |side_a: bool, lane_base: usize| -> [u64; 4] {
+                core::array::from_fn(|jc| {
+                    let mut src = [None; 8];
+                    for m in 0..8 {
+                        let f = jc * 8 + m;
+                        let (di, col) = (f / TILE_D, f % TILE_D);
+                        if col < w {
+                            src[m] = Some(((lane_base + di) as u32, (lo + c0 + col) as u32));
+                        }
+                    }
+                    crate::composite_trace::noised_chunk_id(
+                        if side_a { sp.a_id_base } else { sp.b_id_base },
+                        params.k as usize,
+                        &src,
+                    )
+                })
+            };
+            let a_ids = ids_for(true, sbi * TILE_H);
+            let b_ids = ids_for(false, sbj * TILE_H);
             let is_reset = step == 0 && chunk == 0;
             let mut selectors = [false; NUM_SELECTORS];
             selectors[if is_reset { 0 } else { 1 }] = true;
             RowDescriptor {
                 selectors,
+                ab_id: crate::composite_preprocess::pack_ab_id(a_ids[0], b_ids[0]),
+                a_ids,
+                b_ids,
                 ..RowDescriptor::padding()
             }
         }
@@ -1136,7 +1190,7 @@ mod tests {
         let len = 1 << 13;
         let prog = canonical_program(&p, &bp0(), len).expect("test params valid");
         assert_eq!(prog.height(), len);
-        assert_eq!(prog.width(), PROGRAM_COLS.len(), "12-wide");
+        assert_eq!(prog.width(), PROGRAM_COLS.len(), "program width");
 
         let sched = row_schedule(&p, 0, 0, len);
         let w = PROGRAM_COLS.len();
@@ -1147,7 +1201,7 @@ mod tests {
             }
             saw_pad = true;
             // Pad row: all PROGRAM_COLS zero except STARK_ROW_IDX
-            // (== PROGRAM_COLS[11], the monotonic row counter).
+            // (the final program column, the monotonic row counter).
             for c in 0..w - 1 {
                 assert_eq!(
                     prog.values[r * w + c].as_canonical_u64(),
@@ -1192,8 +1246,7 @@ mod tests {
                 "key-pin row {row} CONTROL_PREP must pack only \
                  SELECTOR_COLS idx {sel_idx}"
             );
-            // Cols 1..11 (noise×8, CV, AB_ID) zero; col 11
-            // (STARK_ROW_IDX) = row.
+            // Every non-control program column except STARK_ROW_IDX is zero.
             for c in 1..w - 1 {
                 assert_eq!(
                     prog.values[row * w + c].as_canonical_u64(),
@@ -1238,7 +1291,8 @@ mod tests {
             }
             let want_cp = ControlChip::pack_control_prep_full(&sel, 0, false, 0, 0, 0);
             // PROGRAM_COLS: [0]=CONTROL_PREP, [1..9]=NOISE×8,
-            // [9]=CV_OR_TWEAK_PREP, [10]=AB_ID, [11]=STARK_ROW_IDX.
+            // [9]=CV_OR_TWEAK_PREP, [10]=AB_ID, then A/B IDs,
+            // final=STARK_ROW_IDX.
             assert_eq!(
                 prog.values[row * w].as_canonical_u64(),
                 want_cp,
@@ -1263,7 +1317,7 @@ mod tests {
                 "jackpot row j={j} AB_ID_PREP must be 0"
             );
             assert_eq!(
-                prog.values[row * w + 11].as_canonical_u64(),
+                prog.values[row * w + (w - 1)].as_canonical_u64(),
                 row as u64,
                 "jackpot row j={j} STARK_ROW_IDX"
             );

@@ -23,19 +23,19 @@
 //!     per row, with `count_weight = 1`. The chip that has u8
 //!     cells emits the queries.
 //!
-//! For the `urange8` POC the query side reuses `UINT8_DATA[0]` —
-//! Pearl populates this column with u8 matrix bytes when
-//! `IS_MSG_MAT = 1`. On rows with `IS_MSG_MAT = 0` the query
-//! multiplicity is zero, so there's no contribution.
+//! For co-located matrix-message rows the query side emits every
+//! `UINT8_DATA[0..64]` byte when `IS_MSG_MAT = 1`. On rows with
+//! `IS_MSG_MAT = 0` the query multiplicity is zero, so there's no
+//! contribution.
 //!
 //! ## What this gives us
 //!
 //! With this wired, `prove_batch` + `verify_batch` will reject
 //! traces where:
 //!   * `URANGE8_FREQ` is over- or under-claimed relative to the
-//!     actual `UINT8_DATA[0]` queries.
-//!   * A `UINT8_DATA[0]` cell carries a value outside `[0, 256)`
-//!     while `IS_MSG_MAT = 1`.
+//!     actual `UINT8_DATA[0..64]` queries.
+//!   * Any `UINT8_DATA[0..64]` cell carries a value outside
+//!     `[0, 256)` while `IS_MSG_MAT = 1`.
 //!
 //! Range-table integrity (TABLE column enumerates `[0..256)`)
 //! continues to be enforced by `URange8Chip`'s constraints —
@@ -46,14 +46,14 @@ use p3_lookup::InteractionBuilder;
 
 use crate::composite_full_air::{CompositeFullAir, CompositeFullAirPinned, ProgramShapeError};
 use crate::composite_layout::{
-    AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_NOISED_START, A_NOISED_UNPACK_LEN,
-    A_NOISED_UNPACK_START, B_ID, B_NOISED_START, B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START,
-    CV_IN_LEN, CV_IN_START, CV_OR_TWEAK_PREP, CV_OUT_FREQ, CV_OUT_LEN, CV_OUT_START, I8U8_FREQ,
-    I8U8_TABLE, IRANGE7P1_FREQ, IRANGE7P1_TABLE, IRANGE8_FREQ, IRANGE8_TABLE, IS_CV_IN, IS_MSG_MAT,
-    IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, MAT_FREQ, MAT_ID, MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START,
-    MAT_UNPACK_START, MAT_UNPACK_WIN, NOISED_PACKED_START, NOISE_UNPACK_START, NOISE_UNPACK_WIN,
-    STARK_ROW_IDX, TOTAL_TRACE_WIDTH, UINT8_DATA_START, UINT8_DATA_WIN, URANGE13_FREQ,
-    URANGE13_TABLE, URANGE8_FREQ, URANGE8_TABLE,
+    AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_ID_LEN, A_NOISED_START, A_NOISED_UNPACK_LEN,
+    A_NOISED_UNPACK_START, B_ID, B_ID_LEN, B_NOISED_START, B_NOISED_UNPACK_LEN,
+    B_NOISED_UNPACK_START, CV_IN_LEN, CV_IN_START, CV_OR_TWEAK_PREP, CV_OUT_FREQ, CV_OUT_LEN,
+    CV_OUT_START, I8U8_FREQ, I8U8_TABLE, IRANGE7P1_FREQ, IRANGE7P1_TABLE, IRANGE8_FREQ,
+    IRANGE8_TABLE, IS_CV_IN, IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, MAT_FREQ, MAT_ID,
+    MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START, MAT_UNPACK_START, MAT_UNPACK_WIN, NOISED_PACKED_START,
+    NOISE_UNPACK_START, NOISE_UNPACK_WIN, STARK_ROW_IDX, TOTAL_TRACE_WIDTH, UINT8_DATA_START,
+    UINT8_DATA_WIN, URANGE13_FREQ, URANGE13_TABLE, URANGE8_FREQ, URANGE8_TABLE,
 };
 use crate::composite_lookups::{
     BUS_CV_ROUTING, BUS_I8U8, BUS_IRANGE7P1, BUS_IRANGE8, BUS_NOISED_PACKED, BUS_URANGE13,
@@ -209,7 +209,7 @@ mod bus_emit {
     /// `urange8` bus — u8 range check `[0, 256)`.
     ///
     /// Table: (URANGE8_TABLE, −URANGE8_FREQ).
-    /// Queries: UINT8_DATA[0..8] gated by IS_MSG_MAT (when the
+    /// Queries: UINT8_DATA[0..64] gated by IS_MSG_MAT (when the
     /// BLAKE3 message buffer is loading matrix bytes, each cell is
     /// a u8 query).
     pub fn urange8<AB: AirBuilder + InteractionBuilder>(builder: &mut AB) {
@@ -266,7 +266,7 @@ mod bus_emit {
     /// `irange7p1` bus — i7+1 range check `[-64, 64]`.
     ///
     /// Table: (IRANGE7P1_TABLE, −IRANGE7P1_FREQ).
-    /// Queries: NOISE_UNPACK[0..8] every row (Pearl's signed
+    /// Queries: NOISE_UNPACK[0..64] every row (Pearl's signed
     /// noise bytes).
     pub fn irange7p1<AB: AirBuilder + InteractionBuilder>(builder: &mut AB) {
         let main = builder.main();
@@ -291,7 +291,7 @@ mod bus_emit {
     ///
     /// Table: (IRANGE8_TABLE, −IRANGE8_FREQ).
     /// Queries: A_NOISED_UNPACK[0..32] + B_NOISED_UNPACK[0..32]
-    /// + MAT_UNPACK[0..8] every row (i8 matrix cells).
+    /// + MAT_UNPACK[0..64] every row (i8 matrix cells).
     pub fn irange8<AB: AirBuilder + InteractionBuilder>(builder: &mut AB) {
         let main = builder.main();
         let cur = main.current_slice();
@@ -359,13 +359,13 @@ mod bus_emit {
     /// `noised_packed` bus — RAM lookup tying matmul reads to
     /// the canonical NOISED_PACKED matrix store.
     ///
-    /// Table key: (MAT_ID, NOISED_PACKED[0..2]) per row, with
-    /// multiplicity MAT_FREQ.
+    /// Table key: (MAT_ID, NOISED_PACKED[2s..2s+2]) per row
+    /// sub-slice, with multiplicity MAT_FREQ[s].
     /// Queries:
     /// * matmul-side (gated by IS_RESET_CUMSUM + IS_UPDATE_CUMSUM):
     ///   (A_ID, A_NOISED[0..2]) and (B_ID, B_NOISED[0..2]).
-    /// * BLAKE3-side (gated by IS_MSG_MAT): (MAT_ID, NOISED_PACKED[0..2])
-    ///   — the row's own key. When the BLAKE3 chip reads matrix
+    /// * BLAKE3-side (gated by IS_MSG_MAT): all eight row-local
+    ///   sub-slice keys. When the BLAKE3 chip reads matrix
     ///   bytes (M52 step 4-B), the row also serves as a "plain"
     ///   table entry: NOISE_UNPACK = 0 ⇒ NOISED_PACKED = polyval(MAT_UNPACK).
     ///   This binds the bytes BLAKE3 absorbs to the canonical
@@ -388,14 +388,22 @@ mod bus_emit {
         // sub-slices live; `populate_lookup_freq` accounts each
         // sub-slice's `MAT_FREQ[s]`.
         for s in 0..crate::composite_layout::MAT_FREQ_LEN {
+            let chunk_id: AB::Expr = <AB::Var as Into<AB::Expr>>::into(cur[MAT_ID])
+                + <AB::F as p3_field::PrimeCharacteristicRing>::from_u64(s as u64);
+            let table_mult: AB::Expr = if s == 0 {
+                <AB::Var as Into<AB::Expr>>::into(cur[MAT_FREQ])
+            } else {
+                <AB::Var as Into<AB::Expr>>::into(cur[MAT_FREQ + s])
+                    * <AB::Var as Into<AB::Expr>>::into(cur[IS_MSG_MAT])
+            };
             builder.push_interaction(
                 BUS_NOISED_PACKED,
                 [
-                    <AB::Var as Into<AB::Expr>>::into(cur[MAT_ID]),
+                    chunk_id,
                     <AB::Var as Into<AB::Expr>>::into(cur[NOISED_PACKED_START + 2 * s]),
                     <AB::Var as Into<AB::Expr>>::into(cur[NOISED_PACKED_START + 2 * s + 1]),
                 ],
-                -<AB::Var as Into<AB::Expr>>::into(cur[MAT_FREQ + s]),
+                -table_mult,
                 0,
             );
         }
@@ -405,22 +413,20 @@ mod bus_emit {
         // first 2-cell chunk. With the pack-link
         // (`A_NOISED[c] == polyval(A_NOISED_UNPACK)`) each 2-cell
         // chunk is provably the dot inputs; emit one query per
-        // 2-cell chunk so every consumed chunk must be a member of
-        // the canonical producer store (multiset binding,
-        // value-as-key — `A_ID`/`B_ID` are the constant store
-        // namespace, the chunk *value* is the discriminant). The
-        // producer (`place_noised_store`) publishes the block's
-        // `a_prime`/`b_prime` chunks with `MAT_FREQ` multiplicity;
-        // `populate_lookup_freq` accounts these queries. A swept
-        // chunk ∉ the store ⇒ no table key ⇒ LogUp unbalanced ⇒
-        // reject. (Store ↔ plain-A `HASH_A` is the §4.C.2 residual.)
+        // 2-cell chunk so every consumed chunk must match the exact
+        // verifier-fixed chunk position ID and packed value in the
+        // canonical producer store. The producer key is
+        // `MAT_ID + sub_slice`; matmul queries use the corresponding
+        // per-sub-slice `A_ID[j]` / `B_ID[j]`. A value from the wrong
+        // position, or a zero substituted against padding, leaves no
+        // matching table key ⇒ LogUp rejects.
         let matmul_active: AB::Expr = <AB::Var as Into<AB::Expr>>::into(cur[IS_RESET_CUMSUM])
             + <AB::Var as Into<AB::Expr>>::into(cur[IS_UPDATE_CUMSUM]);
-        for j in 0..(crate::composite_layout::A_NOISED_LEN / 2) {
+        for j in 0..A_ID_LEN {
             builder.push_interaction(
                 BUS_NOISED_PACKED,
                 [
-                    <AB::Var as Into<AB::Expr>>::into(cur[A_ID]),
+                    <AB::Var as Into<AB::Expr>>::into(cur[A_ID + j]),
                     <AB::Var as Into<AB::Expr>>::into(cur[A_NOISED_START + 2 * j]),
                     <AB::Var as Into<AB::Expr>>::into(cur[A_NOISED_START + 2 * j + 1]),
                 ],
@@ -428,11 +434,11 @@ mod bus_emit {
                 1,
             );
         }
-        for j in 0..(crate::composite_layout::B_NOISED_LEN / 2) {
+        for j in 0..B_ID_LEN {
             builder.push_interaction(
                 BUS_NOISED_PACKED,
                 [
-                    <AB::Var as Into<AB::Expr>>::into(cur[B_ID]),
+                    <AB::Var as Into<AB::Expr>>::into(cur[B_ID + j]),
                     <AB::Var as Into<AB::Expr>>::into(cur[B_NOISED_START + 2 * j]),
                     <AB::Var as Into<AB::Expr>>::into(cur[B_NOISED_START + 2 * j + 1]),
                 ],
@@ -441,24 +447,26 @@ mod bus_emit {
             );
         }
 
-        // M52 step 4-B: BLAKE3-side query. Gated by IS_MSG_MAT.
-        // The row's own (MAT_ID, NOISED_PACKED) is the lookup key —
-        // self-referential. Combined with NOISE_UNPACK = 0 on
-        // matrix-hash rows, this means NOISED_PACKED encodes plain
-        // matrix bytes, binding BLAKE3's absorb stream to the
-        // canonical matrix store. MAT_FREQ on these rows = 1 to
-        // balance the self-query.
+        // M52 step 4-B / cx.2: BLAKE3-side self-queries. Gated by
+        // IS_MSG_MAT. The row's own eight sub-slice keys are
+        // self-referential. Combined with the input-chip packing and
+        // full-width i8/u8 conversion, this binds every 8-byte
+        // sub-slice BLAKE3 absorbs to the canonical matrix store.
         let blake_msg_mat: AB::Expr = cur[IS_MSG_MAT].into();
-        builder.push_interaction(
-            BUS_NOISED_PACKED,
-            [
-                <AB::Var as Into<AB::Expr>>::into(cur[MAT_ID]),
-                <AB::Var as Into<AB::Expr>>::into(cur[NOISED_PACKED_START]),
-                <AB::Var as Into<AB::Expr>>::into(cur[NOISED_PACKED_START + 1]),
-            ],
-            blake_msg_mat,
-            1,
-        );
+        for s in 0..crate::composite_layout::MAT_FREQ_LEN {
+            let chunk_id: AB::Expr = <AB::Var as Into<AB::Expr>>::into(cur[MAT_ID])
+                + <AB::F as p3_field::PrimeCharacteristicRing>::from_u64(s as u64);
+            builder.push_interaction(
+                BUS_NOISED_PACKED,
+                [
+                    chunk_id,
+                    <AB::Var as Into<AB::Expr>>::into(cur[NOISED_PACKED_START + 2 * s]),
+                    <AB::Var as Into<AB::Expr>>::into(cur[NOISED_PACKED_START + 2 * s + 1]),
+                ],
+                blake_msg_mat.clone(),
+                1,
+            );
+        }
     }
 
     /// `cv_routing` bus — BLAKE3 chaining-value routing across
@@ -505,7 +513,7 @@ mod tests {
     //! End-to-end LogUp tests on the full composite trace.
     //! `prove_batch` enforces the `urange8` bus balance at proof
     //! time. Valid traces verify; over-claimed `URANGE8_FREQ` or
-    //! out-of-range `UINT8_DATA[0]` queries are rejected.
+    //! out-of-range `UINT8_DATA[0..64]` queries are rejected.
 
     use p3_batch_stark::{prove_batch, verify_batch, ProverData, StarkInstance};
     use p3_field::integers::QuotientMap;
@@ -513,7 +521,10 @@ mod tests {
     use super::*;
     use crate::chips::control::ControlChip;
     use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
-    use crate::composite_layout::{UINT8_DATA_START, URANGE8_FREQ};
+    use crate::composite_layout::{
+        MAT_UNPACK_START, NOISED_PACKED_START, NOISE_PACKED_PREP, NOISE_UNPACK_START,
+        UINT8_DATA_START, URANGE8_FREQ,
+    };
     use crate::composite_trace::CompositeTrace;
     use crate::params::ZkParams;
     use crate::Val;
@@ -604,6 +615,39 @@ mod tests {
         // is 0 so polyval(NOISE, 256) = 0.
         row[crate::composite_layout::NOISED_PACKED_START] =
             <Val as QuotientMap<i64>>::from_int(signed);
+    }
+
+    fn pack4_signed(bytes: &[i8]) -> i64 {
+        assert_eq!(bytes.len(), 4);
+        bytes
+            .iter()
+            .enumerate()
+            .map(|(j, &b)| (b as i64) * 256i64.pow(j as u32))
+            .sum()
+    }
+
+    fn place_full_msg_mat_row(trace: &mut CompositeTrace, row_idx: usize, plain: &[i8; 64]) {
+        assert!(row_idx < trace.height());
+        let base = row_idx * TOTAL_TRACE_WIDTH;
+        let row = &mut trace.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+
+        let mut selectors = [false; 21];
+        selectors[10] = true; // IS_MSG_MAT
+        ControlChip.fill_row(&selectors, 0, row);
+
+        for i in 0..64 {
+            row[MAT_UNPACK_START + i] = <Val as QuotientMap<i64>>::from_int(plain[i] as i64);
+            row[UINT8_DATA_START + i] =
+                <Val as QuotientMap<u64>>::from_int((plain[i] as u8) as u64);
+            row[NOISE_UNPACK_START + i] = Val::default();
+        }
+        for s in 0..8 {
+            row[NOISE_PACKED_PREP + s] = Val::default();
+        }
+        for cell in 0..16 {
+            row[NOISED_PACKED_START + cell] =
+                <Val as QuotientMap<i64>>::from_int(pack4_signed(&plain[cell * 4..cell * 4 + 4]));
+        }
     }
 
     #[test]
@@ -890,6 +934,37 @@ mod tests {
         );
     }
 
+    /// Regression for the cx.2 split-view gap: byte 8 is in the
+    /// second 8-byte sub-slice. The attack leaves the unsigned
+    /// BLAKE3-facing view unchanged, mutates the signed
+    /// matmul-facing view, and recomputes the matching
+    /// `NOISED_PACKED` cell so the input chip still accepts. Full
+    /// 64-byte i8/u8 lookup activation must reject it.
+    #[test]
+    fn second_subslice_split_view_rejected_by_i8u8_logup() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        let mut plain = [0i8; 64];
+        plain[8] = 5;
+        place_full_msg_mat_row(&mut trace, 0, &plain);
+
+        let base = 0 * TOTAL_TRACE_WIDTH;
+        trace.matrix.values[base + MAT_UNPACK_START + 8] = <Val as QuotientMap<i64>>::from_int(6);
+        let mut tampered = [0i8; 4];
+        tampered.copy_from_slice(&plain[8..12]);
+        tampered[0] = 6;
+        trace.matrix.values[base + NOISED_PACKED_START + 2] =
+            <Val as QuotientMap<i64>>::from_int(pack4_signed(&tampered));
+
+        trace.populate_lookup_freq();
+        let res = run_batch(&cfg, &trace.matrix);
+        assert!(
+            res.is_err(),
+            "second-sub-slice MAT_UNPACK/UINT8_DATA split view must reject; got {:?}",
+            res
+        );
+    }
+
     /// Tamper I8U8_FREQ AFTER populate → reject.
     #[test]
     fn tampered_i8u8_freq_rejected_by_logup() {
@@ -967,6 +1042,99 @@ mod tests {
         assert!(
             res.is_err(),
             "tampered A_NOISED must reject via NOISED_PACKED bus; got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn positioned_lookup_accepts_exact_chunk_id_and_value() {
+        use crate::composite_layout::TILE_D;
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        let real_id = crate::composite_trace::NOISED_CHUNK_ID_BASE;
+        let committed = [3i8, 4, 5, 6, 7, 8, 9, 10];
+        trace.place_noised_store_row(32, &committed, real_id as u32);
+
+        let mut a = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        a[0][..8].copy_from_slice(&committed);
+        let b = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        let mut a_ids = [0u64; A_ID_LEN];
+        a_ids[0] = real_id;
+        let b_ids = [0u64; B_ID_LEN];
+        let zero = [0i32; crate::chips::matmul::compute::CUMSUM_LEN];
+        let _ = trace.place_matmul_step_with_ids(8, &a, &b, &a_ids, &b_ids, true, false, &zero);
+        trace.fill_cumsum_passthrough(9, &zero);
+
+        trace.populate_lookup_freq();
+        run_batch(&cfg, &trace.matrix)
+            .expect("exact chunk ID + value must satisfy positioned noised_packed lookup");
+    }
+
+    #[test]
+    fn positioned_lookup_rejects_zero_substitution_against_padding() {
+        use crate::composite_layout::TILE_D;
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        let real_id = crate::composite_trace::NOISED_CHUNK_ID_BASE;
+        let committed = [3i8, 4, 5, 6, 7, 8, 9, 10];
+
+        trace.place_noised_store_row(32, &committed, real_id as u32);
+
+        // Malicious sweep: query the exact committed position ID but
+        // use a zero chunk. The low padding keys are all-zero, but
+        // they are IDs 0..7; they must not satisfy `real_id`.
+        let a = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        let b = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        let mut a_ids = [0u64; A_ID_LEN];
+        a_ids[0] = real_id;
+        let b_ids = [0u64; B_ID_LEN];
+        let zero = [0i32; crate::chips::matmul::compute::CUMSUM_LEN];
+        let _ = trace.place_matmul_step_with_ids(8, &a, &b, &a_ids, &b_ids, true, false, &zero);
+        trace.fill_cumsum_passthrough(9, &zero);
+
+        trace.populate_lookup_freq();
+        let res = run_batch(&cfg, &trace.matrix);
+        assert!(
+            res.is_err(),
+            "zero substitution at a real chunk ID must reject; got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn positioned_lookup_rejects_value_from_wrong_position() {
+        use crate::composite_layout::TILE_D;
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        let id_a = crate::composite_trace::NOISED_CHUNK_ID_BASE;
+        let id_b = id_a + 1;
+        let chunk_a = [1i8, 2, 3, 4, 5, 6, 7, 8];
+        let chunk_b = [11i8, 12, 13, 14, 15, 16, 17, 18];
+        trace.place_noised_store_row(32, &chunk_a, id_a as u32);
+        trace.place_noised_store_row(33, &chunk_b, id_b as u32);
+
+        // Malicious sweep: consume `chunk_b` while claiming the
+        // position ID for `chunk_a`. A value-only lookup accepts this
+        // because `chunk_b` exists somewhere; the positioned key must
+        // reject it.
+        let mut a = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        a[0][..8].copy_from_slice(&chunk_b);
+        let b = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        let mut a_ids = [0u64; A_ID_LEN];
+        a_ids[0] = id_a;
+        let b_ids = [0u64; B_ID_LEN];
+        let zero = [0i32; crate::chips::matmul::compute::CUMSUM_LEN];
+        let _ = trace.place_matmul_step_with_ids(8, &a, &b, &a_ids, &b_ids, true, false, &zero);
+        trace.fill_cumsum_passthrough(9, &zero);
+
+        trace.populate_lookup_freq();
+        let res = run_batch(&cfg, &trace.matrix);
+        assert!(
+            res.is_err(),
+            "value from the wrong chunk ID must reject; got {:?}",
             res
         );
     }

@@ -95,7 +95,7 @@ impl<F> BaseAir<F> for CompositeFullAir {
     }
 }
 
-/// The five "program / setup" columns. Pinning these to a
+/// The verifier-fixed "program / setup" columns. Pinning these to a
 /// verifier-committed preprocessed trace makes the entire
 /// instruction schedule + noise verifier-fixed:
 /// `CONTROL_PREP` pins all 21 selectors **and** `MAT_ID` (the
@@ -110,21 +110,16 @@ impl<F> BaseAir<F> for CompositeFullAir {
 // suite went from fast to ~22 min CPU (a 10x+ prover blow-up),
 // and the binding is *vacuous* in the shipping path anyway
 // (`zk_bridge` places no matmul rows until §4.A). The
-// cost-aware redesign (pin only matmul rows via a gated/narrow
-// preprocessed block, co-landed + measured with §4.A) is in
-// `2026-05-15_HIGH2_2_DESIGN.md` §4.C.8. Keeping `PROGRAM_COLS` at the 5
-// CRIT-1 anchors until then.
+// cost-aware redesign (pin only verifier-derived row metadata rather
+// than all matmul bytes) is in `2026-05-15_HIGH2_2_DESIGN.md` §4.C.8.
 // §4.C.2 c-exact (cx.2-pcols/X1): `NOISE_PACKED_PREP` widened
 // 1→8 (one `polyval(noise_subslice,129)` per co-located leaf
-// block sub-slice) ⇒ PROGRAM_COLS 5→12. Order MUST match the
+// block sub-slice), and positioned A/B chunk IDs add 8 more cols.
+// Order MUST match the
 // preprocessed column order (`extract_program` iterates this;
 // the pin asserts `main[PROGRAM_COLS[k]] == preproc[k]`;
-// `build_preprocessed_columns` emits in this order). The 7 added
-// `NOISE_PACKED_PREP+1..8` cols are zero while `g = IS_MSG_MAT·
-// IS_NEW_BLAKE = 0` everywhere (no co-location yet) ⇒ byte-
-// identical CRIT-1 pin (zero-blast); the cx.2 activation flips
-// them live on the co-located leaf rows.
-pub const PROGRAM_COLS: [usize; 12] = [
+// `build_preprocessed_columns` emits in this order).
+pub const PROGRAM_COLS: [usize; 20] = [
     crate::composite_layout::CONTROL_PREP,
     crate::composite_layout::NOISE_PACKED_PREP,
     crate::composite_layout::NOISE_PACKED_PREP + 1,
@@ -136,6 +131,14 @@ pub const PROGRAM_COLS: [usize; 12] = [
     crate::composite_layout::NOISE_PACKED_PREP + 7,
     crate::composite_layout::CV_OR_TWEAK_PREP,
     crate::composite_layout::AB_ID_PREP,
+    crate::composite_layout::A_ID,
+    crate::composite_layout::A_ID + 1,
+    crate::composite_layout::A_ID + 2,
+    crate::composite_layout::A_ID + 3,
+    crate::composite_layout::B_ID,
+    crate::composite_layout::B_ID + 1,
+    crate::composite_layout::B_ID + 2,
+    crate::composite_layout::B_ID + 3,
     crate::composite_layout::STARK_ROW_IDX,
 ];
 
@@ -281,8 +284,8 @@ impl<AB: AirBuilder<F = crate::Val>> Air<AB> for CompositeFullAirPinned {
         // across builder.assert_*).
         let main = builder.main();
         let m_cur = main.current_slice();
-        // cx.2-pcols: PROGRAM_COLS is 12 (NOISE_PACKED_PREP 1→8);
-        // collect into Vecs (no fixed [_;5]) so the pin tracks
+        // cx.2-pcols plus positioned A/B chunk IDs widen PROGRAM_COLS;
+        // collect into Vecs (no fixed [_;N]) so the pin tracks
         // PROGRAM_COLS.len() automatically.
         let m: Vec<AB::Var> = PROGRAM_COLS.iter().map(|&c| m_cur[c]).collect();
         let prep = builder.preprocessed();
@@ -387,6 +390,27 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
 
         // CONTROL_PREP unpacking + MAT_ID limb decomposition.
         ControlChip.eval(builder);
+
+        // AB_ID_PREP unpacking for the first A/B sub-slice ID pair.
+        // The remaining per-sub-slice IDs are verifier-fixed by the
+        // CRIT-1 program pin directly; this keeps the historical pack
+        // meaningful instead of leaving AB_ID_PREP as inert metadata.
+        {
+            use crate::composite_layout::{
+                AB_ID_LIMBS_START, AB_ID_PREP, A_ID, BITS_PER_LIMB, B_ID,
+            };
+            let main = builder.main();
+            let cur = main.current_slice();
+            let base = <AB::F as PrimeCharacteristicRing>::from_u32(1u32 << BITS_PER_LIMB);
+            let base2 = <AB::F as PrimeCharacteristicRing>::from_u64(1u64 << (2 * BITS_PER_LIMB));
+            let a_id: AB::Expr =
+                cur[AB_ID_LIMBS_START].into() + cur[AB_ID_LIMBS_START + 1].into() * base.clone();
+            let b_id: AB::Expr =
+                cur[AB_ID_LIMBS_START + 2].into() + cur[AB_ID_LIMBS_START + 3].into() * base;
+            builder.assert_eq(cur[A_ID], a_id.clone());
+            builder.assert_eq(cur[B_ID], b_id.clone());
+            builder.assert_eq(cur[AB_ID_PREP], a_id + b_id * base2);
+        }
 
         // Input chip: NOISE_PACKED_PREP unpacking + NOISED_PACKED
         // = polyval(MAT, 256) + polyval(NOISE, 256) integrity.

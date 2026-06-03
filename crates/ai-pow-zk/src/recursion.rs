@@ -616,44 +616,73 @@ pub fn recurse_composite_to_l1(
     })
 }
 
-/// Produce Nockchain's canonical recursive AI-PoW certificate from an
-/// already-generated Layer-0 composite proof.
+/// Layer-0 proof parts that a caller has already checked against the
+/// chain-derived AI-PoW statement.
+pub struct ChainVerifiedCompositeProof<'a> {
+    program: &'a crate::AiPowProgram,
+    proof: &'a BatchProof<AiPowStarkConfig>,
+    public_inputs: &'a crate::composite_public::CompositePublicInputs,
+}
+
+impl<'a> ChainVerifiedCompositeProof<'a> {
+    /// Construct a recursion input after the caller has verified the
+    /// Layer-0 proof against the exact chain-derived statement:
+    /// canonical program, public inputs, target, selected work unit,
+    /// commitments, nonce, and production/full-work admissibility.
+    ///
+    /// # Safety
+    ///
+    /// This is unsafe because the type cannot itself prove that the
+    /// caller performed the chain statement verification. Constructing
+    /// it from arbitrary proof parts can produce a recursive certificate
+    /// for a valid STARK statement that is not a valid Nockchain AI-PoW
+    /// work unit.
+    pub unsafe fn from_parts_after_chain_statement_verification(
+        program: &'a crate::AiPowProgram,
+        proof: &'a BatchProof<AiPowStarkConfig>,
+        public_inputs: &'a crate::composite_public::CompositePublicInputs,
+    ) -> Self {
+        Self {
+            program,
+            proof,
+            public_inputs,
+        }
+    }
+}
+
+/// Produce a recursive AI-PoW certificate from bridge-verified Layer-0
+/// proof parts.
 ///
-/// The caller supplies the pinned Layer-0 program and public inputs that were
-/// produced with the proof. This function recursively verifies that Layer-0
-/// proof in-circuit and returns only the recursive L1 certificate. It does not
-/// serialize, persist, or bless the Layer-0 proof as a block artifact. It also
-/// does not decide whether the Layer-0 statement represents enough consensus
-/// work; that check belongs to the chain-derived statement verifier.
-pub fn prove_canonical_ai_pow_certificate_from_composite_proof(
+/// This function recursively verifies the Layer-0 proof in-circuit and
+/// returns only the recursive L1 certificate. It does not serialize,
+/// persist, or bless the Layer-0 proof as a block artifact.
+pub fn prove_recursive_certificate_from_chain_verified_composite_proof(
     zk_params: &crate::params::ZkParams,
     profile: &crate::circuit::CircuitConfig,
-    program: &crate::AiPowProgram,
-    proof: &BatchProof<AiPowStarkConfig>,
-    public_inputs: &crate::composite_public::CompositePublicInputs,
+    verified: ChainVerifiedCompositeProof<'_>,
 ) -> Result<L1CertificateRun, VerificationError> {
     use std::time::Instant;
 
     let cfg = crate::composite_proof::build_config(zk_params, profile);
     let t = Instant::now();
-    let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
-    let pd = crate::composite_proof::logup_common_for(&cfg, program, true);
+    let air = CompositeFullAirWithLookupsPinned::new_with(verified.program.clone(), true);
+    let pd = crate::composite_proof::logup_common_for(&cfg, verified.program, true);
     let built = build_composite_l1_verifier_circuit(
         &cfg,
         &air,
-        proof,
+        verified.proof,
         &pd.common,
-        &public_inputs.to_vec(),
+        &verified.public_inputs.to_vec(),
         profile,
     )?;
     let l1_circuit_build_ms = t.elapsed().as_millis();
 
     let t = Instant::now();
-    run_composite_l1_verifier(&built, proof)?;
+    run_composite_l1_verifier(&built, verified.proof)?;
     let l1_in_circuit_verify_ms = t.elapsed().as_millis();
 
     let t = Instant::now();
-    let l1_cert = prove_composite_l1_outer_cert(&built, proof)?;
+    let l1_cert = prove_composite_l1_outer_cert(&built, verified.proof)?;
     let l1_outer_cert_ms = t.elapsed().as_millis();
 
     Ok(L1CertificateRun {

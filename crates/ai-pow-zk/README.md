@@ -319,8 +319,8 @@ The proof attests that:
    LogUp (`urange8`, `urange13`, `irange7p1`, `irange8` buses).
 5. **i8 ↔ u8 conversion** consistency on matrix bytes (`i8u8` bus).
 6. **NOISED_PACKED RAM lookup** — matmul A/B reads come from the
-   canonical matrix store (`noised_packed` bus). Merge-mining
-   byte-equivalence anchor.
+   canonical position-keyed matrix store (`noised_packed` bus).
+   Merge-mining byte-equivalence anchor.
 7. **BLAKE3 CV routing** across non-adjacent rows (`cv_routing` bus).
 8. The trace's last-row CUMSUM_TILE and JACKPOT_MSG match the
    claimed `CompositePublicInputs`.
@@ -361,10 +361,10 @@ form. This subsection is the in-narrative description.)
 | [`composite_full_air`] | `CompositeFullAir` — top-level AIR over `TOTAL_TRACE_WIDTH` cols. Calls all 10 chip evals via per-chip `eval_composite` methods. Public-input binding on the trace's last row. |
 | [`composite_full_air_with_lookups`] | `CompositeFullAirWithLookups` — same AIR + 7 LogUp bus emissions in a `bus_emit::*` submodule. Used with `p3-batch-stark`'s `prove_batch` / `verify_batch`. |
 | [`composite_trace`] | `CompositeTrace` — composite-trace builder. `place_blake3_hash`, `place_matmul_step`, `place_jackpot_step`, `fill_*_passthrough`, `populate_lookup_freq`. |
-| [`composite_public`] | `CompositePublicInputs` — typed 20-element PI vector (4 i32 cumsum + 16 u32 jackpot). `derive_from_trace` snapshots the trace's last row. |
+| [`composite_public`] | `CompositePublicInputs` — typed 60-element PI vector: cumsum, jackpot, matrix roots, job key, jackpot key, and jackpot hash. `derive_from_trace` snapshots and binds the trace-owned values. |
 | [`composite_proof`] | Lib-level `composite_prove` / `composite_verify` wrappers around `p3-uni-stark`. |
 | [`composite_lookups`] | Lookup-bus design + multiplicity calculus. Names the 7 LogUp buses (`urange8`, `urange13`, `irange7p1`, `irange8`, `i8u8`, `noised_packed`, `cv_routing`). |
-| [`composite_preprocess`] | Preprocessed-trace generation (CONTROL_PREP / NOISE_PACKED_PREP / CV_OR_TWEAK_PREP / AB_ID_PREP / STARK_ROW_IDX). |
+| [`composite_preprocess`] | Preprocessed-trace generation (CONTROL_PREP / NOISE_PACKED_PREP / CV_OR_TWEAK_PREP / AB_ID_PREP / A_ID / B_ID / STARK_ROW_IDX). |
 | [`composite_lookup_proof`] | Standalone POC AIR demonstrating the `p3-batch-stark` LogUp integration pattern. Useful as a teaching example. |
 | [`bench_suite`] | Multi-shape, multi-activity benches at TEST_PEARL and PROD profiles. All `#[ignore]`'d. |
 | [`chips::stark_row`] | Monotonic STARK_ROW_IDX increment. |

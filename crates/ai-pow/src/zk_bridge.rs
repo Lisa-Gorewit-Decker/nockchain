@@ -159,12 +159,10 @@ pub fn expected_layer0_rows(params: &MatmulParams) -> Layer0RowBudget {
         mhash_a: strip,
         mhash_b: strip,
         sweep,
-        // M-S1 producer store: `enumerate_noised_chunks` de-dups to
-        // the tile working set — every 8-i8 sub-window of the t·k
-        // A-strips + t·k B-strips ⇒ ≤ 2·(t·k)/8 = t·k/4 distinct
-        // chunks (a *sound* upper bound; the actual de-duplicated
-        // set is ≤ this).
-        store: (t.saturating_mul(params.k as u64)) / 4 + 1,
+        // M-S1 producer store: one addressed row per swept 8-byte
+        // A/B sub-slice. No value de-duplication: the lookup key is
+        // the verifier-fixed chunk position ID plus the packed value.
+        store: (t / 2) * (t / 2) * num_stripes * r.div_ceil(16) * 8 + 1,
         // key-pin (3) + fold chain (num_stripes) + jackpot (8) + slack.
         fixed: 3 + num_stripes + 8 + 16,
     }
@@ -992,12 +990,21 @@ pub fn prove_ai_pow_recursive_certificate(
     )?;
     verify_ai_pow_tiled_with_statement(params, target, &verified, &artifact)?;
     let zk_params = zk_params_from(params);
-    let l1 = ai_pow_zk::recursion::prove_canonical_ai_pow_certificate_from_composite_proof(
+    let verified_l0 = unsafe {
+        // SAFETY: `derive_ai_pow_statement` plus
+        // `verify_ai_pow_tiled_with_statement` above checked the
+        // canonical program, public inputs, target, selected work unit,
+        // commitments, nonce, and production/full-work boundary.
+        ai_pow_zk::recursion::ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+            &prover_program,
+            &artifact.proof,
+            &artifact.pis,
+        )
+    };
+    let l1 = ai_pow_zk::recursion::prove_recursive_certificate_from_chain_verified_composite_proof(
         &zk_params,
         &CircuitConfig::PROD,
-        &prover_program,
-        &artifact.proof,
-        &artifact.pis,
+        verified_l0,
     )
     .map_err(|e| BridgeError::RecursiveCertificate(format!("{e:?}")))?;
     Ok(AiPowRecursiveCertificateRun {
@@ -1174,12 +1181,21 @@ pub fn prove_pearl_merge_recursive_certificate(
         params, &precheck.work.nockchain_adjusted_target, &verified, &artifact,
     )?;
 
-    let l1 = ai_pow_zk::recursion::prove_canonical_ai_pow_certificate_from_composite_proof(
+    let verified_l0 = unsafe {
+        // SAFETY: the Pearl merge path validates the Pearl statement,
+        // commitments, target, explicit strip schedule, canonical
+        // program, and public inputs before reaching this recursion
+        // boundary.
+        ai_pow_zk::recursion::ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+            &prover_program,
+            &artifact.proof,
+            &artifact.pis,
+        )
+    };
+    let l1 = ai_pow_zk::recursion::prove_recursive_certificate_from_chain_verified_composite_proof(
         &zk_params,
         &CircuitConfig::PROD,
-        &prover_program,
-        &artifact.proof,
-        &artifact.pis,
+        verified_l0,
     )
     .map_err(|e| BridgeError::RecursiveCertificate(format!("{e:?}")))?;
 
@@ -1459,10 +1475,9 @@ pub(crate) fn prove_and_verify(
 /// tile's genuine committed-matrix fold (the §6(b) chain), at the
 /// tile the plain miner actually cleared. The remaining deep
 /// tile↔committed-store binding (a prover proving a tile whose
-/// strips are not the block's committed A/B rows/cols) reduces to
-/// the §4.C `noised_packed`-non-vacuity-on-sweep-rows residual
-/// (place_matmul_step sets `MAT_ID = 0`, emits no `noised_packed`
-/// query — HIGH2_2_DESIGN §4.C.10), tracked jointly.
+/// strips are not the block's committed A/B rows/cols) is enforced
+/// by the §4.C position-keyed `noised_packed` bus plus the C3
+/// strip-opening commitment.
 pub(crate) fn prove_and_verify_tiled(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
@@ -1617,6 +1632,8 @@ fn prove_ai_pow_scheduled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
     let coloc = params.noise_rank % 16 == 0;
     let rr = params.noise_rank;
     let a_strip_lo = ca0 * 1024;
+    let a_id_base = ai_pow_zk::composite_trace::NOISED_CHUNK_ID_BASE;
+    let b_id_base = a_id_base + ((strip_schedule.a_indices.len() * kk).div_ceil(8)) as u64;
     let a_noise_strip: Vec<i8> = (0..(ca1 - ca0) * 1024)
         .map(|j| {
             let p = a_strip_lo + j;
@@ -1637,6 +1654,7 @@ fn prove_ai_pow_scheduled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
         &zctx.kappa,
         4, // IS_HASH_A
         if coloc { Some(&a_noise_strip) } else { None },
+        if coloc { Some(a_id_base) } else { None },
     );
     // B col-major (n cols × k, col j at j·k): tile_j's `t` cols.
     let b_pad = pad_to_chunk_boundary(&b_bytes);
@@ -1666,6 +1684,7 @@ fn prove_ai_pow_scheduled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
         &zctx.kappa,
         5, // IS_HASH_B
         if coloc { Some(&b_noise_strip) } else { None },
+        if coloc { Some(b_id_base) } else { None },
     );
 
     // C1 — key-pin rows binding JOB_KEY = κ and the mode-specific
@@ -1736,22 +1755,18 @@ fn prove_ai_pow_scheduled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
     // the one and only matmul path (the legacy off-circuit
     // `compute_tile_trace` fallback was deleted).
     // HIGH-2.2 §4.C.11 / M-S1 — the `noised_packed` producer store:
-    // one row per *distinct* swept 8-i8 micro-tile chunk. The
-    // chunked whole-micro-tile matmul query
-    // (`bus_emit::noised_packed`) is balanced only if every consumed
-    // chunk is a multiset member of this declared store, so the
-    // §6(b) sweep's A/B inputs are now *bound* (not free). §4.C.2
-    // / A3.2b (b1): each store row carries the explicit
-    // `(plain, noise)` split — `MAT_UNPACK = committed-plain`
-    // (`ctx.a`/`ctx.b` at the chunk's tile-strip src — A3.1
-    // `enumerate_noised_chunks_with_src`), `NOISE_UNPACK =
-    // noise_ref(s_a/s_b)`, `NOISE_PACKED_PREP = polyval(noise,
-    // 129)` (CRIT-1-pinned ⇒ the prover cannot choose the noise).
-    // `NOISED_PACKED = plain+noise = a′` is unchanged ⇒ M-S1's
-    // `noised_packed` LogUp / `populate_lookup_freq` balance
-    // exactly as before. Closes the §4.C.2 *noise* tie (store
-    // noise == Pearl `noise_ref` of the C1-pinned seed); the
-    // *plain* tie (MAT_UNPACK ↔ HASH_A via C3) is A3.2c.
+    // one row per swept 8-i8 micro-tile chunk position. The chunked
+    // whole-micro-tile matmul query (`bus_emit::noised_packed`) is
+    // balanced only if every consumed chunk matches the verifier-fixed
+    // position ID and value published by the declared store, so the
+    // §6(b) sweep's A/B inputs are bound to positions, not merely to a
+    // value multiset. §4.C.2 / A3.2b (b1): each store row carries the
+    // explicit `(plain, noise)` split — `MAT_UNPACK = committed-plain`
+    // (`ctx.a`/`ctx.b` at the chunk's tile-strip src), `NOISE_UNPACK =
+    // noise_ref(s_a/s_b)`, `NOISE_PACKED_PREP = polyval(noise, 129)`
+    // (CRIT-1-pinned ⇒ the prover cannot choose the noise). Closes
+    // the §4.C.2 *noise* tie; the *plain* tie (MAT_UNPACK ↔ HASH_A
+    // via C3) is A3.2c.
     // §4.C.2: producers of the `noised_packed` bus.
     //  * cx.2 g=1 (`coloc`, 16|r): the co-located strip-opening
     //    leaf round-0 rows (placed above with the `noise_strip`s;
@@ -1762,7 +1777,7 @@ fn prove_ai_pow_scheduled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
     //    (MAT_UNPACK=committed-plain, NOISE_UNPACK=noise_ref,
     //    NOISE_PACKED_PREP CRIT-1-pinned ⇒ strictly stronger than
     //    pre-A3, not zero-gap).
-    let store_srcs = CompositeTrace::enumerate_noised_chunks_with_src_hw(
+    let store_srcs = CompositeTrace::enumerate_noised_chunks_positioned_hw(
         &a_strips, &b_strips, h_tile, w_tile, r, num_stripes,
     );
     let n_store = store_srcs.len();
@@ -1808,7 +1823,11 @@ fn prove_ai_pow_scheduled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
         } else {
             for (i, s) in store_srcs.iter().enumerate() {
                 let (plain, noise) = plain_noise(s);
-                trace.place_noised_store_row_split(store_start + i, &plain, &noise, 0);
+                let id_base = if s.side_a { a_id_base } else { b_id_base };
+                let mat_id = ai_pow_zk::composite_trace::noised_chunk_id(id_base, kk2, &s.src)
+                    .try_into()
+                    .map_err(|_| BridgeError::CommitmentMismatch("NOISED_PACKED id overflow"))?;
+                trace.place_noised_store_row_split(store_start + i, &plain, &noise, mat_id);
             }
             n_store
         };
@@ -3900,8 +3919,8 @@ mod tests {
 
     /// **§4.C.2 / A3.1 gate (the verifier-recomputable W1/W2
     /// data, KAT-validated; no AIR change).** For the real
-    /// bridge geometry, every distinct `noised_packed` store
-    /// chunk decomposes as `committed_plain + noise`, where
+    /// bridge geometry, every checked `noised_packed` store chunk
+    /// decomposes as `committed_plain + noise`, where
     /// `noise` is **exactly** `ai_pow_zk::noise_ref` of the
     /// C1-pinned `s_a`/`s_b` at the chunk's deterministic
     /// tile-strip source `(lane,l)`. This is precisely what
@@ -4687,11 +4706,11 @@ mod tests {
     /// geometry** (16|r — the production-faithful path; the
     /// cx.0/cx.2.1 KAT-first discipline):
     ///   (P1) **producer ⊇ consumer** at the `noised_packed`
-    ///        bus-key level: every distinct M-S1-swept `a′`
-    ///        8-chunk (`enumerate_noised_chunks_positioned`, the
-    ///        consumer) is some opened-leaf-block sub-slice's
-    ///        `a′` (the producer) ⇒ the bus stays balanced once
-    ///        the producer moves onto the leaf rows.
+    ///        value level: every M-S1-swept `a′` 8-chunk
+    ///        (`enumerate_noised_chunks_positioned`, the consumer)
+    ///        is some opened-leaf-block sub-slice's `a′` (the
+    ///        producer). Position-keyed AIR tests separately assert
+    ///        that the producer is queried at the exact chunk ID.
     ///   (P2) per sub-slice `NOISE_PACKED_PREP[s] =
     ///        polyval(noise_ref-subslice,129)` is well-formed and
     ///        bounded (the InputChip-eqn1 / CRIT-1-pin value the
@@ -4813,7 +4832,7 @@ mod tests {
             let prod_a = build_producer(&a_pad, ca0, ca1, a_bytes.len(), true);
             let prod_b = build_producer(&b_pad, cb0, cb1, b_bytes.len(), false);
 
-            // Consumer: the distinct M-S1-swept a′ 8-chunks
+            // Consumer: the positioned M-S1-swept a′ 8-chunks
             // (positioned layout; the noised_packed bus queries).
             let pos = CompositeTrace::enumerate_noised_chunks_positioned(
                 &a_strips, &b_strips, t, r, num_stripes,
@@ -5200,7 +5219,7 @@ mod tests {
     /// `ai_pow_zk::canonical::canonical_program` (params-pure, no
     /// witness) must equal `extract_program(honest_trace)`
     /// bit-for-bit on **every row of every `is_class_canonical`
-    /// class** (CR.1: `Pad`), across all 12 PROGRAM_COLS, on the
+    /// class** (CR.1: `Pad`), across all PROGRAM_COLS, on the
     /// REAL `P16`(16|r) bridge trace. This is the §5 gate that, per
     /// row class, fences the eventual CR.6 verify-path flip: when
     /// every class is canonical and this KAT is all-green, the VK
@@ -5262,7 +5281,7 @@ mod tests {
         .expect("honest P16 g=1 (no tamper) must prove + pow-verify");
         let (ext_vals, h) = cap.into_inner().expect("captured trace");
         let w = extract_program_width();
-        assert_eq!(ext_vals.len(), h * w, "extract is h×12");
+        assert_eq!(ext_vals.len(), h * w, "extract has h×PROGRAM_COLS cells");
 
         let zk = ZkParams {
             m: params.m,
@@ -5306,7 +5325,7 @@ mod tests {
         );
     }
 
-    /// PROGRAM_COLS width (12) — `extract_program`'s row stride.
+    /// PROGRAM_COLS width — `extract_program`'s row stride.
     fn extract_program_width() -> usize {
         ai_pow_zk::composite_full_air::PROGRAM_COLS.len()
     }
@@ -5641,17 +5660,13 @@ mod tests {
         );
     }
 
-    /// **§4.C.10 — producer-planting / multiset-permutation
-    /// adversarial test.** The `noised_packed` bus is *value-keyed*
-    /// — "the chunk value is the discriminant" (multiset binding).
-    /// So a miner who runs the §6(b) sweep on a **row-permuted**
-    /// committed matrix presents the *same multiset* of chunks ⇒
-    /// the bus balances even though the matmul is of a different
-    /// matrix. This probes whether anything beyond the multiset bus
-    /// (the §6(b) keystone / §6(a) fold-schedule pin / position-
-    /// exact C3) binds the swept chunks to their committed
-    /// **positions**. A sound AIR MUST reject — else a miner forges
-    /// the PoW by permuting the committed matrix's rows.
+    /// **§4.C.10 — producer-planting / position-permutation
+    /// adversarial test.** A miner who runs the §6(b) sweep on a
+    /// **row-permuted** committed matrix may present the same chunk
+    /// values, but the position-keyed `noised_packed` bus must reject
+    /// because those values no longer sit at the verifier-fixed chunk
+    /// IDs. A sound AIR MUST reject — else a miner forges the PoW by
+    /// permuting the committed matrix's rows.
     #[test]
     fn sec_4c10_sweep_on_row_permuted_matrix_rejects() {
         use crate::synth::synth_matrices;
@@ -5670,10 +5685,10 @@ mod tests {
         let ctx = BlockContext::build(b"4c10-perm-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
 
-        // Row-reverse the committed A: a same-chunk-multiset but
+        // Row-reverse the committed A: same chunk values but a
         // genuinely different matrix (1 row = k = 1024 bytes = one
-        // chunk, so the 8-byte sub-slice multiset is identical, just
-        // reordered). The §6(b) sweep runs on this; the strip-
+        // chunk, so the 8-byte sub-slice values are identical, just
+        // assigned to different positions). The §6(b) sweep runs on this; the strip-
         // opening + HASH_A stay the committed `a`.
         let k = params.k as usize;
         let m = params.m as usize;
@@ -5696,10 +5711,9 @@ mod tests {
         assert!(
             res.is_err(),
             "§4.C.10: a §6(b) sweep on a row-permuted committed \
-             matrix (same chunk multiset, different matrix) MUST be \
-             rejected — the multiset `noised_packed` bus alone does \
-             not bind positions; the keystone / fold-schedule pin / \
-             position-exact C3 must catch the permutation."
+             matrix (same chunk values, different positions) MUST be \
+             rejected by the position-keyed `noised_packed` bus and \
+             strip-opening commitment."
         );
     }
 

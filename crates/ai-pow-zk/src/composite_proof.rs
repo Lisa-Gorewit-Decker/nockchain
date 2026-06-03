@@ -28,9 +28,11 @@
 //!
 //! ## Public-input shape
 //!
-//! [`CompositePublicInputs`] — 20 field elements: 4 i32 final
-//! CUMSUM_TILE + 16 u32 final JACKPOT_MSG, bound by the AIR on
-//! the trace's last row. See
+//! [`CompositePublicInputs`] — 60 field elements:
+//! `cumsum(4) + jackpot(16) + hash_a(8) + hash_b(8) +
+//! job_key(8) + commitment_hash(8) + hash_jackpot(8)`. The
+//! cumsum/jackpot values are bound on the trace's last row; the
+//! hash/key values are bound by selector-gated rows. See
 //! [`crate::composite_public`] for the layout and the
 //! `CompositePublicInputs::derive_from_trace` helper that snapshots
 //! the values from a generated trace.
@@ -226,7 +228,7 @@ pub fn composite_verify_pow(
 //  *unpinned* `CompositeFullAir` — a malicious prover can zero
 //  every selector and forge a winning proof (no preprocessed
 //  commitment ⇒ no verifier-fixed program). The pinned API below
-//  commits the 5 PROGRAM_COLS as a *preprocessed* trace whose
+//  commits `PROGRAM_COLS` as a *preprocessed* trace whose
 //  commitment goes in the verifying key; the AIR forces the
 //  prover's in-trace `*_PREP` cells to equal it. The verifier
 //  rebuilds the canonical program from the trusted shape (never
@@ -979,10 +981,9 @@ mod tests {
         trace.matrix.values[base + FOLD_XSTEP] = tampered_value;
 
         // Derive PIs + canonical from the tampered trace. FOLD_XSTEP
-        // is not in PROGRAM_COLS (the CRIT-1 pin set is CONTROL_PREP,
-        // NOISE_PACKED_PREP×8, CV_OR_TWEAK_PREP, AB_ID_PREP,
-        // STARK_ROW_IDX — see composite_full_air.rs:126-139). Canonical
-        // is unchanged; PIs are unchanged (they bind HASH_A/B,
+        // is not in PROGRAM_COLS (the CRIT-1 pin set is row
+        // metadata: control, noise pins, CV/tweak, A/B IDs, and the
+        // row index). Canonical is unchanged; PIs are unchanged (they bind HASH_A/B,
         // HASH_JACKPOT, key-pin rows). The mismatch surfaces purely as
         // an AIR-constraint failure on the K3 row.
         let pis = CompositePublicInputs::derive_from_trace(&trace);

@@ -110,7 +110,7 @@ pub const MIN_STARK_LEN: usize = 1 << 13;
 //    range tables           (11 cols)
 //    control flags          (22 cols incl. CONTROL_PREP)
 //    input chip unpacking   (25 cols: MAT_UNPACK, UINT8_DATA, NOISE_PACKED_PREP, NOISE_UNPACK)
-//    NOISED_PACKED + indexing (12 cols: NOISED_PACKED, MAT_FREQ, MAT_ID, MAT_ID_LIMBS, AB_ID_PREP, AB_ID_LIMBS, A_ID, B_ID)
+//    NOISED_PACKED + indexing (18 cols: NOISED_PACKED, MAT_FREQ, MAT_ID, MAT_ID_LIMBS, AB_ID_PREP, AB_ID_LIMBS, A_ID[4], B_ID[4])
 //    STARK_ROW_IDX          (1 col)
 //    matmul tile data       (80 cols: A_NOISED, A_NOISED_UNPACK, B_NOISED, B_NOISED_UNPACK)
 //    matmul accumulator     (8 cols: CUMSUM_TILE, CUMSUM_BUFFER)
@@ -200,13 +200,12 @@ pub const NUM_CONTROL_COLS: usize = 22;
 /// whole 64-byte block (mirrors `UINT8_DATA`'s u8 view), so
 /// `InputChip`'s `NOISED_PACKED = polyval(MAT_UNPACK) +
 /// polyval(NOISE_UNPACK)` extends to all 8 sub-slices reusing
-/// M-S1's *exact* packing (no i8/u8 reconciliation). Consumers
-/// use the 8-byte window [`MAT_UNPACK_WIN`] until the cx.2
-/// activation ⇒ 56 added cols zero-default, byte-identical
-/// (the cx.1b-layout zero-blast discipline).
+/// M-S1's *exact* packing.
 pub const MAT_UNPACK_LEN: usize = 64;
-/// The active 8-byte `MAT_UNPACK` window until cx.2/X1 activation.
-pub const MAT_UNPACK_WIN: usize = 8;
+/// Active `MAT_UNPACK` lookup window. cx.2 makes the full
+/// 64-byte co-located block live so hash and matmul cannot split
+/// views across sub-slices.
+pub const MAT_UNPACK_WIN: usize = MAT_UNPACK_LEN;
 pub const MAT_UNPACK_START: usize = CONTROL_PREP + NUM_CONTROL_COLS;
 
 /// UINT8_DATA. **§4.C.2 c-exact (cx.2/X1):** widened 8→64 so a
@@ -214,15 +213,11 @@ pub const MAT_UNPACK_START: usize = CONTROL_PREP + NUM_CONTROL_COLS;
 /// committed block (per-word C3 binds all 16 `BLAKE3_MSG` words
 /// to it ⇒ `UINT8_DATA[0..64]` ≡ the committed block ∈ `HASH_A`;
 /// each swept store window is the 8-byte sub-slice
-/// `UINT8_DATA[8p..8p+8]`). Until the cx.2 activation lands,
-/// every existing consumer operates over the **8-byte window**
-/// [`UINT8_DATA_WIN`] (= the pre-cx.2 width) ⇒ the 56 added
-/// columns are zero-default and behaviour is byte-identical
-/// (the cx.1b-layout zero-blast discipline).
+/// `UINT8_DATA[8p..8p+8]`).
 pub const UINT8_DATA_LEN: usize = 64;
-/// The active 8-byte window of `UINT8_DATA` consumers use until
-/// the cx.2/X1 atomic activation (the pre-cx.2 `UINT8_DATA_LEN`).
-pub const UINT8_DATA_WIN: usize = 8;
+/// Active `UINT8_DATA` lookup window. cx.2 makes all 64 bytes of
+/// a co-located block live under the u8 and i8-u8 buses.
+pub const UINT8_DATA_WIN: usize = UINT8_DATA_LEN;
 pub const UINT8_DATA_START: usize = MAT_UNPACK_START + MAT_UNPACK_LEN;
 
 /// NOISE_PACKED_PREP: **§4.C.2 c-exact (cx.2-pcols/X1):** widened
@@ -242,12 +237,10 @@ pub const NOISE_PACKED_PREP_LEN: usize = 8;
 
 /// NOISE_UNPACK. **§4.C.2 c-exact (cx.2/X1):** widened 8→64 so a
 /// co-located leaf round-0 row carries its block's per-position
-/// `noise_ref` for all 8 sub-slices. Consumers use the 8-byte
-/// window [`NOISE_UNPACK_WIN`] until the cx.2 activation
-/// (zero-blast: 56 added cols zero-default).
+/// `noise_ref` for all 8 sub-slices.
 pub const NOISE_UNPACK_LEN: usize = 64;
-/// The active 8-byte `NOISE_UNPACK` window until cx.2/X1 activation.
-pub const NOISE_UNPACK_WIN: usize = 8;
+/// Active `NOISE_UNPACK` lookup window for the full co-located block.
+pub const NOISE_UNPACK_WIN: usize = NOISE_UNPACK_LEN;
 pub const NOISE_UNPACK_START: usize = NOISE_PACKED_PREP + NOISE_PACKED_PREP_LEN;
 
 // ---- NOISED_PACKED: canonical noised-matrix data table ----
@@ -295,24 +288,28 @@ pub const MAT_ID: usize = MAT_FREQ + MAT_FREQ_LEN;
 pub const MAT_ID_LIMBS_LEN: usize = 2;
 pub const MAT_ID_LIMBS_START: usize = MAT_ID + 1;
 
-/// AB_ID_PREP: 1 preprocessed col. Packs `A_ID || B_ID` for the
-/// matmul tile load.
+/// AB_ID_PREP: 1 preprocessed col. Packs the first `A_ID || B_ID`
+/// pair for the matmul tile load. The full per-sub-slice IDs below
+/// are pinned directly as program columns; this legacy pack keeps
+/// the original limb decomposition useful for the first pair.
 pub const AB_ID_PREP: usize = MAT_ID_LIMBS_START + MAT_ID_LIMBS_LEN;
 
 /// AB_ID_LIMBS: 4 cols. Range check for AB_ID_PREP.
 pub const AB_ID_LIMBS_LEN: usize = 4;
 pub const AB_ID_LIMBS_START: usize = AB_ID_PREP + 1;
 
-/// A_ID, B_ID: 1 col each. Unpacked from AB_ID_PREP. These index
-/// into NOISED_PACKED via LogUp on the matmul chip.
+/// A_ID/B_ID: one position ID per consumed 8-byte sub-slice. These
+/// index into NOISED_PACKED via LogUp on the matmul chip.
+pub const A_ID_LEN: usize = A_NOISED_LEN / 2;
+pub const B_ID_LEN: usize = B_NOISED_LEN / 2;
 pub const A_ID: usize = AB_ID_LIMBS_START + AB_ID_LIMBS_LEN;
-pub const B_ID: usize = A_ID + 1;
+pub const B_ID: usize = A_ID + A_ID_LEN;
 
 // ---- STARK_ROW_IDX ----
 
 /// STARK_ROW_IDX: 1 col, monotonically increasing from 0. Used by
 /// the CV-routing lookup to address arbitrary previous rows.
-pub const STARK_ROW_IDX: usize = B_ID + 1;
+pub const STARK_ROW_IDX: usize = B_ID + B_ID_LEN;
 
 // ---- Per-row matmul tile data ----
 
@@ -799,12 +796,12 @@ mod tests {
     fn ram_lookup_column_widths_match_pearl() {
         assert_eq!(JACKPOT_X_BITS_LEN, 32);
         assert_eq!(JACKPOT_SLOT_SEL_LEN, 16);
-        assert_eq!(MAT_UNPACK_LEN, 64); // cx.2/X1 (was 8); window = MAT_UNPACK_WIN
-        assert_eq!(MAT_UNPACK_WIN, 8);
-        assert_eq!(UINT8_DATA_LEN, 64); // cx.2/X1 (was 8); window = UINT8_DATA_WIN
-        assert_eq!(UINT8_DATA_WIN, 8);
+        assert_eq!(MAT_UNPACK_LEN, 64); // cx.2/X1 full-block activation
+        assert_eq!(MAT_UNPACK_WIN, 64);
+        assert_eq!(UINT8_DATA_LEN, 64); // cx.2/X1 full-block activation
+        assert_eq!(UINT8_DATA_WIN, 64);
         assert_eq!(NOISE_UNPACK_LEN, 64); // cx.2/X1 (was 8)
-        assert_eq!(NOISE_UNPACK_WIN, 8);
+        assert_eq!(NOISE_UNPACK_WIN, 64);
         assert_eq!(NOISED_PACKED_LEN, 16); // cx.2/X1 (was 2)
         assert_eq!(NOISED_PACKED_WIN, 2);
         assert_eq!(MAT_ID_LIMBS_LEN, 2);

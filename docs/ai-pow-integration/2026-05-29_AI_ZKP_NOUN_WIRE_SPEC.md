@@ -406,41 +406,46 @@ harness:
 
 - model params: `m=4096 k=4096 n=14336 noise_rank=64 tile=8`;
 - profile: `CircuitConfig::PROD` with `log_blowup=4`, `num_queries=15`, `pow_bits=1`;
-- trace: `2^15 = 32768` rows by `1911` columns;
+- trace: `2^15 = 32768` rows by `1917` columns;
 - trace contents: zero-activity baseline at production dimensions. The
   STARK/FRI proof cost is data-oblivious for this benchmark, so size
   and prover time are dimension/profile measurements without needing
   16 GB of model weights.
 
-Measured on 2026-05-29:
+Measured on 2026-06-03 after the position-keyed `noised_packed`
+constraint update, with a hot native release build:
 
 | Stage | Time |
 |---|---:|
-| L0 composite prove | 27.14 s |
-| L1 verifier-circuit build | 0.44 s |
-| L1 in-circuit verify | 0.06 s |
-| L1 outer certificate prove + verify | 11.98 s |
-| End-to-end trace-to-recursive-proof time | 39.62 s |
-| Recursive-only time after L0 proof exists | 12.48 s |
+| L0 composite prove | 35.34 s |
+| L1 verifier-circuit build | 0.48 s |
+| L1 in-circuit verify | 0.07 s |
+| L1 outer certificate prove + verify | 13.12 s |
+| End-to-end trace-to-recursive-proof time | 49.01 s |
+| Recursive-only time after L0 proof exists | 13.67 s |
 
 Serialized sizes from the same run:
 
 | Artifact | Bytes | KiB |
 |---|---:|---:|
-| L0 composite proof | 258,032 | 252.0 KiB |
-| L1 recursive certificate | 103,023 | 100.6 KiB |
+| L0 composite proof | 308,368 | 301.1 KiB |
+| L1 recursive certificate | 125,207 | 122.3 KiB |
 
-The non-native build of the same `2^15` run was effectively the same
-size and slightly slower:
+Process-level `/usr/bin/time -l` for the same hot-build run reported
+`49.87 real`, `522.59 user`, `8.96 sys`, and `12,833,603,584` bytes
+maximum resident set size.
 
-```text
-CSV,15,32768,1911,27808,461,59,11963,257774,102958
-```
-
-The native build result was:
+For comparison, the 2026-05-29 native run before this constraint update
+was:
 
 ```text
 CSV,15,32768,1911,27141,436,59,11980,258032,103023
+```
+
+The current native hot-build result is:
+
+```text
+CSV,15,32768,1917,35336,485,67,13117,308368,125207
 ```
 
 CSV columns are:
