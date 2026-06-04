@@ -1147,7 +1147,7 @@ pub struct TerminalNpoTip5LookupFriOpeningProof {
     pub profile: TerminalNpoTip5LookupFriProfile,
     pub commitment: TerminalFriCommitment,
     pub opened_values_basis: Vec<Vec<u64>>,
-    pub proof: TerminalFriProof,
+    pub proof: TerminalCompressedFriProof,
 }
 
 /// Transcript-derived opening of optimized Tip5 lookup AIR main columns.
@@ -6066,13 +6066,30 @@ impl NativeTerminalCompiler {
             );
         challenger.observe(commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
-        let (opened_values, proof) =
+        let (opened_values, plain_proof) =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
                 &pcs,
                 vec![(&data, vec![vec![zeta]])],
                 &mut challenger,
             );
         let opened_values_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
+        let mut query_challenger = TerminalFriChallenger::new(Tip5Perm);
+        Self::seed_terminal_npo_tip5_lookup_fri_challenger(
+            &mut query_challenger,
+            prelude,
+            &profile,
+        );
+        query_challenger.observe(commitment.clone());
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        for point_values in &opened_values[0][0] {
+            query_challenger.observe_algebra_slice(point_values);
+        }
+        let query_indices = Self::derive_terminal_fri_query_indices_from_challenger(
+            &mut query_challenger,
+            &plain_proof,
+            profile.proximity,
+        )?;
+        let proof = Self::compress_terminal_fri_proof(&plain_proof, &query_indices)?;
 
         Ok(TerminalNpoTip5LookupFriOpeningProof {
             profile,
@@ -16857,13 +16874,14 @@ impl NativeTerminalCompiler {
             );
         challenger.observe(proof.commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let restored = Self::decompress_terminal_fri_proof(&proof.proof)?;
         <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
             &pcs,
             vec![(
                 proof.commitment.clone(),
                 vec![(domain, vec![(zeta, opened_values.clone())])],
             )],
-            &proof.proof,
+            &restored,
             &mut challenger,
         )
         .map_err(|err| {
@@ -24750,13 +24768,24 @@ mod tests {
 
         let serialized = postcard::to_allocvec(&proof)
             .expect("terminal Tip5 lookup FRI opening proof must serialize");
+        let restored_fri = NativeTerminalCompiler::decompress_terminal_fri_proof(&proof.proof)
+            .expect("terminal Tip5 lookup compact FRI proof must decompress");
+        let compressed_fri_bytes = postcard::to_allocvec(&proof.proof)
+            .expect("terminal Tip5 lookup compact FRI proof must serialize");
+        let plain_fri_bytes = postcard::to_allocvec(&restored_fri)
+            .expect("terminal Tip5 lookup restored FRI proof must serialize");
         println!(
-            "terminal Tip5 lookup FRI candidate: {} bytes ({:.1} KiB), prove={:?}, verify={:?}",
+            "terminal Tip5 lookup FRI candidate: {} bytes ({:.1} KiB), raw_inner_fri={} bytes ({:.1} KiB), compact_inner_fri={} bytes ({:.1} KiB), prove={:?}, verify={:?}",
             serialized.len(),
             serialized.len() as f64 / 1024.0,
+            plain_fri_bytes.len(),
+            plain_fri_bytes.len() as f64 / 1024.0,
+            compressed_fri_bytes.len(),
+            compressed_fri_bytes.len() as f64 / 1024.0,
             prove_elapsed,
             verify_elapsed,
         );
+        assert!(compressed_fri_bytes.len() < plain_fri_bytes.len());
         let (roundtrip, trailing): (TerminalNpoTip5LookupFriOpeningProof, &[u8]) =
             postcard::take_from_bytes(&serialized)
                 .expect("terminal Tip5 lookup FRI opening proof must deserialize");
@@ -24876,13 +24905,24 @@ mod tests {
 
         let serialized = postcard::to_allocvec(&proof)
             .expect("terminal Tip5 lookup IO FRI opening proof must serialize");
+        let restored_fri = NativeTerminalCompiler::decompress_terminal_fri_proof(&proof.proof)
+            .expect("terminal Tip5 lookup IO compact FRI proof must decompress");
+        let compressed_fri_bytes = postcard::to_allocvec(&proof.proof)
+            .expect("terminal Tip5 lookup IO compact FRI proof must serialize");
+        let plain_fri_bytes = postcard::to_allocvec(&restored_fri)
+            .expect("terminal Tip5 lookup IO restored FRI proof must serialize");
         println!(
-            "terminal Tip5 lookup IO FRI projection candidate: {} bytes ({:.1} KiB), prove={:?}, verify={:?}",
+            "terminal Tip5 lookup IO FRI projection candidate: {} bytes ({:.1} KiB), raw_inner_fri={} bytes ({:.1} KiB), compact_inner_fri={} bytes ({:.1} KiB), prove={:?}, verify={:?}",
             serialized.len(),
             serialized.len() as f64 / 1024.0,
+            plain_fri_bytes.len(),
+            plain_fri_bytes.len() as f64 / 1024.0,
+            compressed_fri_bytes.len(),
+            compressed_fri_bytes.len() as f64 / 1024.0,
             prove_elapsed,
             verify_elapsed,
         );
+        assert!(compressed_fri_bytes.len() < plain_fri_bytes.len());
         assert!(
             serialized.len() < 100_000,
             "terminal IO projection should expose the candidate size floor"
