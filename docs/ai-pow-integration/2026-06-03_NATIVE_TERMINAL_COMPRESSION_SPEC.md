@@ -239,10 +239,12 @@ for this route.
   observing the column commitment and sampling the extension opening point. A
   regression test commits D=2 recompose NPO columns through this native FRI
   PCS, verifies the typed proof, round-trips its serialized form, and rejects
-  tampered opened values and stale profile metadata. This is the proximity
-  substrate for the final backend; production still does not accept it as the
-  full NPO relation proof until the row-polynomial constraints are connected to
-  the FRI openings.
+  tampered opened values and stale profile metadata. The proof now stores its
+  inner FRI opening directly in the terminal-compressed wrapper, so full-table
+  and witness-value NPO FRI checkpoints no longer serialize raw Merkle path
+  material. This is the proximity substrate for the final backend; production
+  still does not accept it as the full NPO relation proof until the
+  row-polynomial constraints are connected to the FRI openings.
 - `TerminalNpoPolynomialFriOpenedColumns`: the verifier-derived handoff from a
   verified NPO FRI opening to future row-polynomial checks. Verification now
   returns the transcript-derived opening point, the verifier-selected column
@@ -483,9 +485,9 @@ for this route.
   payload measured `15,957` bytes / `15.6 KiB`; the compressed wrapper measured
   `10,245` bytes / `10.0 KiB` and decompresses to a proof accepted by the
   existing verifier. On the real 668-row Tip5-L0 NPO FRI candidates, the full
-  table inner FRI payload compresses from `96,300` bytes to `79,357` bytes, and
-  the witness-value-column inner FRI payload compresses from `80,645` bytes to
-  `60,312` bytes; both decompressed proofs are accepted by the existing
+  table inner FRI payload compresses from `96,309` bytes to `67,010` bytes, and
+  the witness-value-column inner FRI payload compresses from `80,476` bytes to
+  `56,378` bytes; both decompressed proofs are accepted by the existing
   verifier. On the padding-quotient checkpoint, the restored raw FRI payload
   measured `15,482` bytes / `15.1 KiB` while the stored compressed payload
   measured `8,153` bytes / `8.0 KiB`. This is not yet the production verifier
@@ -1026,10 +1028,10 @@ Tip5-L0 verifier circuit:
 | exhaustive NPO hidden Tip5 input bytes | 17,402 |
 | exhaustive NPO known-index witness multiproof | 45,385 |
 | exhaustive NPO sparse witness basis coefficients | 1,521 |
-| compact production proof body | 85,562 |
-| compact production certificate | 85,785 |
+| compact production proof body | 84,456 |
+| compact production certificate | 84,681 |
 
-The debug-profile measurement is `prove=4.952 s, verify=3.214 s` for the
+The debug-profile measurement is `prove=5.284 s, verify=3.448 s` for the
 production proof body and certificate, with terminal parameters
 `security_bits=60, log_blowup=4, num_queries=15, query_pow_bits=0`. This removes
 the sampled production NPO validity layer and verifies all 668 supported
@@ -1079,8 +1081,8 @@ Tip5-L0 verifier circuit produced:
 
 | NPO candidate | bytes | inner FRI | compact inner | prove | verify |
 |---|---:|---:|---:|---:|---:|
-| full-table NPO FRI opening proof, 186 field columns / 372 basis columns | 99,647 | 96,300 | 79,357 | 2.281 s | 0.489 s |
-| witness-value-column NPO FRI opening proof, 43 field columns / 86 basis columns | 81,611 | 80,645 | 60,312 | 1.057 s | 0.474 s |
+| full-table NPO FRI opening proof, 186 field columns / 372 basis columns | 70,370 | 96,309 | 67,010 | 2.337 s | 0.498 s |
+| witness-value-column NPO FRI opening proof, 43 field columns / 86 basis columns | 57,349 | 80,476 | 56,378 | 1.069 s | 0.485 s |
 | optimized Tip5 lookup main-trace FRI opening proof, 558 Goldilocks columns | 139,846 | - | - | 1.525 s | 0.057 s |
 | optimized Tip5 lookup terminal-IO FRI projection, 26 Goldilocks columns | 66,063 | - | - | 0.413 s | 0.036 s |
 | optimized Tip5 lookup terminal-IO zero-support quotient, 26 columns + 1 quotient | 85,766 | - | - | 1.756 s | 0.045 s |
@@ -1237,7 +1239,7 @@ Completion audit against the active terminal-compression requirements:
 |---|---|---|
 | Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
-| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `85,785` bytes / `83.8 KiB`, debug-profile `prove=4.952s`, `verify=3.214s`. | satisfied on the measured production fixture |
+| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `84,681` bytes / `82.7 KiB`, debug-profile `prove=5.284s`, `verify=3.448s`. | satisfied on the measured production fixture |
 | No confusing low-soundness testing production path | Production builds expose only `TerminalProofKind::Production`; local checkpoint proof-kind helpers are `cfg(test)`, and public production verification requires all 15 production queries. | satisfied for public production verifier dispatch |
 | Public values, parameters, relation, proximity schedule, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile and column layout, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
@@ -1391,7 +1393,7 @@ Security-audit conclusions for the current implementation checkpoint:
 - Fixed-int bincode serialization is size-only: it changes the Rust helper's
   byte encoding and rejects trailing bytes on decode, but does not alter the
   proof relation, Fiat-Shamir transcript, FRI parameters, or public inputs.
-- The terminal production checkpoint is now 85,785 bytes, or 83.8 KiB, with 60
+- The terminal production checkpoint is now 84,681 bytes, or 82.7 KiB, with 60
   pure-query bits and exhaustive supported-NPO verification. It reached the
   ~100 KiB size target through structural proof-body changes, especially
   omitting verifier-derived witness indices from the exhaustive NPO multiproof

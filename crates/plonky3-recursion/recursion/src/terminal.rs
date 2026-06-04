@@ -1459,7 +1459,7 @@ pub struct TerminalNpoPolynomialFriOpeningProof {
     pub profile: TerminalNpoPolynomialFriProfile,
     pub commitment: TerminalFriCommitment,
     pub opened_values_basis: Vec<Vec<u64>>,
-    pub proof: TerminalFriProof,
+    pub proof: TerminalCompressedFriProof,
 }
 
 /// Transcript-derived opening of terminal NPO polynomial FRI columns.
@@ -14690,23 +14690,15 @@ impl NativeTerminalCompiler {
         prelude: &TerminalProofPrelude,
         proof: &TerminalNpoPolynomialFriOpeningProof,
     ) -> Result<TerminalCompressedFriProof, NativeTerminalVerifyError> {
-        let mut opened_values = Vec::with_capacity(proof.opened_values_basis.len());
-        for basis in &proof.opened_values_basis {
-            opened_values
-                .push(Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(basis)?);
+        if proof.profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: proof.profile.proximity.proof_parameters(),
+                },
+            );
         }
-
-        let (_pcs, mut challenger) = Self::terminal_fri_pcs_and_challenger(proof.profile.proximity)?;
-        Self::seed_terminal_npo_polynomial_fri_challenger(&mut challenger, prelude, &proof.profile);
-        challenger.observe(proof.commitment.clone());
-        let _: TerminalFriChallenge = challenger.sample_algebra_element();
-        challenger.observe_algebra_slice(&opened_values);
-        let query_indices = Self::derive_terminal_fri_query_indices_from_challenger(
-            &mut challenger,
-            &proof.proof,
-            proof.profile.proximity,
-        )?;
-        Self::compress_terminal_fri_proof(&proof.proof, &query_indices)
+        Ok(proof.proof.clone())
     }
 
     pub fn derive_terminal_fri_query_indices_from_challenger(
@@ -14964,20 +14956,37 @@ impl NativeTerminalCompiler {
         >>::commit(&pcs, [(domain, matrix)]);
         challenger.observe(commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
-        let (opened_values, proof) = <TerminalFriPcs as Pcs<
+        let (opened_values, plain_proof) = <TerminalFriPcs as Pcs<
             TerminalFriChallenge,
             TerminalFriChallenger,
         >>::open(
             &pcs, vec![(&data, vec![vec![zeta]])], &mut challenger
         );
-        let opened_values_basis = opened_values
+        let opened_values_flat = opened_values
             .first()
             .and_then(|round| round.first())
             .and_then(|matrix| matrix.first())
             .ok_or(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty)?
+            .clone();
+        let opened_values_basis = opened_values_flat
             .iter()
             .map(Self::goldilocks_basis_u64)
             .collect();
+        let mut query_challenger = TerminalFriChallenger::new(Tip5Perm);
+        Self::seed_terminal_npo_polynomial_fri_challenger(
+            &mut query_challenger,
+            prelude,
+            &profile,
+        );
+        query_challenger.observe(commitment.clone());
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        query_challenger.observe_algebra_slice(&opened_values_flat);
+        let query_indices = Self::derive_terminal_fri_query_indices_from_challenger(
+            &mut query_challenger,
+            &plain_proof,
+            profile.proximity,
+        )?;
+        let proof = Self::compress_terminal_fri_proof(&plain_proof, &query_indices)?;
 
         Ok(TerminalNpoPolynomialFriOpeningProof {
             profile,
@@ -17409,13 +17418,14 @@ impl NativeTerminalCompiler {
             );
         challenger.observe(proof.commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let restored = Self::decompress_terminal_fri_proof(&proof.proof)?;
         <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
             &pcs,
             vec![(
                 proof.commitment.clone(),
                 vec![(domain, vec![(zeta, opened_values.clone())])],
             )],
-            &proof.proof,
+            &restored,
             &mut challenger,
         )
         .map_err(|err| {
@@ -30929,6 +30939,16 @@ mod tests {
             .expect("typed terminal NPO FRI opening proof must verify");
         let serialized = postcard::to_allocvec(&proof)
             .expect("typed terminal NPO FRI opening proof must serialize");
+        let restored_fri = NativeTerminalCompiler::decompress_terminal_fri_proof(&proof.proof)
+            .expect("typed terminal NPO FRI compact proof must decompress");
+        let compact_fri_bytes = postcard::to_allocvec(&proof.proof)
+            .expect("typed terminal NPO FRI compact proof must serialize");
+        let plain_fri_bytes = postcard::to_allocvec(&restored_fri)
+            .expect("typed terminal NPO FRI proof must serialize");
+        assert!(
+            compact_fri_bytes.len() < plain_fri_bytes.len(),
+            "terminal NPO polynomial FRI proof should store compact path material"
+        );
         let (roundtrip, trailing): (TerminalNpoPolynomialFriOpeningProof, &[u8]) =
             postcard::take_from_bytes(&serialized)
                 .expect("typed terminal NPO FRI opening proof must deserialize");
@@ -30986,6 +31006,17 @@ mod tests {
                 &value_proof,
             )
             .expect("typed terminal NPO value-column FRI opening proof must verify");
+        let restored_value_fri =
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&value_proof.proof)
+                .expect("typed terminal NPO value-column compact proof must decompress");
+        let compact_value_fri_bytes = postcard::to_allocvec(&value_proof.proof)
+            .expect("typed terminal NPO value-column compact proof must serialize");
+        let plain_value_fri_bytes = postcard::to_allocvec(&restored_value_fri)
+            .expect("typed terminal NPO value-column FRI proof must serialize");
+        assert!(
+            compact_value_fri_bytes.len() < plain_value_fri_bytes.len(),
+            "terminal NPO value-column FRI proof should store compact path material"
+        );
         let opened_value = compiler
             .verify_and_open_terminal_npo_polynomial_value_fri_opening_goldilocks::<GoldilocksD2>(
                 &vk,
