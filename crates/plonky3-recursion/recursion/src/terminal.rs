@@ -232,6 +232,47 @@ impl TerminalProofParameters {
     }
 }
 
+/// Canonical terminal proximity schedule bound into the transcript profile.
+///
+/// This is the production FRI-style proximity contract the terminal backend is
+/// being wired toward: blowup 16, 15 pure transcript queries, no query PoW, and
+/// a conservative binary folding schedule down to a constant final polynomial.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalProximityProfile {
+    pub scheme_id: u8,
+    pub log_blowup: u8,
+    pub num_queries: u16,
+    pub query_pow_bits: u16,
+    pub max_log_arity: u8,
+    pub log_final_poly_len: u8,
+    pub pure_query_bits: u16,
+}
+
+impl TerminalProximityProfile {
+    pub const TERMINAL_FRI_SCHEME_ID: u8 = 1;
+
+    pub const fn production_60bit() -> Self {
+        Self {
+            scheme_id: Self::TERMINAL_FRI_SCHEME_ID,
+            log_blowup: 4,
+            num_queries: 15,
+            query_pow_bits: 0,
+            max_log_arity: 1,
+            log_final_poly_len: 0,
+            pure_query_bits: MIN_TERMINAL_SECURITY_BITS,
+        }
+    }
+
+    pub const fn proof_parameters(&self) -> TerminalProofParameters {
+        TerminalProofParameters {
+            security_bits: self.pure_query_bits,
+            log_blowup: self.log_blowup,
+            num_queries: self.num_queries,
+            query_pow_bits: self.query_pow_bits,
+        }
+    }
+}
+
 /// Wire object for a native terminal certificate.
 ///
 /// The `proof_body` is backend-specific; the outer certificate format binds it
@@ -657,6 +698,7 @@ impl TerminalOpInventory {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalRelationProfile {
     pub fingerprint: TerminalCircuitFingerprint,
+    pub proximity: TerminalProximityProfile,
     pub primitive_constraints: usize,
     pub terminal_constraints: usize,
     pub hint_ops: usize,
@@ -1359,6 +1401,10 @@ pub enum NativeTerminalVerifyError {
         expected: TerminalProofParameters,
         got: TerminalProofParameters,
     },
+    TerminalProximityParametersMismatch {
+        expected: TerminalProofParameters,
+        got: TerminalProofParameters,
+    },
     TerminalProofQueryPowUnsupported {
         bits: u16,
     },
@@ -1777,6 +1823,7 @@ impl<F> NativeTerminalVerifyingKey<F> {
     ) -> TerminalRelationProfile {
         let mut profile = TerminalRelationProfile {
             fingerprint: self.header.fingerprint,
+            proximity: TerminalProximityProfile::production_60bit(),
             primitive_constraints: self.inventory.total_primitive_ops(),
             terminal_constraints: self.constraints.len(),
             hint_ops: self.inventory.hint_ops,
@@ -2762,6 +2809,7 @@ impl NativeTerminalCompiler {
         let relation_profile = verifying_key.relation_profile_for_goldilocks_basis_dimension(
             <F as BasedVectorSpace<Goldilocks>>::DIMENSION,
         );
+        Self::validate_terminal_proximity_parameters(&relation_profile.proximity, parameters)?;
         let public_values_digest = Self::public_values_digest_goldilocks(public_inputs);
         let query_pow_nonce = 0;
         let challenge_digest = Self::transcript_challenge_digest(
@@ -2807,6 +2855,10 @@ impl NativeTerminalCompiler {
         let expected_profile = verifying_key.relation_profile_for_goldilocks_basis_dimension(
             <F as BasedVectorSpace<Goldilocks>>::DIMENSION,
         );
+        Self::validate_terminal_proximity_parameters(
+            &expected_profile.proximity,
+            prelude.parameters,
+        )?;
         if prelude.relation_profile != expected_profile {
             return Err(NativeTerminalVerifyError::TerminalPreludeProfileMismatch {
                 expected: expected_profile,
@@ -14573,6 +14625,22 @@ impl NativeTerminalCompiler {
         Ok(())
     }
 
+    fn validate_terminal_proximity_parameters(
+        proximity: &TerminalProximityProfile,
+        parameters: TerminalProofParameters,
+    ) -> Result<(), NativeTerminalVerifyError> {
+        let expected = proximity.proof_parameters();
+        if parameters != expected {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected,
+                    got: parameters,
+                },
+            );
+        }
+        Ok(())
+    }
+
     pub fn validate_goldilocks_production_query_domains<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -14729,6 +14797,10 @@ impl NativeTerminalCompiler {
         F: Field + BasedVectorSpace<Goldilocks>,
     {
         sponge.absorb_str("nock-terminal-backend-relation-digest-v1");
+        Self::absorb_terminal_proximity_profile(
+            sponge,
+            &TerminalProximityProfile::production_60bit(),
+        );
         sponge.absorb_str("nock-terminal-backend-relation-projections-v1");
         match verifying_key.primitive_quadratic_relation() {
             Ok(relation) => {
@@ -15797,6 +15869,7 @@ impl NativeTerminalCompiler {
         sponge.absorb_u64(profile.fingerprint.public_flat_len as u64);
         sponge.absorb_u64(profile.fingerprint.private_flat_len as u64);
         sponge.absorb_u64(profile.fingerprint.ops_len as u64);
+        Self::absorb_terminal_proximity_profile(sponge, &profile.proximity);
         sponge.absorb_u64(profile.primitive_constraints as u64);
         sponge.absorb_u64(profile.terminal_constraints as u64);
         sponge.absorb_u64(profile.hint_ops as u64);
@@ -15807,6 +15880,20 @@ impl NativeTerminalCompiler {
         sponge.absorb_u64(profile.external_npo_validity_components as u64);
         sponge.absorb_u64(profile.npo_callsite_input_slots as u64);
         sponge.absorb_u64(profile.npo_callsite_output_slots as u64);
+    }
+
+    fn absorb_terminal_proximity_profile(
+        sponge: &mut TerminalDigestSponge,
+        profile: &TerminalProximityProfile,
+    ) {
+        sponge.absorb_str("nock-terminal-proximity-profile-v1");
+        sponge.absorb_u64(profile.scheme_id as u64);
+        sponge.absorb_u64(profile.log_blowup as u64);
+        sponge.absorb_u64(profile.num_queries as u64);
+        sponge.absorb_u64(profile.query_pow_bits as u64);
+        sponge.absorb_u64(profile.max_log_arity as u64);
+        sponge.absorb_u64(profile.log_final_poly_len as u64);
+        sponge.absorb_u64(profile.pure_query_bits as u64);
     }
 
     fn absorb_terminal_oracle_commitment(
@@ -19090,6 +19177,14 @@ mod tests {
         assert_eq!(prelude.parameters.johnson_bits(), 60);
         assert_eq!(prelude.parameters.num_queries, 15);
         assert_eq!(prelude.parameters.query_pow_bits, 0);
+        assert_eq!(
+            prelude.relation_profile.proximity,
+            TerminalProximityProfile::production_60bit()
+        );
+        assert_eq!(
+            prelude.relation_profile.proximity.proof_parameters(),
+            prelude.parameters
+        );
         assert_eq!(prelude.query_pow_nonce, 0);
         assert_eq!(prelude.relation_profile.tip5_rows, 1);
         assert_eq!(
@@ -19112,6 +19207,16 @@ mod tests {
         tampered_profile.relation_profile.tip5_rows += 1;
         let err = compiler
             .verify_proof_prelude_goldilocks(&vk, &public_inputs, &tampered_profile)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeProfileMismatch { .. }
+        ));
+
+        let mut tampered_proximity = prelude.clone();
+        tampered_proximity.relation_profile.proximity.num_queries += 1;
+        let err = compiler
+            .verify_proof_prelude_goldilocks(&vk, &public_inputs, &tampered_proximity)
             .unwrap_err();
         assert!(matches!(
             err,
@@ -19248,6 +19353,28 @@ mod tests {
             NativeTerminalVerifyError::TerminalProofParametersOverstated {
                 declared: 60,
                 johnson_bits: 48,
+            }
+        );
+
+        let overprovisioned_query_params = TerminalProofParameters {
+            security_bits: 60,
+            log_blowup: 4,
+            num_queries: 16,
+            query_pow_bits: 0,
+        };
+        let err = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                overprovisioned_query_params,
+                vec![commitment],
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                expected: TerminalProofParameters::production_60bit(),
+                got: overprovisioned_query_params,
             }
         );
 

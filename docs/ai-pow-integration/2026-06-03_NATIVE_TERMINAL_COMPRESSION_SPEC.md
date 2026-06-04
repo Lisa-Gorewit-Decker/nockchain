@@ -102,6 +102,13 @@ for this route.
   query_pow_bits=0`, whose pure-query Johnson accounting is exactly 60 bits.
   Public production verification rejects other parameter tuples, even if their
   `log_blowup * num_queries` product also reaches 60 bits.
+- `TerminalProximityProfile`: the transcript-bound terminal proximity schedule
+  that the production backend must implement. The current code binds the
+  conservative two-adic FRI-style schedule `log_blowup=4`, `num_queries=15`,
+  `query_pow_bits=0`, `max_log_arity=1`, and `log_final_poly_len=0` inside the
+  relation profile and backend relation digest. Prelude verification rejects
+  parameter tuples that do not match this profile, so overprovisioned or
+  alternate schedules cannot silently share a transcript.
 - `TerminalProofPrelude`: the first proof-body transcript object. It binds the
   terminal proof parameters, compiled relation profile including the
   component-expanded supported-NPO validity domain, full public-values digest,
@@ -733,15 +740,15 @@ Tip5-L0 verifier circuit:
 
 | component | bytes |
 |---|---:|
-| primitive R1CS row-product proof | 22,404 |
+| primitive R1CS row-product proof | 22,831 |
 | exhaustive NPO proof | 63,673 |
 | exhaustive NPO hidden Tip5 input bytes | 17,402 |
 | exhaustive NPO known-index witness multiproof | 46,271 |
 | exhaustive NPO full-width witness openings | 1,377 |
-| compact production proof body | 86,420 |
-| compact production certificate | 86,642 |
+| compact production proof body | 86,852 |
+| compact production certificate | 87,074 |
 
-The debug-profile measurement is `prove=4.932 s, verify=3.214 s` for the
+The debug-profile measurement is `prove=4.974 s, verify=3.234 s` for the
 production proof body and certificate, with terminal parameters
 `security_bits=60, log_blowup=4, num_queries=15, query_pow_bits=0`. This removes
 the sampled production NPO validity layer and verifies all 668 supported
@@ -843,9 +850,9 @@ Completion audit against the active terminal-compression requirements:
 |---|---|---|
 | Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
-| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `86,642` bytes / `84.6 KiB`, debug-profile `prove=4.932s`, `verify=3.214s`. | satisfied on the measured production fixture |
+| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `87,074` bytes / `85.0 KiB`, debug-profile `prove=4.974s`, `verify=3.234s`. | satisfied on the measured production fixture |
 | No confusing low-soundness testing production path | Production builds expose only `TerminalProofKind::Production`; local checkpoint proof-kind helpers are `cfg(test)`, and public production verification requires all 15 production queries. | satisfied for public production verifier dispatch |
-| Public values, parameters, relation, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile and column layout, prelude parameters, relation profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
+| Public values, parameters, relation, proximity schedule, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile and column layout, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
 | Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against a prelude-bound witness oracle. | satisfied for supported NPO row validity |
 | Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, a random linear-combination MLE checkpoint, and a residual-column zero-check checkpoint now exist, including Tip5/MMCS/recompose tamper tests and Merkle-consistent wrong-combination rejection. Current production still uses exhaustive Merkle openings rather than a low-degree/proximity proof over those columns. | not complete |
@@ -997,7 +1004,7 @@ Security-audit conclusions for the current implementation checkpoint:
 - Fixed-int bincode serialization is size-only: it changes the Rust helper's
   byte encoding and rejects trailing bytes on decode, but does not alter the
   proof relation, Fiat-Shamir transcript, FRI parameters, or public inputs.
-- The terminal production checkpoint is now 86,642 bytes, or 84.6 KiB, with 60
+- The terminal production checkpoint is now 87,074 bytes, or 85.0 KiB, with 60
   pure-query bits and exhaustive supported-NPO verification. It reached the
   ~100 KiB size target through structural proof-body changes, especially
   omitting verifier-derived witness indices from the exhaustive NPO multiproof
@@ -1123,6 +1130,9 @@ Design conclusions for this codebase:
    final-polynomial commitments, and arity/proximity schedule. Serialized query
    indices remain forbidden because they would let a prover steer openings away
    from transcript challenges.
+   Current code now binds the canonical arity/proximity schedule in
+   `TerminalProximityProfile`; final-polynomial commitments remain part of the
+   missing PCS proof object.
 6. The 60-bit production claim must continue to come from pure queries. Query
    PoW may remain useful for historical batch-STARK profiles, but it is not
    counted toward terminal production soundness.
