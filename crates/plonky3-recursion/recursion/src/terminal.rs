@@ -24966,6 +24966,100 @@ mod tests {
     }
 
     #[test]
+    fn goldilocks_compact_composition_fri_binds_profile_transcript_and_opening() {
+        let (circuit, public_inputs) = build_npo_only_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+        let residual_root = compiler
+            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
+            .expect("NPO-only residual oracle must commit")
+            .commitment()
+            .root;
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![residual_root],
+            )
+            .expect("compact composition FRI prelude must build");
+        let profile = NativeTerminalCompiler::terminal_compact_composition_fri_profile(16, 16)
+            .expect("compact composition profile must build");
+        let mut matrix_values = Vec::with_capacity(profile.padded_rows * profile.basis_columns);
+        for row in 0..profile.padded_rows {
+            let value = row as u64 + 1;
+            matrix_values.push(Goldilocks::from_u64(value));
+            matrix_values.push(Goldilocks::from_u64(value * value));
+        }
+        let matrix = RowMajorMatrix::new(matrix_values, profile.basis_columns);
+        let proof = NativeTerminalCompiler::prove_terminal_compact_composition_fri_goldilocks(
+            &prelude,
+            "nock-terminal-compact-composition-test-v1",
+            profile.clone(),
+            matrix,
+        )
+        .expect("compact composition FRI proof must build");
+        let opened = NativeTerminalCompiler::verify_terminal_compact_composition_fri_goldilocks(
+            &prelude,
+            "nock-terminal-compact-composition-test-v1",
+            &profile,
+            &proof,
+        )
+        .expect("compact composition FRI proof must verify");
+        assert_eq!(opened.len(), profile.basis_columns);
+        let serialized =
+            postcard::to_allocvec(&proof).expect("compact composition FRI proof must serialize");
+        println!(
+            "terminal compact composition FRI primitive: {} bytes ({:.1} KiB), rows={}, base_columns={}",
+            serialized.len(),
+            serialized.len() as f64 / 1024.0,
+            profile.padded_rows,
+            profile.basis_columns,
+        );
+
+        let err = NativeTerminalCompiler::verify_terminal_compact_composition_fri_goldilocks(
+            &prelude,
+            "nock-terminal-compact-composition-test-v1/other",
+            &profile,
+            &proof,
+        )
+        .expect_err("compact composition proof must bind transcript label");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+        ));
+
+        let mut wrong_profile = profile.clone();
+        wrong_profile.rows -= 1;
+        let err = NativeTerminalCompiler::verify_terminal_compact_composition_fri_goldilocks(
+            &prelude,
+            "nock-terminal-compact-composition-test-v1",
+            &wrong_profile,
+            &proof,
+        )
+        .expect_err("compact composition proof must bind profile");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. }
+        ));
+
+        let mut bad_opening = proof.clone();
+        bad_opening.opened_values_basis[0][0] ^= 1;
+        let err = NativeTerminalCompiler::verify_terminal_compact_composition_fri_goldilocks(
+            &prelude,
+            "nock-terminal-compact-composition-test-v1",
+            &profile,
+            &bad_opening,
+        )
+        .expect_err("compact composition proof must bind opened value");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+        ));
+    }
+
+    #[test]
     fn goldilocks_npo_tip5_lookup_npo_rows_value_bridge_binds_committed_values() {
         let (circuit, public_inputs) = build_npo_only_tip5_test_circuit();
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);

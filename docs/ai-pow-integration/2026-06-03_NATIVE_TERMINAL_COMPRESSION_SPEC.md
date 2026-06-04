@@ -426,7 +426,10 @@ for this route.
   form and verifies by decompressing through the existing Plonky3 PCS verifier.
   The focused Tip5 AIR test measures this reusable proof object at `60,647`
   bytes / `59.2 KiB` for a 2048-row, one-extension-column composition oracle,
-  and rejects a corrupted compact Merkle path.
+  and rejects a corrupted compact Merkle path. A separate nonconstant-oracle
+  regression test measures `12,282` bytes / `12.0 KiB` for a 16-row fixture and
+  rejects transcript-label substitution, profile substitution, and tampered
+  opened values.
 - `TerminalNpoTip5LookupNpoRowsValueBridgeQuotientProof`: an NPO-row-domain
   value-binding checkpoint for the optimized lookup terminal IO. Instead of
   trusting a prover-supplied lookup-domain NPO projection, it commits the 26
