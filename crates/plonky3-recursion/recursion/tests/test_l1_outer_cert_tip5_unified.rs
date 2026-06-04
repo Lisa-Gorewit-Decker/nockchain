@@ -426,13 +426,10 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
                 .len()
         })
         .unwrap_or(0);
-    let production_npo_witness_multi_opening_count = production_proof
+    let production_npo_witness_sparse_basis_coefficients = production_proof
         .npo_exhaustive_proof
         .as_ref()
-        .map(|proof| {
-            proof.witness_multi_opening.value_basis_flat.len()
-                / <Challenge as BasedVectorSpace<Goldilocks>>::DIMENSION
-        })
+        .map(|proof| proof.witness_multi_opening.value_basis_flat.len())
         .unwrap_or(0);
     let production_npo_witness_multi_opening_size = production_proof
         .npo_exhaustive_proof
@@ -615,9 +612,9 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         production_r1cs_size, production_npo_exhaustive_size,
     );
     eprintln!(
-        "terminal production NPO breakdown: witness_multiproof={} witness_multi_opening_count={} hidden_inputs={}",
+        "terminal production NPO breakdown: witness_multiproof={} witness_sparse_basis_coefficients={} hidden_inputs={}",
         production_npo_witness_multi_opening_size,
-        production_npo_witness_multi_opening_count,
+        production_npo_witness_sparse_basis_coefficients,
         production_npo_hidden_inputs_size,
     );
     eprintln!(

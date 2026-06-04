@@ -184,7 +184,14 @@ pub struct TerminalOracleMultiProof {
 /// verifier-derived from the surrounding relation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalOracleKnownIndexMultiProof {
+    /// Nonzero coefficients for non-boolean opened values.
+    ///
+    /// For extension-field proofs (`DIMENSION > 1`), coefficients are stored
+    /// sparsely and reconstructed from `value_basis_nonzero_masks` before the
+    /// Merkle root check. Base-field proofs keep the old flat one-coefficient
+    /// encoding and leave this mask vector empty.
     pub value_basis_flat: Vec<u64>,
+    pub value_basis_nonzero_masks: Vec<u8>,
     pub boolean_value_bits: Vec<u8>,
     pub frontier: Vec<TerminalCommitmentDigest>,
 }
@@ -2333,12 +2340,18 @@ impl TerminalOracleMerkleTree {
             previous_boolean = Some(index);
         }
 
-        let mut value_basis_flat = Vec::with_capacity(
-            values.len().saturating_sub(boolean_indices.len())
-                * <F as BasedVectorSpace<Goldilocks>>::DIMENSION,
-        );
+        let dimension = <F as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let non_boolean_values = values.len().saturating_sub(boolean_indices.len());
+        let coefficient_count = non_boolean_values * dimension;
+        let mut value_basis_flat = Vec::with_capacity(non_boolean_values * dimension);
+        let mut value_basis_nonzero_masks = if dimension > 1 {
+            vec![0u8; coefficient_count.div_ceil(8)]
+        } else {
+            Vec::new()
+        };
         let mut boolean_value_bits = vec![0u8; boolean_indices.len().div_ceil(8)];
         let mut boolean_index = 0usize;
+        let mut non_boolean_index = 0usize;
         for (index, value) in values {
             let basis = NativeTerminalCompiler::goldilocks_basis_u64(*value);
             if boolean_index < boolean_indices.len() && *index == boolean_indices[boolean_index] {
@@ -2356,7 +2369,19 @@ impl TerminalOracleMerkleTree {
                 }
                 boolean_index += 1;
             } else {
-                value_basis_flat.extend(basis);
+                if dimension == 1 {
+                    value_basis_flat.extend(basis);
+                } else {
+                    for (coeff_index, coeff) in basis.iter().copied().enumerate() {
+                        if coeff != 0 {
+                            let dense_coeff_index = non_boolean_index * dimension + coeff_index;
+                            value_basis_nonzero_masks[dense_coeff_index / 8] |=
+                                1u8 << (dense_coeff_index % 8);
+                            value_basis_flat.push(coeff);
+                        }
+                    }
+                }
+                non_boolean_index += 1;
             }
         }
 
@@ -2365,6 +2390,7 @@ impl TerminalOracleMerkleTree {
         self.collect_multi_frontier(root_level, 0, values, &mut frontier);
         Ok(TerminalOracleKnownIndexMultiProof {
             value_basis_flat,
+            value_basis_nonzero_masks,
             boolean_value_bits,
             frontier,
         })
@@ -3119,14 +3145,59 @@ impl NativeTerminalCompiler {
         }
 
         let dimension = <F as BasedVectorSpace<Goldilocks>>::DIMENSION;
-        let expected_basis_len = indices.len().saturating_sub(boolean_indices.len()) * dimension;
-        if proof.value_basis_flat.len() != expected_basis_len {
+        let non_boolean_values = indices.len().saturating_sub(boolean_indices.len());
+        let coefficient_count = non_boolean_values * dimension;
+        let expected_mask_bytes = if dimension > 1 {
+            coefficient_count.div_ceil(8)
+        } else {
+            0
+        };
+        if proof.value_basis_nonzero_masks.len() != expected_mask_bytes {
             return Err(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: expected_basis_len,
-                    got: proof.value_basis_flat.len(),
+                    expected: expected_mask_bytes,
+                    got: proof.value_basis_nonzero_masks.len(),
                 },
             );
+        }
+        if dimension == 1 {
+            let expected_basis_len = non_boolean_values;
+            if proof.value_basis_flat.len() != expected_basis_len {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                        expected: expected_basis_len,
+                        got: proof.value_basis_flat.len(),
+                    },
+                );
+            }
+        } else {
+            if let Some(last_byte) = proof.value_basis_nonzero_masks.last().copied() {
+                let used_bits = coefficient_count % 8;
+                if used_bits != 0 {
+                    let unused_mask = u8::MAX << used_bits;
+                    if last_byte & unused_mask != 0 {
+                        return Err(
+                            NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical {
+                                limb: coefficient_count,
+                                value: last_byte as u64,
+                            },
+                        );
+                    }
+                }
+            }
+            let expected_basis_len = proof
+                .value_basis_nonzero_masks
+                .iter()
+                .map(|mask| mask.count_ones() as usize)
+                .sum::<usize>();
+            if proof.value_basis_flat.len() != expected_basis_len {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                        expected: expected_basis_len,
+                        got: proof.value_basis_flat.len(),
+                    },
+                );
+            }
         }
         let expected_boolean_bytes = boolean_indices.len().div_ceil(8);
         if proof.boolean_value_bits.len() != expected_boolean_bytes {
@@ -3155,7 +3226,9 @@ impl NativeTerminalCompiler {
         let mut values = Vec::with_capacity(indices.len());
         let mut openings = Vec::with_capacity(indices.len());
         let mut basis_chunks = proof.value_basis_flat.chunks_exact(dimension);
+        let mut sparse_basis_values = proof.value_basis_flat.iter().copied();
         let mut boolean_index = 0usize;
+        let mut non_boolean_index = 0usize;
         for index in indices.iter().copied() {
             let value_basis = if boolean_index < boolean_indices.len()
                 && index == boolean_indices[boolean_index]
@@ -3165,22 +3238,56 @@ impl NativeTerminalCompiler {
                 let mut basis = vec![0u64; dimension];
                 basis[0] = bit as u64;
                 basis
-            } else {
+            } else if dimension == 1 {
                 basis_chunks
                     .next()
                     .ok_or(
                         NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                            expected: expected_basis_len,
+                            expected: non_boolean_values,
                             got: proof.value_basis_flat.len(),
                         },
                     )?
                     .to_vec()
+            } else {
+                let mut basis = vec![0u64; dimension];
+                for coeff_index in 0..dimension {
+                    let dense_coeff_index = non_boolean_index * dimension + coeff_index;
+                    if (proof.value_basis_nonzero_masks[dense_coeff_index / 8]
+                        >> (dense_coeff_index % 8))
+                        & 1
+                        != 0
+                    {
+                        basis[coeff_index] = sparse_basis_values.next().ok_or(
+                            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                                expected: proof.value_basis_nonzero_masks
+                                    .iter()
+                                    .map(|mask| mask.count_ones() as usize)
+                                    .sum(),
+                                got: proof.value_basis_flat.len(),
+                            },
+                        )?;
+                    }
+                }
+                non_boolean_index += 1;
+                basis
             };
             values.push((
                 index,
                 Self::field_from_goldilocks_basis_u64::<F>(&value_basis)?,
             ));
             openings.push(TerminalOracleMultiValueOpening { index, value_basis });
+        }
+        if dimension > 1 && sparse_basis_values.next().is_some() {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof
+                        .value_basis_nonzero_masks
+                        .iter()
+                        .map(|mask| mask.count_ones() as usize)
+                        .sum(),
+                    got: proof.value_basis_flat.len(),
+                },
+            );
         }
 
         let root_level = Self::terminal_oracle_path_len(commitment.values_len);
@@ -19489,6 +19596,7 @@ mod tests {
             .open_goldilocks_known_index_multi_values_with_boolean_indices(&opening_values, &[1, 3])
             .expect("known-index proof with compact booleans must open");
         assert_eq!(proof.boolean_value_bits, vec![1]);
+        assert!(proof.value_basis_nonzero_masks.is_empty());
         assert_eq!(proof.value_basis_flat.len(), 3);
 
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
@@ -19541,6 +19649,95 @@ mod tests {
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical { .. }
+        ));
+    }
+
+    #[test]
+    fn goldilocks_terminal_known_index_multi_proof_compacts_sparse_extension_basis() {
+        let values = vec![
+            GoldilocksD2::from_basis_coefficients_slice(&[
+                Goldilocks::from_u64(11),
+                Goldilocks::ZERO,
+            ])
+            .unwrap(),
+            GoldilocksD2::ONE,
+            GoldilocksD2::from_basis_coefficients_slice(&[
+                Goldilocks::from_u64(13),
+                Goldilocks::from_u64(17),
+            ])
+            .unwrap(),
+            GoldilocksD2::from_basis_coefficients_slice(&[
+                Goldilocks::ZERO,
+                Goldilocks::from_u64(19),
+            ])
+            .unwrap(),
+            GoldilocksD2::ZERO,
+        ];
+        let tree = TerminalOracleMerkleTree::commit_goldilocks_values("witness", &values)
+            .expect("non-empty terminal oracle must commit");
+        let commitment = tree.commitment();
+        let opening_values = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| (index, value))
+            .collect::<Vec<_>>();
+        let proof = tree
+            .open_goldilocks_known_index_multi_values_with_boolean_indices(&opening_values, &[1, 4])
+            .expect("known-index proof with sparse D2 basis must open");
+        assert_eq!(proof.boolean_value_bits, vec![1]);
+        assert_eq!(proof.value_basis_nonzero_masks, vec![0b0010_1101]);
+        assert_eq!(proof.value_basis_flat.len(), 4);
+
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let verified = compiler
+            .verify_terminal_oracle_known_index_multi_proof_goldilocks_with_boolean_indices::<
+                GoldilocksD2,
+            >(&commitment, &[0, 1, 2, 3, 4], &[1, 4], &proof)
+            .expect("sparse D2 known-index proof must verify");
+        assert_eq!(
+            verified.iter().map(|(_, value)| *value).collect::<Vec<_>>(),
+            values
+        );
+
+        let mut missing_masks = proof.clone();
+        missing_masks.value_basis_nonzero_masks.pop();
+        let err = compiler
+            .verify_terminal_oracle_known_index_multi_proof_goldilocks_with_boolean_indices::<
+                GoldilocksD2,
+            >(&commitment, &[0, 1, 2, 3, 4], &[1, 4], &missing_masks)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
+
+        let mut noncanonical_mask_tail = proof.clone();
+        noncanonical_mask_tail.value_basis_nonzero_masks[0] |= 0b1000_0000;
+        let err = compiler
+            .verify_terminal_oracle_known_index_multi_proof_goldilocks_with_boolean_indices::<
+                GoldilocksD2,
+            >(
+                &commitment,
+                &[0, 1, 2, 3, 4],
+                &[1, 4],
+                &noncanonical_mask_tail,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical { .. }
+        ));
+
+        let mut wrong_masks = proof.clone();
+        wrong_masks.value_basis_nonzero_masks = vec![0b0010_1011];
+        let err = compiler
+            .verify_terminal_oracle_known_index_multi_proof_goldilocks_with_boolean_indices::<
+                GoldilocksD2,
+            >(&commitment, &[0, 1, 2, 3, 4], &[1, 4], &wrong_masks)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
         ));
     }
 
