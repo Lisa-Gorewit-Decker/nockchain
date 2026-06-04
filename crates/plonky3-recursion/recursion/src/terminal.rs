@@ -927,6 +927,36 @@ pub struct TerminalNpoPolynomialProfile {
     pub tip5_rounds: usize,
 }
 
+/// One row in the backend polynomial witness table for supported NPOs.
+///
+/// The row stores verifier-derived metadata plus witness-derived local values.
+/// Its `residual_values` flatten in the same order as the
+/// `npo_exhaustive_residual` oracle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalNpoPolynomialTableRow<F> {
+    pub npo_index: usize,
+    pub row_kind: TerminalNpoRowKind,
+    pub local_row: usize,
+    pub mode_new_start: bool,
+    pub mode_merkle_path: bool,
+    pub inputs: Vec<Option<F>>,
+    pub outputs: Vec<Option<F>>,
+    pub hidden_tip5_inputs: Vec<TerminalTip5HiddenInputValue>,
+    pub mmcs_bit: Option<F>,
+    pub residual_offset: usize,
+    pub residual_values: Vec<F>,
+}
+
+/// Backend-ready witness table for the supported-NPO relation.
+///
+/// This is not a proof. It is the deterministic table contract the final
+/// proximity/PCS backend commits to and tests.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalNpoPolynomialTable<F> {
+    pub rows: Vec<TerminalNpoPolynomialTableRow<F>>,
+    pub residual_values: Vec<F>,
+}
+
 /// One flattened component in the production-equivalent supported-NPO residual
 /// domain.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -4134,6 +4164,162 @@ impl NativeTerminalCompiler {
             ));
         }
         Ok(values)
+    }
+
+    pub fn terminal_npo_polynomial_table_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+    ) -> Result<TerminalNpoPolynomialTable<F>, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let witness_values = Self::terminal_witness_values(witness)?;
+        let indexed_witness_values = witness_values
+            .iter()
+            .copied()
+            .enumerate()
+            .collect::<Vec<_>>();
+        let mut previous_normal_tip5_output = None;
+        let mut previous_merkle_tip5_output = None;
+        let mut rows = Vec::with_capacity(Self::terminal_npo_domain_len(verifying_key));
+        let mut residual_values = Vec::with_capacity(
+            Self::terminal_npo_polynomial_profile::<F>(verifying_key).residual_components,
+        );
+
+        for npo_index in 0..Self::terminal_npo_domain_len(verifying_key) {
+            let row_ref = Self::terminal_npo_row(verifying_key, npo_index).ok_or(
+                NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                    query: 0,
+                    expected: npo_index,
+                    got: npo_index,
+                },
+            )?;
+            let (local_opening, expected_witness_ids) =
+                self.terminal_npo_local_opening_goldilocks(verifying_key, witness, npo_index)?;
+            let opened_values = Self::verify_npo_witness_values(
+                npo_index,
+                &expected_witness_ids,
+                &indexed_witness_values,
+            )?;
+            let opened_value = |wanted: WitnessId| {
+                expected_witness_ids
+                    .iter()
+                    .position(|id| *id == wanted)
+                    .map(|idx| opened_values[idx])
+                    .ok_or(NativeTerminalVerifyError::MissingWitness {
+                        witness_id: wanted.0,
+                    })
+            };
+            let residual_offset = residual_values.len();
+
+            let table_row = match row_ref {
+                NativeTerminalNpoRowRef::Tip5 { row, callsite, .. } => {
+                    let mode = callsite.tip5_mode.ok_or(
+                        NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                            op_type: Self::tip5_op_type().as_str().into(),
+                            row,
+                            field: "tip5_mode",
+                            limb: 0,
+                            expected: Some(1),
+                            got: None,
+                        },
+                    )?;
+                    let hidden_inputs = Self::terminal_tip5_hidden_inputs_from_compact(
+                        local_opening.npo_index,
+                        verifying_key,
+                        local_opening.tip5_hidden_input_nonzero_mask,
+                        &local_opening.tip5_hidden_input_values_le,
+                    )?;
+                    let evaluation = self.evaluate_exhaustive_tip5_npo_row_values::<F>(
+                        npo_index,
+                        row,
+                        callsite,
+                        &hidden_inputs,
+                        &expected_witness_ids,
+                        &opened_values,
+                        &mut previous_normal_tip5_output,
+                        &mut previous_merkle_tip5_output,
+                    )?;
+                    let row_residual_values =
+                        Self::terminal_npo_row_evaluation_component_values::<F>(&evaluation);
+                    residual_values.extend(row_residual_values.iter().copied());
+
+                    TerminalNpoPolynomialTableRow {
+                        npo_index,
+                        row_kind: TerminalNpoRowKind::Tip5Goldilocks,
+                        local_row: row,
+                        mode_new_start: mode.new_start,
+                        mode_merkle_path: mode.merkle_path,
+                        inputs: callsite
+                            .inputs
+                            .iter()
+                            .map(|witness_id| witness_id.map(opened_value).transpose())
+                            .collect::<Result<Vec<_>, _>>()?,
+                        outputs: callsite
+                            .outputs
+                            .iter()
+                            .map(|witness_id| witness_id.map(opened_value).transpose())
+                            .collect::<Result<Vec<_>, _>>()?,
+                        hidden_tip5_inputs: hidden_inputs,
+                        mmcs_bit: callsite.tip5_mmcs_bit.map(opened_value).transpose()?,
+                        residual_offset,
+                        residual_values: row_residual_values,
+                    }
+                }
+                NativeTerminalNpoRowRef::Recompose {
+                    op_type,
+                    row,
+                    callsite,
+                } => {
+                    let evaluation = self.evaluate_sampled_recompose_npo_row_values::<F>(
+                        npo_index,
+                        op_type,
+                        row,
+                        callsite,
+                        &[],
+                        &expected_witness_ids,
+                        &opened_values,
+                    )?;
+                    let row_kind = if op_type == NpoTypeId::recompose().as_str() {
+                        TerminalNpoRowKind::Recompose
+                    } else {
+                        TerminalNpoRowKind::RecomposeWithCoeffLookups
+                    };
+                    let row_residual_values =
+                        Self::terminal_npo_row_evaluation_component_values::<F>(&evaluation);
+                    residual_values.extend(row_residual_values.iter().copied());
+
+                    TerminalNpoPolynomialTableRow {
+                        npo_index,
+                        row_kind,
+                        local_row: row,
+                        mode_new_start: false,
+                        mode_merkle_path: false,
+                        inputs: callsite
+                            .inputs
+                            .iter()
+                            .map(|witness_id| witness_id.map(opened_value).transpose())
+                            .collect::<Result<Vec<_>, _>>()?,
+                        outputs: callsite
+                            .outputs
+                            .iter()
+                            .map(|witness_id| witness_id.map(opened_value).transpose())
+                            .collect::<Result<Vec<_>, _>>()?,
+                        hidden_tip5_inputs: Vec::new(),
+                        mmcs_bit: None,
+                        residual_offset,
+                        residual_values: row_residual_values,
+                    }
+                }
+            };
+            rows.push(table_row);
+        }
+
+        Ok(TerminalNpoPolynomialTable {
+            rows,
+            residual_values,
+        })
     }
 
     pub fn commit_terminal_combined_validity_goldilocks<F>(
@@ -13784,6 +13970,97 @@ mod tests {
             NativeTerminalCompiler::npo_exhaustive_residual_oracle_label()
         );
         assert_eq!(commitment.values_len, profile.residual_components);
+    }
+
+    #[test]
+    fn goldilocks_npo_polynomial_table_matches_exhaustive_residual_oracle() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(2);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness =
+            execute_tip5_terminal_witness_with_private_data(&circuit, public_inputs, private_data);
+        let profile = NativeTerminalCompiler::terminal_npo_polynomial_profile::<Goldilocks>(&vk);
+        let table = compiler
+            .terminal_npo_polynomial_table_goldilocks(&vk, &witness)
+            .expect("NPO polynomial table must build");
+        let exhaustive_values = compiler
+            .terminal_npo_exhaustive_residual_values_goldilocks(&vk, &witness)
+            .expect("exhaustive residual values must compute");
+
+        assert_eq!(table.rows.len(), profile.rows);
+        assert_eq!(table.residual_values, exhaustive_values);
+        assert_eq!(table.residual_values.len(), profile.residual_components);
+        let mut expected_offset = 0usize;
+        for row in &table.rows {
+            assert_eq!(row.npo_index, row.local_row);
+            assert_eq!(row.residual_offset, expected_offset);
+            expected_offset += row.residual_values.len();
+        }
+        assert_eq!(expected_offset, profile.residual_components);
+    }
+
+    #[test]
+    fn goldilocks_npo_polynomial_table_tracks_tip5_modes_and_mmcs_bits() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(1);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness =
+            execute_tip5_terminal_witness_with_private_data(&circuit, public_inputs, private_data);
+        let table = compiler
+            .terminal_npo_polynomial_table_goldilocks(&vk, &witness)
+            .expect("NPO polynomial table must build");
+
+        let row = table.rows.first().expect("Merkle Tip5 row must exist");
+        assert_eq!(row.row_kind, TerminalNpoRowKind::Tip5Goldilocks);
+        assert!(row.mode_new_start);
+        assert!(row.mode_merkle_path);
+        assert_eq!(row.inputs.len(), 16);
+        assert_eq!(row.outputs.len(), 10);
+        assert!(row.inputs[..5].iter().all(Option::is_some));
+        assert!(row.inputs[5..].iter().all(Option::is_none));
+        assert!(row.outputs[..5].iter().all(Option::is_some));
+        assert!(row.outputs[5..].iter().all(Option::is_none));
+        assert_eq!(row.mmcs_bit, Some(Goldilocks::ZERO));
+        assert_eq!(row.hidden_tip5_inputs.len(), 11);
+        assert_eq!(row.residual_offset, 0);
+        assert_eq!(row.residual_values.len(), 17);
+        assert!(
+            row.residual_values
+                .iter()
+                .all(|value| *value == Goldilocks::ZERO)
+        );
+    }
+
+    #[test]
+    fn goldilocks_npo_polynomial_table_surfaces_mmcs_booleanity_residual() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(1);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness =
+            execute_tip5_terminal_witness_with_private_data(&circuit, public_inputs, private_data);
+        let mmcs_bit = vk
+            .npo_relation()
+            .rows
+            .iter()
+            .find_map(|row| row.callsite.tip5_mmcs_bit)
+            .expect("Merkle Tip5 row must bind an MMCS direction bit");
+        let mut bad_witness_values = witness_values(&witness);
+        bad_witness_values[mmcs_bit.0 as usize] = Goldilocks::from_u64(2);
+        let mut bad_traces = witness.traces.clone();
+        bad_traces.witness_trace = WitnessTrace::new(bad_witness_values);
+        let bad_witness = TerminalWitness {
+            fingerprint: witness.fingerprint,
+            public_inputs: witness.public_inputs.clone(),
+            private_inputs: witness.private_inputs.clone(),
+            traces: bad_traces,
+        };
+
+        let table = compiler
+            .terminal_npo_polynomial_table_goldilocks(&vk, &bad_witness)
+            .expect("bad NPO polynomial table must still build");
+        assert_eq!(table.rows[0].mmcs_bit, Some(Goldilocks::from_u64(2)));
+        assert_eq!(table.rows[0].residual_values[10], Goldilocks::from_u64(2));
+        assert_eq!(table.residual_values[10], Goldilocks::from_u64(2));
     }
 
     #[test]

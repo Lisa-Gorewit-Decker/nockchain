@@ -188,6 +188,15 @@ for this route.
   input/output residuals. `TerminalNpoResidualComponentRef` maps every flattened
   component index back to its NPO row, row-local component offset, residual
   kind, limb, and basis component.
+- `TerminalNpoPolynomialTable`: the deterministic supported-NPO witness table
+  contract for the final backend. Each row carries verifier-derived metadata
+  (`npo_index`, row kind, local row, Tip5 mode bits), witness-derived local
+  values (call-site inputs/outputs, hidden Tip5 lanes, MMCS bit), the row's
+  offset in the flattened residual domain, and residual component values in the
+  exact `npo_exhaustive_residual` oracle order. Tests require this table's
+  residual vector to match the committed exhaustive residual oracle and require
+  MMCS-bit booleanity failures to surface in both row-local and flattened
+  residual views.
 - `TerminalNpoExhaustiveResidualFoldProof`: a Merkle-backed folded zero check
   for the production-equivalent supported-NPO residual oracle, with transcript
   domains distinct from both primitive residual folding and legacy sampled NPO
@@ -348,6 +357,11 @@ and rejects nonzero folded finals; this is a backend zero-check component, not
 the final Reed-Solomon proximity proof. The residual component mapper gives the
 next consistency proof a stable way to recompute sampled folded components from
 the committed witness and the relevant Tip5/recompose row semantics.
+The `terminal_npo_polynomial_table_goldilocks` builder now materializes the
+same row and residual domain as a column-ready witness table. That table is the
+next backend handoff: future PCS/proximity code should commit its row columns
+from this deterministic structure rather than reconstructing NPO semantics from
+ad hoc witness openings.
 
 `TerminalNpoExhaustiveResidualConsistencyProof` now ties sampled folded
 exhaustive-NPO residual openings back to the witness oracle. For each
@@ -998,10 +1012,13 @@ Design conclusions for this codebase:
    the proof-size structure of Aurora/Spartan-style row checks. The NPO
    polynomial profile now binds the larger production-equivalent residual
    domain, `terminal_npo_exhaustive_residual_values_goldilocks` constructs that
-   concrete residual vector from a real witness, and
-   `TerminalNpoExhaustiveResidualFoldProof` folds it under dedicated transcript
-   domains. The legacy local sampled validity oracle remains an input/output
-   residual checkpoint rather than the final NPO table argument.
+   concrete residual vector from a real witness,
+   `terminal_npo_polynomial_table_goldilocks` materializes the row table whose
+   residual flattening matches that oracle, and
+   `TerminalNpoExhaustiveResidualFoldProof` folds the residual oracle under
+   dedicated transcript domains. The legacy local sampled validity oracle
+   remains an input/output residual checkpoint rather than the final NPO table
+   argument.
 3. The NPO replacement must first define low-degree row predicates for the
    terminal NPO relation:
    - Tip5: 5-round Tip5 state transition with explicit row mode, new-start,
