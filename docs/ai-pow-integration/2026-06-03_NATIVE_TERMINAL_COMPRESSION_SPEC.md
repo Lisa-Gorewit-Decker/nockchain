@@ -1230,9 +1230,11 @@ Literature checkpoint as of 2026-06-04:
   transcript-derived query before handing the proof to the existing Plonky3 FRI
   verifier. The decompressor now rejects shortened `original_order` dictionaries
   that would otherwise panic on query-path indexing and overlong dictionaries
-  that would otherwise carry ignored authentication material. Focused regression
-  tests cover out-of-range, shortened, overlong, and path-corrupted compressed
-  proofs.
+  that would otherwise carry ignored authentication material, and it rejects
+  compressed proofs whose commit-phase commitments, commit PoW witnesses, and
+  commit-round opening dictionaries have inconsistent lengths. Focused
+  regression tests cover out-of-range, shortened, overlong, path-corrupted, and
+  commit-shape-mismatched compressed proofs.
 - The native terminal proof must bind the full Fiat-Shamir transcript domain,
   FRI parameters, query/PoW counts, verifier-circuit fingerprint, public input
   vector, Tip5 variant key, primitive quadratic relation, and all NPO relation
