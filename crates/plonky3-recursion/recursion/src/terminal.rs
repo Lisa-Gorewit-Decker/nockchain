@@ -4728,6 +4728,157 @@ impl NativeTerminalCompiler {
         Self::terminal_npo_polynomial_columns_from_table(&layout, &table)
     }
 
+    pub fn terminal_npo_polynomial_verifier_derived_columns_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+    ) -> Result<TerminalNpoPolynomialColumns<F>, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let layout = Self::terminal_npo_polynomial_column_layout::<F>(verifying_key);
+        let labels = Self::terminal_npo_polynomial_column_labels(&layout);
+        let mut columns = labels
+            .iter()
+            .map(|_| vec![F::ZERO; layout.rows])
+            .collect::<Vec<_>>();
+        let mut set =
+            |label: &str, row: usize, value: F| -> Result<(), NativeTerminalVerifyError> {
+                let column_index = labels
+                    .iter()
+                    .position(|candidate| candidate == label)
+                    .ok_or_else(|| {
+                        NativeTerminalVerifyError::TerminalNpoPolynomialColumnMissing {
+                            label: label.into(),
+                        }
+                    })?;
+                columns[column_index][row] = value;
+                Ok(())
+            };
+        let bool_value = |value: bool| if value { F::ONE } else { F::ZERO };
+        let usize_value = |value: usize| Self::embed_goldilocks(Goldilocks::from_u64(value as u64));
+        let mut residual_offset = 0usize;
+        for npo_index in 0..layout.rows {
+            let row_ref = Self::terminal_npo_row(verifying_key, npo_index).ok_or(
+                NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                    query: npo_index,
+                    expected: npo_index,
+                    got: npo_index,
+                },
+            )?;
+            set("npo_index", npo_index, usize_value(npo_index))?;
+            set("residual_offset", npo_index, usize_value(residual_offset))?;
+            let residual_components =
+                Self::terminal_npo_exhaustive_residual_component_count_for_basis_dimension(
+                    &row_ref,
+                    <F as BasedVectorSpace<Goldilocks>>::DIMENSION,
+                );
+            for slot in 0..layout.residual_present_columns {
+                set(
+                    &format!("residual_present_{slot}"),
+                    npo_index,
+                    bool_value(slot < residual_components),
+                )?;
+            }
+            residual_offset += residual_components;
+
+            match row_ref {
+                NativeTerminalNpoRowRef::Tip5 { row, callsite, .. } => {
+                    set("local_row", npo_index, usize_value(row))?;
+                    set("is_tip5", npo_index, F::ONE)?;
+                    set("is_recompose", npo_index, F::ZERO)?;
+                    set("is_recompose_coeff", npo_index, F::ZERO)?;
+                    let mode = callsite.tip5_mode.ok_or(
+                        NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                            op_type: Self::tip5_op_type().as_str().into(),
+                            row,
+                            field: "tip5_mode",
+                            limb: 0,
+                            expected: Some(1),
+                            got: None,
+                        },
+                    )?;
+                    set("mode_new_start", npo_index, bool_value(mode.new_start))?;
+                    set("mode_merkle_path", npo_index, bool_value(mode.merkle_path))?;
+                    for slot in 0..layout.input_present_columns {
+                        set(
+                            &format!("input_present_{slot}"),
+                            npo_index,
+                            bool_value(callsite.inputs.get(slot).copied().flatten().is_some()),
+                        )?;
+                    }
+                    for slot in 0..layout.output_present_columns {
+                        set(
+                            &format!("output_present_{slot}"),
+                            npo_index,
+                            bool_value(callsite.outputs.get(slot).copied().flatten().is_some()),
+                        )?;
+                    }
+                    for slot in 0..layout.hidden_tip5_present_columns {
+                        set(
+                            &format!("hidden_tip5_present_{slot}"),
+                            npo_index,
+                            bool_value(callsite.inputs.get(slot).copied().flatten().is_none()),
+                        )?;
+                    }
+                    set(
+                        "mmcs_bit_present",
+                        npo_index,
+                        bool_value(callsite.tip5_mmcs_bit.is_some()),
+                    )?;
+                }
+                NativeTerminalNpoRowRef::Recompose {
+                    op_type,
+                    row,
+                    callsite,
+                } => {
+                    set("local_row", npo_index, usize_value(row))?;
+                    set("is_tip5", npo_index, F::ZERO)?;
+                    let is_standard = op_type == NpoTypeId::recompose().as_str();
+                    set("is_recompose", npo_index, bool_value(is_standard))?;
+                    set("is_recompose_coeff", npo_index, bool_value(!is_standard))?;
+                    set("mode_new_start", npo_index, F::ZERO)?;
+                    set("mode_merkle_path", npo_index, F::ZERO)?;
+                    for slot in 0..layout.input_present_columns {
+                        set(
+                            &format!("input_present_{slot}"),
+                            npo_index,
+                            bool_value(callsite.inputs.get(slot).copied().flatten().is_some()),
+                        )?;
+                    }
+                    for slot in 0..layout.output_present_columns {
+                        set(
+                            &format!("output_present_{slot}"),
+                            npo_index,
+                            bool_value(callsite.outputs.get(slot).copied().flatten().is_some()),
+                        )?;
+                    }
+                    set(
+                        "mmcs_bit_present",
+                        npo_index,
+                        bool_value(callsite.tip5_mmcs_bit.is_some()),
+                    )?;
+                }
+            }
+        }
+        let columns = TerminalNpoPolynomialColumns {
+            layout,
+            labels,
+            columns,
+        };
+        for (column_index, label) in columns.labels.iter().enumerate() {
+            if !Self::terminal_npo_polynomial_label_is_verifier_derived(label) {
+                debug_assert!(
+                    columns.columns[column_index]
+                        .iter()
+                        .all(|value| *value == F::ZERO),
+                    "non-verifier-derived NPO column {label} must remain unset"
+                );
+            }
+        }
+        Self::validate_terminal_npo_polynomial_columns(&columns.layout, &columns)?;
+        Ok(columns)
+    }
+
     pub fn commit_terminal_npo_polynomial_columns_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -11030,11 +11181,7 @@ impl NativeTerminalCompiler {
                 .iter()
                 .enumerate()
                 .filter_map(|(index, label)| {
-                    (label.starts_with("input_value_")
-                        || label.starts_with("output_value_")
-                        || label.starts_with("hidden_tip5_value_")
-                        || label == "mmcs_bit")
-                        .then_some(index)
+                    Self::terminal_npo_polynomial_label_is_witness_value(label).then_some(index)
                 })
                 .collect::<Vec<_>>(),
         };
@@ -11373,8 +11520,26 @@ impl NativeTerminalCompiler {
             .labels
             .iter()
             .enumerate()
-            .filter_map(|(index, label)| label.starts_with("residual_value_").then_some(index))
+            .filter_map(|(index, label)| {
+                Self::terminal_npo_polynomial_label_is_residual_value(label).then_some(index)
+            })
             .collect()
+    }
+
+    fn terminal_npo_polynomial_label_is_witness_value(label: &str) -> bool {
+        label.starts_with("input_value_")
+            || label.starts_with("output_value_")
+            || label.starts_with("hidden_tip5_value_")
+            || label == "mmcs_bit"
+    }
+
+    fn terminal_npo_polynomial_label_is_residual_value(label: &str) -> bool {
+        label.starts_with("residual_value_")
+    }
+
+    fn terminal_npo_polynomial_label_is_verifier_derived(label: &str) -> bool {
+        !Self::terminal_npo_polynomial_label_is_witness_value(label)
+            && !Self::terminal_npo_polynomial_label_is_residual_value(label)
     }
 
     fn terminal_npo_polynomial_combined_residual_values<F>(
@@ -17099,6 +17264,7 @@ mod tests {
     use p3_circuit::{
         Circuit, CircuitBuilder, CircuitError, ExprId, NonPrimitiveOpId, NpoPrivateData, WitnessId,
     };
+    use p3_commit::PolynomialSpace;
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
     use p3_matrix::Matrix;
@@ -22513,6 +22679,37 @@ mod tests {
         let columns = compiler
             .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
             .expect("D2 recompose NPO polynomial columns must build");
+        let verifier_columns = compiler
+            .terminal_npo_polynomial_verifier_derived_columns_goldilocks::<GoldilocksD2>(&vk)
+            .expect("D2 verifier-derived NPO polynomial columns must build");
+        assert_eq!(verifier_columns.layout, columns.layout);
+        assert_eq!(verifier_columns.labels, columns.labels);
+        let mut verifier_derived = 0usize;
+        let mut witness_value = 0usize;
+        let mut residual_value = 0usize;
+        for (column_index, label) in columns.labels.iter().enumerate() {
+            if NativeTerminalCompiler::terminal_npo_polynomial_label_is_verifier_derived(label) {
+                verifier_derived += 1;
+                assert_eq!(
+                    verifier_columns.columns[column_index], columns.columns[column_index],
+                    "verifier-derived NPO column {label} must not depend on witness material",
+                );
+            } else if NativeTerminalCompiler::terminal_npo_polynomial_label_is_witness_value(label)
+            {
+                witness_value += 1;
+            } else if NativeTerminalCompiler::terminal_npo_polynomial_label_is_residual_value(label)
+            {
+                residual_value += 1;
+            } else {
+                panic!("unclassified NPO polynomial column label {label}");
+            }
+        }
+        assert_eq!(
+            verifier_derived + witness_value + residual_value,
+            columns.layout.column_count
+        );
+        assert_eq!(witness_value, 4);
+        assert_eq!(residual_value, columns.layout.residual_value_columns);
         let (profile, matrix) =
             NativeTerminalCompiler::terminal_npo_polynomial_basis_matrix_goldilocks(&columns)
                 .expect("D2 NPO columns must basis-expand into a terminal FRI matrix");
@@ -22617,6 +22814,53 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. }
         ));
+
+        let (pcs, _) = NativeTerminalCompiler::terminal_fri_pcs_and_challenger(profile.proximity)
+            .expect("terminal FRI PCS must build");
+        let domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                profile.padded_rows,
+            );
+        let zeta = TerminalFriChallenge::from_basis_coefficients_fn(|basis| {
+            if basis == 0 {
+                Goldilocks::from_u64(19)
+            } else {
+                Goldilocks::ONE
+            }
+        });
+        for label in ["is_recompose", "input_present_0", "residual_present_0"] {
+            let column_index = columns
+                .labels
+                .iter()
+                .position(|candidate| candidate == label)
+                .expect("deterministic column label must exist");
+            assert!(
+                NativeTerminalCompiler::terminal_npo_polynomial_label_is_verifier_derived(label)
+            );
+            let basis_column = column_index * profile.field_basis_dimension;
+            let mut from_full_matrix = Vec::with_capacity(profile.padded_rows);
+            let mut from_verifier_columns = Vec::with_capacity(profile.padded_rows);
+            for row in 0..profile.padded_rows {
+                from_full_matrix.push(matrix.values[row * profile.basis_columns + basis_column]);
+                let value = if row < verifier_columns.layout.rows {
+                    verifier_columns.columns[column_index][row]
+                        .as_basis_coefficients_slice()
+                        .first()
+                        .copied()
+                        .unwrap_or(Goldilocks::ZERO)
+                } else {
+                    Goldilocks::ZERO
+                };
+                from_verifier_columns.push(value);
+            }
+            assert_eq!(from_full_matrix, from_verifier_columns);
+            assert_eq!(
+                domain.evaluate_polynomial_at(&from_full_matrix, zeta),
+                domain.evaluate_polynomial_at(&from_verifier_columns, zeta),
+                "verifier-derived basis column {label} must interpolate to the committed full-table value",
+            );
+        }
 
         let mut tampered_opening = proof.clone();
         tampered_opening.opened_values_basis[0][0] =

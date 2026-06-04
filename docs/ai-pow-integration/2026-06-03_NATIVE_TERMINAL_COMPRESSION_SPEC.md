@@ -213,6 +213,16 @@ for this route.
   and padded residual value and present-bit columns. Tests reconstruct the
   flattened exhaustive residual oracle from these columns and require MMCS-bit
   tampering to appear in both the local MMCS column and the residual columns.
+- `terminal_npo_polynomial_verifier_derived_columns_goldilocks`: the
+  verifier-side fixed-column projection for deterministic NPO table columns.
+  It fills row metadata, row-kind selectors, mode bits, input/output/hidden
+  present bits, MMCS-bit present flags, and residual-present shape directly
+  from the verifying key, leaving witness-value columns and residual-value
+  columns unset. This is the formal boundary used by the optimized value-column
+  FRI path: deterministic selectors and table shape are evaluated by the
+  verifier, not committed by the prover. Tests compare these columns against
+  the witness-materialized full table and check basis-column interpolation on
+  the same terminal two-adic FRI domain.
 - `TerminalNpoPolynomialFriProfile`,
   `TerminalNpoPolynomialFriOpeningProof`, and the terminal FRI PCS builder: the
   NPO table columns now have a concrete Plonky3-compatible low-degree
@@ -824,14 +834,16 @@ Tip5-L0 verifier circuit produced:
 
 The full-table FRI candidate is too large to combine with the primitive
 row-product proof. The witness-value column split is a real table optimization
-but still not enough by itself: `81,538 + 23,858` bytes is already above 100
-KiB before adding the missing NPO row-polynomial relation checks. The
-Merkle-backed residual-zero proof is rejected as a production route because its
-column-opening payload alone was 678,443 bytes and the prover spent about 53 s
-inside that component. The next viable direction is a shared/batched terminal
-proximity backend that amortizes FRI proof material across primitive and NPO
-relations, or an NPO relation check that consumes the value-column FRI openings
-without adding a second Merkle-heavy proof.
+because deterministic metadata, selectors, present bits, and residual-present
+shape are now verifier-derived and need not be committed as FRI columns. It is
+still not enough by itself: `81,538 + 23,858` bytes is already above 100 KiB
+before adding the missing NPO row-polynomial relation checks. The Merkle-backed
+residual-zero proof is rejected as a production route because its column-opening
+payload alone was 678,443 bytes and the prover spent about 53 s inside that
+component. The next viable direction is a shared/batched terminal proximity
+backend that amortizes FRI proof material across primitive and NPO relations, or
+an NPO relation check that consumes the value-column FRI openings without
+adding a second Merkle-heavy proof.
 
 Recursive proving uses 5-round Tip5 only. This terminal path must not be read as
 a change to Nockchain's canonical non-recursive 7-round Tip5 hash path.
