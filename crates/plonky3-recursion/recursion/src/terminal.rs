@@ -1040,7 +1040,7 @@ pub struct TerminalNpoPolynomialProfile {
     pub tip5_rounds: usize,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalNpoTip5LookupTraceProfile {
     pub tip5_rows: usize,
     pub lookup_table_rows: usize,
@@ -1052,6 +1052,41 @@ pub struct TerminalNpoTip5LookupTraceProfile {
     pub permutation_row_offset: usize,
     pub max_constraint_degree: usize,
     pub tip5_rounds: usize,
+}
+
+/// FRI commitment shape for the optimized Tip5 lookup AIR main trace.
+///
+/// The optimized lookup trace is Goldilocks-valued. Its PCS opening values live
+/// in the terminal extension challenge field because low-degree openings are
+/// evaluated at transcript-derived extension points.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalNpoTip5LookupFriProfile {
+    pub trace: TerminalNpoTip5LookupTraceProfile,
+    pub rows: usize,
+    pub padded_rows: usize,
+    pub log_rows: usize,
+    pub field_basis_dimension: usize,
+    pub field_columns: usize,
+    pub basis_columns: usize,
+    pub proximity: TerminalProximityProfile,
+}
+
+/// FRI opening proof for the optimized Tip5 lookup AIR main trace.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TerminalNpoTip5LookupFriOpeningProof {
+    pub profile: TerminalNpoTip5LookupFriProfile,
+    pub commitment: TerminalFriCommitment,
+    pub opened_values_basis: Vec<Vec<u64>>,
+    pub proof: TerminalFriProof,
+}
+
+/// Transcript-derived opening of optimized Tip5 lookup AIR main columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalNpoTip5LookupFriOpenedColumns {
+    pub profile: TerminalNpoTip5LookupFriProfile,
+    pub zeta: TerminalFriChallenge,
+    pub labels: Vec<String>,
+    pub values: Vec<TerminalFriChallenge>,
 }
 
 /// One row in the backend polynomial witness table for supported NPOs.
@@ -4914,6 +4949,72 @@ impl NativeTerminalCompiler {
             profile: profile.clone(),
             labels,
             trees,
+        })
+    }
+
+    pub fn prove_terminal_npo_tip5_lookup_fri_opening_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        witness: &TerminalWitness<F>,
+        prelude: &TerminalProofPrelude,
+    ) -> Result<TerminalNpoTip5LookupFriOpeningProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let (_, trace, _) =
+            self.terminal_npo_tip5_lookup_air_trace_goldilocks(verifying_key, witness)?;
+        Self::prove_terminal_npo_tip5_lookup_fri_opening_from_trace_goldilocks(
+            prelude,
+            &Self::terminal_npo_tip5_lookup_trace_profile(verifying_key),
+            &trace,
+        )
+    }
+
+    fn prove_terminal_npo_tip5_lookup_fri_opening_from_trace_goldilocks(
+        prelude: &TerminalProofPrelude,
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+        trace: &RowMajorMatrix<Goldilocks>,
+    ) -> Result<TerminalNpoTip5LookupFriOpeningProof, NativeTerminalVerifyError> {
+        let (profile, matrix) =
+            Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(trace_profile, trace)?;
+        if profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: profile.proximity.proof_parameters(),
+                },
+            );
+        }
+
+        let (pcs, mut challenger) = Self::terminal_fri_pcs_and_challenger(profile.proximity)?;
+        Self::seed_terminal_npo_tip5_lookup_fri_challenger(&mut challenger, prelude, &profile);
+        let domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                profile.padded_rows,
+            );
+        let (commitment, data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(domain, matrix)],
+            );
+        challenger.observe(commitment.clone());
+        let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let (opened_values, proof) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
+                &pcs,
+                vec![(&data, vec![vec![zeta]])],
+                &mut challenger,
+            );
+        let opened_values_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
+
+        Ok(TerminalNpoTip5LookupFriOpeningProof {
+            profile,
+            commitment,
+            opened_values_basis,
+            proof,
         })
     }
 
@@ -11334,6 +11435,62 @@ impl NativeTerminalCompiler {
         Self::terminal_npo_polynomial_fri_profile_for_layout::<F>(&columns.layout)
     }
 
+    fn terminal_npo_tip5_lookup_fri_profile(
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+    ) -> Result<TerminalNpoTip5LookupFriProfile, NativeTerminalVerifyError> {
+        if trace_profile.main_rows == 0 {
+            return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
+        }
+        if trace_profile.main_width == 0 {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_fri_main_width".into(),
+                    expected: 1,
+                    got: 0,
+                },
+            );
+        }
+        Ok(TerminalNpoTip5LookupFriProfile {
+            trace: trace_profile.clone(),
+            rows: trace_profile.main_rows,
+            padded_rows: trace_profile.main_rows,
+            log_rows: trace_profile.main_log_rows,
+            field_basis_dimension: <Goldilocks as BasedVectorSpace<Goldilocks>>::DIMENSION,
+            field_columns: trace_profile.main_width,
+            basis_columns: trace_profile.main_width,
+            proximity: TerminalProximityProfile::production_60bit(),
+        })
+    }
+
+    fn terminal_npo_tip5_lookup_fri_matrix_goldilocks(
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+        trace: &RowMajorMatrix<Goldilocks>,
+    ) -> Result<
+        (TerminalNpoTip5LookupFriProfile, RowMajorMatrix<Goldilocks>),
+        NativeTerminalVerifyError,
+    > {
+        let profile = Self::terminal_npo_tip5_lookup_fri_profile(trace_profile)?;
+        if trace.width() != profile.field_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_fri_main_width".into(),
+                    expected: profile.field_columns,
+                    got: trace.width(),
+                },
+            );
+        }
+        if trace.height() != profile.rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_fri_main_rows".into(),
+                    expected: profile.rows,
+                    got: trace.height(),
+                },
+            );
+        }
+        Ok((profile, trace.clone()))
+    }
+
     fn terminal_npo_polynomial_fri_profile_for_layout<F>(
         layout: &TerminalNpoPolynomialColumnLayout,
     ) -> Result<TerminalNpoPolynomialFriProfile, NativeTerminalVerifyError>
@@ -12235,6 +12392,25 @@ impl NativeTerminalCompiler {
         .map(|_| ())
     }
 
+    pub fn verify_terminal_npo_tip5_lookup_fri_opening_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoTip5LookupFriOpeningProof,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        self.verify_and_open_terminal_npo_tip5_lookup_fri_opening_goldilocks(
+            verifying_key,
+            public_inputs,
+            prelude,
+            proof,
+        )
+        .map(|_| ())
+    }
+
     pub fn verify_terminal_npo_polynomial_value_fri_opening_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -12291,6 +12467,82 @@ impl NativeTerminalCompiler {
             proof,
             TerminalNpoPolynomialFriColumnSet::WitnessValues,
         )
+    }
+
+    pub fn verify_and_open_terminal_npo_tip5_lookup_fri_opening_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoTip5LookupFriOpeningProof,
+    ) -> Result<TerminalNpoTip5LookupFriOpenedColumns, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
+        let expected_profile = Self::terminal_npo_tip5_lookup_fri_profile(&trace_profile)?;
+        if proof.profile != expected_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_fri_profile".into(),
+                    expected: expected_profile.basis_columns,
+                    got: proof.profile.basis_columns,
+                },
+            );
+        }
+        if proof.profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: proof.profile.proximity.proof_parameters(),
+                },
+            );
+        }
+        if proof.opened_values_basis.len() != proof.profile.basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof.profile.basis_columns,
+                    got: proof.opened_values_basis.len(),
+                },
+            );
+        }
+        let mut opened_values = Vec::with_capacity(proof.opened_values_basis.len());
+        for basis in &proof.opened_values_basis {
+            opened_values
+                .push(Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(basis)?);
+        }
+
+        let (pcs, mut challenger) = Self::terminal_fri_pcs_and_challenger(proof.profile.proximity)?;
+        Self::seed_terminal_npo_tip5_lookup_fri_challenger(&mut challenger, prelude, &proof.profile);
+        let domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                proof.profile.padded_rows,
+            );
+        challenger.observe(proof.commitment.clone());
+        let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
+            &pcs,
+            vec![(
+                proof.commitment.clone(),
+                vec![(domain, vec![(zeta, opened_values.clone())])],
+            )],
+            &proof.proof,
+            &mut challenger,
+        )
+        .map_err(|err| {
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: format!("terminal Tip5 lookup FRI verification failed: {err:?}"),
+            }
+        })?;
+
+        Ok(TerminalNpoTip5LookupFriOpenedColumns {
+            profile: proof.profile.clone(),
+            zeta,
+            labels: Self::terminal_npo_tip5_lookup_air_main_column_labels(&proof.profile.trace),
+            values: opened_values,
+        })
     }
 
     pub fn verify_terminal_npo_polynomial_value_padding_opening_goldilocks<F>(
@@ -12961,6 +13213,62 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, profile.proximity.max_log_arity as u64);
         Self::observe_terminal_fri_u64(challenger, profile.proximity.log_final_poly_len as u64);
         Self::observe_terminal_fri_u64(challenger, profile.proximity.pure_query_bits as u64);
+    }
+
+    fn seed_terminal_npo_tip5_lookup_fri_challenger(
+        challenger: &mut TerminalFriChallenger,
+        prelude: &TerminalProofPrelude,
+        profile: &TerminalNpoTip5LookupFriProfile,
+    ) {
+        Self::observe_terminal_fri_str(challenger, "nock-terminal-npo-tip5-lookup-fri-v1");
+        for limb in prelude.challenge_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
+        for limb in prelude.public_values_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.security_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
+        Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, profile);
+    }
+
+    fn observe_terminal_npo_tip5_lookup_fri_profile(
+        challenger: &mut TerminalFriChallenger,
+        profile: &TerminalNpoTip5LookupFriProfile,
+    ) {
+        Self::observe_terminal_npo_tip5_lookup_trace_profile(challenger, &profile.trace);
+        Self::observe_terminal_fri_u64(challenger, profile.rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.padded_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.log_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.field_basis_dimension as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.field_columns as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.basis_columns as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.scheme_id as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.log_blowup as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.num_queries as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.max_log_arity as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.log_final_poly_len as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.pure_query_bits as u64);
+    }
+
+    fn observe_terminal_npo_tip5_lookup_trace_profile(
+        challenger: &mut TerminalFriChallenger,
+        profile: &TerminalNpoTip5LookupTraceProfile,
+    ) {
+        Self::observe_terminal_fri_u64(challenger, profile.tip5_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.lookup_table_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.main_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.main_log_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.main_width as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.preprocessed_width as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.preprocessed_values as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.permutation_row_offset as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.max_constraint_degree as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.tip5_rounds as u64);
     }
 
     fn seed_terminal_npo_padding_quotient_challenger(
@@ -18803,6 +19111,8 @@ impl TerminalDigestSponge {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use alloc::boxed::Box;
     use alloc::string::String;
     use alloc::vec;
@@ -18824,6 +19134,7 @@ mod tests {
     use p3_field::extension::BinomialExtensionField;
     use p3_matrix::Matrix;
     use p3_tip5_circuit_air::{NUM_ROUNDS, TABLE_ROWS, tip5_lookup_air_width, tip5_perm_air_width};
+    use std::println;
 
     use super::*;
 
@@ -19693,6 +20004,122 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn goldilocks_npo_tip5_lookup_fri_opening_binds_trace_profile() {
+        let (circuit, public_inputs) = build_npo_only_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+        let residual_root = compiler
+            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
+            .expect("NPO-only residual oracle must commit")
+            .commitment()
+            .root;
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![residual_root],
+            )
+            .expect("NPO-only lookup FRI prelude must build");
+        let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
+        let expected_profile =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_fri_profile(&trace_profile)
+                .expect("lookup FRI profile must derive");
+
+        let prove_start = std::time::Instant::now();
+        let proof = compiler
+            .prove_terminal_npo_tip5_lookup_fri_opening_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &prelude,
+            )
+            .expect("terminal Tip5 lookup FRI opening proof must build");
+        let prove_elapsed = prove_start.elapsed();
+        assert_eq!(proof.profile, expected_profile);
+        assert_eq!(
+            proof.profile.proximity,
+            TerminalProximityProfile::production_60bit()
+        );
+        assert_eq!(proof.profile.proximity.pure_query_bits, 60);
+        assert_eq!(proof.opened_values_basis.len(), proof.profile.basis_columns);
+
+        let verify_start = std::time::Instant::now();
+        let opened = compiler
+            .verify_and_open_terminal_npo_tip5_lookup_fri_opening_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &proof,
+            )
+            .expect("terminal Tip5 lookup FRI opening proof must verify");
+        let verify_elapsed = verify_start.elapsed();
+        assert_eq!(opened.profile, proof.profile);
+        assert_eq!(opened.labels.len(), proof.profile.field_columns);
+        assert_eq!(
+            opened.labels,
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_air_main_column_labels(
+                &proof.profile.trace
+            )
+        );
+        assert_eq!(opened.values.len(), proof.profile.field_columns);
+
+        let serialized = postcard::to_allocvec(&proof)
+            .expect("terminal Tip5 lookup FRI opening proof must serialize");
+        println!(
+            "terminal Tip5 lookup FRI candidate: {} bytes ({:.1} KiB), prove={:?}, verify={:?}",
+            serialized.len(),
+            serialized.len() as f64 / 1024.0,
+            prove_elapsed,
+            verify_elapsed,
+        );
+        let (roundtrip, trailing): (TerminalNpoTip5LookupFriOpeningProof, &[u8]) =
+            postcard::take_from_bytes(&serialized)
+                .expect("terminal Tip5 lookup FRI opening proof must deserialize");
+        assert!(trailing.is_empty());
+        compiler
+            .verify_terminal_npo_tip5_lookup_fri_opening_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &roundtrip,
+            )
+            .expect("round-tripped terminal Tip5 lookup FRI opening proof must verify");
+
+        let mut tampered_opening = proof.clone();
+        tampered_opening.opened_values_basis[0][0] =
+            tampered_opening.opened_values_basis[0][0].wrapping_add(1);
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_fri_opening_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &tampered_opening,
+            )
+            .expect_err("tampered terminal Tip5 lookup FRI opening must fail");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+        ));
+
+        let mut tampered_profile = roundtrip;
+        tampered_profile.profile.trace.tip5_rows += 1;
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_fri_opening_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &tampered_profile,
+            )
+            .expect_err("wrong terminal Tip5 lookup FRI profile must fail");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. }
+        ));
     }
 
     #[test]
