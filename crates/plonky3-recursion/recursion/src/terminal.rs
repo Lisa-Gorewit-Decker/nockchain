@@ -1172,6 +1172,20 @@ pub struct TerminalNpoPolynomialPaddingQuotientProof {
     pub proof: TerminalFriProof,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalNpoValueQuotientConstraintKind {
+    Padding,
+    MmcsBooleanBase,
+    MmcsBooleanTail,
+}
+
+#[derive(Clone, Debug)]
+struct TerminalNpoValueQuotientConstraint {
+    present_evals: Vec<Goldilocks>,
+    value_evals: Vec<Goldilocks>,
+    kind: TerminalNpoValueQuotientConstraintKind,
+}
+
 /// Deterministic polynomial-column projection of [`TerminalNpoPolynomialTable`].
 ///
 /// The `labels` vector is aligned with `columns`: `columns[i][row]` is the row
@@ -11111,12 +11125,12 @@ impl NativeTerminalCompiler {
         if layout.rows == 0 {
             return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
         }
-        let padded_rows = 1usize << layout.log_rows;
+        let padded_rows = 1usize << (layout.log_rows + 1);
         Ok(TerminalNpoPolynomialFriProfile {
             column_set: TerminalNpoPolynomialFriColumnSet::PaddingQuotient,
             rows: layout.rows,
             padded_rows,
-            log_rows: layout.log_rows,
+            log_rows: layout.log_rows + 1,
             field_basis_dimension:
                 <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION,
             field_columns: 1,
@@ -11532,7 +11546,7 @@ impl NativeTerminalCompiler {
             )?
             .len(),
         )?;
-        let constraints = Self::terminal_npo_polynomial_padding_constraint_evaluations(
+        let constraints = Self::terminal_npo_polynomial_value_quotient_constraints(
             columns,
             verifier_columns,
             &value_profile,
@@ -11542,10 +11556,15 @@ impl NativeTerminalCompiler {
         for _ in 0..quotient_domain.size() {
             let mut folded = TerminalFriChallenge::ZERO;
             let mut coeff = TerminalFriChallenge::ONE;
-            for (_, present_evals, value_evals) in &constraints {
-                let present = value_domain.evaluate_polynomial_at(present_evals, point);
-                let value = value_domain.evaluate_polynomial_at(value_evals, point);
-                folded += coeff * (TerminalFriChallenge::ONE - present) * value;
+            for constraint in &constraints {
+                let present = value_domain.evaluate_polynomial_at(&constraint.present_evals, point);
+                let value = value_domain.evaluate_polynomial_at(&constraint.value_evals, point);
+                folded += coeff
+                    * Self::terminal_npo_value_quotient_constraint_value(
+                        constraint.kind,
+                        present,
+                        value,
+                    );
                 coeff *= alpha;
             }
             let z_h = value_domain.vanishing_poly_at_point(point);
@@ -11559,11 +11578,11 @@ impl NativeTerminalCompiler {
         Ok(RowMajorMatrix::new_col(quotient_values).flatten_to_base())
     }
 
-    fn terminal_npo_polynomial_padding_constraint_evaluations<F>(
+    fn terminal_npo_polynomial_value_quotient_constraints<F>(
         columns: &TerminalNpoPolynomialColumns<F>,
         verifier_columns: &TerminalNpoPolynomialColumns<F>,
         profile: &TerminalNpoPolynomialFriProfile,
-    ) -> Result<Vec<(String, Vec<Goldilocks>, Vec<Goldilocks>)>, NativeTerminalVerifyError>
+    ) -> Result<Vec<TerminalNpoValueQuotientConstraint>, NativeTerminalVerifyError>
     where
         F: BasedVectorSpace<Goldilocks>,
     {
@@ -11626,14 +11645,57 @@ impl NativeTerminalCompiler {
                     };
                     value_evals.push(value);
                 }
-                constraints.push((
-                    format!("{label}/basis_{basis_index}"),
-                    present_evals.clone(),
+                constraints.push(TerminalNpoValueQuotientConstraint {
+                    present_evals: present_evals.clone(),
                     value_evals,
-                ));
+                    kind: TerminalNpoValueQuotientConstraintKind::Padding,
+                });
+            }
+            if label == "mmcs_bit" {
+                for basis_index in 0..profile.field_basis_dimension {
+                    let mut value_evals = Vec::with_capacity(profile.padded_rows);
+                    for row in 0..profile.padded_rows {
+                        let value = if row < profile.rows {
+                            columns.columns[value_column_index][row]
+                                .as_basis_coefficients_slice()
+                                .get(basis_index)
+                                .copied()
+                                .unwrap_or(Goldilocks::ZERO)
+                        } else {
+                            Goldilocks::ZERO
+                        };
+                        value_evals.push(value);
+                    }
+                    let kind = if basis_index == 0 {
+                        TerminalNpoValueQuotientConstraintKind::MmcsBooleanBase
+                    } else {
+                        TerminalNpoValueQuotientConstraintKind::MmcsBooleanTail
+                    };
+                    constraints.push(TerminalNpoValueQuotientConstraint {
+                        present_evals: present_evals.clone(),
+                        value_evals,
+                        kind,
+                    });
+                }
             }
         }
         Ok(constraints)
+    }
+
+    fn terminal_npo_value_quotient_constraint_value(
+        kind: TerminalNpoValueQuotientConstraintKind,
+        present: TerminalFriChallenge,
+        value: TerminalFriChallenge,
+    ) -> TerminalFriChallenge {
+        match kind {
+            TerminalNpoValueQuotientConstraintKind::Padding => {
+                (TerminalFriChallenge::ONE - present) * value
+            }
+            TerminalNpoValueQuotientConstraintKind::MmcsBooleanBase => {
+                present * value * (value - TerminalFriChallenge::ONE)
+            }
+            TerminalNpoValueQuotientConstraintKind::MmcsBooleanTail => present * value,
+        }
     }
 
     fn terminal_npo_opened_matrix_basis_u64(
@@ -11998,15 +12060,32 @@ impl NativeTerminalCompiler {
             }
             let present = value_domain.evaluate_polynomial_at(&present_evals, opened.zeta);
             for value in value_basis {
-                folded += coeff * (TerminalFriChallenge::ONE - present) * *value;
+                folded += coeff
+                    * Self::terminal_npo_value_quotient_constraint_value(
+                        TerminalNpoValueQuotientConstraintKind::Padding,
+                        present,
+                        *value,
+                    );
                 coeff *= alpha;
+            }
+            if label == "mmcs_bit" {
+                for (basis_index, value) in value_basis.iter().enumerate() {
+                    let kind = if basis_index == 0 {
+                        TerminalNpoValueQuotientConstraintKind::MmcsBooleanBase
+                    } else {
+                        TerminalNpoValueQuotientConstraintKind::MmcsBooleanTail
+                    };
+                    folded += coeff
+                        * Self::terminal_npo_value_quotient_constraint_value(kind, present, *value);
+                    coeff *= alpha;
+                }
             }
         }
         let expected = quotient * value_domain.vanishing_poly_at_point(opened.zeta);
         if folded != expected {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
-                    label: "npo_padding_quotient".into(),
+                    label: "npo_value_relation_quotient".into(),
                 },
             );
         }
@@ -19267,6 +19346,91 @@ mod tests {
     }
 
     #[test]
+    fn goldilocks_npo_value_quotient_rejects_nonboolean_mmcs_bit() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(1);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness_with_private_data(
+            &circuit,
+            public_inputs.clone(),
+            private_data,
+        );
+        let columns = compiler
+            .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
+            .expect("Merkle Tip5 NPO columns must build");
+        let verifier_columns = compiler
+            .terminal_npo_polynomial_verifier_derived_columns_goldilocks::<Goldilocks>(&vk)
+            .expect("Merkle Tip5 verifier-derived NPO columns must build");
+        let column_roots =
+            NativeTerminalCompiler::commit_terminal_npo_polynomial_column_values_goldilocks(
+                &columns,
+            )
+            .expect("Merkle Tip5 NPO column roots must commit")
+            .commitments()
+            .into_iter()
+            .map(|commitment| commitment.root)
+            .collect::<Vec<_>>();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                column_roots,
+            )
+            .expect("Merkle Tip5 terminal NPO prelude must build");
+
+        let honest_proof = compiler
+            .prove_terminal_npo_polynomial_padding_quotient_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &prelude,
+            )
+            .expect("honest MMCS-bit value quotient proof must build");
+        let opened = compiler
+            .verify_terminal_npo_polynomial_padding_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &honest_proof,
+            )
+            .expect("honest MMCS-bit value quotient proof must verify");
+        assert!(opened.labels.iter().any(|label| label == "mmcs_bit"));
+        assert_eq!(
+            honest_proof.quotient_profile.padded_rows,
+            honest_proof.value_profile.padded_rows * 2
+        );
+
+        let mut bad_columns = columns.clone();
+        let mmcs_column = bad_columns
+            .labels
+            .iter()
+            .position(|label| label == "mmcs_bit")
+            .expect("MMCS-bit column must exist");
+        bad_columns.columns[mmcs_column][0] = Goldilocks::from_u64(2);
+        let bad_proof =
+            NativeTerminalCompiler::prove_terminal_npo_polynomial_padding_quotient_from_columns_goldilocks(
+                &prelude,
+                &bad_columns,
+                &verifier_columns,
+            )
+            .expect("FRI-valid but MMCS-booleanity-invalid value quotient proof must build");
+        let err = compiler
+            .verify_terminal_npo_polynomial_padding_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_proof,
+            )
+            .expect_err("nonboolean MMCS bit must fail the value quotient identity");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
+                if label == "npo_value_relation_quotient"
+        ));
+    }
+
+    #[test]
     fn goldilocks_npo_exhaustive_residual_component_mapping_tracks_layout() {
         let (circuit, _public_inputs, _private_data) = build_many_merkle_tip5_test_circuit(1);
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
@@ -23676,7 +23840,7 @@ mod tests {
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
-                if label == "npo_padding_quotient"
+                if label == "npo_value_relation_quotient"
         ));
 
         let mut bad_present_value_columns = columns.clone();
