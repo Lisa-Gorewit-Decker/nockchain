@@ -252,6 +252,14 @@ for this route.
   openings. Tests require the value-column opening labels to contain only
   witness-bearing columns and require the full-table and value-column profiles
   to derive distinct opening points.
+- `verify_terminal_npo_polynomial_value_padding_opening_goldilocks`: the first
+  row-polynomial consumer of the value-column FRI handoff. It verifies the
+  value-column FRI proof, evaluates verifier-derived present-bit columns at the
+  same transcript-derived opening point, and checks
+  `(1 - present(X)) * value(X) = 0` for input, output, hidden Tip5, and MMCS
+  value columns. Tests build a proof that is FRI-valid over a malformed
+  `mmcs_bit` value column but relation-invalid because the verifier-derived
+  `mmcs_bit_present` column is zero, and require the padding check to reject it.
 - `TerminalNpoPolynomialColumnOracleSet`: the commit-ready 5-round Tip5 oracle
   set for those fixed columns. Each column uses a verifier-derived
   `npo_polynomial_column/<column-label>` oracle label and the shared row count.
@@ -853,8 +861,10 @@ component. The next viable direction is a shared/batched terminal proximity
 backend that amortizes FRI proof material across primitive and NPO relations, or
 an NPO relation check that consumes the value-column FRI openings without
 adding a second Merkle-heavy proof. The FRI verifier now exposes exactly that
-checked value-column opening handoff, but the row-polynomial constraints over
-those openings are still pending.
+checked value-column opening handoff, and the first consumed row-polynomial
+constraint now checks verifier-derived present-bit padding. Tip5 permutation,
+chain, MMCS direction-bit booleanity, recompose, and residual-zero constraints
+over those openings are still pending.
 
 Recursive proving uses 5-round Tip5 only. This terminal path must not be read as
 a change to Nockchain's canonical non-recursive 7-round Tip5 hash path.

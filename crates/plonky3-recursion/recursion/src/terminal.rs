@@ -17,7 +17,7 @@ use p3_circuit::ops::{
 };
 use p3_circuit::tables::Traces;
 use p3_circuit::{Circuit, WitnessId};
-use p3_commit::{ExtensionMmcs, Pcs};
+use p3_commit::{ExtensionMmcs, Pcs, PolynomialSpace};
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField64};
@@ -1664,6 +1664,9 @@ pub enum NativeTerminalVerifyError {
     TerminalNpoPolynomialColumnValueMismatch {
         label: String,
         row: usize,
+    },
+    TerminalNpoPolynomialFriRelationMismatch {
+        label: String,
     },
     TerminalNpoPolynomialColumnDuplicateWitnessMismatch {
         npo_index: usize,
@@ -11296,9 +11299,22 @@ impl NativeTerminalCompiler {
     {
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
         let columns = self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
+        Self::prove_terminal_npo_polynomial_fri_opening_from_columns_goldilocks(
+            prelude, &columns, column_set,
+        )
+    }
+
+    fn prove_terminal_npo_polynomial_fri_opening_from_columns_goldilocks<F>(
+        prelude: &TerminalProofPrelude,
+        columns: &TerminalNpoPolynomialColumns<F>,
+        column_set: TerminalNpoPolynomialFriColumnSet,
+    ) -> Result<TerminalNpoPolynomialFriOpeningProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
         let (profile, matrix) =
             Self::terminal_npo_polynomial_basis_matrix_for_column_set_goldilocks(
-                &columns, column_set,
+                columns, column_set,
             )?;
         if profile.proximity != prelude.relation_profile.proximity {
             return Err(
@@ -11423,6 +11439,74 @@ impl NativeTerminalCompiler {
         )
     }
 
+    pub fn verify_terminal_npo_polynomial_value_padding_opening_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoPolynomialFriOpeningProof,
+    ) -> Result<TerminalNpoPolynomialFriOpenedColumns, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let opened = self
+            .verify_and_open_terminal_npo_polynomial_value_fri_opening_goldilocks::<F>(
+                verifying_key,
+                public_inputs,
+                prelude,
+                proof,
+            )?;
+        let verifier_openings = self
+            .terminal_npo_polynomial_verifier_derived_openings_at_zeta_goldilocks::<F>(
+                verifying_key,
+                opened.zeta,
+            )?;
+        for (label, value_basis) in opened.labels.iter().zip(&opened.values) {
+            let present_label = Self::terminal_npo_polynomial_value_present_label(label).ok_or(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: label.clone(),
+                },
+            )?;
+            let present_basis = verifier_openings
+                .iter()
+                .find(|(candidate, _)| candidate == &present_label)
+                .map(|(_, value)| value)
+                .ok_or_else(
+                    || NativeTerminalVerifyError::TerminalNpoPolynomialColumnMissing {
+                        label: present_label.clone(),
+                    },
+                )?;
+            let present = present_basis.first().copied().ok_or(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: 1,
+                    got: 0,
+                },
+            )?;
+            if present_basis
+                .iter()
+                .copied()
+                .skip(1)
+                .any(|value| value != TerminalFriChallenge::ZERO)
+            {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                        label: present_label,
+                    },
+                );
+            }
+            for value in value_basis {
+                if (TerminalFriChallenge::ONE - present) * *value != TerminalFriChallenge::ZERO {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                            label: label.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        Ok(opened)
+    }
+
     fn verify_terminal_npo_polynomial_fri_opening_for_column_set_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -11522,6 +11606,67 @@ impl NativeTerminalCompiler {
             labels: opened_labels,
             values,
         })
+    }
+
+    fn terminal_npo_polynomial_verifier_derived_openings_at_zeta_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        zeta: TerminalFriChallenge,
+    ) -> Result<Vec<(String, Vec<TerminalFriChallenge>)>, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let columns =
+            self.terminal_npo_polynomial_verifier_derived_columns_goldilocks(verifying_key)?;
+        let profile = Self::terminal_npo_polynomial_fri_profile(&columns)?;
+        let (pcs, _) = Self::terminal_fri_pcs_and_challenger(profile.proximity)?;
+        let domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                profile.padded_rows,
+            );
+        let mut openings = Vec::new();
+        for (column_index, label) in columns.labels.iter().enumerate() {
+            if !Self::terminal_npo_polynomial_label_is_verifier_derived(label) {
+                continue;
+            }
+            let mut basis_values = Vec::with_capacity(profile.field_basis_dimension);
+            for basis_index in 0..profile.field_basis_dimension {
+                let mut evaluations = Vec::with_capacity(profile.padded_rows);
+                for row in 0..profile.padded_rows {
+                    let value = if row < profile.rows {
+                        columns.columns[column_index][row]
+                            .as_basis_coefficients_slice()
+                            .get(basis_index)
+                            .copied()
+                            .unwrap_or(Goldilocks::ZERO)
+                    } else {
+                        Goldilocks::ZERO
+                    };
+                    evaluations.push(value);
+                }
+                basis_values.push(domain.evaluate_polynomial_at(&evaluations, zeta));
+            }
+            openings.push((label.clone(), basis_values));
+        }
+        Ok(openings)
+    }
+
+    fn terminal_npo_polynomial_value_present_label(label: &str) -> Option<String> {
+        label
+            .strip_prefix("input_value_")
+            .map(|slot| format!("input_present_{slot}"))
+            .or_else(|| {
+                label
+                    .strip_prefix("output_value_")
+                    .map(|slot| format!("output_present_{slot}"))
+            })
+            .or_else(|| {
+                label
+                    .strip_prefix("hidden_tip5_value_")
+                    .map(|slot| format!("hidden_tip5_present_{slot}"))
+            })
+            .or_else(|| (label == "mmcs_bit").then(|| String::from("mmcs_bit_present")))
     }
 
     fn seed_terminal_npo_polynomial_fri_challenger(
@@ -22925,6 +23070,50 @@ mod tests {
             opened_full.zeta, opened_value.zeta,
             "terminal NPO FRI opening point must be column-set/profile bound",
         );
+        compiler
+            .verify_terminal_npo_polynomial_value_padding_opening_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &value_proof,
+            )
+            .expect("honest value-column FRI openings must satisfy verifier-derived padding");
+
+        let mut bad_padding_columns = columns.clone();
+        let mmcs_column = bad_padding_columns
+            .labels
+            .iter()
+            .position(|label| label == "mmcs_bit")
+            .expect("MMCS value column must exist");
+        bad_padding_columns.columns[mmcs_column][0] = GoldilocksD2::ONE;
+        let bad_padding_proof =
+            NativeTerminalCompiler::prove_terminal_npo_polynomial_fri_opening_from_columns_goldilocks(
+                &prelude,
+                &bad_padding_columns,
+                TerminalNpoPolynomialFriColumnSet::WitnessValues,
+            )
+            .expect("FRI-valid but padding-invalid value-column proof must build");
+        compiler
+            .verify_and_open_terminal_npo_polynomial_value_fri_opening_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_padding_proof,
+            )
+            .expect("padding-invalid value-column proof is still a valid FRI opening");
+        let err = compiler
+            .verify_terminal_npo_polynomial_value_padding_opening_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_padding_proof,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
+                if label == "mmcs_bit"
+        ));
         let err = compiler
             .verify_terminal_npo_polynomial_fri_opening_goldilocks::<GoldilocksD2>(
                 &vk,
