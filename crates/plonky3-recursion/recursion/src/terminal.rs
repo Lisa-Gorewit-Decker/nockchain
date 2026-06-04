@@ -535,8 +535,9 @@ pub struct TerminalNpoValidityFoldProof {
 /// residual/NPO validity consistency checks into one proof body shape. A
 /// production terminal backend still has to add the global proximity/sumcheck
 /// argument.
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TerminalLocalProof {
+struct TerminalLocalProof {
     pub prelude: TerminalProofPrelude,
     pub witness_commitment: TerminalOracleCommitment,
     pub combined_validity_commitment: TerminalOracleCommitment,
@@ -2371,7 +2372,8 @@ impl NativeTerminalCompiler {
         )
     }
 
-    pub fn assemble_goldilocks_local_certificate<F>(
+    #[cfg(test)]
+    fn assemble_goldilocks_local_certificate<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
         public_inputs: &[F],
@@ -2394,7 +2396,8 @@ impl NativeTerminalCompiler {
         )
     }
 
-    pub fn verify_goldilocks_local_certificate<F>(
+    #[cfg(test)]
+    fn verify_goldilocks_local_certificate<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
         certificate: &TerminalCertificate,
@@ -5532,7 +5535,8 @@ impl NativeTerminalCompiler {
         Ok(plan)
     }
 
-    pub fn prove_terminal_local_queries_goldilocks<F>(
+    #[cfg(test)]
+    fn prove_terminal_local_queries_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
         public_inputs: &[F],
@@ -6507,7 +6511,8 @@ impl NativeTerminalCompiler {
         Ok(())
     }
 
-    pub fn verify_terminal_local_queries_goldilocks<F>(
+    #[cfg(test)]
+    fn verify_terminal_local_queries_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
         public_inputs: &[F],

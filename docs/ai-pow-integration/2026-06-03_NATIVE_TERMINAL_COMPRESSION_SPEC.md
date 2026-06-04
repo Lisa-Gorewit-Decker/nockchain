@@ -92,9 +92,9 @@ for this route.
   `TerminalProofKind`, a Tip5 digest of the full public input vector, a Tip5
   digest of the backend proof body, an aggregate `TerminalBindingDigest` over
   header + proof kind + public digest + proof body digest, and the
-  backend-specific proof body bytes. The current typed local checkpoint is
-  marked `LocalCheckpoint`; the completed backend must use a distinct
-  production kind.
+  backend-specific proof body bytes. The public certificate path is production
+  only and uses `TerminalProofKind::Production`; local checkpoint helpers are
+  internal regression machinery, not an integration or wire path.
 - `TerminalProofParameters`: production terminal parameters committed before
   any backend challenge is sampled. The active native-terminal checkpoint
   profile is `security_bits=60, log_blowup=4, num_queries=15,
@@ -178,10 +178,6 @@ for this route.
   authenticates each fold layer with one sparse terminal-oracle multiproof over
   the transcript-derived left/right leaves, rather than serializing an
   independent Merkle path per sampled query and round.
-- `TerminalLocalProof`: the implemented local-proof envelope. It carries the
-  prelude, witness commitment, combined-validity commitment, mixed consistency
-  proof, and combined-validity fold proof as one serializable object. It is an
-  integration checkpoint, not the final global terminal proof.
 - `TerminalProductionProof`: the typed production proof body for the current
   compact backend checkpoint. It binds a witness oracle for exhaustive NPO row
   openings, an assignment oracle for primitive sparse-R1CS, the primitive
@@ -386,22 +382,13 @@ tampering, and stale aggregate binding digests before a backend-specific proof
 verifier can run. This is a wire-format and binding checkpoint; it is not yet a
 compact proof backend.
 
-There is now a typed checkpoint for the implemented local-proof body:
-`assemble_goldilocks_local_certificate` verifies a `TerminalLocalProof`, encodes
-it as the certificate proof body, and assembles the standard terminal
-certificate binding with `TerminalProofKind::LocalCheckpoint`.
-`verify_goldilocks_local_certificate` first checks the certificate
-header/proof-kind/public/body/binding digests, then decodes the body as a
-`TerminalLocalProof` with explicit rejection of trailing bytes, then reruns the
-local proof verifier. A raw certificate can still bind arbitrary bytes for a
-future backend, but the proof kind is committed and the local-proof checkpoint
-no longer treats typed local proof material as an opaque blob once the local
-verifier is selected. The raw binding checker is not a public production
-verifier; `verify_goldilocks_production_certificate` checks for a
-`Production`-kind envelope, decodes a typed `TerminalProductionProof` with
-explicit trailing-byte rejection, and reruns the compact production
-verifier. Malformed production bodies are rejected before relation checks, and
-`LocalCheckpoint` certificates still fail by proof-kind mismatch.
+Goldilocks production certificate assembly and verification are now the only
+public terminal certificate path. `verify_goldilocks_production_certificate`
+checks for a `Production`-kind envelope, decodes a typed
+`TerminalProductionProof` with explicit trailing-byte rejection, and reruns the
+compact production verifier. Malformed production bodies are rejected before
+relation checks. Local checkpoint proof helpers remain internal to the terminal
+module's regression suite so they cannot be selected by integration code.
 
 Goldilocks terminal proof prelude assembly and public production verification
 now reject:
@@ -554,42 +541,13 @@ Regression tests now also reject primitive rows presented as NPO rows, NPO rows
 presented as primitive rows, wrong combined-validity indices, and wrong
 NPO-index derivations inside the mixed consistency proof.
 
-On the real Tip5 L0 verifier fixture, fold compaction reduced the
-terminal-local certificate from 408,453 bytes (398.9 KiB) before compaction, to
-328,150 bytes (320.5 KiB) after right-leaf compaction, and then to 248,200 bytes
-(242.4 KiB) after next-link compaction. The measured terminal-local
-prove/verify times at the last point were about 5.95 s and 3.58 s respectively
-in the debug-profile test harness. The direct primitive samples, direct
-supported-NPO samples, and standalone residual zero openings were then removed
-from `TerminalLocalProof` because they duplicate the stronger consistency/fold
-checkpoint components without establishing production global soundness. That
-brings the typed local certificate to 178,073 bytes (173.9 KiB), with
-debug-profile prove/verify around 5.45 s and 2.49 s. The residual-witness and
-NPO-validity consistency proofs then stopped serializing duplicate
-residual/validity Merkle openings. They now link to the same transcript-derived
-base values already authenticated by the corresponding fold proof. That brings
-the typed local certificate to 157,348 bytes (153.7 KiB), with debug-profile
-prove/verify around 4.93 s and 2.42 s. A terminal query-PoW profile was
-implemented and measured, but production soundness must not count query-PoW
-bits. The active production checkpoint therefore rejects nonzero terminal
-`query_pow_bits` and uses pure-query `num_queries=15, query_pow_bits=0`. The
-next structural pass combined primitive
-quadratic residuals and supported-NPO validity residuals into one
-`combined_validity` oracle and one fold proof, ordered as
-`[primitive residuals || NPO validity residuals]`. That removes the second fold
-proof and the separate NPO consistency query set from the aggregate local proof.
-The active 60-bit pure-query checkpoint most recently measured 83,414 bytes
-(81.5 KiB) for the typed local certificate, with debug-profile prove/verify
-around 5.51 s and 1.97 s. Recent runs remain below the 100 KiB target for the
-local checkpoint, but it is still not a production terminal certificate.
-
-`TerminalLocalProof` now packages all implemented local proof components behind
-one verifier entrypoint. The verifier rechecks the prelude, then verifies the
-combined-validity consistency proof and combined-validity fold proof against the
-same public input vector and the same prelude-bound roots. Corrupting the
-combined validity commitment, fold proof, primitive consistency opening, or NPO
-consistency opening is rejected. This prevents integration code from accepting a
-proof body that quietly omits one current local component.
+Earlier local-checkpoint measurements were useful implementation diagnostics,
+but they are no longer maintained as a public certificate profile. The active
+60-bit terminal benchmark prints only the production certificate and its
+production subcomponents. Internal tests still exercise the local fold and
+consistency components so regressions in shared transcript/oracle machinery are
+caught, but integration code cannot assemble or verify a `LocalCheckpoint`
+certificate.
 
 The second local relation proof component samples supported non-primitive rows
 with domain `nock-terminal-npo-query-v1`. The verifier recomputes the NPO-row
@@ -613,23 +571,10 @@ is still a sampled local component, not the complete argument: global
 composition, unsampled-row coverage, and a polynomial/proximity or sumcheck
 argument are still required for production soundness.
 
-The current real-circuit terminal-local size profile after fold compaction is:
-
-| component | bytes |
-|---|---:|
-| prelude | 218 |
-| combined validity consistency openings | 24,868 |
-| combined validity fold | 60,995 |
-| typed local proof body | 86,205 |
-| typed local certificate | 86,423 |
-
-This profile says the remaining size problem is not generic serialization
-overhead. The large items are still Merkle-authenticated local openings and the
-fold-path commitments. A production terminal backend must replace these local
-samples with a real global composition/proximity argument, or add a proper
-multi-opening commitment layer. This checkpoint is useful as a typed
-local-proof baseline, but it is not production terminal soundness and is no
-longer the size path.
+The local/checkpoint components are retained only inside the terminal module's
+regression suite. They are not measured or maintained as a public certificate
+profile. The active real-circuit benchmark below reports the production
+certificate only.
 
 The typed compact production checker now measures as follows on the same real
 Tip5-L0 verifier circuit:
@@ -644,7 +589,7 @@ Tip5-L0 verifier circuit:
 | compact production proof body | 88,577 |
 | compact production certificate | 88,798 |
 
-The debug-profile measurement is `prove=4.844 s, verify=3.127 s` for the
+The debug-profile measurement is `prove=5.392 s, verify=3.399 s` for the
 production proof body and certificate, with terminal parameters
 `security_bits=60, log_blowup=4, num_queries=15, query_pow_bits=0`. This removes
 the sampled production NPO validity layer and verifies all 668 supported
@@ -679,8 +624,8 @@ component includes that matrix-vector subproof:
 | assignment fold query indices | 46 |
 | assignment fold round multiproofs | 20,791 |
 
-The latest debug-profile measurements are `prove=2.102 s, verify=1.460 s` for
-the matrix-vector component and `prove=2.132 s, verify=1.344 s` for the
+The latest debug-profile measurements are `prove=2.279 s, verify=1.460 s` for
+the matrix-vector component and `prove=2.300 s, verify=1.459 s` for the
 row-product component. This now proves the primitive sparse-R1CS row relation
 against the assignment commitment with compact public-prefix authentication, but
 NPO/table global arguments and the final polynomial proximity backend remain
@@ -746,7 +691,7 @@ Completion audit against the active terminal-compression requirements:
 |---|---|---|
 | Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
-| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `88,798` bytes / `86.7 KiB`, debug-profile `prove=4.844s`, `verify=3.127s`. | satisfied on the measured production fixture |
+| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `88,798` bytes / `86.7 KiB`, debug-profile `prove=5.392s`, `verify=3.399s`. | satisfied on the measured production fixture |
 | No confusing low-soundness testing production path | Production certificate verifier accepts only `TerminalProofKind::Production`; `LocalCheckpoint` is rejected by kind mismatch and query domains must support all 15 production queries. | satisfied for public production verifier dispatch |
 | Public values, parameters, relation, and commitments are bound before challenges | Header, public-values digest, backend relation digest, prelude parameters, relation profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
@@ -866,8 +811,8 @@ Security-audit conclusions for the current implementation checkpoint:
   to replace the exhaustive Merkle-opening verifier.
 - Direct NPO validity consistency verification now validates the referenced fold
   commitment schedule before deriving consistency query rows. This keeps the
-  direct verifier entrypoint fail-closed even if it is called outside the
-  aggregate `TerminalLocalProof` verifier.
+  internal regression verifier fail-closed even when exercised directly by
+  tests.
 - Direct and aggregate NPO validity consistency verification also re-verifies
   each sampled `TerminalNpoOpening` against the witness commitment. A folded
   zero validity row is therefore not enough by itself; malformed/missing
@@ -880,10 +825,6 @@ Security-audit conclusions for the current implementation checkpoint:
   after no-trailing-bytes decoding and relation verification. It rejects
   malformed production bodies and rejects `LocalCheckpoint` certificates by
   proof-kind mismatch.
-- `TerminalLocalProof` prevents a proof body from omitting one implemented local
-  component while still passing a single local verifier entrypoint. It is still
-  a local-proof envelope; it must be extended with the global
-  proximity/sumcheck proof before it can carry production terminal soundness.
 - The mixed combined-validity verifier has explicit regression coverage for
   branch confusion (`Quadratic` vs `Npo`) and NPO-index confusion. This protects
   the current aggregate local proof from accepting a row opened under the wrong

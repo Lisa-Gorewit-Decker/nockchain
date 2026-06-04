@@ -347,7 +347,7 @@ fn terminal_compiler_covers_real_tip5_l0_verifier_circuit() {
 }
 
 #[test]
-fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
+fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
     let BuiltLayer0Circuit {
         circuit,
         public_inputs,
@@ -391,60 +391,6 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
     compiler
         .validate_goldilocks_production_query_domains(&vk, parameters)
         .expect("real Tip5 L0 verifier circuit must support production terminal query count");
-
-    let prove_start = std::time::Instant::now();
-    let local_proof = compiler
-        .prove_terminal_local_queries_goldilocks(
-            &vk,
-            &terminal_witness.public_inputs,
-            &terminal_witness,
-            parameters,
-        )
-        .expect("terminal local proof must build for real Tip5 L0 verifier circuit");
-    let local_prove_elapsed = prove_start.elapsed();
-
-    let combined_fold_plan = compiler
-        .derive_terminal_combined_validity_fold_query_plan(
-            &local_proof.prelude,
-            &local_proof.combined_validity_commitment,
-            &local_proof.combined_validity_fold_proof.fold_commitments,
-        )
-        .expect("real terminal combined-validity fold query plan must derive");
-    assert_eq!(
-        combined_fold_plan.indices.len(),
-        parameters.num_queries as usize
-    );
-    for (pos, index) in combined_fold_plan.indices.iter().enumerate() {
-        assert!(
-            !combined_fold_plan.indices[..pos].contains(index),
-            "real terminal combined-validity fold queries must be distinct"
-        );
-    }
-
-    let certificate = compiler
-        .assemble_goldilocks_local_certificate(&vk, &terminal_witness.public_inputs, &local_proof)
-        .expect("terminal local certificate must assemble");
-    let body_size = certificate.proof_body.len();
-    let certificate_size = postcard::to_allocvec(&certificate)
-        .expect("terminal local certificate must serialize")
-        .len();
-    let prelude_size = postcard::to_allocvec(&local_proof.prelude)
-        .expect("serialize terminal local prelude")
-        .len();
-    let combined_validity_consistency_size =
-        postcard::to_allocvec(&local_proof.combined_validity_consistency_proof)
-            .expect("serialize terminal combined validity consistency proof")
-            .len();
-    let combined_validity_fold_size =
-        postcard::to_allocvec(&local_proof.combined_validity_fold_proof)
-            .expect("serialize terminal combined validity fold proof")
-            .len();
-
-    let verify_start = std::time::Instant::now();
-    compiler
-        .verify_goldilocks_local_certificate(&vk, &certificate, &terminal_witness.public_inputs)
-        .expect("terminal local certificate must verify");
-    let verify_elapsed = verify_start.elapsed();
 
     let production_prove_start = std::time::Instant::now();
     let production_proof = compiler
@@ -654,23 +600,6 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
     }
 
     eprintln!(
-        "terminal local certificate: body={} bytes ({:.1} KiB) certificate={} bytes ({:.1} KiB) prove={:.3}s verify={:.3}s parameters={{security_bits:{}, log_blowup:{}, num_queries:{}, query_pow_bits:{}}}",
-        body_size,
-        body_size as f64 / 1024.0,
-        certificate_size,
-        certificate_size as f64 / 1024.0,
-        local_prove_elapsed.as_secs_f64(),
-        verify_elapsed.as_secs_f64(),
-        parameters.security_bits,
-        parameters.log_blowup,
-        parameters.num_queries,
-        parameters.query_pow_bits,
-    );
-    eprintln!(
-        "terminal local components: prelude={} combined_validity_consistency={} combined_validity_fold={}",
-        prelude_size, combined_validity_consistency_size, combined_validity_fold_size,
-    );
-    eprintln!(
         "terminal production compact certificate: body={} bytes ({:.1} KiB) certificate={} bytes ({:.1} KiB) prove={:.3}s verify={:.3}s",
         production_body_size,
         production_body_size as f64 / 1024.0,
@@ -715,7 +644,6 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
         r1cs_assignment_fold_round_openings_size,
     );
 
-    assert!(certificate_size > body_size);
     assert!(production_certificate_size > production_body_size);
     assert_eq!(parameters.security_bits, 60);
     assert_eq!(parameters.num_queries, 15);
