@@ -874,6 +874,7 @@ impl TerminalNpoRelation {
 pub struct TerminalNpoPolynomialProfile {
     pub rows: usize,
     pub log_rows: usize,
+    pub sampled_residual_components: usize,
     pub residual_components: usize,
     pub log_residual_components: usize,
     pub witness_input_slots: usize,
@@ -7902,10 +7903,15 @@ impl NativeTerminalCompiler {
         let mut profile = TerminalNpoPolynomialProfile {
             rows: relation.rows.len(),
             log_rows: Self::terminal_mle_log_size(relation.rows.len()),
-            residual_components: Self::terminal_npo_validity_domain_len_for_basis_dimension(
+            sampled_residual_components: Self::terminal_npo_validity_domain_len_for_basis_dimension(
                 verifying_key,
                 basis_dimension,
             ),
+            residual_components:
+                Self::terminal_npo_exhaustive_residual_domain_len_for_basis_dimension(
+                    verifying_key,
+                    basis_dimension,
+                ),
             tip5_rounds: TIP5_PERM_ROUNDS,
             ..TerminalNpoPolynomialProfile::default()
         };
@@ -7975,6 +7981,67 @@ impl NativeTerminalCompiler {
             }
         }
         count_without_swap.max(count_with_swap)
+    }
+
+    fn terminal_npo_exhaustive_residual_domain_len_for_basis_dimension<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        basis_dimension: usize,
+    ) -> usize {
+        (0..Self::terminal_npo_domain_len(verifying_key))
+            .map(|npo_index| {
+                Self::terminal_npo_row(verifying_key, npo_index)
+                    .map(|row| {
+                        Self::terminal_npo_exhaustive_residual_component_count_for_basis_dimension(
+                            &row,
+                            basis_dimension,
+                        )
+                    })
+                    .unwrap_or(0)
+            })
+            .sum()
+    }
+
+    fn terminal_npo_exhaustive_residual_component_count_for_basis_dimension(
+        row: &NativeTerminalNpoRowRef<'_>,
+        basis_dimension: usize,
+    ) -> usize {
+        let sampled_components =
+            Self::terminal_npo_validity_component_count_for_basis_dimension(row, basis_dimension);
+        match row {
+            NativeTerminalNpoRowRef::Tip5 { callsite, .. } => {
+                let Some(mode) = callsite.tip5_mode else {
+                    return sampled_components;
+                };
+                let mut exhaustive_components = sampled_components;
+                if mode.merkle_path && callsite.tip5_mmcs_bit.is_some() {
+                    exhaustive_components += 1;
+                }
+                exhaustive_components
+                    + Self::terminal_tip5_chain_residual_component_count(callsite, mode)
+            }
+            NativeTerminalNpoRowRef::Recompose { .. } => sampled_components,
+        }
+    }
+
+    fn terminal_tip5_chain_residual_component_count(
+        callsite: &NativeTerminalNpoCallsite,
+        mode: Tip5TerminalMode,
+    ) -> usize {
+        if mode.merkle_path {
+            let chained_rate_lanes = (0..5)
+                .filter(|limb| callsite.inputs[*limb].is_none())
+                .count();
+            let zero_capacity_lanes = (10..16)
+                .filter(|limb| callsite.inputs[*limb].is_none())
+                .count();
+            chained_rate_lanes + zero_capacity_lanes
+        } else {
+            callsite
+                .inputs
+                .iter()
+                .filter(|input| input.is_none())
+                .count()
+        }
     }
 
     fn terminal_npo_validity_domain_len<F>(verifying_key: &NativeTerminalVerifyingKey<F>) -> usize
@@ -10793,6 +10860,7 @@ impl NativeTerminalCompiler {
         sponge.absorb_str("nock-terminal-npo-polynomial-profile-v1");
         sponge.absorb_u64(profile.rows as u64);
         sponge.absorb_u64(profile.log_rows as u64);
+        sponge.absorb_u64(profile.sampled_residual_components as u64);
         sponge.absorb_u64(profile.residual_components as u64);
         sponge.absorb_u64(profile.log_residual_components as u64);
         sponge.absorb_u64(profile.witness_input_slots as u64);
@@ -12488,9 +12556,11 @@ mod tests {
         assert_eq!(profile.rows, npo_relation.rows.len());
         assert_eq!(profile.log_rows, 1);
         assert_eq!(
-            profile.residual_components,
+            profile.sampled_residual_components,
             NativeTerminalCompiler::terminal_npo_validity_domain_len::<Goldilocks>(&vk)
         );
+        assert_eq!(profile.sampled_residual_components, 20);
+        assert_eq!(profile.residual_components, 34);
         assert_eq!(
             profile.log_residual_components,
             NativeTerminalCompiler::terminal_mle_log_size(profile.residual_components)
