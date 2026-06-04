@@ -213,18 +213,22 @@ for this route.
   and padded residual value and present-bit columns. Tests reconstruct the
   flattened exhaustive residual oracle from these columns and require MMCS-bit
   tampering to appear in both the local MMCS column and the residual columns.
-- `TerminalNpoPolynomialFriProfile` and the terminal FRI PCS builder: the NPO
-  table columns now have a concrete Plonky3-compatible low-degree commitment
-  target. Since terminal FRI commits Goldilocks codewords, verifier-circuit
-  field columns are expanded into Goldilocks basis columns and padded to the
-  verifier-key-derived two-adic row domain, then committed with recursive
-  5-round Tip5 and the canonical `log_blowup=4`, `num_queries=15`,
-  `query_pow_bits=0` schedule. A regression test commits D=2 recompose NPO
-  columns through this native FRI PCS, opens at a transcript-derived extension
-  point after the commitment is observed, verifies the proof, and rejects a
-  tampered opening claim. This is the proximity substrate for the final backend;
-  production still does not accept it as the full NPO relation proof until the
-  row-polynomial constraints are connected to the FRI openings.
+- `TerminalNpoPolynomialFriProfile`,
+  `TerminalNpoPolynomialFriOpeningProof`, and the terminal FRI PCS builder: the
+  NPO table columns now have a concrete Plonky3-compatible low-degree
+  commitment target. Since terminal FRI commits Goldilocks codewords,
+  verifier-circuit field columns are expanded into Goldilocks basis columns and
+  padded to the verifier-key-derived two-adic row domain, then committed with
+  recursive 5-round Tip5 and the canonical `log_blowup=4`, `num_queries=15`,
+  `query_pow_bits=0` schedule. The typed opening proof seeds the FRI challenger
+  with the terminal-prelude challenge digest, public-values digest, proof
+  parameters, zero query-PoW nonce, and full NPO FRI profile before observing
+  the column commitment and sampling the extension opening point. A regression
+  test commits D=2 recompose NPO columns through this native FRI PCS, verifies
+  the typed proof, round-trips its serialized form, and rejects tampered opened
+  values and stale profile metadata. This is the proximity substrate for the
+  final backend; production still does not accept it as the full NPO relation
+  proof until the row-polynomial constraints are connected to the FRI openings.
 - `TerminalNpoPolynomialColumnOracleSet`: the commit-ready 5-round Tip5 oracle
   set for those fixed columns. Each column uses a verifier-derived
   `npo_polynomial_column/<column-label>` oracle label and the shared row count.
