@@ -24406,6 +24406,82 @@ mod tests {
             )
             .expect("round-tripped terminal Tip5 lookup AIR algebra proof must verify");
 
+        let opened_trace = proof
+            .opened_trace_basis
+            .iter()
+            .map(|basis| {
+                NativeTerminalCompiler::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(
+                    basis,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .expect("lookup AIR trace opening must decode");
+        let opened_quotient = proof
+            .opened_quotient_basis
+            .iter()
+            .map(|basis| {
+                NativeTerminalCompiler::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(
+                    basis,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .expect("lookup AIR quotient opening must decode");
+        let (_pcs, mut compact_challenger) =
+            NativeTerminalCompiler::terminal_fri_pcs_and_challenger(
+                proof.trace_profile.proximity,
+            )
+            .expect("terminal FRI PCS must build");
+        NativeTerminalCompiler::seed_terminal_npo_tip5_lookup_air_algebra_quotient_challenger(
+            &mut compact_challenger,
+            &prelude,
+            &proof.trace_profile,
+            &proof.quotient_profile,
+        );
+        compact_challenger.observe(proof.trace_commitment.clone());
+        let _: TerminalFriChallenge = compact_challenger.sample_algebra_element();
+        let _: TerminalFriChallenge = compact_challenger.sample_algebra_element();
+        compact_challenger.observe(proof.quotient_commitment.clone());
+        let _: TerminalFriChallenge = compact_challenger.sample_algebra_element();
+        compact_challenger.observe_algebra_slice(&opened_trace);
+        compact_challenger.observe_algebra_slice(&opened_quotient);
+        let query_indices =
+            NativeTerminalCompiler::derive_terminal_fri_query_indices_from_challenger(
+                &mut compact_challenger,
+                &proof.proof,
+                proof.trace_profile.proximity,
+            )
+            .expect("terminal FRI query indices must derive");
+        let compressed_fri =
+            NativeTerminalCompiler::compress_terminal_fri_proof(&proof.proof, &query_indices)
+                .expect("terminal FRI proof must compress");
+        let compressed_fri_bytes = postcard::to_allocvec(&compressed_fri)
+            .expect("compressed terminal FRI proof must serialize");
+        let plain_fri_bytes =
+            postcard::to_allocvec(&proof.proof).expect("plain terminal FRI proof must serialize");
+        println!(
+            "terminal Tip5 lookup AIR algebra compact FRI: plain={} bytes ({:.1} KiB) compressed={} bytes ({:.1} KiB)",
+            plain_fri_bytes.len(),
+            plain_fri_bytes.len() as f64 / 1024.0,
+            compressed_fri_bytes.len(),
+            compressed_fri_bytes.len() as f64 / 1024.0,
+        );
+        assert!(
+            compressed_fri_bytes.len() < plain_fri_bytes.len(),
+            "terminal compressed FRI should reduce AIR algebra path material"
+        );
+        let restored_fri = NativeTerminalCompiler::decompress_terminal_fri_proof(&compressed_fri)
+            .expect("compressed terminal FRI proof must decompress");
+        let mut restored_proof = proof.clone();
+        restored_proof.proof = restored_fri;
+        compiler
+            .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &restored_proof,
+            )
+            .expect("compressed-restored terminal Tip5 lookup AIR algebra proof must verify");
+
         let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
         let (_, mut bad_table_trace, _) = compiler
             .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
