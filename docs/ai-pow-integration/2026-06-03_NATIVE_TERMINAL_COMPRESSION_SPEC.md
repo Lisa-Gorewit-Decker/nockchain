@@ -206,6 +206,11 @@ for this route.
   and padded residual value and present-bit columns. Tests reconstruct the
   flattened exhaustive residual oracle from these columns and require MMCS-bit
   tampering to appear in both the local MMCS column and the residual columns.
+- `TerminalNpoPolynomialColumnOracleSet`: the commit-ready 5-round Tip5 oracle
+  set for those fixed columns. Each column uses a verifier-derived
+  `npo_polynomial_column/<column-label>` oracle label and the shared row count.
+  This is a transcript-binding checkpoint for the final backend; it is not a
+  substitute for the missing low-degree/proximity proof.
 - `TerminalNpoExhaustiveResidualFoldProof`: a Merkle-backed folded zero check
   for the production-equivalent supported-NPO residual oracle, with transcript
   domains distinct from both primitive residual folding and legacy sampled NPO

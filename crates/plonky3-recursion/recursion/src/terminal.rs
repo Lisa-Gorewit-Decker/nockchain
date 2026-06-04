@@ -992,6 +992,23 @@ pub struct TerminalNpoPolynomialColumns<F> {
     pub columns: Vec<Vec<F>>,
 }
 
+/// Commitment set for fixed supported-NPO polynomial columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalNpoPolynomialColumnOracleSet {
+    pub layout: TerminalNpoPolynomialColumnLayout,
+    pub labels: Vec<String>,
+    pub trees: Vec<TerminalOracleMerkleTree>,
+}
+
+impl TerminalNpoPolynomialColumnOracleSet {
+    pub fn commitments(&self) -> Vec<TerminalOracleCommitment> {
+        self.trees
+            .iter()
+            .map(TerminalOracleMerkleTree::commitment)
+            .collect()
+    }
+}
+
 /// One flattened component in the production-equivalent supported-NPO residual
 /// domain.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -4368,6 +4385,18 @@ impl NativeTerminalCompiler {
         let layout = Self::terminal_npo_polynomial_column_layout::<F>(verifying_key);
         let table = self.terminal_npo_polynomial_table_goldilocks(verifying_key, witness)?;
         Self::terminal_npo_polynomial_columns_from_table(&layout, &table)
+    }
+
+    pub fn commit_terminal_npo_polynomial_columns_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+    ) -> Result<TerminalNpoPolynomialColumnOracleSet, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let columns = self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
+        Self::commit_terminal_npo_polynomial_column_values_goldilocks(&columns)
     }
 
     pub fn commit_terminal_combined_validity_goldilocks<F>(
@@ -9056,6 +9085,26 @@ impl NativeTerminalCompiler {
         })
     }
 
+    fn commit_terminal_npo_polynomial_column_values_goldilocks<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+    ) -> Result<TerminalNpoPolynomialColumnOracleSet, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let mut trees = Vec::with_capacity(columns.columns.len());
+        for (label, values) in columns.labels.iter().zip(&columns.columns) {
+            trees.push(TerminalOracleMerkleTree::commit_goldilocks_values(
+                Self::terminal_npo_polynomial_column_oracle_label(label),
+                values,
+            )?);
+        }
+        Ok(TerminalNpoPolynomialColumnOracleSet {
+            layout: columns.layout.clone(),
+            labels: columns.labels.clone(),
+            trees,
+        })
+    }
+
     fn max_serialized_tip5_hidden_input_slots(
         callsite: &NativeTerminalNpoCallsite,
         mode: Tip5TerminalMode,
@@ -10236,6 +10285,10 @@ impl NativeTerminalCompiler {
 
     fn npo_exhaustive_residual_fold_oracle_label(round: usize) -> String {
         format!("npo_exhaustive_residual_fold_{round}")
+    }
+
+    fn terminal_npo_polynomial_column_oracle_label(label: &str) -> String {
+        format!("npo_polynomial_column/{label}")
     }
 
     fn evaluate_terminal_npo_row_from_witness_goldilocks<F>(
@@ -14473,6 +14526,58 @@ mod tests {
             reconstructed_residuals
                 .iter()
                 .all(|value| *value == Goldilocks::ZERO)
+        );
+    }
+
+    #[test]
+    fn goldilocks_npo_polynomial_column_oracles_bind_labels_and_values() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(2);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness =
+            execute_tip5_terminal_witness_with_private_data(&circuit, public_inputs, private_data);
+        let columns = compiler
+            .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
+            .expect("NPO polynomial columns must build");
+        let oracle_set = compiler
+            .commit_terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
+            .expect("NPO polynomial column oracles must commit");
+        let commitments = oracle_set.commitments();
+
+        assert_eq!(oracle_set.layout, columns.layout);
+        assert_eq!(oracle_set.labels, columns.labels);
+        assert_eq!(oracle_set.trees.len(), columns.layout.column_count);
+        assert_eq!(commitments.len(), columns.layout.column_count);
+        for (label, commitment) in columns.labels.iter().zip(&commitments) {
+            assert_eq!(
+                commitment.label,
+                NativeTerminalCompiler::terminal_npo_polynomial_column_oracle_label(label)
+            );
+            assert_eq!(commitment.values_len, columns.layout.rows);
+        }
+
+        let mmcs_index = columns
+            .labels
+            .iter()
+            .position(|label| label == "mmcs_bit")
+            .expect("MMCS-bit column must exist");
+        let expected_tree = TerminalOracleMerkleTree::commit_goldilocks_values(
+            NativeTerminalCompiler::terminal_npo_polynomial_column_oracle_label("mmcs_bit"),
+            &columns.columns[mmcs_index],
+        )
+        .expect("independent MMCS-bit column commitment must build");
+        assert_eq!(commitments[mmcs_index], expected_tree.commitment());
+
+        let mut tampered_columns = columns.clone();
+        tampered_columns.columns[mmcs_index][0] += Goldilocks::ONE;
+        let tampered_set =
+            NativeTerminalCompiler::commit_terminal_npo_polynomial_column_values_goldilocks(
+                &tampered_columns,
+            )
+            .expect("tampered NPO polynomial column oracles must commit");
+        assert_ne!(
+            commitments[mmcs_index].root,
+            tampered_set.commitments()[mmcs_index].root
         );
     }
 
