@@ -1137,6 +1137,21 @@ pub struct TerminalNpoPolynomialFriOpeningProof {
     pub proof: TerminalFriProof,
 }
 
+/// Transcript-derived opening of terminal NPO polynomial FRI columns.
+///
+/// `values[column][basis]` is the terminal FRI challenge-field value for one
+/// Goldilocks basis column at the derived opening point. This is intentionally
+/// not serialized; the verifier derives it from a verified
+/// [`TerminalNpoPolynomialFriOpeningProof`] so row-polynomial checks can consume
+/// labeled openings without trusting prover-selected labels or points.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalNpoPolynomialFriOpenedColumns {
+    pub profile: TerminalNpoPolynomialFriProfile,
+    pub zeta: TerminalFriChallenge,
+    pub labels: Vec<String>,
+    pub values: Vec<Vec<TerminalFriChallenge>>,
+}
+
 /// Deterministic polynomial-column projection of [`TerminalNpoPolynomialTable`].
 ///
 /// The `labels` vector is aligned with `columns`: `columns[i][row]` is the row
@@ -11347,6 +11362,7 @@ impl NativeTerminalCompiler {
             proof,
             TerminalNpoPolynomialFriColumnSet::FullTable,
         )
+        .map(|_| ())
     }
 
     pub fn verify_terminal_npo_polynomial_value_fri_opening_goldilocks<F>(
@@ -11366,6 +11382,45 @@ impl NativeTerminalCompiler {
             proof,
             TerminalNpoPolynomialFriColumnSet::WitnessValues,
         )
+        .map(|_| ())
+    }
+
+    pub fn verify_and_open_terminal_npo_polynomial_fri_opening_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoPolynomialFriOpeningProof,
+    ) -> Result<TerminalNpoPolynomialFriOpenedColumns, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        self.verify_terminal_npo_polynomial_fri_opening_for_column_set_goldilocks(
+            verifying_key,
+            public_inputs,
+            prelude,
+            proof,
+            TerminalNpoPolynomialFriColumnSet::FullTable,
+        )
+    }
+
+    pub fn verify_and_open_terminal_npo_polynomial_value_fri_opening_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoPolynomialFriOpeningProof,
+    ) -> Result<TerminalNpoPolynomialFriOpenedColumns, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        self.verify_terminal_npo_polynomial_fri_opening_for_column_set_goldilocks(
+            verifying_key,
+            public_inputs,
+            prelude,
+            proof,
+            TerminalNpoPolynomialFriColumnSet::WitnessValues,
+        )
     }
 
     fn verify_terminal_npo_polynomial_fri_opening_for_column_set_goldilocks<F>(
@@ -11375,7 +11430,7 @@ impl NativeTerminalCompiler {
         prelude: &TerminalProofPrelude,
         proof: &TerminalNpoPolynomialFriOpeningProof,
         column_set: TerminalNpoPolynomialFriColumnSet,
-    ) -> Result<(), NativeTerminalVerifyError>
+    ) -> Result<TerminalNpoPolynomialFriOpenedColumns, NativeTerminalVerifyError>
     where
         F: Field + BasedVectorSpace<Goldilocks>,
     {
@@ -11384,11 +11439,16 @@ impl NativeTerminalCompiler {
         let labels = Self::terminal_npo_polynomial_column_labels(&layout);
         let dummy_columns = TerminalNpoPolynomialColumns::<F> {
             layout: layout.clone(),
-            labels,
+            labels: labels.clone(),
             columns: vec![Vec::new(); layout.column_count],
         };
-        let field_columns =
-            Self::terminal_npo_polynomial_fri_column_indices(&dummy_columns, column_set)?.len();
+        let column_indices =
+            Self::terminal_npo_polynomial_fri_column_indices(&dummy_columns, column_set)?;
+        let field_columns = column_indices.len();
+        let opened_labels = column_indices
+            .iter()
+            .map(|index| labels[*index].clone())
+            .collect::<Vec<_>>();
         let expected_profile = Self::terminal_npo_polynomial_fri_profile_for_column_count::<F>(
             &layout,
             column_set,
@@ -11438,16 +11498,30 @@ impl NativeTerminalCompiler {
             &pcs,
             vec![(
                 proof.commitment.clone(),
-                vec![(domain, vec![(zeta, opened_values)])],
+                vec![(domain, vec![(zeta, opened_values.clone())])],
             )],
             &proof.proof,
             &mut challenger,
         )
-        .map_err(
-            |err| NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+        .map_err(|err| {
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
                 reason: format!("terminal NPO FRI verification failed: {err:?}"),
-            },
-        )
+            }
+        })?;
+
+        let mut values = Vec::with_capacity(proof.profile.field_columns);
+        let mut offset = 0usize;
+        for _ in 0..proof.profile.field_columns {
+            let next_offset = offset + proof.profile.field_basis_dimension;
+            values.push(opened_values[offset..next_offset].to_vec());
+            offset = next_offset;
+        }
+        Ok(TerminalNpoPolynomialFriOpenedColumns {
+            profile: proof.profile.clone(),
+            zeta,
+            labels: opened_labels,
+            values,
+        })
     }
 
     fn seed_terminal_npo_polynomial_fri_challenger(
@@ -22774,6 +22848,23 @@ mod tests {
                 &roundtrip,
             )
             .expect("round-tripped terminal NPO FRI opening proof must verify");
+        let opened_full = compiler
+            .verify_and_open_terminal_npo_polynomial_fri_opening_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &roundtrip,
+            )
+            .expect("typed terminal NPO FRI opened columns must verify");
+        assert_eq!(opened_full.profile, profile);
+        assert_eq!(opened_full.labels, columns.labels);
+        assert_eq!(opened_full.values.len(), profile.field_columns);
+        assert!(
+            opened_full
+                .values
+                .iter()
+                .all(|basis| basis.len() == profile.field_basis_dimension)
+        );
 
         let (value_profile, value_matrix) =
             NativeTerminalCompiler::terminal_npo_polynomial_value_basis_matrix_goldilocks(&columns)
@@ -22802,6 +22893,38 @@ mod tests {
                 &value_proof,
             )
             .expect("typed terminal NPO value-column FRI opening proof must verify");
+        let opened_value = compiler
+            .verify_and_open_terminal_npo_polynomial_value_fri_opening_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &value_proof,
+            )
+            .expect("typed terminal NPO value-column FRI opened columns must verify");
+        assert_eq!(opened_value.profile, value_profile);
+        assert_eq!(
+            opened_value.labels,
+            vec![
+                String::from("input_value_0"),
+                String::from("input_value_1"),
+                String::from("output_value_0"),
+                String::from("mmcs_bit"),
+            ]
+        );
+        assert!(opened_value.labels.iter().all(|label| {
+            NativeTerminalCompiler::terminal_npo_polynomial_label_is_witness_value(label)
+        }));
+        assert_eq!(opened_value.values.len(), value_profile.field_columns);
+        assert!(
+            opened_value
+                .values
+                .iter()
+                .all(|basis| basis.len() == value_profile.field_basis_dimension)
+        );
+        assert_ne!(
+            opened_full.zeta, opened_value.zeta,
+            "terminal NPO FRI opening point must be column-set/profile bound",
+        );
         let err = compiler
             .verify_terminal_npo_polynomial_fri_opening_goldilocks::<GoldilocksD2>(
                 &vk,

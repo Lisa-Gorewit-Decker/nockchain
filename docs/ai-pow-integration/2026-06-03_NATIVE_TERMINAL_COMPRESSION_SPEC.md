@@ -243,6 +243,15 @@ for this route.
   substrate for the final backend; production still does not accept it as the
   full NPO relation proof until the row-polynomial constraints are connected to
   the FRI openings.
+- `TerminalNpoPolynomialFriOpenedColumns`: the verifier-derived handoff from a
+  verified NPO FRI opening to future row-polynomial checks. Verification now
+  returns the transcript-derived opening point, the verifier-selected column
+  labels for the active column set, and the opened Goldilocks-basis values in
+  terminal challenge field form. Existing public verify methods still return
+  `()` for compatibility, while `verify_and_open_*` methods expose the checked
+  openings. Tests require the value-column opening labels to contain only
+  witness-bearing columns and require the full-table and value-column profiles
+  to derive distinct opening points.
 - `TerminalNpoPolynomialColumnOracleSet`: the commit-ready 5-round Tip5 oracle
   set for those fixed columns. Each column uses a verifier-derived
   `npo_polynomial_column/<column-label>` oracle label and the shared row count.
@@ -843,7 +852,9 @@ payload alone was 678,443 bytes and the prover spent about 53 s inside that
 component. The next viable direction is a shared/batched terminal proximity
 backend that amortizes FRI proof material across primitive and NPO relations, or
 an NPO relation check that consumes the value-column FRI openings without
-adding a second Merkle-heavy proof.
+adding a second Merkle-heavy proof. The FRI verifier now exposes exactly that
+checked value-column opening handoff, but the row-polynomial constraints over
+those openings are still pending.
 
 Recursive proving uses 5-round Tip5 only. This terminal path must not be read as
 a change to Nockchain's canonical non-recursive 7-round Tip5 hash path.
