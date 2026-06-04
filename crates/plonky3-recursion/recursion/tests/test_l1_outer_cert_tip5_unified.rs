@@ -648,6 +648,39 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
                 .expect("terminal NPO polynomial residual-zero proof must verify");
             let npo_residual_zero_verify_elapsed = npo_residual_zero_verify_start.elapsed();
 
+            let npo_compact_residual_zero_prove_start = std::time::Instant::now();
+            let npo_compact_residual_zero_proof = compiler
+                .prove_terminal_npo_polynomial_compact_residual_zero_goldilocks(
+                    &vk,
+                    &terminal_witness,
+                    &npo_polynomial_prelude,
+                )
+                .expect("terminal NPO compact residual-zero proof must build");
+            let npo_compact_residual_zero_prove_elapsed =
+                npo_compact_residual_zero_prove_start.elapsed();
+            let npo_compact_residual_zero_size =
+                postcard::to_allocvec(&npo_compact_residual_zero_proof)
+                    .expect("terminal NPO compact residual-zero proof must serialize")
+                    .len();
+            let npo_compact_residual_zero_column_opening_size =
+                postcard::to_allocvec(&npo_compact_residual_zero_proof.column_opening_proof)
+                    .expect("terminal NPO compact residual-zero column openings must serialize")
+                    .len();
+            let npo_compact_residual_zero_fri_size =
+                postcard::to_allocvec(&npo_compact_residual_zero_proof.proof)
+                    .expect("terminal NPO compact residual-zero FRI proof must serialize")
+                    .len();
+            let npo_compact_residual_zero_verify_start = std::time::Instant::now();
+            compiler
+                .verify_terminal_npo_polynomial_compact_residual_zero_goldilocks(
+                    &vk,
+                    &npo_polynomial_prelude,
+                    &npo_compact_residual_zero_proof,
+                )
+                .expect("terminal NPO compact residual-zero proof must verify");
+            let npo_compact_residual_zero_verify_elapsed =
+                npo_compact_residual_zero_verify_start.elapsed();
+
             Some((
                 npo_column_oracles.layout.rows,
                 npo_column_oracles.layout.column_count,
@@ -658,6 +691,11 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
                 npo_residual_zero_fold_openings_size,
                 npo_residual_zero_prove_elapsed,
                 npo_residual_zero_verify_elapsed,
+                npo_compact_residual_zero_size,
+                npo_compact_residual_zero_column_opening_size,
+                npo_compact_residual_zero_fri_size,
+                npo_compact_residual_zero_prove_elapsed,
+                npo_compact_residual_zero_verify_elapsed,
             ))
         } else {
             None
@@ -857,6 +895,11 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         npo_residual_zero_fold_openings_size,
         npo_residual_zero_prove_elapsed,
         npo_residual_zero_verify_elapsed,
+        npo_compact_residual_zero_size,
+        npo_compact_residual_zero_column_opening_size,
+        npo_compact_residual_zero_fri_size,
+        npo_compact_residual_zero_prove_elapsed,
+        npo_compact_residual_zero_verify_elapsed,
     )) = npo_residual_zero_measurement
     {
         eprintln!(
@@ -874,6 +917,15 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
             npo_residual_zero_fold_openings_size,
             npo_residual_zero_prove_elapsed.as_secs_f64(),
             npo_residual_zero_verify_elapsed.as_secs_f64(),
+        );
+        eprintln!(
+            "terminal NPO compact residual-zero FRI candidate: proof={} bytes ({:.1} KiB) column_openings={} compact_fri={} prove={:.3}s verify={:.3}s",
+            npo_compact_residual_zero_size,
+            npo_compact_residual_zero_size as f64 / 1024.0,
+            npo_compact_residual_zero_column_opening_size,
+            npo_compact_residual_zero_fri_size,
+            npo_compact_residual_zero_prove_elapsed.as_secs_f64(),
+            npo_compact_residual_zero_verify_elapsed.as_secs_f64(),
         );
     }
     eprintln!(

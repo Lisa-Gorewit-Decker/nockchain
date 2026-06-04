@@ -7252,12 +7252,15 @@ impl NativeTerminalCompiler {
         })
     }
 
-    pub fn prove_terminal_npo_polynomial_compact_residual_zero_goldilocks(
+    pub fn prove_terminal_npo_polynomial_compact_residual_zero_goldilocks<F>(
         &self,
-        verifying_key: &NativeTerminalVerifyingKey<Goldilocks>,
-        witness: &TerminalWitness<Goldilocks>,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
         prelude: &TerminalProofPrelude,
-    ) -> Result<TerminalNpoPolynomialCompactResidualZeroProof, NativeTerminalVerifyError> {
+    ) -> Result<TerminalNpoPolynomialCompactResidualZeroProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
         let columns = self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
         self.prove_terminal_npo_polynomial_compact_residual_zero_from_columns_goldilocks(
             verifying_key,
@@ -7266,22 +7269,25 @@ impl NativeTerminalCompiler {
         )
     }
 
-    fn prove_terminal_npo_polynomial_compact_residual_zero_from_columns_goldilocks(
+    fn prove_terminal_npo_polynomial_compact_residual_zero_from_columns_goldilocks<F>(
         &self,
-        verifying_key: &NativeTerminalVerifyingKey<Goldilocks>,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
         prelude: &TerminalProofPrelude,
-        columns: &TerminalNpoPolynomialColumns<Goldilocks>,
-    ) -> Result<TerminalNpoPolynomialCompactResidualZeroProof, NativeTerminalVerifyError> {
+        columns: &TerminalNpoPolynomialColumns<F>,
+    ) -> Result<TerminalNpoPolynomialCompactResidualZeroProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
         Self::validate_terminal_npo_polynomial_columns(&columns.layout, columns)?;
         let oracle_set = Self::commit_terminal_npo_polynomial_column_values_goldilocks(columns)?;
         let commitments = oracle_set.commitments();
-        let plan = self.derive_terminal_npo_polynomial_column_query_plan::<Goldilocks>(
+        let plan = self.derive_terminal_npo_polynomial_column_query_plan::<F>(
             verifying_key,
             prelude,
             &commitments,
         )?;
         let combination_challenge =
-            Self::derive_terminal_npo_polynomial_residual_combination_challenge::<Goldilocks>(
+            Self::derive_terminal_npo_polynomial_residual_combination_challenge::<F>(
                 prelude,
                 &commitments,
             )?;
@@ -7291,7 +7297,7 @@ impl NativeTerminalCompiler {
             columns.layout.rows,
             columns.layout.rows.next_power_of_two(),
         )?;
-        let matrix = Self::terminal_compact_composition_matrix_from_goldilocks_values(
+        let matrix = Self::terminal_compact_composition_matrix_from_field_values(
             &combined_residual_values,
             &profile,
         )?;
@@ -7383,14 +7389,17 @@ impl NativeTerminalCompiler {
         })
     }
 
-    pub fn verify_terminal_npo_polynomial_compact_residual_zero_goldilocks(
+    pub fn verify_terminal_npo_polynomial_compact_residual_zero_goldilocks<F>(
         &self,
-        verifying_key: &NativeTerminalVerifyingKey<Goldilocks>,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
         prelude: &TerminalProofPrelude,
         proof: &TerminalNpoPolynomialCompactResidualZeroProof,
-    ) -> Result<TerminalNpoPolynomialColumnQueryPlan, NativeTerminalVerifyError> {
+    ) -> Result<TerminalNpoPolynomialColumnQueryPlan, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
         let (plan, opened_columns) = self
-            .verify_terminal_npo_polynomial_column_opening_values_goldilocks::<Goldilocks>(
+            .verify_terminal_npo_polynomial_column_opening_values_goldilocks::<F>(
                 verifying_key,
                 prelude,
                 &proof.column_opening_proof,
@@ -7491,7 +7500,7 @@ impl NativeTerminalCompiler {
         }
 
         let combination_challenge =
-            Self::derive_terminal_npo_polynomial_residual_combination_challenge::<Goldilocks>(
+            Self::derive_terminal_npo_polynomial_residual_combination_challenge::<F>(
                 prelude,
                 &proof.column_opening_proof.commitments,
             )?;
@@ -7503,19 +7512,18 @@ impl NativeTerminalCompiler {
             .zip(opened_points.iter().skip(1))
             .enumerate()
         {
-            let mut expected_value = Goldilocks::ZERO;
-            let mut coeff = Goldilocks::ONE;
+            let mut expected_value = F::ZERO;
+            let mut coeff = F::ONE;
             for column_index in &residual_column_indices {
                 expected_value += opened_columns.columns[*column_index][*index] * coeff;
                 coeff *= combination_challenge;
             }
-            if opened_value.first().copied().unwrap_or(TerminalFriChallenge::ZERO)
-                != TerminalFriChallenge::from(expected_value)
-                || opened_value
-                    .iter()
-                    .skip(1)
-                    .any(|value| *value != TerminalFriChallenge::ZERO)
-            {
+            let expected_opened_value =
+                Self::terminal_compact_composition_point_values_from_field(
+                    expected_value,
+                    &proof.profile,
+                )?;
+            if opened_value != &expected_opened_value {
                 return Err(
                     NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
                         label: Self::terminal_npo_polynomial_compact_residual_zero_label().into(),
@@ -7523,7 +7531,7 @@ impl NativeTerminalCompiler {
                     },
                 );
             }
-            let segment = Self::terminal_npo_exhaustive_residual_segment_indices::<Goldilocks>(
+            let segment = Self::terminal_npo_exhaustive_residual_segment_indices::<F>(
                 verifying_key,
                 *index,
             )?;
@@ -7537,8 +7545,7 @@ impl NativeTerminalCompiler {
                     &mut previous_normal_tip5_output,
                     &mut previous_merkle_tip5_output,
                 )?;
-                let derived =
-                    Self::terminal_npo_row_evaluation_component_values::<Goldilocks>(&evaluation);
+                let derived = Self::terminal_npo_row_evaluation_component_values::<F>(&evaluation);
                 let opened = Self::terminal_npo_polynomial_column_row_residual_values(
                     &opened_columns,
                     npo_index,
@@ -16062,6 +16069,65 @@ impl NativeTerminalCompiler {
             matrix_values[row * profile.basis_columns] = value;
         }
         Ok(RowMajorMatrix::new(matrix_values, profile.basis_columns))
+    }
+
+    fn terminal_compact_composition_matrix_from_field_values<F>(
+        values: &[F],
+        profile: &TerminalCompactCompositionFriProfile,
+    ) -> Result<RowMajorMatrix<Goldilocks>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        if values.len() != profile.rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compact_composition_values".into(),
+                    expected: profile.rows,
+                    got: values.len(),
+                },
+            );
+        }
+        let mut matrix_values = vec![Goldilocks::ZERO; profile.padded_rows * profile.basis_columns];
+        for (row, value) in values.iter().enumerate() {
+            let basis = value.as_basis_coefficients_slice();
+            if basis.len() > profile.basis_columns {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                        expected: profile.basis_columns,
+                        got: basis.len(),
+                    },
+                );
+            }
+            for (basis_index, basis_value) in basis.iter().copied().enumerate() {
+                matrix_values[row * profile.basis_columns + basis_index] = basis_value;
+            }
+        }
+        Ok(RowMajorMatrix::new(matrix_values, profile.basis_columns))
+    }
+
+    fn terminal_compact_composition_point_values_from_field<F>(
+        value: F,
+        profile: &TerminalCompactCompositionFriProfile,
+    ) -> Result<Vec<TerminalFriChallenge>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let basis = value.as_basis_coefficients_slice();
+        if basis.len() > profile.basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: profile.basis_columns,
+                    got: basis.len(),
+                },
+            );
+        }
+        Ok((0..profile.basis_columns)
+            .map(|basis_index| {
+                TerminalFriChallenge::from(
+                    basis.get(basis_index).copied().unwrap_or(Goldilocks::ZERO),
+                )
+            })
+            .collect())
     }
 
     fn terminal_compact_composition_point_values_from_basis(
@@ -32105,6 +32171,50 @@ mod tests {
                 .iter()
                 .all(|basis| basis.len() == profile.field_basis_dimension)
         );
+
+        let column_oracles = compiler
+            .commit_terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
+            .expect("D2 NPO polynomial column oracles must commit");
+        let column_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                column_oracles
+                    .commitments()
+                    .iter()
+                    .map(|commitment| commitment.root)
+                    .collect(),
+            )
+            .expect("D2 terminal NPO column prelude must build");
+        let compact_residual_zero = compiler
+            .prove_terminal_npo_polynomial_compact_residual_zero_goldilocks(
+                &vk,
+                &witness,
+                &column_prelude,
+            )
+            .expect("D2 compact residual-zero proof must build");
+        compiler
+            .verify_terminal_npo_polynomial_compact_residual_zero_goldilocks::<GoldilocksD2>(
+                &vk,
+                &column_prelude,
+                &compact_residual_zero,
+            )
+            .expect("D2 compact residual-zero proof must verify");
+        let mut bad_compact_residual_zero = compact_residual_zero.clone();
+        bad_compact_residual_zero.opened_row_values_basis[0][1][0] ^= 1;
+        let err = compiler
+            .verify_terminal_npo_polynomial_compact_residual_zero_goldilocks::<GoldilocksD2>(
+                &vk,
+                &column_prelude,
+                &bad_compact_residual_zero,
+            )
+            .expect_err("D2 compact residual-zero proof must reject tampered extension limb");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+                | NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch { .. }
+        ));
 
         let (value_profile, value_matrix) =
             NativeTerminalCompiler::terminal_npo_polynomial_value_basis_matrix_goldilocks(&columns)
