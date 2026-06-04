@@ -165,6 +165,13 @@ pub struct TerminalOracleOpening {
     pub path: Vec<TerminalMerkleSibling>,
 }
 
+/// Authenticated opening of a contiguous oracle prefix starting at index 0.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalOraclePrefixProof {
+    pub prefix_len: usize,
+    pub frontier: Vec<TerminalCommitmentDigest>,
+}
+
 /// Merkle commitment to a terminal oracle vector.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalOracleCommitment {
@@ -405,13 +412,14 @@ pub struct TerminalResidualFoldProof {
 /// Merkle-backed multilinear evaluation proof for the terminal assignment
 /// vector `[1 || public || witness]`.
 ///
-/// The proof opens the public prefix against the assignment commitment, then
-/// folds the whole assignment vector to one transcript-derived evaluation. This
-/// is the PCS primitive the terminal R1CS sumcheck needs for its final
-/// `z(y*)` check; it is not accepted as a standalone production proof.
+/// The proof authenticates the public prefix against the assignment commitment
+/// with a compact Merkle frontier, then folds the whole assignment vector to one
+/// transcript-derived evaluation. This is the PCS primitive the terminal R1CS
+/// sumcheck needs for its final `z(y*)` check; it is not accepted as a
+/// standalone production proof.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalAssignmentEvaluationProof {
-    pub public_prefix_openings: Vec<TerminalOracleOpening>,
+    pub public_prefix_proof: TerminalOraclePrefixProof,
     pub fold_commitments: Vec<TerminalOracleCommitment>,
     pub final_value_basis: Vec<u64>,
     pub openings: Vec<TerminalResidualFoldQueryOpening>,
@@ -1816,6 +1824,48 @@ impl TerminalOracleMerkleTree {
             path,
         })
     }
+
+    pub fn open_goldilocks_prefix<F>(
+        &self,
+        values: &[F],
+    ) -> Result<TerminalOraclePrefixProof, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        if values.len() > self.values_len {
+            return Err(NativeTerminalVerifyError::TerminalOracleIndexOutOfBounds {
+                index: values.len(),
+                values_len: self.values_len,
+            });
+        }
+        let mut frontier = Vec::new();
+        let root_level = self.levels.len().saturating_sub(1);
+        self.collect_prefix_frontier(root_level, 0, values.len(), &mut frontier);
+        Ok(TerminalOraclePrefixProof {
+            prefix_len: values.len(),
+            frontier,
+        })
+    }
+
+    fn collect_prefix_frontier(
+        &self,
+        level: usize,
+        start: usize,
+        prefix_len: usize,
+        frontier: &mut Vec<TerminalCommitmentDigest>,
+    ) {
+        let size = 1usize << level;
+        if start >= prefix_len {
+            frontier.push(self.levels[level][start >> level]);
+            return;
+        }
+        if start + size <= prefix_len || level == 0 {
+            return;
+        }
+        let half = size / 2;
+        self.collect_prefix_frontier(level - 1, start, prefix_len, frontier);
+        self.collect_prefix_frontier(level - 1, start + half, prefix_len, frontier);
+    }
 }
 
 /// Native terminal compiler checkpoint.
@@ -2344,6 +2394,64 @@ impl NativeTerminalCompiler {
             );
         }
         self.verify_terminal_oracle_opening(commitment, opening)
+    }
+
+    pub fn verify_terminal_oracle_prefix_goldilocks<F>(
+        &self,
+        commitment: &TerminalOracleCommitment,
+        proof: &TerminalOraclePrefixProof,
+        expected_values: &[F],
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        if proof.prefix_len != expected_values.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalConstraintOpeningCountMismatch {
+                    constraint_index: 0,
+                    expected: expected_values.len(),
+                    got: proof.prefix_len,
+                },
+            );
+        }
+        if proof.prefix_len > commitment.values_len {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningIndexOutOfBounds {
+                    index: proof.prefix_len,
+                    values_len: commitment.values_len,
+                },
+            );
+        }
+
+        let root_level = Self::terminal_oracle_path_len(commitment.values_len);
+        let mut frontier = proof.frontier.iter().copied();
+        let got = Self::terminal_oracle_prefix_root_goldilocks(
+            &commitment.label,
+            commitment.values_len,
+            expected_values,
+            proof.prefix_len,
+            root_level,
+            0,
+            &mut frontier,
+        )?;
+        let remaining = frontier.count();
+        if remaining != 0 {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningPathLengthMismatch {
+                    expected: proof.frontier.len() - remaining,
+                    got: proof.frontier.len(),
+                },
+            );
+        }
+        if got != commitment.root {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch {
+                    expected: commitment.root,
+                    got,
+                },
+            );
+        }
+        Ok(())
     }
 
     pub fn derive_terminal_query_plan(
@@ -4914,10 +5022,8 @@ impl NativeTerminalCompiler {
         let assignment_values =
             Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)?;
         let public_prefix_len = 1 + verifying_key.header.fingerprint.public_flat_len;
-        let mut public_prefix_openings = Vec::with_capacity(public_prefix_len);
-        for (index, value) in assignment_values.iter().take(public_prefix_len).enumerate() {
-            public_prefix_openings.push(assignment_oracle.open_goldilocks_value(index, value)?);
-        }
+        let public_prefix_proof =
+            assignment_oracle.open_goldilocks_prefix(&assignment_values[..public_prefix_len])?;
 
         let mut layers = vec![assignment_values];
         let mut trees = Vec::new();
@@ -5000,7 +5106,7 @@ impl NativeTerminalCompiler {
         }
 
         Ok(TerminalAssignmentEvaluationProof {
-            public_prefix_openings,
+            public_prefix_proof,
             fold_commitments,
             final_value_basis,
             openings,
@@ -5032,10 +5138,8 @@ impl NativeTerminalCompiler {
         let assignment_values =
             Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)?;
         let public_prefix_len = 1 + verifying_key.header.fingerprint.public_flat_len;
-        let mut public_prefix_openings = Vec::with_capacity(public_prefix_len);
-        for (index, value) in assignment_values.iter().take(public_prefix_len).enumerate() {
-            public_prefix_openings.push(assignment_oracle.open_goldilocks_value(index, value)?);
-        }
+        let public_prefix_proof =
+            assignment_oracle.open_goldilocks_prefix(&assignment_values[..public_prefix_len])?;
 
         let mut layers = vec![assignment_values];
         let mut trees = Vec::new();
@@ -5110,7 +5214,7 @@ impl NativeTerminalCompiler {
         }
 
         Ok(TerminalAssignmentEvaluationProof {
-            public_prefix_openings,
+            public_prefix_proof,
             fold_commitments,
             final_value_basis,
             openings,
@@ -5138,39 +5242,14 @@ impl NativeTerminalCompiler {
         )?;
 
         let public_prefix_len = 1 + verifying_key.header.fingerprint.public_flat_len;
-        if proof.public_prefix_openings.len() != public_prefix_len {
-            return Err(
-                NativeTerminalVerifyError::TerminalConstraintOpeningCountMismatch {
-                    constraint_index: 0,
-                    expected: public_prefix_len,
-                    got: proof.public_prefix_openings.len(),
-                },
-            );
-        }
-        for (index, opening) in proof.public_prefix_openings.iter().enumerate() {
-            if opening.index != index {
-                return Err(
-                    NativeTerminalVerifyError::TerminalConstraintOpeningWitnessMismatch {
-                        constraint_index: 0,
-                        opening: index,
-                        expected: index as u32,
-                        got: opening.index,
-                    },
-                );
-            }
-            self.verify_terminal_oracle_opening(assignment_commitment, opening)?;
-            let opened = Self::field_from_goldilocks_basis_u64::<F>(&opening.value_basis)?;
-            let expected = if index == 0 {
-                F::ONE
-            } else {
-                public_inputs[index - 1]
-            };
-            if opened != expected {
-                return Err(NativeTerminalVerifyError::PublicInputMismatch {
-                    public_pos: index.saturating_sub(1),
-                });
-            }
-        }
+        let mut expected_public_prefix = Vec::with_capacity(public_prefix_len);
+        expected_public_prefix.push(F::ONE);
+        expected_public_prefix.extend_from_slice(public_inputs);
+        self.verify_terminal_oracle_prefix_goldilocks(
+            assignment_commitment,
+            &proof.public_prefix_proof,
+            &expected_public_prefix,
+        )?;
 
         let query_plan = self.derive_terminal_assignment_fold_query_plan(
             prelude,
@@ -5219,39 +5298,14 @@ impl NativeTerminalCompiler {
         )?;
 
         let public_prefix_len = 1 + verifying_key.header.fingerprint.public_flat_len;
-        if proof.public_prefix_openings.len() != public_prefix_len {
-            return Err(
-                NativeTerminalVerifyError::TerminalConstraintOpeningCountMismatch {
-                    constraint_index: 0,
-                    expected: public_prefix_len,
-                    got: proof.public_prefix_openings.len(),
-                },
-            );
-        }
-        for (index, opening) in proof.public_prefix_openings.iter().enumerate() {
-            if opening.index != index {
-                return Err(
-                    NativeTerminalVerifyError::TerminalConstraintOpeningWitnessMismatch {
-                        constraint_index: 0,
-                        opening: index,
-                        expected: index as u32,
-                        got: opening.index,
-                    },
-                );
-            }
-            self.verify_terminal_oracle_opening(assignment_commitment, opening)?;
-            let opened = Self::field_from_goldilocks_basis_u64::<F>(&opening.value_basis)?;
-            let expected = if index == 0 {
-                F::ONE
-            } else {
-                public_inputs[index - 1]
-            };
-            if opened != expected {
-                return Err(NativeTerminalVerifyError::PublicInputMismatch {
-                    public_pos: index.saturating_sub(1),
-                });
-            }
-        }
+        let mut expected_public_prefix = Vec::with_capacity(public_prefix_len);
+        expected_public_prefix.push(F::ONE);
+        expected_public_prefix.extend_from_slice(public_inputs);
+        self.verify_terminal_oracle_prefix_goldilocks(
+            assignment_commitment,
+            &proof.public_prefix_proof,
+            &expected_public_prefix,
+        )?;
 
         let query_plan = self.derive_terminal_assignment_fold_query_plan(
             prelude,
@@ -8841,6 +8895,62 @@ impl NativeTerminalCompiler {
         TerminalCommitmentDigest(sponge.finalize())
     }
 
+    fn terminal_oracle_prefix_root_goldilocks<F, I>(
+        label: &str,
+        values_len: usize,
+        expected_values: &[F],
+        prefix_len: usize,
+        level: usize,
+        start: usize,
+        frontier: &mut I,
+    ) -> Result<TerminalCommitmentDigest, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+        I: Iterator<Item = TerminalCommitmentDigest>,
+    {
+        let size = 1usize << level;
+        if start >= prefix_len {
+            return frontier.next().ok_or(
+                NativeTerminalVerifyError::TerminalOracleOpeningPathLengthMismatch {
+                    expected: 1,
+                    got: 0,
+                },
+            );
+        }
+        if level == 0 {
+            let value = expected_values.get(start).ok_or(
+                NativeTerminalVerifyError::TerminalOracleOpeningIndexOutOfBounds {
+                    index: start,
+                    values_len,
+                },
+            )?;
+            return Ok(Self::terminal_oracle_leaf_digest(
+                label, values_len, start, value,
+            ));
+        }
+
+        let half = size / 2;
+        let left = Self::terminal_oracle_prefix_root_goldilocks(
+            label,
+            values_len,
+            expected_values,
+            prefix_len,
+            level - 1,
+            start,
+            frontier,
+        )?;
+        let right = Self::terminal_oracle_prefix_root_goldilocks(
+            label,
+            values_len,
+            expected_values,
+            prefix_len,
+            level - 1,
+            start + half,
+            frontier,
+        )?;
+        Ok(Self::terminal_oracle_node_digest(label, left, right))
+    }
+
     fn terminal_query_block(
         prelude: &TerminalProofPrelude,
         commitment: &TerminalOracleCommitment,
@@ -10536,7 +10646,7 @@ mod tests {
         );
 
         let mut bad_public_prefix = proof.clone();
-        bad_public_prefix.public_prefix_openings[1].value_basis[0] += 1;
+        bad_public_prefix.public_prefix_proof.frontier[0].0[0] ^= 1;
         assert!(
             compiler
                 .verify_terminal_assignment_evaluation_goldilocks(

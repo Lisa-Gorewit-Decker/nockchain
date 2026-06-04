@@ -138,9 +138,10 @@ for this route.
   only after all fold roots are fixed, checks sampled pair-fold consistency, and
   requires the final one-value fold to be zero.
 - `TerminalAssignmentEvaluationProof`: a Merkle-backed multilinear evaluation
-  proof for the assignment vector `[1 || public || witness]`. It explicitly
-  opens the public prefix against the assignment commitment and folds the whole
-  assignment vector to one value. It supports both its standalone
+  proof for the assignment vector `[1 || public || witness]`. It authenticates
+  the public prefix against the assignment commitment with one compact
+  prefix-frontier proof, then folds the whole assignment vector to one value. It
+  supports both its standalone
   transcript-derived point and an externally supplied point from a sparse-R1CS
   sumcheck. This is the native PCS primitive the sumcheck needs for its final
   `z(y*)` check; it is not accepted as a standalone production proof.
@@ -551,9 +552,9 @@ quadratic residuals and supported-NPO validity residuals into one
 `combined_validity` oracle and one fold proof, ordered as
 `[primitive residuals || NPO validity residuals]`. That removes the second fold
 proof and the separate NPO consistency query set from the aggregate local proof.
-The active 60-bit pure-query checkpoint now measures 95,841 bytes (93.6 KiB)
-for the typed local certificate, with debug-profile prove/verify around 4.60 s
-and 1.55 s. This is below the 100 KiB target for the local checkpoint, but it
+The active 60-bit pure-query checkpoint now measures 97,282 bytes (95.0 KiB)
+for the typed local certificate, with debug-profile prove/verify around 5.53 s
+and 2.03 s. This is below the 100 KiB target for the local checkpoint, but it
 is still not a production terminal certificate.
 
 `TerminalLocalProof` now packages all implemented local proof components behind
@@ -590,11 +591,11 @@ The current real-circuit terminal-local size profile after fold compaction is:
 
 | component | bytes |
 |---|---:|
-| prelude | 219 |
-| combined validity consistency openings | 21,781 |
-| combined validity fold | 61,069 |
-| typed local proof body | 83,193 |
-| typed local certificate | 83,414 |
+| prelude | 216 |
+| combined validity consistency openings | 35,628 |
+| combined validity fold | 61,094 |
+| typed local proof body | 97,062 |
+| typed local certificate | 97,282 |
 
 This profile says the remaining size problem is not generic serialization
 overhead. The large items are still Merkle-authenticated local openings and the
@@ -609,20 +610,24 @@ Tip5-L0 verifier circuit:
 
 | component | bytes |
 |---|---:|
-| primitive R1CS row-product proof | 91,612 |
-| NPO validity consistency proof | 32,480 |
-| NPO validity fold proof | 43,392 |
-| compact production proof body | 167,938 |
-| compact production certificate | 168,162 |
+| primitive R1CS row-product proof | 72,152 |
+| NPO validity consistency proof | 52,910 |
+| NPO validity fold proof | 43,437 |
+| compact production proof body | 168,948 |
+| compact production certificate | 169,172 |
 
-The debug-profile measurement is `prove=6.373 s, verify=3.601 s`. This removes
-the witness-basis serialization from the production proof body, but it is still
-above the ~100 KiB target. The immediate size targets are the row-product proof
-encoding (about 89.5 KiB alone) and the NPO validity fold/consistency material
-(about 74.7 KiB together). The remaining production-backend task is to replace
-the sampled NPO validity layer with a polynomialized Tip5/recompose relation
-and to compress or aggregate the primitive row-product opening material without
-dropping below the 60-bit pure-query requirement.
+The debug-profile measurement is `prove=6.347 s, verify=3.554 s`. This removes
+the witness-basis serialization from the production proof body and replaces the
+assignment public-prefix openings with a compact prefix frontier. The
+row-product component fell from about 89.6 KiB to about 70.3 KiB in the
+standalone measurement; the public-prefix authentication inside it fell from
+20,131 bytes to 478 bytes. The total production certificate is still above the
+~100 KiB target because sampled NPO validity consistency/fold material remains
+large and varies with the transcript-derived NPO rows. The remaining
+production-backend task is to replace the sampled NPO validity layer with a
+polynomialized Tip5/recompose relation and to compress or aggregate the
+remaining fold-opening material without dropping below the 60-bit pure-query
+requirement.
 
 The optimized sparse-R1CS matrix-vector sumcheck component measures separately
 on the same real Tip5-L0 verifier circuit. The completed primitive row-product
@@ -630,15 +635,21 @@ component includes that matrix-vector subproof:
 
 | component | bytes |
 |---|---:|
-| sparse R1CS matrix sumcheck proof | 90,962 |
-| R1CS row-product sumcheck proof | 91,764 |
+| sparse R1CS matrix sumcheck proof | 71,176 |
+| R1CS row-product sumcheck proof | 71,955 |
+| row-product rounds | 847 |
+| matrix-sumcheck rounds | 724 |
+| assignment evaluation proof | 70,327 |
+| assignment public-prefix proof | 478 |
+| assignment fold commitments | 802 |
+| assignment fold openings | 69,028 |
 
-The latest debug-profile measurements are `prove=2.053 s, verify=1.435 s` for
-the matrix-vector component and `prove=2.078 s, verify=1.443 s` for the
+The latest debug-profile measurements are `prove=2.089 s, verify=1.443 s` for
+the matrix-vector component and `prove=2.114 s, verify=1.418 s` for the
 row-product component. This now proves the primitive sparse-R1CS row relation
-against the assignment commitment, but NPO/table global arguments and the final
-polynomial proximity backend remain required before it can replace the direct
-production proof.
+against the assignment commitment with compact public-prefix authentication, but
+NPO/table global arguments and the final polynomial proximity backend remain
+required before it can replace the sampled NPO validity layer.
 
 Recursive proving uses 5-round Tip5 only. This terminal path must not be read as
 a change to Nockchain's canonical non-recursive 7-round Tip5 hash path.
@@ -687,17 +698,16 @@ Literature checkpoint as of 2026-06-03:
 
 Security-audit conclusions for the current implementation checkpoint:
 
-- The typed direct production proof now gives native terminal certificates an
-  exact relation checker: it recomputes every primitive quadratic row and every
-  supported 5-round Tip5/recompose row from committed witness values. This is
-  sound for the compiled terminal relation, but it exposes witness material and
-  is therefore a baseline, not the final polynomial/sumcheck terminal backend.
+- The typed compact production proof now gives native terminal certificates a
+  non-witness primitive sparse-R1CS row-product argument plus sampled
+  NPO-validity fold/consistency checks. This removes the previous full-witness
+  serialization baseline, but the sampled NPO layer is still not the final
+  polynomialized Tip5/recompose terminal backend.
 - The terminal proof prelude is now an implemented transcript-binding prefix,
   not a standalone argument. It prevents challenge grinding across relation,
-  public input, parameter, and commitment substitutions. In the direct
-  production proof it binds the witness commitment; in the future
-  polynomial/sumcheck backend it must also bind the replacement PCS/sumcheck
-  commitments before any verifier challenges are sampled.
+  public input, parameter, and commitment substitutions. In the compact
+  production proof it binds witness, assignment, and NPO-validity commitments
+  before any verifier challenges are sampled.
 - Oracle roots passed to local proof verifiers must now be prelude-bound. This
   includes the generic terminal query-opening verifier and closes the immediate
   post-challenge oracle-substitution bug for witness, residual, NPO validity,
@@ -729,9 +739,10 @@ Security-audit conclusions for the current implementation checkpoint:
   terminal proof for the supported NPO/table rows.
 - The terminal oracle Merkle layer is binding to opened values under the
   recursive 5-round Tip5 assumption, but it is not itself a polynomial
-  commitment. The direct production proof recomputes the relation from the full
-  serialized witness vector; the remaining non-witness backend must replace
-  that vector with a PCS/sumcheck argument at ≥60-bit soundness.
+  commitment. The compact production proof now removes full witness
+  serialization for primitive rows; the remaining backend must replace sampled
+  NPO row checks and Merkle-heavy fold openings with a polynomialized
+  PCS/sumcheck argument at >=60-bit soundness.
 - The terminal query plan is now verifier-derived and commitment-bound, which
   removes serialized-query steering. It does not by itself justify the 60-bit
   soundness claim; the final backend still needs the algebraic proximity or

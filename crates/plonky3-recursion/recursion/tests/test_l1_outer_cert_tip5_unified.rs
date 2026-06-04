@@ -552,6 +552,45 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
     let r1cs_row_product_size = postcard::to_allocvec(&r1cs_row_product_proof)
         .expect("terminal R1CS row-product sumcheck must serialize")
         .len();
+    let r1cs_row_product_rounds_size = postcard::to_allocvec(&r1cs_row_product_proof.rounds)
+        .expect("terminal R1CS row-product rounds must serialize")
+        .len();
+    let r1cs_row_product_matrix_size =
+        postcard::to_allocvec(&r1cs_row_product_proof.matrix_sumcheck)
+            .expect("terminal R1CS row-product matrix sumcheck must serialize")
+            .len();
+    let r1cs_matrix_rounds_size =
+        postcard::to_allocvec(&r1cs_row_product_proof.matrix_sumcheck.rounds)
+            .expect("terminal R1CS matrix rounds must serialize")
+            .len();
+    let r1cs_assignment_evaluation_size =
+        postcard::to_allocvec(&r1cs_row_product_proof.matrix_sumcheck.assignment_evaluation)
+            .expect("terminal assignment evaluation proof must serialize")
+            .len();
+    let r1cs_assignment_public_prefix_size = postcard::to_allocvec(
+        &r1cs_row_product_proof
+            .matrix_sumcheck
+            .assignment_evaluation
+            .public_prefix_proof,
+    )
+    .expect("terminal assignment public-prefix proof must serialize")
+    .len();
+    let r1cs_assignment_fold_commitments_size = postcard::to_allocvec(
+        &r1cs_row_product_proof
+            .matrix_sumcheck
+            .assignment_evaluation
+            .fold_commitments,
+    )
+    .expect("terminal assignment fold commitments must serialize")
+    .len();
+    let r1cs_assignment_fold_openings_size = postcard::to_allocvec(
+        &r1cs_row_product_proof
+            .matrix_sumcheck
+            .assignment_evaluation
+            .openings,
+    )
+    .expect("terminal assignment fold openings must serialize")
+    .len();
     let r1cs_row_product_verify_start = std::time::Instant::now();
     compiler
         .verify_terminal_r1cs_row_product_sumcheck_goldilocks(
@@ -630,6 +669,16 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
         r1cs_row_product_size as f64 / 1024.0,
         r1cs_row_product_prove_elapsed.as_secs_f64(),
         r1cs_row_product_verify_elapsed.as_secs_f64(),
+    );
+    eprintln!(
+        "terminal R1CS row-product breakdown: row_rounds={} matrix_sumcheck={} matrix_rounds={} assignment_eval={} assignment_public_prefix={} assignment_fold_commitments={} assignment_fold_openings={}",
+        r1cs_row_product_rounds_size,
+        r1cs_row_product_matrix_size,
+        r1cs_matrix_rounds_size,
+        r1cs_assignment_evaluation_size,
+        r1cs_assignment_public_prefix_size,
+        r1cs_assignment_fold_commitments_size,
+        r1cs_assignment_fold_openings_size,
     );
 
     assert!(certificate_size > body_size);
