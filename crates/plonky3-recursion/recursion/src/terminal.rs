@@ -14261,6 +14261,31 @@ impl NativeTerminalCompiler {
         )
     }
 
+    pub fn terminal_npo_polynomial_fri_prelude_commitments_goldilocks<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        column_set: TerminalNpoPolynomialFriColumnSet,
+    ) -> Result<Vec<TerminalCommitmentDigest>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let (profile, matrix) =
+            Self::terminal_npo_polynomial_basis_matrix_for_column_set_goldilocks(
+                columns, column_set,
+            )?;
+        let (pcs, _) = Self::terminal_fri_pcs_and_challenger(profile.proximity)?;
+        let domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                profile.padded_rows,
+            );
+        let (commitment, _) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(domain, matrix)],
+            );
+        Ok(vec![Self::terminal_fri_commitment_digest(&commitment)?])
+    }
+
     fn terminal_npo_polynomial_basis_matrix_for_column_set_goldilocks<F>(
         columns: &TerminalNpoPolynomialColumns<F>,
         column_set: TerminalNpoPolynomialFriColumnSet,
@@ -15225,7 +15250,6 @@ impl NativeTerminalCompiler {
         }
 
         let (pcs, mut challenger) = Self::terminal_fri_pcs_and_challenger(profile.proximity)?;
-        Self::seed_terminal_npo_polynomial_fri_challenger(&mut challenger, prelude, &profile);
         let domain =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
                 &pcs,
@@ -15235,6 +15259,9 @@ impl NativeTerminalCompiler {
             TerminalFriChallenge,
             TerminalFriChallenger,
         >>::commit(&pcs, [(domain, matrix)]);
+        let commitment_digest = Self::terminal_fri_commitment_digest(&commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(prelude, &[commitment_digest])?;
+        Self::seed_terminal_npo_polynomial_fri_challenger(&mut challenger, prelude, &profile);
         challenger.observe(commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
         let (opened_values, plain_proof) = <TerminalFriPcs as Pcs<
@@ -15328,12 +15355,6 @@ impl NativeTerminalCompiler {
         }
 
         let (pcs, mut challenger) = Self::terminal_fri_pcs_and_challenger(value_profile.proximity)?;
-        Self::seed_terminal_npo_padding_quotient_challenger(
-            &mut challenger,
-            prelude,
-            &value_profile,
-            &quotient_profile,
-        );
         let value_domain =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
                 &pcs,
@@ -15344,6 +15365,14 @@ impl NativeTerminalCompiler {
                 &pcs,
                 [(value_domain, value_matrix)],
             );
+        let value_commitment_digest = Self::terminal_fri_commitment_digest(&value_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(prelude, &[value_commitment_digest])?;
+        Self::seed_terminal_npo_padding_quotient_challenger(
+            &mut challenger,
+            prelude,
+            &value_profile,
+            &quotient_profile,
+        );
         challenger.observe(value_commitment.clone());
         let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
 
@@ -17178,6 +17207,9 @@ impl NativeTerminalCompiler {
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let value_commitment_digest =
+            Self::terminal_fri_commitment_digest(&proof.value_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(prelude, &[value_commitment_digest])?;
         let layout = Self::terminal_npo_polynomial_column_layout::<F>(verifying_key);
         let labels = Self::terminal_npo_polynomial_column_labels(&layout);
         let dummy_columns = TerminalNpoPolynomialColumns::<F> {
@@ -17643,6 +17675,8 @@ impl NativeTerminalCompiler {
         F: Field + BasedVectorSpace<Goldilocks>,
     {
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let commitment_digest = Self::terminal_fri_commitment_digest(&proof.commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(prelude, &[commitment_digest])?;
         let layout = Self::terminal_npo_polynomial_column_layout::<F>(verifying_key);
         let labels = Self::terminal_npo_polynomial_column_labels(&layout);
         let dummy_columns = TerminalNpoPolynomialColumns::<F> {
@@ -19841,6 +19875,51 @@ impl NativeTerminalCompiler {
                     root: commitment.root,
                 },
             );
+        }
+        Ok(())
+    }
+
+    pub fn terminal_fri_commitment_digest(
+        commitment: &TerminalFriCommitment,
+    ) -> Result<TerminalCommitmentDigest, NativeTerminalVerifyError> {
+        if commitment.num_roots() != 1 {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                    reason: format!(
+                        "terminal FRI commitment cap must have one root, got {}",
+                        commitment.num_roots()
+                    ),
+                },
+            );
+        }
+        let root = commitment.roots()[0];
+        Ok(TerminalCommitmentDigest(
+            root.map(|limb| limb.as_canonical_u64()),
+        ))
+    }
+
+    fn verify_terminal_fri_prelude_commitments(
+        prelude: &TerminalProofPrelude,
+        expected: &[TerminalCommitmentDigest],
+    ) -> Result<(), NativeTerminalVerifyError> {
+        if prelude.commitments.len() != expected.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
+                    expected: expected.len(),
+                    got: prelude.commitments.len(),
+                },
+            );
+        }
+        for (index, (got, expected)) in prelude.commitments.iter().zip(expected).enumerate() {
+            if got != expected {
+                return Err(
+                    NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch {
+                        index,
+                        expected: *expected,
+                        got: *got,
+                    },
+                );
+            }
         }
         Ok(())
     }
@@ -27208,23 +27287,35 @@ mod tests {
         let verifier_columns = compiler
             .terminal_npo_polynomial_verifier_derived_columns_goldilocks::<Goldilocks>(&vk)
             .expect("Merkle Tip5 verifier-derived NPO columns must build");
-        let column_roots =
-            NativeTerminalCompiler::commit_terminal_npo_polynomial_column_values_goldilocks(
+        let value_roots =
+            NativeTerminalCompiler::terminal_npo_polynomial_fri_prelude_commitments_goldilocks(
                 &columns,
+                TerminalNpoPolynomialFriColumnSet::WitnessValues,
             )
-            .expect("Merkle Tip5 NPO column roots must commit")
-            .commitments()
-            .into_iter()
-            .map(|commitment| commitment.root)
-            .collect::<Vec<_>>();
+            .expect("Merkle Tip5 NPO value FRI root must commit");
         let prelude = compiler
             .build_proof_prelude_goldilocks(
                 &vk,
                 &public_inputs,
                 TerminalProofParameters::production_60bit(),
-                column_roots,
+                value_roots,
             )
             .expect("Merkle Tip5 terminal NPO prelude must build");
+        let value_prelude_for_columns = |candidate_columns: &TerminalNpoPolynomialColumns<
+            Goldilocks,
+        >| {
+            let roots =
+                NativeTerminalCompiler::terminal_npo_polynomial_fri_prelude_commitments_goldilocks(
+                    candidate_columns,
+                    TerminalNpoPolynomialFriColumnSet::WitnessValues,
+                )?;
+            compiler.build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                roots,
+            )
+        };
 
         let honest_proof = compiler
             .prove_terminal_npo_polynomial_padding_quotient_goldilocks(
@@ -27255,9 +27346,11 @@ mod tests {
             .position(|label| label == "mmcs_bit")
             .expect("MMCS-bit column must exist");
         bad_columns.columns[mmcs_column][0] = Goldilocks::from_u64(2);
+        let bad_prelude = value_prelude_for_columns(&bad_columns)
+            .expect("nonboolean MMCS-bit prelude must build");
         let bad_proof =
             NativeTerminalCompiler::prove_terminal_npo_polynomial_padding_quotient_from_columns_goldilocks(
-                &prelude,
+                &bad_prelude,
                 &bad_columns,
                 &verifier_columns,
             )
@@ -27266,7 +27359,7 @@ mod tests {
             .verify_terminal_npo_polynomial_padding_quotient_goldilocks::<Goldilocks>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_prelude,
                 &bad_proof,
             )
             .expect_err("nonboolean MMCS bit must fail the value quotient identity");
@@ -27283,9 +27376,11 @@ mod tests {
             .position(|label| label == "hidden_tip5_value_12")
             .expect("Merkle capacity lane column must exist");
         bad_columns.columns[capacity_column][0] = Goldilocks::ONE;
+        let bad_prelude =
+            value_prelude_for_columns(&bad_columns).expect("bad capacity lane prelude must build");
         let bad_proof =
             NativeTerminalCompiler::prove_terminal_npo_polynomial_padding_quotient_from_columns_goldilocks(
-                &prelude,
+                &bad_prelude,
                 &bad_columns,
                 &verifier_columns,
             )
@@ -27294,7 +27389,7 @@ mod tests {
             .verify_terminal_npo_polynomial_padding_quotient_goldilocks::<Goldilocks>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_prelude,
                 &bad_proof,
             )
             .expect_err("nonzero Merkle capacity lane must fail the value quotient identity");
@@ -27326,23 +27421,35 @@ mod tests {
             &[Goldilocks::ONE]
         );
 
-        let column_roots =
-            NativeTerminalCompiler::commit_terminal_npo_polynomial_column_values_goldilocks(
+        let value_roots =
+            NativeTerminalCompiler::terminal_npo_polynomial_fri_prelude_commitments_goldilocks(
                 &columns,
+                TerminalNpoPolynomialFriColumnSet::WitnessValues,
             )
-            .expect("NPO-only column roots must commit")
-            .commitments()
-            .into_iter()
-            .map(|commitment| commitment.root)
-            .collect::<Vec<_>>();
+            .expect("NPO-only value FRI root must commit");
         let prelude = compiler
             .build_proof_prelude_goldilocks(
                 &vk,
                 &public_inputs,
                 TerminalProofParameters::production_60bit(),
-                column_roots,
+                value_roots,
             )
             .expect("NPO-only prelude must build");
+        let value_prelude_for_columns = |candidate_columns: &TerminalNpoPolynomialColumns<
+            Goldilocks,
+        >| {
+            let roots =
+                NativeTerminalCompiler::terminal_npo_polynomial_fri_prelude_commitments_goldilocks(
+                    candidate_columns,
+                    TerminalNpoPolynomialFriColumnSet::WitnessValues,
+                )?;
+            compiler.build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                roots,
+            )
+        };
         let honest_proof = compiler
             .prove_terminal_npo_polynomial_padding_quotient_goldilocks(
                 &vk,
@@ -27367,9 +27474,11 @@ mod tests {
             .position(|label| label == "hidden_tip5_value_3")
             .expect("hidden Tip5 value column must exist");
         bad_columns.columns[hidden_column][0] = Goldilocks::ONE;
+        let bad_prelude =
+            value_prelude_for_columns(&bad_columns).expect("bad chain-start prelude must build");
         let bad_proof =
             NativeTerminalCompiler::prove_terminal_npo_polynomial_padding_quotient_from_columns_goldilocks(
-                &prelude,
+                &bad_prelude,
                 &bad_columns,
                 &verifier_columns,
             )
@@ -27378,7 +27487,7 @@ mod tests {
             .verify_terminal_npo_polynomial_padding_quotient_goldilocks::<Goldilocks>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_prelude,
                 &bad_proof,
             )
             .expect_err("nonzero new-start hidden lane must fail the value quotient identity");
@@ -31649,21 +31758,18 @@ mod tests {
         assert_eq!(matrix.height(), profile.padded_rows);
         assert_eq!(matrix.width(), profile.basis_columns);
 
-        let column_roots =
-            NativeTerminalCompiler::commit_terminal_npo_polynomial_column_values_goldilocks(
+        let full_fri_roots =
+            NativeTerminalCompiler::terminal_npo_polynomial_fri_prelude_commitments_goldilocks(
                 &columns,
+                TerminalNpoPolynomialFriColumnSet::FullTable,
             )
-            .expect("NPO column roots must commit")
-            .commitments()
-            .into_iter()
-            .map(|commitment| commitment.root)
-            .collect::<Vec<_>>();
+            .expect("NPO full-table FRI root must commit");
         let prelude = compiler
             .build_proof_prelude_goldilocks(
                 &vk,
                 &public_inputs,
                 TerminalProofParameters::production_60bit(),
-                column_roots,
+                full_fri_roots.clone(),
             )
             .expect("terminal NPO FRI prelude must build");
         let proof = compiler
@@ -31736,12 +31842,40 @@ mod tests {
         assert!(value_profile.field_columns < profile.field_columns);
         assert_eq!(value_matrix.height(), value_profile.padded_rows);
         assert_eq!(value_matrix.width(), value_profile.basis_columns);
+        let value_fri_roots =
+            NativeTerminalCompiler::terminal_npo_polynomial_fri_prelude_commitments_goldilocks(
+                &columns,
+                TerminalNpoPolynomialFriColumnSet::WitnessValues,
+            )
+            .expect("NPO value-column FRI root must commit");
+        let value_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                value_fri_roots.clone(),
+            )
+            .expect("terminal NPO value FRI prelude must build");
+        let value_prelude_for_columns =
+            |candidate_columns: &TerminalNpoPolynomialColumns<GoldilocksD2>| {
+                let roots =
+                    NativeTerminalCompiler::terminal_npo_polynomial_fri_prelude_commitments_goldilocks(
+                        candidate_columns,
+                        TerminalNpoPolynomialFriColumnSet::WitnessValues,
+                    )?;
+                compiler.build_proof_prelude_goldilocks(
+                    &vk,
+                    &public_inputs,
+                    TerminalProofParameters::production_60bit(),
+                    roots,
+                )
+            };
         let value_proof = compiler
             .prove_terminal_npo_polynomial_value_fri_opening_goldilocks(
                 &vk,
                 &public_inputs,
                 &witness,
-                &prelude,
+                &value_prelude,
             )
             .expect("typed terminal NPO value-column FRI opening proof must build");
         assert_eq!(value_proof.profile, value_profile);
@@ -31749,10 +31883,55 @@ mod tests {
             .verify_terminal_npo_polynomial_value_fri_opening_goldilocks::<GoldilocksD2>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &value_prelude,
                 &value_proof,
             )
             .expect("typed terminal NPO value-column FRI opening proof must verify");
+        let stale_value_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                full_fri_roots.clone(),
+            )
+            .expect("stale full-table root prelude must build");
+        let err = compiler
+            .verify_terminal_npo_polynomial_value_fri_opening_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &stale_value_prelude,
+                &value_proof,
+            )
+            .expect_err("value FRI verifier must reject stale full-table prelude root");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch { .. }
+        ));
+        let mut extra_value_roots = value_fri_roots.clone();
+        extra_value_roots.push(full_fri_roots[0]);
+        let extra_value_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                extra_value_roots,
+            )
+            .expect("extra-root value FRI prelude must build");
+        let err = compiler
+            .verify_terminal_npo_polynomial_value_fri_opening_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &extra_value_prelude,
+                &value_proof,
+            )
+            .expect_err("value FRI verifier must reject extra prelude roots");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
+                expected: 1,
+                got: 2
+            }
+        ));
         let restored_value_fri =
             NativeTerminalCompiler::decompress_terminal_fri_proof(&value_proof.proof)
                 .expect("typed terminal NPO value-column compact proof must decompress");
@@ -31768,7 +31947,7 @@ mod tests {
             .verify_and_open_terminal_npo_polynomial_value_fri_opening_goldilocks::<GoldilocksD2>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &value_prelude,
                 &value_proof,
             )
             .expect("typed terminal NPO value-column FRI opened columns must verify");
@@ -31800,7 +31979,7 @@ mod tests {
             .verify_terminal_npo_polynomial_value_padding_opening_goldilocks::<GoldilocksD2>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &value_prelude,
                 &value_proof,
             )
             .expect("honest value-column FRI openings must satisfy verifier-derived padding");
@@ -31809,7 +31988,7 @@ mod tests {
                 &vk,
                 &public_inputs,
                 &witness,
-                &prelude,
+                &value_prelude,
             )
             .expect("honest terminal NPO padding quotient proof must build");
         assert_eq!(padding_quotient_proof.value_profile, value_profile);
@@ -31825,7 +32004,7 @@ mod tests {
             .verify_terminal_npo_polynomial_padding_quotient_goldilocks::<GoldilocksD2>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &value_prelude,
                 &padding_quotient_proof,
             )
             .expect("honest terminal NPO padding quotient proof must verify");
@@ -31860,7 +32039,7 @@ mod tests {
             .verify_terminal_npo_polynomial_padding_quotient_goldilocks::<GoldilocksD2>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &value_prelude,
                 &roundtrip_padding,
             )
             .expect("round-tripped padding quotient proof must verify");
@@ -31872,9 +32051,11 @@ mod tests {
             .position(|label| label == "mmcs_bit")
             .expect("MMCS value column must exist");
         bad_padding_columns.columns[mmcs_column][0] = GoldilocksD2::ONE;
+        let bad_padding_prelude = value_prelude_for_columns(&bad_padding_columns)
+            .expect("bad padding value prelude must build");
         let bad_padding_proof =
             NativeTerminalCompiler::prove_terminal_npo_polynomial_fri_opening_from_columns_goldilocks(
-                &prelude,
+                &bad_padding_prelude,
                 &bad_padding_columns,
                 TerminalNpoPolynomialFriColumnSet::WitnessValues,
             )
@@ -31883,7 +32064,7 @@ mod tests {
             .verify_and_open_terminal_npo_polynomial_value_fri_opening_goldilocks::<GoldilocksD2>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_padding_prelude,
                 &bad_padding_proof,
             )
             .expect("padding-invalid value-column proof is still a valid FRI opening");
@@ -31891,7 +32072,7 @@ mod tests {
             .verify_terminal_npo_polynomial_value_padding_opening_goldilocks::<GoldilocksD2>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_padding_prelude,
                 &bad_padding_proof,
             )
             .unwrap_err();
@@ -31902,7 +32083,7 @@ mod tests {
         ));
         let bad_padding_quotient_proof =
             NativeTerminalCompiler::prove_terminal_npo_polynomial_padding_quotient_from_columns_goldilocks(
-                &prelude,
+                &bad_padding_prelude,
                 &bad_padding_columns,
                 &verifier_columns,
             )
@@ -31911,7 +32092,7 @@ mod tests {
             .verify_terminal_npo_polynomial_padding_quotient_goldilocks::<GoldilocksD2>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_padding_prelude,
                 &bad_padding_quotient_proof,
             )
             .unwrap_err();
@@ -31928,9 +32109,11 @@ mod tests {
             .position(|label| label == "input_value_0")
             .expect("input value column must exist");
         bad_present_value_columns.columns[input_column][0] += GoldilocksD2::ONE;
+        let bad_present_value_prelude = value_prelude_for_columns(&bad_present_value_columns)
+            .expect("bad present-value prelude must build");
         let bad_present_value_proof =
             NativeTerminalCompiler::prove_terminal_npo_polynomial_fri_opening_from_columns_goldilocks(
-                &prelude,
+                &bad_present_value_prelude,
                 &bad_present_value_columns,
                 TerminalNpoPolynomialFriColumnSet::WitnessValues,
             )
@@ -31939,13 +32122,13 @@ mod tests {
             .verify_terminal_npo_polynomial_value_padding_opening_goldilocks::<GoldilocksD2>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_present_value_prelude,
                 &bad_present_value_proof,
             )
             .expect("padding-only checker must not claim full present-value row semantics");
         let bad_recompose_quotient_proof =
             NativeTerminalCompiler::prove_terminal_npo_polynomial_padding_quotient_from_columns_goldilocks(
-                &prelude,
+                &bad_present_value_prelude,
                 &bad_present_value_columns,
                 &verifier_columns,
             )
@@ -31954,7 +32137,7 @@ mod tests {
             .verify_terminal_npo_polynomial_padding_quotient_goldilocks::<GoldilocksD2>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_present_value_prelude,
                 &bad_recompose_quotient_proof,
             )
             .unwrap_err();
@@ -31967,7 +32150,7 @@ mod tests {
             .verify_terminal_npo_polynomial_fri_opening_goldilocks::<GoldilocksD2>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &value_prelude,
                 &value_proof,
             )
             .unwrap_err();

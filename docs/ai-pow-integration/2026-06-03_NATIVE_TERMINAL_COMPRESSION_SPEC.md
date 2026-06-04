@@ -241,12 +241,15 @@ for this route.
   observing the column commitment and sampling the extension opening point. A
   regression test commits D=2 recompose NPO columns through this native FRI
   PCS, verifies the typed proof, round-trips its serialized form, and rejects
-  tampered opened values and stale profile metadata. The proof now stores its
-  inner FRI opening directly in the terminal-compressed wrapper, so full-table
-  and witness-value NPO FRI checkpoints no longer serialize raw Merkle path
-  material. This is the proximity substrate for the final backend; production
-  still does not accept it as the full NPO relation proof until the
-  row-polynomial constraints are connected to the FRI openings.
+  tampered opened values, stale profile metadata, stale prelude roots, and
+  extra prelude roots. The standalone NPO polynomial FRI prelude has an exact
+  transcript shape: its commitment vector is the single terminal FRI Merkle-cap
+  root for the committed column set. The proof now stores its inner FRI opening
+  directly in the terminal-compressed wrapper, so full-table and witness-value
+  NPO FRI checkpoints no longer serialize raw Merkle path material. This is the
+  proximity substrate for the final backend; production still does not accept
+  it as the full NPO relation proof until the row-polynomial constraints are
+  connected to the FRI openings.
 - `TerminalNpoPolynomialFriOpenedColumns`: the verifier-derived handoff from a
   verified NPO FRI opening to future row-polynomial checks. Verification now
   returns the transcript-derived opening point, the verifier-selected column
@@ -287,11 +290,15 @@ for this route.
   `output_basis_i = input_i_base` under the combined
   `is_recompose + is_recompose_coeff` selector. The quotient domain is twice
   the value-column trace domain so the degree-3 booleanity relation has a
-  low-degree quotient. The proof now stores the terminal FRI opening in the
-  compressed terminal wrapper rather than serializing raw path material; the
-  focused 2-row fixture measured `8,378` bytes / `8.2 KiB`, with restored raw
-  FRI payload `15,482` bytes / `15.1 KiB` and stored compressed FRI payload
-  `8,153` bytes / `8.0 KiB`. This is the Plonky3-style
+  low-degree quotient. Its standalone prelude commitment vector is exactly the
+  witness-value FRI root; the quotient root is not prelude material because it
+  depends on the value-root-derived folding challenge and is instead observed
+  in the PCS transcript before the opening point is sampled. The proof now
+  stores the terminal FRI opening in the compressed terminal wrapper rather
+  than serializing raw path material; the focused 2-row fixture measured
+  `8,378` bytes / `8.2 KiB`, with restored raw FRI payload `15,482` bytes /
+  `15.1 KiB` and stored compressed FRI payload `8,153` bytes / `8.0 KiB`.
+  This is the Plonky3-style
   quotient/vanishing-polynomial form needed for mixed present-bit padding,
   MMCS direction-bit booleanity, Tip5 chain-start zero lanes, Merkle
   capacity-zero lanes, and recompose value-column semantics; it is still a
@@ -762,6 +769,11 @@ prover-selected roots. This mirrors the production prelude hardening and
 prevents unused roots from steering sampled rows, fold challenges, or
 residual-combination challenges when these checkpoints are promoted into the
 terminal production backend.
+The standalone NPO polynomial FRI and padding-quotient checkpoints apply the
+same rule to terminal FRI roots: full-table/value-column FRI openings bind the
+single committed FRI root in the prelude, while the padding quotient binds the
+value-column root and absorbs the quotient root later after its challenge
+dependency is resolved.
 
 `TerminalBackendRelationDigest` is the explicit commitment to those backend
 projections. It has its own domain and absorbs `TerminalQuadraticRelation`,

@@ -44,7 +44,8 @@ use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTarg
 use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
 use p3_recursion::terminal::{
-    NativeTerminalCompiler, TerminalCircuitFingerprint, TerminalProofParameters, TerminalWitness,
+    NativeTerminalCompiler, TerminalCircuitFingerprint, TerminalNpoPolynomialFriColumnSet,
+    TerminalProofParameters, TerminalWitness,
 };
 use p3_recursion::verify_p3_uni_proof_circuit;
 use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
@@ -459,13 +460,45 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         .expect("terminal production certificate must verify");
     let production_verify_elapsed = production_verify_start.elapsed();
 
+    let npo_polynomial_columns = compiler
+        .terminal_npo_polynomial_columns_goldilocks(&vk, &terminal_witness)
+        .expect("terminal NPO polynomial columns must build for FRI candidates");
+    let npo_fri_roots =
+        NativeTerminalCompiler::terminal_npo_polynomial_fri_prelude_commitments_goldilocks(
+            &npo_polynomial_columns,
+            TerminalNpoPolynomialFriColumnSet::FullTable,
+        )
+        .expect("terminal NPO polynomial full-table FRI root must commit");
+    let npo_fri_prelude = compiler
+        .build_proof_prelude_goldilocks(
+            &vk,
+            &terminal_witness.public_inputs,
+            TerminalProofParameters::production_60bit(),
+            npo_fri_roots,
+        )
+        .expect("terminal NPO polynomial full-table FRI prelude must build");
+    let npo_value_fri_roots =
+        NativeTerminalCompiler::terminal_npo_polynomial_fri_prelude_commitments_goldilocks(
+            &npo_polynomial_columns,
+            TerminalNpoPolynomialFriColumnSet::WitnessValues,
+        )
+        .expect("terminal NPO polynomial value FRI root must commit");
+    let npo_value_fri_prelude = compiler
+        .build_proof_prelude_goldilocks(
+            &vk,
+            &terminal_witness.public_inputs,
+            TerminalProofParameters::production_60bit(),
+            npo_value_fri_roots,
+        )
+        .expect("terminal NPO polynomial value FRI prelude must build");
+
     let npo_fri_prove_start = std::time::Instant::now();
     let npo_fri_proof = compiler
         .prove_terminal_npo_polynomial_fri_opening_goldilocks(
             &vk,
             &terminal_witness.public_inputs,
             &terminal_witness,
-            &production_proof.prelude,
+            &npo_fri_prelude,
         )
         .expect("terminal NPO polynomial FRI opening proof must build");
     let npo_fri_prove_elapsed = npo_fri_prove_start.elapsed();
@@ -489,14 +522,14 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         .verify_terminal_npo_polynomial_fri_opening_goldilocks::<Challenge>(
             &vk,
             &terminal_witness.public_inputs,
-            &production_proof.prelude,
+            &npo_fri_prelude,
             &npo_fri_proof,
         )
         .expect("terminal NPO polynomial FRI opening proof must verify");
     let npo_fri_verify_elapsed = npo_fri_verify_start.elapsed();
     let npo_fri_compressed =
         NativeTerminalCompiler::compress_terminal_npo_polynomial_fri_opening_proof(
-            &production_proof.prelude,
+            &npo_fri_prelude,
             &npo_fri_proof,
         )
         .expect("terminal NPO polynomial FRI proof must compact");
@@ -512,7 +545,7 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
             &vk,
             &terminal_witness.public_inputs,
             &terminal_witness,
-            &production_proof.prelude,
+            &npo_value_fri_prelude,
         )
         .expect("terminal NPO value-column FRI opening proof must build");
     let npo_value_fri_prove_elapsed = npo_value_fri_prove_start.elapsed();
@@ -539,14 +572,14 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         .verify_terminal_npo_polynomial_value_fri_opening_goldilocks::<Challenge>(
             &vk,
             &terminal_witness.public_inputs,
-            &production_proof.prelude,
+            &npo_value_fri_prelude,
             &npo_value_fri_proof,
         )
         .expect("terminal NPO value-column FRI opening proof must verify");
     let npo_value_fri_verify_elapsed = npo_value_fri_verify_start.elapsed();
     let npo_value_fri_compressed =
         NativeTerminalCompiler::compress_terminal_npo_polynomial_fri_opening_proof(
-            &production_proof.prelude,
+            &npo_value_fri_prelude,
             &npo_value_fri_proof,
         )
         .expect("terminal NPO value-column FRI proof must compact");
