@@ -21,7 +21,7 @@ use p3_circuit::ops::{
 use p3_circuit::tables::Traces;
 use p3_circuit::{Circuit, WitnessId};
 use p3_commit::{BatchOpening, ExtensionMmcs, Pcs, PolynomialSpace};
-use p3_dft::Radix2DitParallel;
+use p3_dft::{Radix2DitParallel, TwoAdicSubgroupDft};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_fri::{CommitPhaseProofStep, FriParameters, FriProof, QueryProof, TwoAdicFriPcs};
@@ -1435,6 +1435,9 @@ pub enum TerminalNpoPolynomialFriColumnSet {
     /// shape are reconstructed locally. This column set is the FRI-native
     /// replacement target for the selected-column Merkle opening layer.
     ProverDependent,
+    /// One extension-valued quotient column, flattened into terminal
+    /// Goldilocks basis columns, for batched residual relation checks.
+    ResidualRelationQuotient,
 }
 
 /// FRI commitment shape for the basis-expanded supported-NPO polynomial table.
@@ -1517,6 +1520,15 @@ struct TerminalNpoValueQuotientConstraint {
     value_evals: Vec<Goldilocks>,
     rhs_evals: Option<Vec<Goldilocks>>,
     kind: TerminalNpoValueQuotientConstraintKind,
+}
+
+#[derive(Clone, Debug)]
+struct TerminalNpoRecomposeResidualRelationEvals {
+    row_selector_evals: Vec<Goldilocks>,
+    input_basis_evals: Vec<Vec<Vec<Goldilocks>>>,
+    output_basis_evals: Vec<Vec<Goldilocks>>,
+    residual_present_evals: Vec<Vec<Goldilocks>>,
+    residual_basis_evals: Vec<Vec<Vec<Goldilocks>>>,
 }
 
 /// Deterministic polynomial-column projection of [`TerminalNpoPolynomialTable`].
@@ -1658,6 +1670,24 @@ pub struct TerminalNpoPolynomialFriCompactResidualZeroProof {
     pub composition_commitment: TerminalFriCommitment,
     pub opened_selected_basis: Vec<Vec<u64>>,
     pub opened_composition_basis: Vec<Vec<u64>>,
+    pub proof: TerminalCompressedFriProof,
+}
+
+/// FRI-native quotient tying committed recompose residual columns to values.
+///
+/// This row-relation checkpoint commits prover-dependent NPO columns, derives a
+/// batching challenge from that root, commits one quotient for the recompose
+/// input/output residual identities, and opens both at one transcript-derived
+/// point. Tip5 permutation and predecessor-chain residuals remain separate
+/// backend work.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TerminalNpoPolynomialRecomposeResidualQuotientProof {
+    pub selected_profile: TerminalNpoPolynomialFriProfile,
+    pub quotient_profile: TerminalNpoPolynomialFriProfile,
+    pub selected_commitment: TerminalFriCommitment,
+    pub quotient_commitment: TerminalFriCommitment,
+    pub opened_selected_basis: Vec<Vec<u64>>,
+    pub opened_quotient_basis: Vec<Vec<u64>>,
     pub proof: TerminalCompressedFriProof,
 }
 
@@ -8049,6 +8079,855 @@ impl NativeTerminalCompiler {
                     label: Self::terminal_npo_polynomial_fri_compact_residual_zero_label().into(),
                 },
             );
+        }
+        Ok(())
+    }
+
+    pub fn prove_terminal_npo_polynomial_recompose_residual_quotient_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        witness: &TerminalWitness<F>,
+        prelude: &TerminalProofPrelude,
+    ) -> Result<TerminalNpoPolynomialRecomposeResidualQuotientProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let columns = self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
+        let verifier_columns =
+            self.terminal_npo_polynomial_verifier_derived_columns_goldilocks(verifying_key)?;
+        Self::prove_terminal_npo_polynomial_recompose_residual_quotient_from_columns_goldilocks(
+            prelude,
+            &columns,
+            &verifier_columns,
+        )
+    }
+
+    fn prove_terminal_npo_polynomial_recompose_residual_quotient_from_columns_goldilocks<F>(
+        prelude: &TerminalProofPrelude,
+        columns: &TerminalNpoPolynomialColumns<F>,
+        verifier_columns: &TerminalNpoPolynomialColumns<F>,
+    ) -> Result<TerminalNpoPolynomialRecomposeResidualQuotientProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let (selected_profile, selected_matrix) =
+            Self::terminal_npo_polynomial_basis_matrix_for_column_set_goldilocks(
+                columns,
+                TerminalNpoPolynomialFriColumnSet::ProverDependent,
+            )?;
+        let quotient_profile =
+            Self::terminal_npo_polynomial_residual_relation_quotient_profile(&columns.layout)?;
+        if selected_profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: selected_profile.proximity.proof_parameters(),
+                },
+            );
+        }
+        if quotient_profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: quotient_profile.proximity.proof_parameters(),
+                },
+            );
+        }
+
+        let (pcs, mut challenger) =
+            Self::terminal_fri_pcs_and_challenger(selected_profile.proximity)?;
+        let selected_domain = <TerminalFriPcs as Pcs<
+            TerminalFriChallenge,
+            TerminalFriChallenger,
+        >>::natural_domain_for_degree(
+            &pcs, selected_profile.padded_rows
+        );
+        let (selected_commitment, selected_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(selected_domain, selected_matrix)],
+            );
+        let selected_commitment_digest =
+            Self::terminal_fri_commitment_digest(&selected_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(prelude, &[selected_commitment_digest])?;
+        Self::seed_terminal_npo_recompose_residual_quotient_challenger(
+            &mut challenger,
+            prelude,
+            &selected_profile,
+            &quotient_profile,
+        );
+        challenger.observe(selected_commitment.clone());
+        let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
+
+        let quotient_domain = selected_domain.create_disjoint_domain(quotient_profile.padded_rows);
+        let quotient_matrix =
+            Self::terminal_npo_polynomial_recompose_residual_quotient_matrix_goldilocks(
+                selected_domain,
+                quotient_domain,
+                columns,
+                verifier_columns,
+                &selected_profile,
+                alpha,
+            )?;
+        let (quotient_commitment, quotient_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(quotient_domain, quotient_matrix)],
+            );
+        challenger.observe(quotient_commitment.clone());
+        let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let (opened_values, plain_proof) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
+                &pcs,
+                vec![
+                    (&selected_data, vec![vec![zeta]]),
+                    (&quotient_data, vec![vec![zeta]]),
+                ],
+                &mut challenger,
+            );
+        let opened_selected_basis =
+            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
+        let opened_quotient_basis =
+            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 1)?;
+
+        let mut query_challenger = TerminalFriChallenger::new(Tip5Perm);
+        Self::seed_terminal_npo_recompose_residual_quotient_challenger(
+            &mut query_challenger,
+            prelude,
+            &selected_profile,
+            &quotient_profile,
+        );
+        query_challenger.observe(selected_commitment.clone());
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        query_challenger.observe(quotient_commitment.clone());
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        for point_values in &opened_values[0][0] {
+            query_challenger.observe_algebra_slice(point_values);
+        }
+        for point_values in &opened_values[1][0] {
+            query_challenger.observe_algebra_slice(point_values);
+        }
+        let query_indices = Self::derive_terminal_fri_query_indices_from_challenger(
+            &mut query_challenger,
+            &plain_proof,
+            selected_profile.proximity,
+        )?;
+        let proof = Self::compress_terminal_fri_proof(&plain_proof, &query_indices)?;
+
+        Ok(
+            TerminalNpoPolynomialRecomposeResidualQuotientProof {
+                selected_profile,
+                quotient_profile,
+                selected_commitment,
+                quotient_commitment,
+                opened_selected_basis,
+                opened_quotient_basis,
+                proof,
+            },
+        )
+    }
+
+    fn terminal_npo_polynomial_recompose_residual_quotient_matrix_goldilocks<F>(
+        selected_domain: <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::Domain,
+        quotient_domain: <TerminalFriPcs as Pcs<
+            TerminalFriChallenge,
+            TerminalFriChallenger,
+        >>::Domain,
+        columns: &TerminalNpoPolynomialColumns<F>,
+        verifier_columns: &TerminalNpoPolynomialColumns<F>,
+        selected_profile: &TerminalNpoPolynomialFriProfile,
+        alpha: TerminalFriChallenge,
+    ) -> Result<RowMajorMatrix<Goldilocks>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        Self::validate_terminal_npo_polynomial_columns(&columns.layout, columns)?;
+        Self::validate_terminal_npo_polynomial_columns(&verifier_columns.layout, verifier_columns)?;
+        if verifier_columns.layout != columns.layout || verifier_columns.labels != columns.labels {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLayoutMismatch {
+                    expected: columns.layout.clone(),
+                    got: verifier_columns.layout.clone(),
+                },
+            );
+        }
+        let relation_evals = Self::terminal_npo_recompose_residual_relation_evals_goldilocks(
+            columns,
+            verifier_columns,
+            selected_profile,
+        )?;
+        let relation_lde =
+            Self::terminal_npo_recompose_residual_relation_lde_goldilocks(
+                selected_domain,
+                quotient_domain,
+                &relation_evals,
+            )?;
+        let mut quotient_values = Vec::with_capacity(quotient_domain.size());
+        let mut point = TerminalFriChallenge::from(quotient_domain.first_point());
+        for row in 0..quotient_domain.size() {
+            let folded =
+                Self::terminal_npo_recompose_residual_relation_from_lde_row_goldilocks(
+                    &relation_lde,
+                    selected_profile.field_basis_dimension,
+                    row,
+                    alpha,
+                )?;
+            let z_h = selected_domain.vanishing_poly_at_point(point);
+            quotient_values.push(folded / z_h);
+            point = quotient_domain.next_point(point).ok_or_else(|| {
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                    reason: "terminal NPO recompose residual quotient domain has no successor"
+                        .into(),
+                }
+            })?;
+        }
+        Ok(RowMajorMatrix::new_col(quotient_values).flatten_to_base())
+    }
+
+    fn terminal_npo_recompose_residual_relation_evals_goldilocks<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        verifier_columns: &TerminalNpoPolynomialColumns<F>,
+        profile: &TerminalNpoPolynomialFriProfile,
+    ) -> Result<TerminalNpoRecomposeResidualRelationEvals, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let d = profile.field_basis_dimension;
+        let row_selector_evals = Self::terminal_npo_polynomial_combined_selector_evals(
+            verifier_columns,
+            profile,
+            &["is_recompose", "is_recompose_coeff"],
+        )?;
+        let mut input_basis_evals = Vec::with_capacity(d);
+        for limb in 0..d {
+            let input_label = format!("input_value_{limb}");
+            let input_column = Self::terminal_npo_polynomial_column_index(columns, &input_label)?;
+            input_basis_evals.push(
+                (0..d)
+                    .map(|basis| {
+                        Self::terminal_npo_polynomial_column_basis_evals(
+                            columns,
+                            profile,
+                            input_column,
+                            basis,
+                        )
+                    })
+                    .collect(),
+            );
+        }
+        let output_column = Self::terminal_npo_polynomial_column_index(columns, "output_value_0")?;
+        let output_basis_evals = (0..d)
+            .map(|basis| {
+                Self::terminal_npo_polynomial_column_basis_evals(
+                    columns,
+                    profile,
+                    output_column,
+                    basis,
+                )
+            })
+            .collect::<Vec<_>>();
+        let residual_slots = d * d + d;
+        let mut residual_present_evals = Vec::with_capacity(residual_slots);
+        let mut residual_basis_evals = Vec::with_capacity(residual_slots);
+        for residual_slot in 0..residual_slots {
+            if residual_slot >= columns.layout.residual_value_columns {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                        label: "npo_recompose_residual_slot".into(),
+                        expected: residual_slot + 1,
+                        got: columns.layout.residual_value_columns,
+                    },
+                );
+            }
+            let present_label = format!("residual_present_{residual_slot}");
+            let present_column =
+                Self::terminal_npo_polynomial_column_index(verifier_columns, &present_label)?;
+            residual_present_evals.push(Self::terminal_npo_polynomial_column_basis_evals(
+                verifier_columns,
+                profile,
+                present_column,
+                0,
+            ));
+
+            let residual_label = format!("residual_value_{residual_slot}");
+            let residual_column =
+                Self::terminal_npo_polynomial_column_index(columns, &residual_label)?;
+            residual_basis_evals.push(
+                (0..d)
+                    .map(|basis| {
+                        Self::terminal_npo_polynomial_column_basis_evals(
+                            columns,
+                            profile,
+                            residual_column,
+                            basis,
+                        )
+                    })
+                    .collect(),
+            );
+        }
+        Ok(TerminalNpoRecomposeResidualRelationEvals {
+            row_selector_evals,
+            input_basis_evals,
+            output_basis_evals,
+            residual_present_evals,
+            residual_basis_evals,
+        })
+    }
+
+    fn terminal_npo_recompose_residual_relation_lde_goldilocks(
+        domain: <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::Domain,
+        quotient_domain: <TerminalFriPcs as Pcs<
+            TerminalFriChallenge,
+            TerminalFriChallenger,
+        >>::Domain,
+        relation_evals: &TerminalNpoRecomposeResidualRelationEvals,
+    ) -> Result<TerminalNpoRecomposeResidualRelationEvals, NativeTerminalVerifyError> {
+        let mut columns = Vec::<Vec<Goldilocks>>::new();
+        let mut push_column = |values: &[Goldilocks]| {
+            let index = columns.len();
+            columns.push(values.to_vec());
+            index
+        };
+        let row_selector_index = push_column(&relation_evals.row_selector_evals);
+        let input_basis_indices = relation_evals
+            .input_basis_evals
+            .iter()
+            .map(|limb| limb.iter().map(|values| push_column(values)).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        let output_basis_indices = relation_evals
+            .output_basis_evals
+            .iter()
+            .map(|values| push_column(values))
+            .collect::<Vec<_>>();
+        let residual_present_indices = relation_evals
+            .residual_present_evals
+            .iter()
+            .map(|values| push_column(values))
+            .collect::<Vec<_>>();
+        let residual_basis_indices = relation_evals
+            .residual_basis_evals
+            .iter()
+            .map(|slot| slot.iter().map(|values| push_column(values)).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+
+        let width = columns.len();
+        let height = domain.size();
+        let mut matrix_values = Vec::with_capacity(height * width);
+        for row in 0..height {
+            for column in &columns {
+                matrix_values.push(column[row]);
+            }
+        }
+        let added_bits = quotient_domain
+            .size()
+            .checked_div(domain.size())
+            .filter(|ratio| ratio.is_power_of_two())
+            .map(|ratio| ratio.trailing_zeros() as usize)
+            .ok_or(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "npo_recompose_residual_quotient_lde".into(),
+                    expected: domain.size() * 2,
+                    got: quotient_domain.size(),
+                },
+            )?;
+        let shift = quotient_domain.first_point() / domain.first_point();
+        let lde = TerminalFriDft::default()
+            .coset_lde_batch(RowMajorMatrix::new(matrix_values, width), added_bits, shift)
+            .to_row_major_matrix();
+        let extract_column = |index: usize| -> Vec<Goldilocks> {
+            (0..lde.height())
+                .map(|row| lde.values[row * lde.width() + index])
+                .collect()
+        };
+        Ok(TerminalNpoRecomposeResidualRelationEvals {
+            row_selector_evals: extract_column(row_selector_index),
+            input_basis_evals: input_basis_indices
+                .iter()
+                .map(|limb| limb.iter().map(|&index| extract_column(index)).collect())
+                .collect(),
+            output_basis_evals: output_basis_indices
+                .iter()
+                .map(|&index| extract_column(index))
+                .collect(),
+            residual_present_evals: residual_present_indices
+                .iter()
+                .map(|&index| extract_column(index))
+                .collect(),
+            residual_basis_evals: residual_basis_indices
+                .iter()
+                .map(|slot| slot.iter().map(|&index| extract_column(index)).collect())
+                .collect(),
+        })
+    }
+
+    fn terminal_npo_recompose_residual_relation_from_lde_row_goldilocks(
+        relation_lde: &TerminalNpoRecomposeResidualRelationEvals,
+        field_basis_dimension: usize,
+        row: usize,
+        alpha: TerminalFriChallenge,
+    ) -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
+        let row_selector = TerminalFriChallenge::from(
+            *relation_lde
+                .row_selector_evals
+                .get(row)
+                .ok_or(NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "npo_recompose_residual_lde_row".into(),
+                    expected: row + 1,
+                    got: relation_lde.row_selector_evals.len(),
+                })?,
+        );
+        let d = field_basis_dimension;
+        let mut folded = TerminalFriChallenge::ZERO;
+        let mut coeff = TerminalFriChallenge::ONE;
+        for limb in 0..d {
+            let input_basis = relation_lde.input_basis_evals[limb]
+                .iter()
+                .map(|evals| {
+                    evals.get(row).copied().map(TerminalFriChallenge::from).ok_or(
+                        NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                            label: "npo_recompose_residual_input_lde".into(),
+                            expected: row + 1,
+                            got: evals.len(),
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            for component in 0..d {
+                let residual_slot = limb * d + component;
+                let expected = if component == 0 {
+                    TerminalFriChallenge::ZERO
+                } else {
+                    input_basis[component]
+                };
+                Self::fold_terminal_npo_recompose_residual_slot_relation_from_lde_row_goldilocks(
+                    relation_lde,
+                    row,
+                    row_selector,
+                    residual_slot,
+                    expected,
+                    alpha,
+                    &mut folded,
+                    &mut coeff,
+                )?;
+            }
+        }
+
+        let output_basis = relation_lde
+            .output_basis_evals
+            .iter()
+            .map(|evals| {
+                evals.get(row).copied().map(TerminalFriChallenge::from).ok_or(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                        label: "npo_recompose_residual_output_lde".into(),
+                        expected: row + 1,
+                        got: evals.len(),
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for component in 0..d {
+            let input_base = TerminalFriChallenge::from(
+                *relation_lde.input_basis_evals[component][0].get(row).ok_or(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                        label: "npo_recompose_residual_input_lde".into(),
+                        expected: row + 1,
+                        got: relation_lde.input_basis_evals[component][0].len(),
+                    },
+                )?,
+            );
+            let residual_slot = d * d + component;
+            let expected = output_basis[component] - input_base;
+            Self::fold_terminal_npo_recompose_residual_slot_relation_from_lde_row_goldilocks(
+                relation_lde,
+                row,
+                row_selector,
+                residual_slot,
+                expected,
+                alpha,
+                &mut folded,
+                &mut coeff,
+            )?;
+        }
+        Ok(folded)
+    }
+
+    fn fold_terminal_npo_recompose_residual_slot_relation_from_lde_row_goldilocks(
+        relation_lde: &TerminalNpoRecomposeResidualRelationEvals,
+        row: usize,
+        row_selector: TerminalFriChallenge,
+        residual_slot: usize,
+        expected_base_component: TerminalFriChallenge,
+        alpha: TerminalFriChallenge,
+        folded: &mut TerminalFriChallenge,
+        coeff: &mut TerminalFriChallenge,
+    ) -> Result<(), NativeTerminalVerifyError> {
+        let present = TerminalFriChallenge::from(
+            *relation_lde
+                .residual_present_evals
+                .get(residual_slot)
+                .ok_or(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                        label: "npo_recompose_residual_slot".into(),
+                        expected: residual_slot + 1,
+                        got: relation_lde.residual_present_evals.len(),
+                    },
+                )?
+                .get(row)
+                .ok_or(NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "npo_recompose_residual_present_lde".into(),
+                    expected: row + 1,
+                    got: relation_lde.residual_present_evals[residual_slot].len(),
+                })?,
+        );
+        let selector = row_selector * present;
+        let residual_basis_evals = relation_lde.residual_basis_evals.get(residual_slot).ok_or(
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                label: "npo_recompose_residual_slot".into(),
+                expected: residual_slot + 1,
+                got: relation_lde.residual_basis_evals.len(),
+            },
+        )?;
+        for (basis, evals) in residual_basis_evals.iter().enumerate() {
+            let value = TerminalFriChallenge::from(
+                *evals.get(row).ok_or(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                        label: "npo_recompose_residual_value_lde".into(),
+                        expected: row + 1,
+                        got: evals.len(),
+                    },
+                )?,
+            );
+            let expected = if basis == 0 {
+                expected_base_component
+            } else {
+                TerminalFriChallenge::ZERO
+            };
+            *folded += *coeff * selector * (value - expected);
+            *coeff *= alpha;
+        }
+        Ok(())
+    }
+
+    pub fn verify_terminal_npo_polynomial_recompose_residual_quotient_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoPolynomialRecomposeResidualQuotientProof,
+    ) -> Result<TerminalNpoPolynomialFriOpenedColumns, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let selected_commitment_digest =
+            Self::terminal_fri_commitment_digest(&proof.selected_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(prelude, &[selected_commitment_digest])?;
+
+        let layout = Self::terminal_npo_polynomial_column_layout::<F>(verifying_key);
+        let labels = Self::terminal_npo_polynomial_column_labels(&layout);
+        let dummy_columns = TerminalNpoPolynomialColumns::<F> {
+            layout: layout.clone(),
+            labels: labels.clone(),
+            columns: vec![Vec::new(); layout.column_count],
+        };
+        let selected_indices = Self::terminal_npo_polynomial_fri_column_indices(
+            &dummy_columns,
+            TerminalNpoPolynomialFriColumnSet::ProverDependent,
+        )?;
+        let selected_labels = selected_indices
+            .iter()
+            .map(|index| labels[*index].clone())
+            .collect::<Vec<_>>();
+        let expected_selected_profile =
+            Self::terminal_npo_polynomial_fri_profile_for_column_count::<F>(
+                &layout,
+                TerminalNpoPolynomialFriColumnSet::ProverDependent,
+                selected_indices.len(),
+            )?;
+        let expected_quotient_profile =
+            Self::terminal_npo_polynomial_residual_relation_quotient_profile(&layout)?;
+        if proof.selected_profile != expected_selected_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "npo_recompose_residual_selected_profile".into(),
+                    expected: expected_selected_profile.basis_columns,
+                    got: proof.selected_profile.basis_columns,
+                },
+            );
+        }
+        if proof.quotient_profile != expected_quotient_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "npo_recompose_residual_quotient_profile".into(),
+                    expected: expected_quotient_profile.basis_columns,
+                    got: proof.quotient_profile.basis_columns,
+                },
+            );
+        }
+        if proof.selected_profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: proof.selected_profile.proximity.proof_parameters(),
+                },
+            );
+        }
+        if proof.quotient_profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: proof.quotient_profile.proximity.proof_parameters(),
+                },
+            );
+        }
+        if proof.opened_selected_basis.len() != proof.selected_profile.basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof.selected_profile.basis_columns,
+                    got: proof.opened_selected_basis.len(),
+                },
+            );
+        }
+        if proof.opened_quotient_basis.len() != proof.quotient_profile.basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof.quotient_profile.basis_columns,
+                    got: proof.opened_quotient_basis.len(),
+                },
+            );
+        }
+
+        let mut opened_selected_flat = Vec::with_capacity(proof.opened_selected_basis.len());
+        for basis in &proof.opened_selected_basis {
+            opened_selected_flat
+                .push(Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(basis)?);
+        }
+        let mut opened_quotient_flat = Vec::with_capacity(proof.opened_quotient_basis.len());
+        for basis in &proof.opened_quotient_basis {
+            opened_quotient_flat
+                .push(Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(basis)?);
+        }
+
+        let (pcs, mut challenger) =
+            Self::terminal_fri_pcs_and_challenger(proof.selected_profile.proximity)?;
+        Self::seed_terminal_npo_recompose_residual_quotient_challenger(
+            &mut challenger,
+            prelude,
+            &proof.selected_profile,
+            &proof.quotient_profile,
+        );
+        let selected_domain = <TerminalFriPcs as Pcs<
+            TerminalFriChallenge,
+            TerminalFriChallenger,
+        >>::natural_domain_for_degree(
+            &pcs, proof.selected_profile.padded_rows
+        );
+        let quotient_domain = selected_domain.create_disjoint_domain(proof.quotient_profile.padded_rows);
+        challenger.observe(proof.selected_commitment.clone());
+        let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
+        challenger.observe(proof.quotient_commitment.clone());
+        let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let restored = Self::decompress_terminal_fri_proof(&proof.proof)?;
+        <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
+            &pcs,
+            vec![
+                (
+                    proof.selected_commitment.clone(),
+                    vec![(selected_domain, vec![(zeta, opened_selected_flat.clone())])],
+                ),
+                (
+                    proof.quotient_commitment.clone(),
+                    vec![(quotient_domain, vec![(zeta, opened_quotient_flat.clone())])],
+                ),
+            ],
+            &restored,
+            &mut challenger,
+        )
+        .map_err(|err| {
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: format!(
+                    "terminal NPO recompose residual quotient FRI verification failed: {err:?}"
+                ),
+            }
+        })?;
+
+        let mut opened_selected_values = Vec::with_capacity(proof.selected_profile.field_columns);
+        let mut offset = 0usize;
+        for _ in 0..proof.selected_profile.field_columns {
+            let next_offset = offset + proof.selected_profile.field_basis_dimension;
+            opened_selected_values.push(opened_selected_flat[offset..next_offset].to_vec());
+            offset = next_offset;
+        }
+        let opened = TerminalNpoPolynomialFriOpenedColumns {
+            profile: proof.selected_profile.clone(),
+            zeta,
+            labels: selected_labels,
+            values: opened_selected_values,
+        };
+        let quotient =
+            <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
+                &opened_quotient_flat,
+            )
+            .ok_or(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof.quotient_profile.field_basis_dimension,
+                    got: opened_quotient_flat.len(),
+                },
+            )?;
+        let verifier_columns =
+            self.terminal_npo_polynomial_verifier_derived_columns_goldilocks(verifying_key)?;
+        self.verify_terminal_npo_recompose_residual_quotient_identity_goldilocks(
+            &verifier_columns,
+            selected_domain,
+            alpha,
+            quotient,
+            &opened,
+        )?;
+        Ok(opened)
+    }
+
+    fn verify_terminal_npo_recompose_residual_quotient_identity_goldilocks<F>(
+        &self,
+        verifier_columns: &TerminalNpoPolynomialColumns<F>,
+        selected_domain: <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::Domain,
+        alpha: TerminalFriChallenge,
+        quotient: TerminalFriChallenge,
+        opened: &TerminalNpoPolynomialFriOpenedColumns,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let row_selector_evals = Self::terminal_npo_polynomial_combined_selector_evals(
+            verifier_columns,
+            &opened.profile,
+            &["is_recompose", "is_recompose_coeff"],
+        )?;
+        let row_selector =
+            selected_domain.evaluate_polynomial_at(&row_selector_evals, opened.zeta);
+        let d = opened.profile.field_basis_dimension;
+        let mut folded = TerminalFriChallenge::ZERO;
+        let mut coeff = TerminalFriChallenge::ONE;
+        for limb in 0..d {
+            let input_label = format!("input_value_{limb}");
+            let input_basis = Self::terminal_npo_opened_value_basis(opened, &input_label)?;
+            for component in 0..d {
+                let residual_slot = limb * d + component;
+                let expected = if component == 0 {
+                    TerminalFriChallenge::ZERO
+                } else {
+                    input_basis.get(component).copied().ok_or(
+                        NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                            expected: d,
+                            got: input_basis.len(),
+                        },
+                    )?
+                };
+                self.fold_terminal_npo_recompose_residual_slot_opened_identity_goldilocks(
+                    verifier_columns,
+                    selected_domain,
+                    opened,
+                    row_selector,
+                    residual_slot,
+                    expected,
+                    alpha,
+                    &mut folded,
+                    &mut coeff,
+                )?;
+            }
+        }
+
+        let output_basis = Self::terminal_npo_opened_value_basis(opened, "output_value_0")?;
+        for component in 0..d {
+            let input_label = format!("input_value_{component}");
+            let input_basis = Self::terminal_npo_opened_value_basis(opened, &input_label)?;
+            let output_component = output_basis.get(component).copied().ok_or(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: d,
+                    got: output_basis.len(),
+                },
+            )?;
+            let input_base = input_basis.first().copied().ok_or(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: d,
+                    got: input_basis.len(),
+                },
+            )?;
+            let residual_slot = d * d + component;
+            self.fold_terminal_npo_recompose_residual_slot_opened_identity_goldilocks(
+                verifier_columns,
+                selected_domain,
+                opened,
+                row_selector,
+                residual_slot,
+                output_component - input_base,
+                alpha,
+                &mut folded,
+                &mut coeff,
+            )?;
+        }
+
+        let expected = quotient * selected_domain.vanishing_poly_at_point(opened.zeta);
+        if folded != expected {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: "npo_recompose_residual_relation_quotient".into(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn fold_terminal_npo_recompose_residual_slot_opened_identity_goldilocks<F>(
+        &self,
+        verifier_columns: &TerminalNpoPolynomialColumns<F>,
+        selected_domain: <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::Domain,
+        opened: &TerminalNpoPolynomialFriOpenedColumns,
+        row_selector: TerminalFriChallenge,
+        residual_slot: usize,
+        expected_base_component: TerminalFriChallenge,
+        alpha: TerminalFriChallenge,
+        folded: &mut TerminalFriChallenge,
+        coeff: &mut TerminalFriChallenge,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        if residual_slot >= opened.profile.field_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "npo_recompose_residual_opened_slot".into(),
+                    expected: residual_slot + 1,
+                    got: opened.profile.field_columns,
+                },
+            );
+        }
+        let present_label = format!("residual_present_{residual_slot}");
+        let present_evals = Self::terminal_npo_polynomial_column_basis_evals(
+            verifier_columns,
+            &opened.profile,
+            Self::terminal_npo_polynomial_column_index(verifier_columns, &present_label)?,
+            0,
+        );
+        let selector =
+            row_selector * selected_domain.evaluate_polynomial_at(&present_evals, opened.zeta);
+        let residual_label = format!("residual_value_{residual_slot}");
+        let residual_basis = Self::terminal_npo_opened_value_basis(opened, &residual_label)?;
+        for basis in 0..opened.profile.field_basis_dimension {
+            let value = residual_basis.get(basis).copied().ok_or(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: opened.profile.field_basis_dimension,
+                    got: residual_basis.len(),
+                },
+            )?;
+            let expected = if basis == 0 {
+                expected_base_component
+            } else {
+                TerminalFriChallenge::ZERO
+            };
+            *folded += *coeff * selector * (value - expected);
+            *coeff *= alpha;
         }
         Ok(())
     }
@@ -14818,6 +15697,26 @@ impl NativeTerminalCompiler {
         })
     }
 
+    fn terminal_npo_polynomial_residual_relation_quotient_profile(
+        layout: &TerminalNpoPolynomialColumnLayout,
+    ) -> Result<TerminalNpoPolynomialFriProfile, NativeTerminalVerifyError> {
+        if layout.rows == 0 {
+            return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
+        }
+        let padded_rows = 1usize << (layout.log_rows + 1);
+        Ok(TerminalNpoPolynomialFriProfile {
+            column_set: TerminalNpoPolynomialFriColumnSet::ResidualRelationQuotient,
+            rows: layout.rows,
+            padded_rows,
+            log_rows: layout.log_rows + 1,
+            field_basis_dimension:
+                <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION,
+            field_columns: 1,
+            basis_columns: <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION,
+            proximity: TerminalProximityProfile::production_60bit(),
+        })
+    }
+
     fn terminal_npo_polynomial_fri_profile_for_column_count<F>(
         layout: &TerminalNpoPolynomialColumnLayout,
         column_set: TerminalNpoPolynomialFriColumnSet,
@@ -15062,7 +15961,8 @@ impl NativeTerminalCompiler {
                         .then_some(index)
                 })
                 .collect::<Vec<_>>(),
-            TerminalNpoPolynomialFriColumnSet::PaddingQuotient => Vec::new(),
+            TerminalNpoPolynomialFriColumnSet::PaddingQuotient
+            | TerminalNpoPolynomialFriColumnSet::ResidualRelationQuotient => Vec::new(),
         };
         if indices.is_empty() {
             return Err(
@@ -18997,6 +19897,31 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, selected_profile);
         Self::observe_terminal_compact_composition_fri_profile(challenger, composition_profile);
+    }
+
+    fn seed_terminal_npo_recompose_residual_quotient_challenger(
+        challenger: &mut TerminalFriChallenger,
+        prelude: &TerminalProofPrelude,
+        selected_profile: &TerminalNpoPolynomialFriProfile,
+        quotient_profile: &TerminalNpoPolynomialFriProfile,
+    ) {
+        Self::observe_terminal_fri_str(
+            challenger,
+            "nock-terminal-npo-recompose-residual-quotient-v1",
+        );
+        for limb in prelude.challenge_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
+        for limb in prelude.public_values_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.security_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
+        Self::observe_terminal_npo_polynomial_fri_profile(challenger, selected_profile);
+        Self::observe_terminal_npo_polynomial_fri_profile(challenger, quotient_profile);
     }
 
     fn observe_terminal_npo_polynomial_fri_profile(
@@ -33145,6 +34070,127 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
                 if label == NativeTerminalCompiler::terminal_npo_polynomial_fri_compact_residual_zero_label()
+        ));
+
+        let prover_dependent_prelude_for_columns =
+            |candidate_columns: &TerminalNpoPolynomialColumns<GoldilocksD2>| {
+                let roots =
+                    NativeTerminalCompiler::terminal_npo_polynomial_fri_prelude_commitments_goldilocks(
+                        candidate_columns,
+                        TerminalNpoPolynomialFriColumnSet::ProverDependent,
+                    )?;
+                compiler.build_proof_prelude_goldilocks(
+                    &vk,
+                    &public_inputs,
+                    TerminalProofParameters::production_60bit(),
+                    roots,
+                )
+            };
+        let recompose_residual_quotient = compiler
+            .prove_terminal_npo_polynomial_recompose_residual_quotient_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &prover_dependent_prelude,
+            )
+            .expect("D2 recompose residual relation quotient proof must build");
+        assert_eq!(
+            recompose_residual_quotient.selected_profile.column_set,
+            TerminalNpoPolynomialFriColumnSet::ProverDependent
+        );
+        assert_eq!(
+            recompose_residual_quotient.quotient_profile.column_set,
+            TerminalNpoPolynomialFriColumnSet::ResidualRelationQuotient
+        );
+        let opened_recompose_residual = compiler
+            .verify_terminal_npo_polynomial_recompose_residual_quotient_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &prover_dependent_prelude,
+                &recompose_residual_quotient,
+            )
+            .expect("D2 recompose residual relation quotient proof must verify");
+        assert_eq!(opened_recompose_residual.labels, opened_fri_compact.labels);
+        let serialized_recompose_residual = postcard::to_allocvec(&recompose_residual_quotient)
+            .expect("recompose residual quotient proof must serialize");
+        let restored_recompose_residual_fri =
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&recompose_residual_quotient.proof)
+                .expect("recompose residual quotient compact FRI proof must decompress");
+        let compact_recompose_residual_fri_bytes =
+            postcard::to_allocvec(&recompose_residual_quotient.proof)
+                .expect("recompose residual quotient compact FRI proof must serialize");
+        let plain_recompose_residual_fri_bytes =
+            postcard::to_allocvec(&restored_recompose_residual_fri)
+                .expect("recompose residual quotient restored FRI proof must serialize");
+        println!(
+            "terminal NPO recompose residual quotient candidate: {} bytes ({:.1} KiB), raw_inner_fri={} bytes ({:.1} KiB), compact_inner_fri={} bytes ({:.1} KiB)",
+            serialized_recompose_residual.len(),
+            serialized_recompose_residual.len() as f64 / 1024.0,
+            plain_recompose_residual_fri_bytes.len(),
+            plain_recompose_residual_fri_bytes.len() as f64 / 1024.0,
+            compact_recompose_residual_fri_bytes.len(),
+            compact_recompose_residual_fri_bytes.len() as f64 / 1024.0,
+        );
+        assert!(
+            compact_recompose_residual_fri_bytes.len() < plain_recompose_residual_fri_bytes.len(),
+            "recompose residual quotient proof should store compact path material"
+        );
+        let (roundtrip_recompose_residual, trailing): (
+            TerminalNpoPolynomialRecomposeResidualQuotientProof,
+            &[u8],
+        ) = postcard::take_from_bytes(&serialized_recompose_residual)
+            .expect("recompose residual quotient proof must deserialize");
+        assert!(trailing.is_empty());
+        compiler
+            .verify_terminal_npo_polynomial_recompose_residual_quotient_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &prover_dependent_prelude,
+                &roundtrip_recompose_residual,
+            )
+            .expect("round-tripped recompose residual quotient proof must verify");
+        let err = compiler
+            .verify_terminal_npo_polynomial_recompose_residual_quotient_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &stale_fri_compact_prelude,
+                &recompose_residual_quotient,
+            )
+            .expect_err("recompose residual quotient verifier must reject stale roots");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch { .. }
+        ));
+
+        let mut bad_recompose_value_columns = columns.clone();
+        let input_column = bad_recompose_value_columns
+            .labels
+            .iter()
+            .position(|label| label == "input_value_0")
+            .expect("input value column must exist");
+        bad_recompose_value_columns.columns[input_column][0] += GoldilocksD2::ONE;
+        let bad_recompose_value_prelude =
+            prover_dependent_prelude_for_columns(&bad_recompose_value_columns)
+                .expect("bad recompose-value prover-dependent prelude must build");
+        let bad_recompose_value_proof =
+            NativeTerminalCompiler::prove_terminal_npo_polynomial_recompose_residual_quotient_from_columns_goldilocks(
+                &bad_recompose_value_prelude,
+                &bad_recompose_value_columns,
+                &verifier_columns,
+            )
+            .expect("FRI-valid but recompose-residual-invalid quotient proof must build");
+        let err = compiler
+            .verify_terminal_npo_polynomial_recompose_residual_quotient_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &bad_recompose_value_prelude,
+                &bad_recompose_value_proof,
+            )
+            .expect_err("recompose residual quotient must reject value/residual mismatch");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
+                if label == "npo_recompose_residual_relation_quotient"
         ));
 
         let (value_profile, value_matrix) =

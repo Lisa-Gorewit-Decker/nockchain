@@ -308,6 +308,25 @@ for this route.
   MMCS direction-bit booleanity, Tip5 chain-start zero lanes, Merkle
   capacity-zero lanes, and recompose value-column semantics; it is still a
   checkpoint, not yet the complete production NPO relation proof.
+- `TerminalNpoPolynomialRecomposeResidualQuotientProof`: a FRI-native
+  row-relation checkpoint tying committed recompose residual-value columns to
+  the committed prover-dependent NPO value columns and verifier-derived
+  residual-present selectors. The prover commits the 89 prover-dependent
+  witness/residual columns, derives a folding challenge from that root, commits
+  one residual-relation quotient column over the doubled disjoint domain, and
+  opens both at one transcript-derived point. The quotient checks, under the
+  verifier-derived `is_recompose + is_recompose_coeff` selector, that each
+  `RecomposeInput` residual slot equals the non-base input limb basis
+  component, that each `RecomposeOutput` residual slot equals
+  `output_basis_i - input_i_base`, and that residual-value extension tails are
+  zero. The prover-side quotient builder originally used naive pointwise
+  Lagrange evaluation on the quotient domain and measured `55.9 s`; it was
+  replaced with a Plonky3-style `coset_lde_batch` pass over the required
+  selector/value/residual basis columns, reducing the real-circuit prove time
+  to `1.852 s` without changing proof bytes. This checkpoint is intentionally
+  scoped to recompose residual equality; Tip5 permutation algebra and
+  predecessor-chain residuals still need their own quotient or lookup-backed
+  relation.
 - `TerminalNpoPolynomialColumnOracleSet`: the commit-ready 5-round Tip5 oracle
   set for those fixed columns. Each column uses a verifier-derived
   `npo_polynomial_column/<column-label>` oracle label and the shared row count.
@@ -1193,6 +1212,7 @@ Tip5-L0 verifier circuit produced:
 | Merkle residual-zero candidate, opt-in real Tip5-L0 measurement | 734,249 | - | - | 56.449 s | 4.627 s |
 | selected-column compact residual-zero FRI candidate, opt-in real Tip5-L0 measurement | 376,642 | - | 48,495 | 26.304 s | 2.273 s |
 | FRI-native compact residual-zero candidate, opt-in real Tip5-L0 measurement | 61,683 | - | 60,372 | 1.567 s | 0.496 s |
+| recompose residual-relation quotient candidate, opt-in real Tip5-L0 measurement | 81,266 | - | 79,916 | 1.852 s | 0.601 s |
 
 The full-table FRI candidate is too large to combine with the primitive
 row-product proof. The witness-value column split is a real table optimization
@@ -1212,14 +1232,19 @@ compact residual-zero checkpoint removes that layer entirely and measures
 `60.2 KiB`, dominated by its `60,372` byte compact FRI payload with only
 `1,174` bytes of selected zeta openings. This is the right residual-zero size
 floor, but it is not production-sound by itself: the final backend still needs
-the row-relation quotient tying residual columns to the committed witness-value
-columns and verifier-derived fixed columns. The next viable direction is a
-shared/batched terminal proximity backend that commits the NPO row columns
-through one low-degree object and amortizes FRI proof material across primitive
-and NPO relations, or an NPO relation check that consumes the selected/value
-FRI openings without adding a second Merkle-heavy proof. The FRI verifier now
-exposes exactly that checked value-column opening handoff. The padding quotient
-checkpoint now
+row-relation quotients tying residual columns to the committed witness-value
+columns and verifier-derived fixed columns. The recompose residual-relation
+quotient proves that tie for Goldilocks recompose rows and is now fast enough
+after replacing naive quotient-domain evaluation with batched LDEs, but as a
+separate FRI proof it is too expensive to stack with the residual-zero proof:
+`60.2 KiB + 79.4 KiB` duplicates selected-column commitment/opening material
+before Tip5 permutation and chain constraints are added. The next viable
+direction is a shared/batched terminal proximity backend that commits the NPO
+row columns through one low-degree object and amortizes FRI proof material
+across primitive and NPO relations, or an NPO relation check that consumes the
+selected/value FRI openings without adding a second standalone proof. The FRI
+verifier now exposes exactly that checked value-column opening handoff. The
+padding quotient checkpoint now
 checks mixed present-bit value padding and MMCS direction-bit booleanity with a
 quotient/vanishing identity over the same opened value columns, and it now
 checks Tip5 chain-start zero lanes, Merkle capacity-zero lanes, and recompose
@@ -1386,7 +1411,7 @@ Completion audit against the active terminal-compression requirements:
 | Public values, parameters, relation, proximity schedule, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile and column layout, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
 | Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against the same prelude-bound assignment oracle used by primitive R1CS. | satisfied for supported NPO row validity |
-| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 71.6 KiB proof, a random linear-combination MLE checkpoint, a sampled selected-column residual-zero checkpoint, and a FRI-native residual-zero checkpoint now exist, including Tip5/MMCS/recompose tamper tests, FRI tampered-claim rejection, stale-profile/column-set rejection, table-row IO hiding rejection, stale lookup-IO bridge rejection, Merkle-consistent wrong-combination rejection, and FRI-valid nonzero residual-column rejection. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over the NPO row constraints. | not complete |
+| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 71.6 KiB proof, a random linear-combination MLE checkpoint, a sampled selected-column residual-zero checkpoint, a FRI-native residual-zero checkpoint, and a FRI-native recompose residual-relation quotient now exist, including Tip5/MMCS/recompose tamper tests, FRI tampered-claim rejection, stale-profile/column-set rejection, table-row IO hiding rejection, stale lookup-IO bridge rejection, Merkle-consistent wrong-combination rejection, FRI-valid nonzero residual-column rejection, and FRI-valid recompose value/residual mismatch rejection. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over the NPO row constraints; Tip5 permutation/chain residuals and final proof batching remain open. | not complete |
 | Full terminal proof has a source-backed soundness calculation | Current doc records 60 pure-query Johnson accounting for the terminal profile and tests verifier binding, but it does not yet derive a complete theorem for the row-product plus NPO-column plus PCS/proximity backend. | incomplete |
 | Zero-knowledge or witness hiding for recursive-verifier witness values | Current production opens 1,377 full-width verifier-circuit witness values plus packed MMCS direction bits for exhaustive NPO checking. That is smaller than full witness serialization, but it is not a zero-knowledge terminal backend. | incomplete if ZK is required |
 
