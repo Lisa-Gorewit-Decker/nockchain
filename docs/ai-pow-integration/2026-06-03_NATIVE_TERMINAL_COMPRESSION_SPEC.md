@@ -347,6 +347,19 @@ for this route.
   internal split/lookup/power/MDS witness columns; it is a size-floor checkpoint
   for designs that would combine boundary openings with a smaller quotient or
   batched AIR relation proof.
+- `TerminalNpoTip5LookupIoZeroQuotientProof`: a quotient-backed support
+  constraint for the terminal-IO lookup projection. The prover commits the
+  26-column IO projection, samples a folding challenge, commits one
+  extension-valued quotient over a disjoint doubled domain, and opens both at
+  one transcript point. Verification checks
+  `V_perm_window(zeta) * sum alpha^i * io_i(zeta) =
+  quotient(zeta) * Z_H(zeta)`, where `V_perm_window` vanishes exactly on the
+  verifier-derived terminal Tip5 permutation rows. This forces the IO
+  projection to be zero on the lookup-table and padding rows. Tests round-trip
+  the proof and reject a malicious trace that inserts a nonzero IO value into a
+  lookup-table row. This still does not prove the internal Tip5 lookup-AIR
+  transition relation, but it removes an otherwise unconstrained hiding surface
+  from the 26-column projection.
 - `TerminalNpoPolynomialColumnQueryPlan`: the verifier-derived row schedule for
   future NPO-column openings. It validates that every fixed column commitment
   has the verifier-derived label, shared row count, and a root already bound in
@@ -924,6 +937,7 @@ Tip5-L0 verifier circuit produced:
 | witness-value-column NPO FRI opening proof, 43 field columns / 86 basis columns | 81,538 | 1.046 s | 0.469 s |
 | optimized Tip5 lookup main-trace FRI opening proof, 558 Goldilocks columns | 139,846 | 1.525 s | 0.057 s |
 | optimized Tip5 lookup terminal-IO FRI projection, 26 Goldilocks columns | 66,063 | 0.413 s | 0.036 s |
+| optimized Tip5 lookup terminal-IO zero-support quotient, 26 columns + 1 quotient | 85,766 | 1.756 s | 0.045 s |
 | Merkle residual-zero candidate, opt-in measurement | 691,173 | 53.486 s | 4.955 s |
 
 The full-table FRI candidate is too large to combine with the primitive
@@ -949,6 +963,9 @@ committed and opened with the production 60-bit FRI tuple, but its standalone
 The terminal-IO projection reaches 64.5 KiB and shows the boundary-opening
 floor is compatible with the 100 KiB target, but it is intentionally not
 sound by itself because the internal lookup-AIR relation columns are omitted.
+Adding the zero-support quotient keeps that projection under target at 83.8 KiB
+and removes table/padding-row hiding capacity with about 1.8 s debug-profile
+prove time after folding the 26 IO columns before quotient evaluation.
 Tip5 permutation, prior-output chain transitions, and residual-zero constraints
 over those openings are still pending.
 
@@ -1016,7 +1033,7 @@ Completion audit against the active terminal-compression requirements:
 | Public values, parameters, relation, proximity schedule, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile and column layout, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
 | Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against a prelude-bound witness oracle. | satisfied for supported NPO row validity |
-| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace, and a 26-column terminal-IO lookup projection, a random linear-combination MLE checkpoint, and a residual-column zero-check checkpoint now exist, including Tip5/MMCS/recompose tamper tests, FRI tampered-claim rejection, stale-profile/column-set rejection, and Merkle-consistent wrong-combination rejection. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over the NPO row constraints. | not complete |
+| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace, a 26-column terminal-IO lookup projection, and a terminal-IO zero-support quotient, a random linear-combination MLE checkpoint, and a residual-column zero-check checkpoint now exist, including Tip5/MMCS/recompose tamper tests, FRI tampered-claim rejection, stale-profile/column-set rejection, table-row IO hiding rejection, and Merkle-consistent wrong-combination rejection. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over the NPO row constraints. | not complete |
 | Full terminal proof has a source-backed soundness calculation | Current doc records 60 pure-query Johnson accounting for the terminal profile and tests verifier binding, but it does not yet derive a complete theorem for the row-product plus NPO-column plus PCS/proximity backend. | incomplete |
 | Zero-knowledge or witness hiding for recursive-verifier witness values | Current production opens 1,377 full-width verifier-circuit witness values plus packed MMCS direction bits for exhaustive NPO checking. That is smaller than full witness serialization, but it is not a zero-knowledge terminal backend. | incomplete if ZK is required |
 
