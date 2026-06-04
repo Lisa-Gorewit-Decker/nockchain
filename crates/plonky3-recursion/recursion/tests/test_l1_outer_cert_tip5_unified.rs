@@ -429,14 +429,14 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
     let production_npo_witness_sparse_basis_coefficients = production_proof
         .npo_exhaustive_proof
         .as_ref()
-        .map(|proof| proof.witness_multi_opening.value_basis_flat.len())
+        .map(|proof| proof.assignment_witness_multi_opening.value_basis_flat.len())
         .unwrap_or(0);
     let production_npo_witness_multi_opening_size = production_proof
         .npo_exhaustive_proof
         .as_ref()
         .map(|proof| {
-            postcard::to_allocvec(&proof.witness_multi_opening)
-                .expect("terminal production NPO witness multiproof must serialize")
+            postcard::to_allocvec(&proof.assignment_witness_multi_opening)
+                .expect("terminal production NPO assignment-witness multiproof must serialize")
                 .len()
         })
         .unwrap_or(0);
@@ -750,7 +750,7 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
             .npo_exhaustive_proof
             .as_mut()
             .expect("real production proof must carry exhaustive NPO proof")
-            .witness_multi_opening
+            .assignment_witness_multi_opening
             .value_basis_flat
             .pop();
         let err = compiler
@@ -783,7 +783,7 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         production_r1cs_size, production_npo_exhaustive_size,
     );
     eprintln!(
-        "terminal production NPO breakdown: witness_multiproof={} witness_sparse_basis_coefficients={} hidden_inputs={}",
+        "terminal production NPO breakdown: assignment_witness_multiproof={} assignment_witness_sparse_basis_coefficients={} hidden_inputs={}",
         production_npo_witness_multi_opening_size,
         production_npo_witness_sparse_basis_coefficients,
         production_npo_hidden_inputs_size,

@@ -527,7 +527,10 @@ pub struct TerminalNpoExhaustiveProof {
     /// have no Tip5 hidden inputs, and selected zero-valued Tip5 lanes are
     /// serialized as canonical zero values rather than represented by a mask.
     pub tip5_hidden_input_values_le: Vec<[u8; 8]>,
-    pub witness_multi_opening: TerminalOracleKnownIndexMultiProof,
+    /// Assignment-oracle openings for the same NPO witness IDs, shifted by the
+    /// `[1 || public]` prefix. These bind the primitive R1CS assignment vector
+    /// to the NPO row checks.
+    pub assignment_witness_multi_opening: TerminalOracleKnownIndexMultiProof,
 }
 
 /// Opened row material for one sampled combined-validity row.
@@ -764,7 +767,6 @@ struct TerminalLocalProof {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalProductionProof {
     pub prelude: TerminalProofPrelude,
-    pub witness_commitment: TerminalOracleCommitment,
     pub assignment_commitment: TerminalOracleCommitment,
     pub primitive_r1cs_proof: TerminalR1csRowProductSumcheckProof,
     pub npo_exhaustive_proof: Option<TerminalNpoExhaustiveProof>,
@@ -2030,6 +2032,11 @@ pub enum NativeTerminalVerifyError {
         opening: usize,
         expected: u32,
         got: usize,
+    },
+    TerminalNpoAssignmentWitnessMismatch {
+        query: usize,
+        witness_index: usize,
+        assignment_index: usize,
     },
     TerminalNpoTip5InputValueLength {
         npo_index: usize,
@@ -9257,15 +9264,19 @@ impl NativeTerminalCompiler {
         verifying_key: &NativeTerminalVerifyingKey<F>,
         public_inputs: &[F],
         prelude: &TerminalProofPrelude,
-        witness_oracle: &TerminalOracleMerkleTree,
+        assignment_oracle: &TerminalOracleMerkleTree,
         witness: &TerminalWitness<F>,
     ) -> Result<TerminalNpoExhaustiveProof, NativeTerminalVerifyError>
     where
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
-        let witness_commitment = witness_oracle.commitment();
-        Self::verify_prelude_binds_commitment(prelude, &witness_commitment)?;
+        let assignment_commitment = assignment_oracle.commitment();
+        Self::verify_terminal_assignment_commitment_identity(
+            verifying_key,
+            &assignment_commitment,
+        )?;
+        Self::verify_prelude_binds_commitment(prelude, &assignment_commitment)?;
 
         let npo_rows = Self::terminal_npo_domain_len(verifying_key);
         let mut tip5_hidden_input_values_le = Vec::new();
@@ -9345,14 +9356,23 @@ impl NativeTerminalCompiler {
             .iter()
             .map(|witness_id| witness_id.0 as usize)
             .collect::<Vec<_>>();
-        let witness_multi_opening = witness_oracle
+        let assignment_prefix_len = 1 + verifying_key.header.fingerprint.public_flat_len;
+        let assignment_witness_values = witness_values
+            .iter()
+            .map(|(index, value)| (assignment_prefix_len + *index, *value))
+            .collect::<Vec<_>>();
+        let assignment_boolean_indices = boolean_witness_indices
+            .iter()
+            .map(|index| assignment_prefix_len + *index)
+            .collect::<Vec<_>>();
+        let assignment_witness_multi_opening = assignment_oracle
             .open_goldilocks_known_index_multi_values_with_boolean_indices(
-                &witness_values,
-                &boolean_witness_indices,
+                &assignment_witness_values,
+                &assignment_boolean_indices,
             )?;
         Ok(TerminalNpoExhaustiveProof {
             tip5_hidden_input_values_le,
-            witness_multi_opening,
+            assignment_witness_multi_opening,
         })
     }
 
@@ -9361,15 +9381,15 @@ impl NativeTerminalCompiler {
         verifying_key: &NativeTerminalVerifyingKey<F>,
         public_inputs: &[F],
         prelude: &TerminalProofPrelude,
-        witness_commitment: &TerminalOracleCommitment,
+        assignment_commitment: &TerminalOracleCommitment,
         proof: &TerminalNpoExhaustiveProof,
     ) -> Result<(), NativeTerminalVerifyError>
     where
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
-        Self::verify_terminal_witness_commitment_identity(verifying_key, witness_commitment)?;
-        Self::verify_prelude_binds_commitment(prelude, witness_commitment)?;
+        Self::verify_terminal_assignment_commitment_identity(verifying_key, assignment_commitment)?;
+        Self::verify_prelude_binds_commitment(prelude, assignment_commitment)?;
 
         let npo_rows = Self::terminal_npo_domain_len(verifying_key);
         let mut expected_global_witness_ids = Vec::new();
@@ -9411,13 +9431,41 @@ impl NativeTerminalCompiler {
             .iter()
             .map(|witness_id| witness_id.0 as usize)
             .collect::<Vec<_>>();
-        let witness_values = self
+        let assignment_prefix_len = 1 + verifying_key.header.fingerprint.public_flat_len;
+        let expected_assignment_indices = expected_global_witness_indices
+            .iter()
+            .map(|index| assignment_prefix_len + *index)
+            .collect::<Vec<_>>();
+        let expected_assignment_boolean_indices = expected_global_boolean_witness_indices
+            .iter()
+            .map(|index| assignment_prefix_len + *index)
+            .collect::<Vec<_>>();
+        let assignment_witness_values = self
             .verify_terminal_oracle_known_index_multi_proof_goldilocks_with_boolean_indices::<F>(
-                witness_commitment,
-                &expected_global_witness_indices,
-                &expected_global_boolean_witness_indices,
-                &proof.witness_multi_opening,
+                assignment_commitment,
+                &expected_assignment_indices,
+                &expected_assignment_boolean_indices,
+                &proof.assignment_witness_multi_opening,
             )?;
+        let witness_values = expected_global_witness_indices
+            .iter()
+            .copied()
+            .zip(assignment_witness_values.into_iter())
+            .enumerate()
+            .map(|(query, (witness_index, (assignment_index, value)))| {
+                let expected_assignment_index = assignment_prefix_len + witness_index;
+                if assignment_index != expected_assignment_index {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalNpoAssignmentWitnessMismatch {
+                            query,
+                            witness_index,
+                            assignment_index,
+                        },
+                    );
+                }
+                Ok((witness_index, value))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         let mut hidden_value_offset = 0usize;
         let mut previous_normal_tip5_output = None;
@@ -10401,17 +10449,11 @@ impl NativeTerminalCompiler {
         )?;
         self.verify_assignment_with_goldilocks_npos(verifying_key, witness)?;
 
-        let witness_values = Self::terminal_witness_values(witness)?;
-        let witness_oracle = TerminalOracleMerkleTree::commit_goldilocks_values(
-            Self::witness_oracle_label(),
-            &witness_values,
-        )?;
-        let witness_commitment = witness_oracle.commitment();
         let assignment_oracle =
             self.commit_terminal_assignment_goldilocks(verifying_key, public_inputs, witness)?;
         let assignment_commitment = assignment_oracle.commitment();
 
-        let prelude_commitments = vec![witness_commitment.root, assignment_commitment.root];
+        let prelude_commitments = vec![assignment_commitment.root];
         let prelude = self.build_proof_prelude_goldilocks(
             verifying_key,
             public_inputs,
@@ -10430,7 +10472,7 @@ impl NativeTerminalCompiler {
                 verifying_key,
                 public_inputs,
                 &prelude,
-                &witness_oracle,
+                &assignment_oracle,
                 witness,
             )?)
         } else {
@@ -10439,7 +10481,6 @@ impl NativeTerminalCompiler {
 
         Ok(TerminalProductionProof {
             prelude,
-            witness_commitment,
             assignment_commitment,
             primitive_r1cs_proof,
             npo_exhaustive_proof,
@@ -11256,18 +11297,12 @@ impl NativeTerminalCompiler {
         Self::validate_terminal_production_parameters(proof.prelude.parameters)?;
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, &proof.prelude)?;
         self.validate_goldilocks_production_query_domains(verifying_key, proof.prelude.parameters)?;
-        Self::verify_terminal_witness_commitment_identity(
-            verifying_key,
-            &proof.witness_commitment,
-        )?;
-        Self::verify_prelude_binds_commitment(&proof.prelude, &proof.witness_commitment)?;
         Self::verify_terminal_assignment_commitment_identity(
             verifying_key,
             &proof.assignment_commitment,
         )?;
         Self::verify_production_prelude_commitments(
             &proof.prelude,
-            &proof.witness_commitment,
             &proof.assignment_commitment,
         )?;
         Self::verify_prelude_binds_commitment(&proof.prelude, &proof.assignment_commitment)?;
@@ -11300,7 +11335,7 @@ impl NativeTerminalCompiler {
                     verifying_key,
                     public_inputs,
                     &proof.prelude,
-                    &proof.witness_commitment,
+                    &proof.assignment_commitment,
                     npo_proof,
                 )?;
             }
@@ -19723,10 +19758,9 @@ impl NativeTerminalCompiler {
 
     fn verify_production_prelude_commitments(
         prelude: &TerminalProofPrelude,
-        witness_commitment: &TerminalOracleCommitment,
         assignment_commitment: &TerminalOracleCommitment,
     ) -> Result<(), NativeTerminalVerifyError> {
-        let expected = [witness_commitment.root, assignment_commitment.root];
+        let expected = [assignment_commitment.root];
         if prelude.commitments.len() != expected.len() {
             return Err(
                 NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
@@ -27979,31 +28013,31 @@ mod tests {
         assert_eq!(
             err,
             NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
-                expected: 2,
-                got: 3,
+                expected: 1,
+                got: 2,
             }
         );
 
-        let mut reordered_commitments = proof.clone();
-        reordered_commitments.prelude.commitments.swap(0, 1);
-        reordered_commitments.prelude.challenge_digest =
+        let mut wrong_commitment = proof.clone();
+        wrong_commitment.prelude.commitments[0] = TerminalCommitmentDigest([5, 4, 3, 2, 1]);
+        wrong_commitment.prelude.challenge_digest =
             NativeTerminalCompiler::transcript_challenge_digest(
                 &vk.header,
-                reordered_commitments.prelude.parameters,
-                &reordered_commitments.prelude.relation_profile,
-                reordered_commitments.prelude.public_values_digest,
-                &reordered_commitments.prelude.commitments,
-                reordered_commitments.prelude.query_pow_nonce,
+                wrong_commitment.prelude.parameters,
+                &wrong_commitment.prelude.relation_profile,
+                wrong_commitment.prelude.public_values_digest,
+                &wrong_commitment.prelude.commitments,
+                wrong_commitment.prelude.query_pow_nonce,
             );
         let err = compiler
-            .verify_terminal_production_goldilocks(&vk, &public_inputs, &reordered_commitments)
+            .verify_terminal_production_goldilocks(&vk, &public_inputs, &wrong_commitment)
             .unwrap_err();
         assert_eq!(
             err,
             NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch {
                 index: 0,
-                expected: proof.witness_commitment.root,
-                got: proof.assignment_commitment.root,
+                expected: proof.assignment_commitment.root,
+                got: TerminalCommitmentDigest([5, 4, 3, 2, 1]),
             }
         );
     }
@@ -28082,7 +28116,7 @@ mod tests {
             .npo_exhaustive_proof
             .as_mut()
             .expect("fixture must include exhaustive NPO proof")
-            .witness_multi_opening
+            .assignment_witness_multi_opening
             .value_basis_flat
             .pop();
         let err = compiler
@@ -28163,7 +28197,7 @@ mod tests {
             .npo_exhaustive_proof
             .as_mut()
             .expect("fixture must include exhaustive NPO proof")
-            .witness_multi_opening
+            .assignment_witness_multi_opening
             .value_basis_flat[0];
         *value = if *value == 0 { 1 } else { 0 };
         let err = compiler
