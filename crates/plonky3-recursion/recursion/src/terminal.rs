@@ -546,6 +546,28 @@ pub struct TerminalNpoExhaustiveResidualFoldProof {
     pub openings: Vec<TerminalResidualFoldQueryOpening>,
 }
 
+/// Opened row segment and residual metadata for one sampled folded exhaustive
+/// NPO residual component.
+///
+/// Tip5 chain-input components may depend on earlier same-mode Tip5 output, so
+/// the opening carries the deterministic segment from the last same-mode
+/// `new_start` row through the sampled row. Recompose rows carry a one-row
+/// segment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalNpoExhaustiveResidualConsistencyOpening {
+    pub residual_index: usize,
+    pub component: TerminalNpoResidualComponentRef,
+    pub segment_openings: Vec<TerminalNpoLocalOpening>,
+}
+
+/// Sampled consistency proof tying the production-equivalent exhaustive NPO
+/// residual oracle to the witness oracle.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalNpoExhaustiveResidualConsistencyProof {
+    pub openings: Vec<TerminalNpoExhaustiveResidualConsistencyOpening>,
+    pub witness_multi_opening: TerminalOracleMultiProof,
+}
+
 /// Envelope for all implemented terminal local-proof components.
 ///
 /// This is a backend integration checkpoint, not the final compact terminal
@@ -786,7 +808,7 @@ pub enum TerminalNpoRowKind {
     RecomposeWithCoeffLookups,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TerminalNpoResidualKind {
     Tip5Input,
     Tip5Output,
@@ -907,7 +929,7 @@ pub struct TerminalNpoPolynomialProfile {
 
 /// One flattened component in the production-equivalent supported-NPO residual
 /// domain.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalNpoResidualComponentRef {
     pub npo_index: usize,
     pub component_offset: usize,
@@ -5234,6 +5256,82 @@ impl NativeTerminalCompiler {
         })
     }
 
+    pub fn prove_terminal_npo_exhaustive_residual_consistency_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        witness_oracle: &TerminalOracleMerkleTree,
+        residual_oracle: &TerminalOracleMerkleTree,
+        residual_fold_proof: &TerminalNpoExhaustiveResidualFoldProof,
+        witness: &TerminalWitness<F>,
+    ) -> Result<TerminalNpoExhaustiveResidualConsistencyProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let witness_commitment = witness_oracle.commitment();
+        let residual_commitment = residual_oracle.commitment();
+        Self::verify_prelude_binds_commitment(prelude, &witness_commitment)?;
+        Self::verify_prelude_binds_commitment(prelude, &residual_commitment)?;
+        let plan = self.derive_terminal_npo_exhaustive_residual_fold_query_plan(
+            prelude,
+            &residual_commitment,
+            &residual_fold_proof.fold_commitments,
+        )?;
+
+        let mut openings = Vec::with_capacity(plan.indices.len());
+        let mut witness_ids = Vec::new();
+        for residual_index in &plan.indices {
+            let component = Self::terminal_npo_exhaustive_residual_component_row::<F>(
+                verifying_key,
+                *residual_index,
+            )
+            .ok_or(
+                NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
+                    query: 0,
+                    expected: *residual_index,
+                    got: *residual_index,
+                },
+            )?;
+            let segment_indices = Self::terminal_npo_exhaustive_residual_segment_indices(
+                verifying_key,
+                component.npo_index,
+            )?;
+            let mut segment_openings = Vec::with_capacity(segment_indices.len());
+            for npo_index in segment_indices {
+                let (npo_opening, row_witness_ids) =
+                    self.terminal_npo_local_opening_goldilocks(verifying_key, witness, npo_index)?;
+                for witness_id in row_witness_ids {
+                    Self::push_unique_witness(&mut witness_ids, witness_id);
+                }
+                segment_openings.push(npo_opening);
+            }
+            openings.push(TerminalNpoExhaustiveResidualConsistencyOpening {
+                residual_index: *residual_index,
+                component,
+                segment_openings,
+            });
+        }
+
+        witness_ids.sort_by_key(|witness_id| witness_id.0);
+        let mut witness_values = Vec::with_capacity(witness_ids.len());
+        for witness_id in &witness_ids {
+            let value = witness.traces.witness_trace.get_value(*witness_id).ok_or(
+                NativeTerminalVerifyError::MissingWitness {
+                    witness_id: witness_id.0,
+                },
+            )?;
+            witness_values.push((witness_id.0 as usize, value));
+        }
+        let witness_multi_opening = witness_oracle.open_goldilocks_multi_values(&witness_values)?;
+
+        Ok(TerminalNpoExhaustiveResidualConsistencyProof {
+            openings,
+            witness_multi_opening,
+        })
+    }
+
     pub fn prove_terminal_npo_exhaustive_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -5722,6 +5820,202 @@ impl NativeTerminalCompiler {
                         });
                     }
                 }
+            }
+        }
+
+        Ok(plan)
+    }
+
+    pub fn verify_terminal_npo_exhaustive_residual_consistency_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        witness_commitment: &TerminalOracleCommitment,
+        residual_commitment: &TerminalOracleCommitment,
+        residual_fold_proof: &TerminalNpoExhaustiveResidualFoldProof,
+        proof: &TerminalNpoExhaustiveResidualConsistencyProof,
+    ) -> Result<TerminalQueryPlan, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        Self::verify_terminal_witness_commitment_identity(verifying_key, witness_commitment)?;
+        Self::verify_terminal_npo_exhaustive_residual_commitment_identity::<F>(
+            verifying_key,
+            residual_commitment,
+        )?;
+        let plan = self.verify_terminal_npo_exhaustive_residual_fold_goldilocks::<F>(
+            verifying_key,
+            public_inputs,
+            prelude,
+            residual_commitment,
+            residual_fold_proof,
+        )?;
+        Self::verify_prelude_binds_commitment(prelude, witness_commitment)?;
+        Self::verify_prelude_binds_commitment(prelude, residual_commitment)?;
+        if proof.openings.len() != plan.indices.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoValidityQueryLengthMismatch {
+                    expected: plan.indices.len(),
+                    got: proof.openings.len(),
+                },
+            );
+        }
+
+        let witness_values = self.verify_terminal_oracle_multi_proof_goldilocks::<F>(
+            witness_commitment,
+            &proof.witness_multi_opening,
+        )?;
+        let mut expected_global_witness_ids = Vec::new();
+        for residual_index in &plan.indices {
+            let component = Self::terminal_npo_exhaustive_residual_component_row::<F>(
+                verifying_key,
+                *residual_index,
+            )
+            .ok_or(
+                NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
+                    query: 0,
+                    expected: *residual_index,
+                    got: *residual_index,
+                },
+            )?;
+            for npo_index in Self::terminal_npo_exhaustive_residual_segment_indices(
+                verifying_key,
+                component.npo_index,
+            )? {
+                let row_ref = Self::terminal_npo_row(verifying_key, npo_index).ok_or(
+                    NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                        query: 0,
+                        expected: npo_index,
+                        got: npo_index,
+                    },
+                )?;
+                match row_ref {
+                    NativeTerminalNpoRowRef::Tip5 { callsite, .. }
+                    | NativeTerminalNpoRowRef::Recompose { callsite, .. } => {
+                        for witness_id in Self::npo_callsite_witness_ids(callsite) {
+                            Self::push_unique_witness(&mut expected_global_witness_ids, witness_id);
+                        }
+                    }
+                }
+            }
+        }
+        expected_global_witness_ids.sort_by_key(|witness_id| witness_id.0);
+        if witness_values.len() != expected_global_witness_ids.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleQueryLengthMismatch {
+                    expected: expected_global_witness_ids.len(),
+                    got: witness_values.len(),
+                },
+            );
+        }
+        for (query, (expected_witness, (got_index, _))) in expected_global_witness_ids
+            .iter()
+            .zip(&witness_values)
+            .enumerate()
+        {
+            if *got_index != expected_witness.0 as usize {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleQueryIndexMismatch {
+                        query,
+                        expected: expected_witness.0 as usize,
+                        got: *got_index,
+                    },
+                );
+            }
+        }
+
+        for (query, (opening, expected_index)) in
+            proof.openings.iter().zip(&plan.indices).enumerate()
+        {
+            if opening.residual_index != *expected_index {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
+                        query,
+                        expected: *expected_index,
+                        got: opening.residual_index,
+                    },
+                );
+            }
+            let expected_component = Self::terminal_npo_exhaustive_residual_component_row::<F>(
+                verifying_key,
+                *expected_index,
+            )
+            .ok_or(
+                NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
+                    query,
+                    expected: *expected_index,
+                    got: *expected_index,
+                },
+            )?;
+            if opening.component != expected_component {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
+                        query,
+                        expected: expected_component.component_offset,
+                        got: opening.component.component_offset,
+                    },
+                );
+            }
+            let expected_segment = Self::terminal_npo_exhaustive_residual_segment_indices(
+                verifying_key,
+                expected_component.npo_index,
+            )?;
+            if opening.segment_openings.len() != expected_segment.len() {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoValidityQueryLengthMismatch {
+                        expected: expected_segment.len(),
+                        got: opening.segment_openings.len(),
+                    },
+                );
+            }
+            for (segment_query, (segment_opening, expected_npo_index)) in opening
+                .segment_openings
+                .iter()
+                .zip(&expected_segment)
+                .enumerate()
+            {
+                if segment_opening.npo_index != *expected_npo_index {
+                    return Err(NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                        query: segment_query,
+                        expected: *expected_npo_index,
+                        got: segment_opening.npo_index,
+                    });
+                }
+            }
+
+            let residual_basis = Self::terminal_npo_exhaustive_residual_fold_base_value_basis(
+                residual_fold_proof,
+                *expected_index,
+            )
+            .ok_or(
+                NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
+                    query,
+                    round: 0,
+                },
+            )?;
+            let opened_residual = Self::field_from_goldilocks_basis_u64::<F>(residual_basis)?;
+            let recomputed_residual = self
+                .terminal_npo_exhaustive_residual_component_value_from_openings::<F>(
+                    verifying_key,
+                    &expected_component,
+                    &opening.segment_openings,
+                    &witness_values,
+                )?;
+            if opened_residual != recomputed_residual {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoValidityResidualMismatch {
+                        query,
+                        npo_index: expected_component.npo_index,
+                    },
+                );
+            }
+            if opened_residual != F::ZERO {
+                return Err(NativeTerminalVerifyError::TerminalNpoValidityNonZero {
+                    query,
+                    npo_index: expected_component.npo_index,
+                });
             }
         }
 
@@ -8305,6 +8599,66 @@ impl NativeTerminalCompiler {
         )
     }
 
+    fn terminal_npo_exhaustive_residual_segment_indices<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        npo_index: usize,
+    ) -> Result<Vec<usize>, NativeTerminalVerifyError> {
+        let target_row = Self::terminal_npo_row(verifying_key, npo_index).ok_or(
+            NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                query: 0,
+                expected: npo_index,
+                got: npo_index,
+            },
+        )?;
+        let target_mode = match target_row {
+            NativeTerminalNpoRowRef::Recompose { .. } => return Ok(vec![npo_index]),
+            NativeTerminalNpoRowRef::Tip5 { row, callsite, .. } => callsite.tip5_mode.ok_or(
+                NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                    op_type: Self::tip5_op_type().as_str().into(),
+                    row,
+                    field: "tip5_mode",
+                    limb: 0,
+                    expected: Some(1),
+                    got: None,
+                },
+            )?,
+        };
+
+        let mut segment = Vec::new();
+        for candidate in 0..=npo_index {
+            let Some(NativeTerminalNpoRowRef::Tip5 { row, callsite, .. }) =
+                Self::terminal_npo_row(verifying_key, candidate)
+            else {
+                continue;
+            };
+            let mode = callsite.tip5_mode.ok_or(
+                NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                    op_type: Self::tip5_op_type().as_str().into(),
+                    row,
+                    field: "tip5_mode",
+                    limb: 0,
+                    expected: Some(1),
+                    got: None,
+                },
+            )?;
+            if mode.merkle_path != target_mode.merkle_path {
+                continue;
+            }
+            if mode.new_start {
+                segment.clear();
+            }
+            segment.push(candidate);
+        }
+        if segment.last().copied() != Some(npo_index) {
+            return Err(NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                query: 0,
+                expected: npo_index,
+                got: segment.last().copied().unwrap_or(npo_index),
+            });
+        }
+        Ok(segment)
+    }
+
     fn terminal_npo_exhaustive_residual_component_row_for_basis_dimension<F>(
         verifying_key: &NativeTerminalVerifyingKey<F>,
         residual_index: usize,
@@ -9504,6 +9858,140 @@ impl NativeTerminalCompiler {
         }
     }
 
+    fn terminal_npo_exhaustive_residual_component_value_from_openings<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        component: &TerminalNpoResidualComponentRef,
+        segment_openings: &[TerminalNpoLocalOpening],
+        indexed_witness_values: &[(usize, F)],
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let target_row = Self::terminal_npo_row(verifying_key, component.npo_index).ok_or(
+            NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                query: 0,
+                expected: component.npo_index,
+                got: component.npo_index,
+            },
+        )?;
+        match target_row {
+            NativeTerminalNpoRowRef::Recompose {
+                op_type,
+                row,
+                callsite,
+            } => {
+                if segment_openings.len() != 1
+                    || segment_openings[0].npo_index != component.npo_index
+                {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalNpoValidityQueryLengthMismatch {
+                            expected: 1,
+                            got: segment_openings.len(),
+                        },
+                    );
+                }
+                let expected_witness_ids = Self::npo_callsite_witness_ids(callsite);
+                let opened_values = Self::verify_npo_witness_values(
+                    component.npo_index,
+                    &expected_witness_ids,
+                    indexed_witness_values,
+                )?;
+                let evaluation = self.evaluate_sampled_recompose_npo_row_values::<F>(
+                    component.npo_index,
+                    op_type,
+                    row,
+                    callsite,
+                    &[],
+                    &expected_witness_ids,
+                    &opened_values,
+                )?;
+                Self::terminal_npo_row_evaluation_component_value::<F>(
+                    &evaluation,
+                    component.component_offset,
+                )
+            }
+            NativeTerminalNpoRowRef::Tip5 { .. } => {
+                let expected_segment = Self::terminal_npo_exhaustive_residual_segment_indices(
+                    verifying_key,
+                    component.npo_index,
+                )?;
+                if segment_openings.len() != expected_segment.len() {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalNpoValidityQueryLengthMismatch {
+                            expected: expected_segment.len(),
+                            got: segment_openings.len(),
+                        },
+                    );
+                }
+                let mut previous_normal_tip5_output = None;
+                let mut previous_merkle_tip5_output = None;
+                let mut target_evaluation = None;
+                for (segment_opening, expected_npo_index) in
+                    segment_openings.iter().zip(expected_segment)
+                {
+                    if segment_opening.npo_index != expected_npo_index {
+                        return Err(NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                            query: 0,
+                            expected: expected_npo_index,
+                            got: segment_opening.npo_index,
+                        });
+                    }
+                    let row_ref = Self::terminal_npo_row(verifying_key, expected_npo_index).ok_or(
+                        NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                            query: 0,
+                            expected: expected_npo_index,
+                            got: expected_npo_index,
+                        },
+                    )?;
+                    let NativeTerminalNpoRowRef::Tip5 { row, callsite, .. } = row_ref else {
+                        return Err(NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                            query: 0,
+                            expected: expected_npo_index,
+                            got: expected_npo_index,
+                        });
+                    };
+                    let expected_witness_ids = Self::npo_callsite_witness_ids(callsite);
+                    let opened_values = Self::verify_npo_witness_values(
+                        expected_npo_index,
+                        &expected_witness_ids,
+                        indexed_witness_values,
+                    )?;
+                    let hidden_inputs = Self::terminal_tip5_hidden_inputs_from_compact(
+                        segment_opening.npo_index,
+                        verifying_key,
+                        segment_opening.tip5_hidden_input_nonzero_mask,
+                        &segment_opening.tip5_hidden_input_values_le,
+                    )?;
+                    let evaluation = self.evaluate_exhaustive_tip5_npo_row_values::<F>(
+                        expected_npo_index,
+                        row,
+                        callsite,
+                        &hidden_inputs,
+                        &expected_witness_ids,
+                        &opened_values,
+                        &mut previous_normal_tip5_output,
+                        &mut previous_merkle_tip5_output,
+                    )?;
+                    if expected_npo_index == component.npo_index {
+                        target_evaluation = Some(evaluation);
+                    }
+                }
+                let evaluation = target_evaluation.ok_or(
+                    NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                        query: 0,
+                        expected: component.npo_index,
+                        got: component.npo_index,
+                    },
+                )?;
+                Self::terminal_npo_row_evaluation_component_value::<F>(
+                    &evaluation,
+                    component.component_offset,
+                )
+            }
+        }
+    }
+
     fn terminal_npo_row_evaluation_component_values<F>(
         evaluation: &TerminalNpoRowEvaluation,
     ) -> Vec<F>
@@ -10522,6 +11010,21 @@ impl NativeTerminalCompiler {
 
     fn terminal_npo_validity_fold_base_value_basis(
         proof: &TerminalNpoValidityFoldProof,
+        initial_index: usize,
+    ) -> Option<&[u64]> {
+        if let Some(round_opening) = proof.round_openings.first() {
+            round_opening
+                .openings
+                .iter()
+                .find(|opening| opening.index == initial_index)
+                .map(|opening| opening.value_basis.as_slice())
+        } else {
+            Some(&proof.final_value_basis)
+        }
+    }
+
+    fn terminal_npo_exhaustive_residual_fold_base_value_basis(
+        proof: &TerminalNpoExhaustiveResidualFoldProof,
         initial_index: usize,
     ) -> Option<&[u64]> {
         if let Some(round_opening) = proof.round_openings.first() {
@@ -13517,6 +14020,195 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalResidualFoldFinalValueNonZero
         );
+    }
+
+    #[test]
+    fn goldilocks_npo_exhaustive_residual_consistency_proof_verifies() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(2);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness_with_private_data(
+            &circuit,
+            public_inputs.clone(),
+            private_data,
+        );
+        let witness_oracle = TerminalOracleMerkleTree::commit_goldilocks_values(
+            NativeTerminalCompiler::witness_oracle_label(),
+            &witness_values(&witness),
+        )
+        .expect("witness oracle must commit");
+        let residual_oracle = compiler
+            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
+            .expect("exhaustive NPO residual oracle must commit");
+        let witness_commitment = witness_oracle.commitment();
+        let residual_commitment = residual_oracle.commitment();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![witness_commitment.root, residual_commitment.root],
+            )
+            .expect("prelude must bind witness and residual oracles");
+        let fold_proof = compiler
+            .prove_terminal_npo_exhaustive_residual_fold_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &residual_oracle,
+                &witness,
+            )
+            .expect("exhaustive residual fold proof must build");
+        let consistency_proof = compiler
+            .prove_terminal_npo_exhaustive_residual_consistency_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &witness_oracle,
+                &residual_oracle,
+                &fold_proof,
+                &witness,
+            )
+            .expect("exhaustive residual consistency proof must build");
+
+        let plan = compiler
+            .verify_terminal_npo_exhaustive_residual_consistency_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &witness_commitment,
+                &residual_commitment,
+                &fold_proof,
+                &consistency_proof,
+            )
+            .expect("exhaustive residual consistency proof must verify");
+        assert_eq!(plan.indices.len(), consistency_proof.openings.len());
+        assert!(
+            consistency_proof
+                .openings
+                .iter()
+                .all(|opening| !opening.segment_openings.is_empty())
+        );
+    }
+
+    #[test]
+    fn goldilocks_npo_exhaustive_residual_consistency_uses_verifier_derived_segments() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(2);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness =
+            execute_tip5_terminal_witness_with_private_data(&circuit, public_inputs, private_data);
+        let witness_values = witness_values(&witness)
+            .into_iter()
+            .enumerate()
+            .collect::<Vec<_>>();
+        let component =
+            (0..NativeTerminalCompiler::terminal_npo_polynomial_profile::<Goldilocks>(&vk)
+                .residual_components)
+                .filter_map(|index| {
+                    NativeTerminalCompiler::terminal_npo_exhaustive_residual_component_row::<
+                        Goldilocks,
+                    >(&vk, index)
+                })
+                .find(|component| {
+                    component.npo_index == 1
+                        && component.kind == TerminalNpoResidualKind::Tip5ChainInput
+                })
+                .expect("second Tip5 row must expose a chained residual component");
+        let segment = NativeTerminalCompiler::terminal_npo_exhaustive_residual_segment_indices(
+            &vk,
+            component.npo_index,
+        )
+        .expect("segment must derive");
+        assert_eq!(
+            segment,
+            vec![1],
+            "the fixture starts every Merkle row fresh, so the verifier-derived segment is local"
+        );
+
+        let mut segment_openings = Vec::new();
+        for npo_index in segment {
+            let (opening, _) = compiler
+                .terminal_npo_local_opening_goldilocks(&vk, &witness, npo_index)
+                .expect("segment opening must build");
+            segment_openings.push(opening);
+        }
+        let value = compiler
+            .terminal_npo_exhaustive_residual_component_value_from_openings::<Goldilocks>(
+                &vk,
+                &component,
+                &segment_openings,
+                &witness_values,
+            )
+            .expect("component must recompute");
+        assert_eq!(value, Goldilocks::ZERO);
+    }
+
+    #[test]
+    fn goldilocks_npo_exhaustive_residual_consistency_rejects_tampered_segment() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(1);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness_with_private_data(
+            &circuit,
+            public_inputs.clone(),
+            private_data,
+        );
+        let witness_oracle = TerminalOracleMerkleTree::commit_goldilocks_values(
+            NativeTerminalCompiler::witness_oracle_label(),
+            &witness_values(&witness),
+        )
+        .expect("witness oracle must commit");
+        let residual_oracle = compiler
+            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
+            .expect("exhaustive NPO residual oracle must commit");
+        let witness_commitment = witness_oracle.commitment();
+        let residual_commitment = residual_oracle.commitment();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![witness_commitment.root, residual_commitment.root],
+            )
+            .expect("prelude must bind witness and residual oracles");
+        let fold_proof = compiler
+            .prove_terminal_npo_exhaustive_residual_fold_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &residual_oracle,
+                &witness,
+            )
+            .expect("exhaustive residual fold proof must build");
+        let mut consistency_proof = compiler
+            .prove_terminal_npo_exhaustive_residual_consistency_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &witness_oracle,
+                &residual_oracle,
+                &fold_proof,
+                &witness,
+            )
+            .expect("exhaustive residual consistency proof must build");
+        consistency_proof.openings[0].segment_openings[0].npo_index += 1;
+
+        let err = compiler
+            .verify_terminal_npo_exhaustive_residual_consistency_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &witness_commitment,
+                &residual_commitment,
+                &fold_proof,
+                &consistency_proof,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch { .. }
+        ));
     }
 
     #[test]
