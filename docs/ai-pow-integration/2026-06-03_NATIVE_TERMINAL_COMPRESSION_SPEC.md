@@ -307,6 +307,14 @@ for this route.
   the generated AIR trace back to the terminal table inputs and terminal
   exposed outputs. This is not yet a production proof component; it is the
   table source for the pending Tip5 permutation quotient/FRI backend.
+- `TerminalNpoTip5LookupAirTrace` bridge: the optimized permutation table
+  source for the same terminal Tip5 rows. It generates the narrower global-bus
+  lookup AIR main trace plus verifier-fixed preprocessed lookup table, with
+  permutation rows placed after the 256 lookup table rows. Tests bind those
+  permutation rows to the same terminal-derived Tip5 inputs as the lookup-free
+  bridge. This is the preferred table source for the eventual production
+  permutation backend because it avoids the lookup-free trace's boolean-bit
+  column blowup.
 - `TerminalNpoPolynomialColumnQueryPlan`: the verifier-derived row schedule for
   future NPO-column openings. It validates that every fixed column commitment
   has the verifier-derived label, shared row count, and a root already bound in

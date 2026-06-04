@@ -26,7 +26,9 @@ use p3_goldilocks::Goldilocks;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
-use p3_tip5_circuit_air::{NUM_ROUNDS as TIP5_PERM_ROUNDS, Tip5Perm, generate_trace_rows};
+use p3_tip5_circuit_air::{
+    NUM_ROUNDS as TIP5_PERM_ROUNDS, Tip5Perm, generate_lookup_trace, generate_trace_rows,
+};
 use serde::{Deserialize, Serialize};
 
 /// Minimum production soundness accepted for native terminal certificates.
@@ -4799,6 +4801,31 @@ impl NativeTerminalCompiler {
             .collect::<Vec<[u64; 16]>>();
         let trace = generate_trace_rows(&raw_inputs);
         Ok((inputs, trace))
+    }
+
+    pub fn terminal_npo_tip5_lookup_air_trace_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+    ) -> Result<
+        (
+            Vec<[Goldilocks; 16]>,
+            RowMajorMatrix<Goldilocks>,
+            Vec<Goldilocks>,
+        ),
+        NativeTerminalVerifyError,
+    >
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let table = self.terminal_npo_polynomial_table_goldilocks(verifying_key, witness)?;
+        let inputs = Self::terminal_npo_tip5_air_inputs_from_table(&table)?;
+        let raw_inputs = inputs
+            .iter()
+            .map(|state| core::array::from_fn(|i| PrimeField64::as_canonical_u64(&state[i])))
+            .collect::<Vec<[u64; 16]>>();
+        let (trace, preprocessed) = generate_lookup_trace(&raw_inputs);
+        Ok((inputs, trace, preprocessed))
     }
 
     fn terminal_npo_tip5_air_inputs_from_table<F>(
@@ -18652,7 +18679,7 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
     use p3_matrix::Matrix;
-    use p3_tip5_circuit_air::{NUM_ROUNDS, tip5_perm_air_width};
+    use p3_tip5_circuit_air::{NUM_ROUNDS, TABLE_ROWS, tip5_lookup_air_width, tip5_perm_air_width};
 
     use super::*;
 
@@ -19443,14 +19470,30 @@ mod tests {
         let (air_inputs, air_trace) = compiler
             .terminal_npo_tip5_air_trace_goldilocks(&vk, &witness)
             .expect("terminal Tip5 AIR trace must build");
+        let (lookup_inputs, lookup_trace, lookup_preprocessed) = compiler
+            .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
+            .expect("terminal Tip5 lookup AIR trace must build");
 
         assert_eq!(air_inputs.len(), 2);
         assert_eq!(air_trace.width(), tip5_perm_air_width());
         assert_eq!(air_trace.height(), 2);
+        assert_eq!(lookup_inputs, air_inputs);
+        assert_eq!(lookup_trace.width(), tip5_lookup_air_width());
+        assert_eq!(
+            lookup_trace.height(),
+            (TABLE_ROWS + air_inputs.len()).next_power_of_two()
+        );
+        assert_eq!(lookup_preprocessed.len(), lookup_trace.height() * 3);
         for (row_index, input) in air_inputs.iter().enumerate() {
             for (limb, value) in input.iter().enumerate() {
                 assert_eq!(
                     air_trace.values[row_index * air_trace.width() + limb],
+                    *value
+                );
+                let lookup_row = TABLE_ROWS + row_index;
+                let lookup_input_col = 2 + limb;
+                assert_eq!(
+                    lookup_trace.values[lookup_row * lookup_trace.width() + lookup_input_col],
                     *value
                 );
             }
