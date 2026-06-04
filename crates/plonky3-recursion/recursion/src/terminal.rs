@@ -21738,6 +21738,37 @@ mod tests {
             )
             .expect("round-tripped terminal Tip5 lookup IO bridge quotient proof must verify");
 
+        let mut tampered_npo_opening = proof.clone();
+        tampered_npo_opening.opened_npo_io_basis[0][0] =
+            tampered_npo_opening.opened_npo_io_basis[0][0].wrapping_add(1);
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_io_bridge_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &tampered_npo_opening,
+            )
+            .expect_err("tampered NPO IO opening must fail bridge quotient verification");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+        ));
+
+        let mut truncated_npo_opening = proof.clone();
+        truncated_npo_opening.opened_npo_io_basis.pop();
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_io_bridge_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &truncated_npo_opening,
+            )
+            .expect_err("truncated NPO IO opening must fail before PCS verification");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
+
         let (_, mut bad_trace, _) = compiler
             .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
             .expect("terminal Tip5 lookup trace must build");
