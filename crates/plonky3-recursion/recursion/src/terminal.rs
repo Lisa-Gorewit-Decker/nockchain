@@ -24543,6 +24543,54 @@ mod tests {
                         + commit_phase_paths_bytes.len()
                 ),
         );
+        let (floor_pcs, mut floor_challenger) =
+            NativeTerminalCompiler::terminal_fri_pcs_and_challenger(
+                proof.trace_profile.proximity,
+            )
+            .expect("terminal FRI PCS must build for composition floor");
+        NativeTerminalCompiler::observe_terminal_fri_str(
+            &mut floor_challenger,
+            "nock-terminal-tip5-air-composition-floor-v1",
+        );
+        for limb in prelude.challenge_digest.0 {
+            floor_challenger.observe(Goldilocks::from_u64(limb));
+        }
+        for limb in prelude.public_values_digest.0 {
+            floor_challenger.observe(Goldilocks::from_u64(limb));
+        }
+        let floor_domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &floor_pcs,
+                proof.quotient_profile.padded_rows,
+            );
+        let floor_width = <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let floor_matrix = RowMajorMatrix::new(
+            vec![Goldilocks::ZERO; proof.quotient_profile.padded_rows * floor_width],
+            floor_width,
+        );
+        let (floor_commitment, floor_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &floor_pcs,
+                [(floor_domain, floor_matrix)],
+            );
+        floor_challenger.observe(floor_commitment.clone());
+        let floor_zeta: TerminalFriChallenge = floor_challenger.sample_algebra_element();
+        let (floor_opened_values, floor_fri_proof) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
+                &floor_pcs,
+                vec![(&floor_data, vec![vec![floor_zeta]])],
+                &mut floor_challenger,
+            );
+        let floor_serialized =
+            postcard::to_allocvec(&(floor_commitment, floor_opened_values, floor_fri_proof))
+                .expect("terminal composition floor proof must serialize");
+        println!(
+            "terminal Tip5 lookup AIR composition-FRI floor: {} bytes ({:.1} KiB), rows={}, base_columns={}",
+            floor_serialized.len(),
+            floor_serialized.len() as f64 / 1024.0,
+            proof.quotient_profile.padded_rows,
+            floor_width,
+        );
         assert!(
             compressed_fri_bytes.len() < plain_fri_bytes.len(),
             "terminal compressed FRI should reduce AIR algebra path material"
