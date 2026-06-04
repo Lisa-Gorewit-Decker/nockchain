@@ -483,21 +483,27 @@ for this route.
   residual-zero checkpoint for the fixed NPO polynomial columns. It commits the
   randomized combined residual polynomial, opens that same FRI commitment at
   the transcript-derived zeta point and at the sampled row-domain points used
-  by `TerminalNpoPolynomialColumnOpeningProof`, and checks those row openings
-  against the residual-column linear combination. The compact composition now
-  stores all Goldilocks basis limbs of the verifier field, so the same proof
-  path covers the real Goldilocks quadratic-extension Tip5-L0 verifier circuit
-  instead of only base-Goldilocks fixtures. The focused regression test measures
-  `15,481` bytes / `15.1 KiB` for the 2-row NPO polynomial fixture,
-  debug-profile `prove=150.7ms`, `verify=126.1ms`, and rejects both tampered
-  compact row openings, tampered extension limbs, and stale residual columns.
-  On the real Tip5-L0 verifier circuit, the opt-in benchmark measures
-  `717,196` bytes / `700.4 KiB`, of which `665,381` bytes are sampled
-  per-column Merkle openings and `51,457` bytes are compact FRI material. This
-  closes the previous "zero proof not tied to residual columns at sampled rows"
-  gap for this checkpoint, but it also rules out appending this component as
-  the production route: the final backend must avoid the per-column Merkle
-  opening layer.
+  by `TerminalNpoPolynomialSelectedColumnOpeningProof`, and checks those row
+  openings against the residual-column linear combination. Verifier-derived
+  metadata, selector, present-bit, and residual-present columns are
+  reconstructed locally; the proof commits and opens only prover-dependent
+  witness-value and residual-value columns, and the verifier rejects any
+  missing, extra, or reordered selected column set before sampling challenges.
+  The compact composition now stores all Goldilocks basis limbs of the verifier
+  field, so the same proof path covers the real Goldilocks quadratic-extension
+  Tip5-L0 verifier circuit instead of only base-Goldilocks fixtures. The
+  focused regression test measures `8,763` bytes / `8.6 KiB` for the 2-row NPO
+  polynomial fixture, debug-profile `prove=71.9ms`, `verify=60.9ms`, and
+  rejects both tampered compact row openings, tampered extension limbs, and
+  stale residual columns. On the real Tip5-L0 verifier circuit, the opt-in
+  benchmark measures `409,037` bytes / `399.5 KiB`, of which `359,273` bytes
+  are selected-column Merkle openings and `49,448` bytes are compact FRI
+  material; the selected column commitments serialize to `7,903` bytes for
+  `89` selected columns out of `186`. This closes the previous "zero proof not
+  tied to residual columns at sampled rows" gap for this checkpoint and removes
+  deterministic-column openings, but it also rules out appending this component
+  as the production route: the final backend must avoid the sampled
+  prover-dependent column-opening layer.
 - `TerminalNpoTip5LookupNpoRowsValueBridgeQuotientProof`: an NPO-row-domain
   value-binding checkpoint for the optimized lookup terminal IO. Instead of
   trusting a prover-supplied lookup-domain NPO projection, it commits the 26
@@ -787,11 +793,14 @@ polynomial and the committed residual oracle; it is the measured zero/proximity
 component the next combined backend should absorb.
 The NPO-column variant now adds the missing sampled-row binding: the compact
 FRI commitment is also opened at the same row-domain points authenticated by
-the column-opening proof and those openings are checked against the randomized
-residual-column combination. That bound checkpoint measures `15,481` bytes /
-`15.1 KiB` on the 2-row fixture, with debug `prove=150.7ms` and
-`verify=126.1ms`; it rejects tampered compact row openings and stale residual
-columns. The NPO polynomial column-opening checkpoint, standalone
+the selected-column opening proof and those openings are checked against the
+randomized residual-column combination. That bound checkpoint measures `8,763`
+bytes / `8.6 KiB` on the 2-row fixture, with debug `prove=71.9ms` and
+`verify=60.9ms`; it rejects tampered compact row openings and stale residual
+columns. The compact residual checkpoint reconstructs verifier-derived columns
+locally and requires the prover-dependent selected-column roots to appear in
+exact order with no missing or extra roots. The NPO polynomial column-opening
+checkpoint, standalone
 column-evaluation proof, and column-evaluation batch now also treat their
 prelude commitment vectors as exact transcript shapes: every verifier-derived
 column root must appear in order with no missing roots and no extra
@@ -1132,8 +1141,8 @@ component includes that matrix-vector subproof:
 
 | component | bytes |
 |---|---:|
-| sparse R1CS matrix sumcheck proof | 23,924 |
-| R1CS row-product sumcheck proof | 23,296 |
+| sparse R1CS matrix sumcheck proof | 22,044 |
+| R1CS row-product sumcheck proof | 23,954 |
 | row-product rounds | 842 |
 | matrix-sumcheck rounds | 720 |
 | assignment evaluation proof | 21,674 |
@@ -1142,8 +1151,8 @@ component includes that matrix-vector subproof:
 | assignment fold query indices | 46 |
 | assignment fold round multiproofs | 20,323 |
 
-The latest debug-profile measurements are `prove=2.090 s, verify=1.368 s` for
-the matrix-vector component and `prove=2.118 s, verify=1.341 s` for the
+The latest debug-profile measurements are `prove=2.278 s, verify=1.483 s` for
+the matrix-vector component and `prove=2.307 s, verify=1.484 s` for the
 row-product component. This now proves the primitive sparse-R1CS row relation
 against the assignment commitment with compact public-prefix authentication, but
 NPO/table global arguments and the final polynomial proximity backend remain
@@ -1155,28 +1164,32 @@ Tip5-L0 verifier circuit produced:
 
 | NPO candidate | bytes | inner FRI | compact inner | prove | verify |
 |---|---:|---:|---:|---:|---:|
-| full-table NPO FRI opening proof, 186 field columns / 372 basis columns | 79,088 | 96,669 | 75,736 | 2.371 s | 0.512 s |
-| witness-value-column NPO FRI opening proof, 43 field columns / 86 basis columns | 59,727 | 80,471 | 58,759 | 1.072 s | 0.496 s |
+| full-table NPO FRI opening proof, 186 field columns / 372 basis columns | 78,202 | 96,236 | 74,830 | 2.389 s | 0.500 s |
+| witness-value-column NPO FRI opening proof, 43 field columns / 86 basis columns | 59,241 | 80,647 | 58,268 | 1.075 s | 0.492 s |
 | optimized Tip5 lookup main-trace FRI opening proof, 558 Goldilocks columns | 119,448 | 130,206 | 109,977 | 3.294 s | 0.060 s |
 | optimized Tip5 lookup terminal-IO FRI projection, 26 Goldilocks columns | 48,801 | 65,781 | 48,474 | 5.354 s | 0.047 s |
 | optimized Tip5 lookup terminal-IO zero-support quotient, 26 columns + 1 quotient | 62,132 | 85,385 | 61,704 | 14.050 s | 0.050 s |
 | optimized Tip5 lookup terminal-IO bridge quotient, lookup IO + NPO-derived IO + 1 quotient | 70,220 | 96,188 | 69,481 | 11.804 s | 0.074 s |
-| Merkle residual-zero candidate, opt-in real Tip5-L0 measurement | 678,836 | - | - | 56.376 s | 5.396 s |
-| compact residual-zero FRI candidate, opt-in real Tip5-L0 measurement | 717,196 | - | 51,457 | 55.772 s | 5.137 s |
+| Merkle residual-zero candidate, opt-in real Tip5-L0 measurement | 634,155 | - | - | 56.284 s | 5.082 s |
+| selected-column compact residual-zero FRI candidate, opt-in real Tip5-L0 measurement | 409,037 | - | 49,448 | 26.190 s | 2.508 s |
 
 The full-table FRI candidate is too large to combine with the primitive
 row-product proof. The witness-value column split is a real table optimization
 because deterministic metadata, selectors, present bits, and residual-present
 shape are now verifier-derived and need not be committed as FRI columns. It is
-still incomplete by itself: `59,727 + 24,063` bytes leaves about 16 KiB
+still incomplete by itself: `59,241 + 23,954` bytes leaves about 16 KiB
 before adding the missing NPO row-polynomial relation checks and certificate
 framing. The Merkle-backed residual-zero proof is rejected as a production route
-because its column-opening payload alone is `665,381` bytes on the real Tip5-L0
-fixture. The compact residual-zero FRI candidate proves that terminal compact
-FRI itself is not the dominant cost there: its compact FRI payload is only
-`51,457` bytes, but it still carries the same `665,381` bytes of sampled
-per-column openings, giving a `700.4 KiB` component. The next viable direction
-is a shared/batched terminal proximity backend that commits the NPO row columns
+because its column-opening payload dominates the real Tip5-L0 fixture. The
+selected-column compact residual-zero FRI candidate now reconstructs
+verifier-derived metadata, selector, present-bit, and residual-present columns
+locally and opens only the 89 prover-dependent witness/residual columns. That
+cuts the real compact-residual checkpoint from the previous `700.4 KiB`
+full-column experiment to `399.5 KiB`, with `359,273` bytes of selected-column
+openings and `49,448` bytes of compact FRI material. This proves terminal
+compact FRI itself is not the dominant cost there, but it still rules out
+appending this component as the production route. The next viable direction is
+a shared/batched terminal proximity backend that commits the NPO row columns
 through one low-degree object and amortizes FRI proof material across primitive
 and NPO relations, or an NPO relation check that consumes the value-column FRI
 openings without adding a second Merkle-heavy proof. The FRI verifier now
@@ -1606,12 +1619,13 @@ Design conclusions for this codebase:
    row predicate from those columns. The columns now also basis-expand into a
    Goldilocks matrix accepted by the native Plonky3 FRI PCS with recursive
    5-round Tip5 commitments. `TerminalNpoPolynomialCompactResidualZeroProof`
-   now binds a compact FRI residual-zero commitment to sampled residual-column
+   now binds a compact FRI residual-zero commitment to sampled selected-column
    openings over both base and quadratic-extension Goldilocks verifier fields.
-   The real-circuit measurement shows the sampled per-column opening layer is
-   far too large, so the remaining gap is replacing that layer with one shared
-   composition/proximity argument rather than proving each subrelation as an
-   appended component.
+   The real-circuit measurement shows the sampled prover-dependent column
+   opening layer remains far too large even after verifier-derived columns are
+   reconstructed locally, so the remaining gap is replacing that layer with one
+   shared composition/proximity argument rather than proving each subrelation as
+   an appended component.
 3. The fixed-column NPO row predicate now covers:
    - Tip5: 5-round Tip5 state transition with explicit row mode, new-start,
      Merkle-path direction, carry/zero derivation, hidden-lane embedding, MMCS

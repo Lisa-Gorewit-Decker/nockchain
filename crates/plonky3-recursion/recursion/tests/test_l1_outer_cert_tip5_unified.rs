@@ -648,12 +648,38 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
                 .expect("terminal NPO polynomial residual-zero proof must verify");
             let npo_residual_zero_verify_elapsed = npo_residual_zero_verify_start.elapsed();
 
+            let npo_selected_column_indices =
+                NativeTerminalCompiler::terminal_npo_polynomial_prover_dependent_column_indices(
+                    &npo_polynomial_columns,
+                );
+            let npo_selected_column_oracles =
+                NativeTerminalCompiler::commit_terminal_npo_polynomial_selected_column_values_goldilocks(
+                    &npo_polynomial_columns,
+                    &npo_selected_column_indices,
+                )
+                .expect("terminal selected NPO polynomial columns must commit");
+            let npo_selected_column_commitments = npo_selected_column_oracles.commitments();
+            let npo_selected_column_commitments_size =
+                postcard::to_allocvec(&npo_selected_column_commitments)
+                    .expect("terminal selected NPO column commitments must serialize")
+                    .len();
+            let npo_selected_prelude = compiler
+                .build_proof_prelude_goldilocks(
+                    &vk,
+                    &terminal_witness.public_inputs,
+                    parameters,
+                    npo_selected_column_commitments
+                        .iter()
+                        .map(|commitment| commitment.root)
+                        .collect(),
+                )
+                .expect("terminal selected NPO polynomial prelude must build");
             let npo_compact_residual_zero_prove_start = std::time::Instant::now();
             let npo_compact_residual_zero_proof = compiler
                 .prove_terminal_npo_polynomial_compact_residual_zero_goldilocks(
                     &vk,
                     &terminal_witness,
-                    &npo_polynomial_prelude,
+                    &npo_selected_prelude,
                 )
                 .expect("terminal NPO compact residual-zero proof must build");
             let npo_compact_residual_zero_prove_elapsed =
@@ -674,7 +700,7 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
             compiler
                 .verify_terminal_npo_polynomial_compact_residual_zero_goldilocks(
                     &vk,
-                    &npo_polynomial_prelude,
+                    &npo_selected_prelude,
                     &npo_compact_residual_zero_proof,
                 )
                 .expect("terminal NPO compact residual-zero proof must verify");
@@ -691,6 +717,8 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
                 npo_residual_zero_fold_openings_size,
                 npo_residual_zero_prove_elapsed,
                 npo_residual_zero_verify_elapsed,
+                npo_selected_column_indices.len(),
+                npo_selected_column_commitments_size,
                 npo_compact_residual_zero_size,
                 npo_compact_residual_zero_column_opening_size,
                 npo_compact_residual_zero_fri_size,
@@ -895,6 +923,8 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         npo_residual_zero_fold_openings_size,
         npo_residual_zero_prove_elapsed,
         npo_residual_zero_verify_elapsed,
+        npo_selected_column_count,
+        npo_selected_column_commitments_size,
         npo_compact_residual_zero_size,
         npo_compact_residual_zero_column_opening_size,
         npo_compact_residual_zero_fri_size,
@@ -926,6 +956,11 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
             npo_compact_residual_zero_fri_size,
             npo_compact_residual_zero_prove_elapsed.as_secs_f64(),
             npo_compact_residual_zero_verify_elapsed.as_secs_f64(),
+        );
+        eprintln!(
+            "terminal NPO selected columns: columns={} commitments={} bytes",
+            npo_selected_column_count,
+            npo_selected_column_commitments_size,
         );
     }
     eprintln!(
