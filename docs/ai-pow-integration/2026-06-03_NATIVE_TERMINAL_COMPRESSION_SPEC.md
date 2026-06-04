@@ -543,6 +543,28 @@ for this route.
   proof because the residual columns still need a quotient tying them to the
   witness-value columns and verifier-derived row relation over the whole NPO
   domain.
+- `TerminalNpoPolynomialFriResidualZeroRecomposeProof`: a combined FRI-native
+  checkpoint that opens the prover-dependent NPO table, the folded residual-zero
+  composition polynomial, and the recompose residual quotient in one terminal
+  FRI proof. The transcript samples the residual folding challenge and the
+  recompose quotient challenge after the selected-column FRI root is fixed,
+  then observes both derived commitments before sampling the shared opening
+  point. Verification requires the selected FRI root to match the exact prelude
+  commitment, checks that the folded residual opening is zero and matches the
+  opened residual-value columns, and checks the recompose
+  value/residual/selector quotient identity against verifier-derived fixed
+  columns. The D2 focused fixture measures `10,475` bytes / `10.2 KiB`, with
+  raw inner FRI `19,326` bytes and compressed inner FRI `10,143` bytes, and
+  rejects stale roots, nonzero residual columns, and recompose value/residual
+  mismatches. On the real Tip5-L0 verifier circuit, the opt-in benchmark
+  measures `90,598` bytes / `88.5 KiB`, with `1,179` bytes of selected zeta
+  openings, `89,177` bytes of compact FRI material, `prove=2.005s`, and
+  `verify=0.645s`. This removes the duplicated selected-column opening and FRI
+  query material from the standalone `60.2 KiB` residual-zero plus `79.4 KiB`
+  recompose checkpoints, but it is still only the recompose/residual part of
+  the production NPO backend. The full production replacement still needs the
+  Tip5 permutation/lookup relation tied into the same terminal proximity
+  theorem rather than appended as a separate large FRI proof.
 - `TerminalNpoTip5LookupNpoRowsValueBridgeQuotientProof`: an NPO-row-domain
   value-binding checkpoint for the optimized lookup terminal IO. Instead of
   trusting a prover-supplied lookup-domain NPO projection, it commits the 26

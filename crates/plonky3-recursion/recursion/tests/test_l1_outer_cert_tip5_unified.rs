@@ -793,6 +793,46 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
             let npo_recompose_residual_quotient_verify_elapsed =
                 npo_recompose_residual_quotient_verify_start.elapsed();
 
+            let npo_combined_residual_recompose_prove_start = std::time::Instant::now();
+            let npo_combined_residual_recompose_proof = compiler
+                .prove_terminal_npo_polynomial_fri_residual_zero_recompose_goldilocks(
+                    &vk,
+                    &terminal_witness.public_inputs,
+                    &terminal_witness,
+                    &npo_fri_compact_residual_zero_prelude,
+                )
+                .expect("terminal NPO combined residual-zero/recompose proof must build");
+            let npo_combined_residual_recompose_prove_elapsed =
+                npo_combined_residual_recompose_prove_start.elapsed();
+            let npo_combined_residual_recompose_size =
+                postcard::to_allocvec(&npo_combined_residual_recompose_proof)
+                    .expect("terminal NPO combined residual-zero/recompose proof must serialize")
+                    .len();
+            let npo_combined_residual_recompose_opened_selected_size = postcard::to_allocvec(
+                &npo_combined_residual_recompose_proof.opened_selected_basis,
+            )
+            .expect(
+                "terminal NPO combined residual-zero/recompose selected openings must serialize",
+            )
+            .len();
+            let npo_combined_residual_recompose_fri_size =
+                postcard::to_allocvec(&npo_combined_residual_recompose_proof.proof)
+                    .expect(
+                        "terminal NPO combined residual-zero/recompose FRI proof must serialize",
+                    )
+                    .len();
+            let npo_combined_residual_recompose_verify_start = std::time::Instant::now();
+            compiler
+                .verify_terminal_npo_polynomial_fri_residual_zero_recompose_goldilocks::<Challenge>(
+                    &vk,
+                    &terminal_witness.public_inputs,
+                    &npo_fri_compact_residual_zero_prelude,
+                    &npo_combined_residual_recompose_proof,
+                )
+                .expect("terminal NPO combined residual-zero/recompose proof must verify");
+            let npo_combined_residual_recompose_verify_elapsed =
+                npo_combined_residual_recompose_verify_start.elapsed();
+
             Some((
                 npo_column_oracles.layout.rows,
                 npo_column_oracles.layout.column_count,
@@ -820,6 +860,11 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
                 npo_recompose_residual_quotient_fri_size,
                 npo_recompose_residual_quotient_prove_elapsed,
                 npo_recompose_residual_quotient_verify_elapsed,
+                npo_combined_residual_recompose_size,
+                npo_combined_residual_recompose_opened_selected_size,
+                npo_combined_residual_recompose_fri_size,
+                npo_combined_residual_recompose_prove_elapsed,
+                npo_combined_residual_recompose_verify_elapsed,
             ))
         } else {
             None
@@ -1036,6 +1081,11 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         npo_recompose_residual_quotient_fri_size,
         npo_recompose_residual_quotient_prove_elapsed,
         npo_recompose_residual_quotient_verify_elapsed,
+        npo_combined_residual_recompose_size,
+        npo_combined_residual_recompose_opened_selected_size,
+        npo_combined_residual_recompose_fri_size,
+        npo_combined_residual_recompose_prove_elapsed,
+        npo_combined_residual_recompose_verify_elapsed,
     )) = npo_residual_zero_measurement
     {
         eprintln!(
@@ -1080,6 +1130,15 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
             npo_recompose_residual_quotient_fri_size,
             npo_recompose_residual_quotient_prove_elapsed.as_secs_f64(),
             npo_recompose_residual_quotient_verify_elapsed.as_secs_f64(),
+        );
+        eprintln!(
+            "terminal NPO FRI-native residual-zero+recompose candidate: proof={} bytes ({:.1} KiB) opened_selected={} compact_fri={} prove={:.3}s verify={:.3}s",
+            npo_combined_residual_recompose_size,
+            npo_combined_residual_recompose_size as f64 / 1024.0,
+            npo_combined_residual_recompose_opened_selected_size,
+            npo_combined_residual_recompose_fri_size,
+            npo_combined_residual_recompose_prove_elapsed.as_secs_f64(),
+            npo_combined_residual_recompose_verify_elapsed.as_secs_f64(),
         );
         eprintln!(
             "terminal NPO selected columns: columns={} commitments={} bytes",
