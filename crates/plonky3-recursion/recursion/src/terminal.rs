@@ -10,20 +10,60 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use p3_challenger::DuplexChallenger;
 use p3_circuit::ops::{
     AluOpKind, NpoTypeId, Op, RecomposeCircuitRow, RecomposeTrace, RecomposeTraceKind,
     Tip5CircuitRow, Tip5Config, Tip5TerminalMode, Tip5Trace,
 };
 use p3_circuit::tables::Traces;
 use p3_circuit::{Circuit, WitnessId};
+use p3_commit::ExtensionMmcs;
+use p3_dft::Radix2DitParallel;
+use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_fri::{FriParameters, TwoAdicFriPcs};
 use p3_goldilocks::Goldilocks;
-use p3_symmetric::Permutation;
+use p3_matrix::dense::RowMajorMatrix;
+use p3_merkle_tree::MerkleTreeMmcs;
+use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 use p3_tip5_circuit_air::{NUM_ROUNDS as TIP5_PERM_ROUNDS, Tip5Perm};
 use serde::{Deserialize, Serialize};
 
 /// Minimum production soundness accepted for native terminal certificates.
 pub const MIN_TERMINAL_SECURITY_BITS: u16 = 60;
+
+/// Tip5 sponge used by the terminal FRI/MMCS backend.
+pub type TerminalTip5Sponge = PaddingFreeSponge<Tip5Perm, 16, 10, 5>;
+
+/// Tip5 2-to-1 compression used by the terminal FRI/MMCS backend.
+pub type TerminalTip5Compress = TruncatedPermutation<Tip5Perm, 2, 5, 16>;
+
+/// Goldilocks MMCS for terminal FRI codeword commitments.
+pub type TerminalFriValMmcs = MerkleTreeMmcs<
+    <Goldilocks as Field>::Packing,
+    <Goldilocks as Field>::Packing,
+    TerminalTip5Sponge,
+    TerminalTip5Compress,
+    2,
+    5,
+>;
+
+/// Extension field used for terminal FRI challenges.
+pub type TerminalFriChallenge = BinomialExtensionField<Goldilocks, 2>;
+
+/// Extension-MMCS for terminal FRI commit-phase codewords.
+pub type TerminalFriChallengeMmcs =
+    ExtensionMmcs<Goldilocks, TerminalFriChallenge, TerminalFriValMmcs>;
+
+/// Fiat-Shamir challenger for terminal FRI, over recursive 5-round Tip5.
+pub type TerminalFriChallenger = DuplexChallenger<Goldilocks, Tip5Perm, 16, 10>;
+
+/// DFT implementation used by terminal FRI.
+pub type TerminalFriDft = Radix2DitParallel<Goldilocks>;
+
+/// Native terminal FRI PCS over Goldilocks with 5-round Tip5 commitments.
+pub type TerminalFriPcs =
+    TwoAdicFriPcs<Goldilocks, TerminalFriDft, TerminalFriValMmcs, TerminalFriChallengeMmcs>;
 
 /// Stable fingerprint for a compiled terminal verifier circuit.
 ///
@@ -1040,6 +1080,23 @@ pub struct TerminalNpoPolynomialColumnLayout {
     pub mmcs_columns: usize,
     pub residual_value_columns: usize,
     pub residual_present_columns: usize,
+}
+
+/// FRI commitment shape for the basis-expanded supported-NPO polynomial table.
+///
+/// The terminal NPO table lives over the verifier-circuit field `F`. The
+/// terminal FRI PCS commits Goldilocks codewords, so every `F` column is
+/// expanded into its Goldilocks basis coefficients before padding to the
+/// verifier-key-derived two-adic row domain.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalNpoPolynomialFriProfile {
+    pub rows: usize,
+    pub padded_rows: usize,
+    pub log_rows: usize,
+    pub field_basis_dimension: usize,
+    pub field_columns: usize,
+    pub basis_columns: usize,
+    pub proximity: TerminalProximityProfile,
 }
 
 /// Deterministic polynomial-column projection of [`TerminalNpoPolynomialTable`].
@@ -10795,6 +10852,91 @@ impl NativeTerminalCompiler {
         })
     }
 
+    pub fn terminal_npo_polynomial_fri_profile<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+    ) -> Result<TerminalNpoPolynomialFriProfile, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        Self::validate_terminal_npo_polynomial_columns(&columns.layout, columns)?;
+        if columns.layout.rows == 0 {
+            return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
+        }
+        let padded_rows = 1usize << columns.layout.log_rows;
+        let field_basis_dimension = <F as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        Ok(TerminalNpoPolynomialFriProfile {
+            rows: columns.layout.rows,
+            padded_rows,
+            log_rows: columns.layout.log_rows,
+            field_basis_dimension,
+            field_columns: columns.layout.column_count,
+            basis_columns: columns.layout.column_count * field_basis_dimension,
+            proximity: TerminalProximityProfile::production_60bit(),
+        })
+    }
+
+    pub fn terminal_npo_polynomial_basis_matrix_goldilocks<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+    ) -> Result<
+        (TerminalNpoPolynomialFriProfile, RowMajorMatrix<Goldilocks>),
+        NativeTerminalVerifyError,
+    >
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let profile = Self::terminal_npo_polynomial_fri_profile(columns)?;
+        let mut values = Vec::with_capacity(profile.padded_rows * profile.basis_columns);
+        for row in 0..profile.padded_rows {
+            for column in &columns.columns {
+                let basis = if row < profile.rows {
+                    column[row].as_basis_coefficients_slice()
+                } else {
+                    &[]
+                };
+                for basis_index in 0..profile.field_basis_dimension {
+                    values.push(basis.get(basis_index).copied().unwrap_or(Goldilocks::ZERO));
+                }
+            }
+        }
+        Ok((
+            profile.clone(),
+            RowMajorMatrix::new(values, profile.basis_columns),
+        ))
+    }
+
+    pub fn terminal_fri_parameters(
+        profile: TerminalProximityProfile,
+        mmcs: TerminalFriChallengeMmcs,
+    ) -> Result<FriParameters<TerminalFriChallengeMmcs>, NativeTerminalVerifyError> {
+        let parameters = profile.proof_parameters();
+        Self::validate_terminal_production_parameters(parameters)?;
+        Self::validate_terminal_proximity_parameters(&profile, parameters)?;
+        Ok(FriParameters {
+            log_blowup: profile.log_blowup as usize,
+            log_final_poly_len: profile.log_final_poly_len as usize,
+            max_log_arity: profile.max_log_arity as usize,
+            num_queries: profile.num_queries as usize,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits: profile.query_pow_bits as usize,
+            mmcs,
+        })
+    }
+
+    pub fn terminal_fri_pcs_and_challenger(
+        profile: TerminalProximityProfile,
+    ) -> Result<(TerminalFriPcs, TerminalFriChallenger), NativeTerminalVerifyError> {
+        let perm = Tip5Perm;
+        let hash = TerminalTip5Sponge::new(perm);
+        let compress = TerminalTip5Compress::new(perm);
+        let val_mmcs = TerminalFriValMmcs::new(hash, compress, 0);
+        let challenge_mmcs = TerminalFriChallengeMmcs::new(val_mmcs.clone());
+        let fri_parameters = Self::terminal_fri_parameters(profile, challenge_mmcs)?;
+        Ok((
+            TerminalFriPcs::new(TerminalFriDft::default(), val_mmcs, fri_parameters),
+            TerminalFriChallenger::new(perm),
+        ))
+    }
+
     fn terminal_npo_polynomial_combined_column_values<F>(
         columns: &TerminalNpoPolynomialColumns<F>,
         challenge: F,
@@ -16538,6 +16680,7 @@ mod tests {
 
     use hashbrown::HashMap;
     use p3_baby_bear::BabyBear;
+    use p3_challenger::{CanObserve, FieldChallenger};
     use p3_circuit::ops::tip5_perm::Tip5PermCallMmcs;
     use p3_circuit::ops::{
         ExecutionContext, NonPrimitiveExecutor, NpoTypeId, Tip5Goldilocks, Tip5PermCall,
@@ -16547,8 +16690,10 @@ mod tests {
     use p3_circuit::{
         Circuit, CircuitBuilder, CircuitError, ExprId, NonPrimitiveOpId, NpoPrivateData, WitnessId,
     };
+    use p3_commit::Pcs;
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
+    use p3_matrix::Matrix;
     use p3_tip5_circuit_air::NUM_ROUNDS;
 
     use super::*;
@@ -21949,6 +22094,93 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialResidualMismatch { npo_index: 0, .. }
         ));
+    }
+
+    #[test]
+    fn goldilocks_d2_npo_polynomial_columns_commit_through_terminal_fri() {
+        let (circuit, public_inputs) = build_recompose_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_recompose_terminal_witness(&circuit, public_inputs);
+        let columns = compiler
+            .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
+            .expect("D2 recompose NPO polynomial columns must build");
+        let (profile, matrix) =
+            NativeTerminalCompiler::terminal_npo_polynomial_basis_matrix_goldilocks(&columns)
+                .expect("D2 NPO columns must basis-expand into a terminal FRI matrix");
+        assert_eq!(profile.rows, 2);
+        assert_eq!(profile.padded_rows, 2);
+        assert_eq!(profile.field_basis_dimension, 2);
+        assert_eq!(profile.field_columns, columns.layout.column_count);
+        assert_eq!(profile.basis_columns, columns.layout.column_count * 2);
+        assert_eq!(
+            profile.proximity,
+            TerminalProximityProfile::production_60bit()
+        );
+        assert_eq!(matrix.height(), profile.padded_rows);
+        assert_eq!(matrix.width(), profile.basis_columns);
+
+        let (pcs, challenger_template) =
+            NativeTerminalCompiler::terminal_fri_pcs_and_challenger(profile.proximity)
+                .expect("terminal FRI PCS must build from the production proximity profile");
+        let domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                matrix.height(),
+            );
+        let (commitment, data) = <TerminalFriPcs as Pcs<
+            TerminalFriChallenge,
+            TerminalFriChallenger,
+        >>::commit(&pcs, [(domain, matrix)]);
+
+        let mut prover_challenger = challenger_template.clone();
+        prover_challenger.observe(commitment.clone());
+        let zeta: TerminalFriChallenge = prover_challenger.sample_algebra_element();
+        let (opened_values, fri_proof) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
+                &pcs,
+                vec![(&data, vec![vec![zeta]])],
+                &mut prover_challenger,
+            );
+        assert_eq!(opened_values.len(), 1);
+        assert_eq!(opened_values[0].len(), 1);
+        assert_eq!(opened_values[0][0].len(), 1);
+        assert_eq!(opened_values[0][0][0].len(), profile.basis_columns);
+
+        let mut verifier_challenger = challenger_template.clone();
+        verifier_challenger.observe(commitment.clone());
+        let verifier_zeta: TerminalFriChallenge = verifier_challenger.sample_algebra_element();
+        assert_eq!(verifier_zeta, zeta);
+        <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
+            &pcs,
+            vec![(
+                commitment.clone(),
+                vec![(
+                    domain,
+                    vec![(verifier_zeta, opened_values[0][0][0].clone())],
+                )],
+            )],
+            &fri_proof,
+            &mut verifier_challenger,
+        )
+        .expect("terminal FRI proof over basis-expanded NPO columns must verify");
+
+        let mut tampered_claim = opened_values[0][0][0].clone();
+        tampered_claim[0] += TerminalFriChallenge::ONE;
+        let mut tampered_challenger = challenger_template;
+        tampered_challenger.observe(commitment.clone());
+        let tampered_zeta: TerminalFriChallenge = tampered_challenger.sample_algebra_element();
+        let err = <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
+            &pcs,
+            vec![(
+                commitment,
+                vec![(domain, vec![(tampered_zeta, tampered_claim)])],
+            )],
+            &fri_proof,
+            &mut tampered_challenger,
+        )
+        .expect_err("tampered terminal FRI opening claim must reject");
+        let _ = err;
     }
 
     #[test]

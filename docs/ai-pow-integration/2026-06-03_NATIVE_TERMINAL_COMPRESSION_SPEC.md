@@ -213,6 +213,18 @@ for this route.
   and padded residual value and present-bit columns. Tests reconstruct the
   flattened exhaustive residual oracle from these columns and require MMCS-bit
   tampering to appear in both the local MMCS column and the residual columns.
+- `TerminalNpoPolynomialFriProfile` and the terminal FRI PCS builder: the NPO
+  table columns now have a concrete Plonky3-compatible low-degree commitment
+  target. Since terminal FRI commits Goldilocks codewords, verifier-circuit
+  field columns are expanded into Goldilocks basis columns and padded to the
+  verifier-key-derived two-adic row domain, then committed with recursive
+  5-round Tip5 and the canonical `log_blowup=4`, `num_queries=15`,
+  `query_pow_bits=0` schedule. A regression test commits D=2 recompose NPO
+  columns through this native FRI PCS, opens at a transcript-derived extension
+  point after the commitment is observed, verifies the proof, and rejects a
+  tampered opening claim. This is the proximity substrate for the final backend;
+  production still does not accept it as the full NPO relation proof until the
+  row-polynomial constraints are connected to the FRI openings.
 - `TerminalNpoPolynomialColumnOracleSet`: the commit-ready 5-round Tip5 oracle
   set for those fixed columns. Each column uses a verifier-derived
   `npo_polynomial_column/<column-label>` oracle label and the shared row count.
@@ -857,7 +869,7 @@ Completion audit against the active terminal-compression requirements:
 | Public values, parameters, relation, proximity schedule, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile and column layout, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
 | Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against a prelude-bound witness oracle. | satisfied for supported NPO row validity |
-| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, a random linear-combination MLE checkpoint, and a residual-column zero-check checkpoint now exist, including Tip5/MMCS/recompose tamper tests and Merkle-consistent wrong-combination rejection. Current production still uses exhaustive Merkle openings rather than a low-degree/proximity proof over those columns. | not complete |
+| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, a native 5-round-Tip5 Plonky3 FRI commitment/opening checkpoint for basis-expanded NPO columns, a random linear-combination MLE checkpoint, and a residual-column zero-check checkpoint now exist, including Tip5/MMCS/recompose tamper tests, FRI tampered-claim rejection, and Merkle-consistent wrong-combination rejection. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over the NPO row constraints. | not complete |
 | Full terminal proof has a source-backed soundness calculation | Current doc records 60 pure-query Johnson accounting for the terminal profile and tests verifier binding, but it does not yet derive a complete theorem for the row-product plus NPO-column plus PCS/proximity backend. | incomplete |
 | Zero-knowledge or witness hiding for recursive-verifier witness values | Current production opens 1,377 full-width verifier-circuit witness values plus packed MMCS direction bits for exhaustive NPO checking. That is smaller than full witness serialization, but it is not a zero-knowledge terminal backend. | incomplete if ZK is required |
 
@@ -1107,10 +1119,12 @@ Design conclusions for this codebase:
    residual flattening matches that oracle,
    `TerminalNpoPolynomialColumns` projects the row table into fixed columns, and
    `terminal_npo_polynomial_column_residual_values_goldilocks` reconstructs the
-   row predicate from those columns. `TerminalNpoExhaustiveResidualFoldProof`
-   still folds the residual oracle under dedicated transcript domains, so the
-   remaining gap is a PCS/proximity argument over these columns rather than a
-   missing row predicate.
+   row predicate from those columns. The columns now also basis-expand into a
+   Goldilocks matrix accepted by the native Plonky3 FRI PCS with recursive
+   5-round Tip5 commitments. `TerminalNpoExhaustiveResidualFoldProof` still
+   folds the residual oracle under dedicated transcript domains, so the
+   remaining gap is connecting the row constraints to that PCS/proximity
+   argument rather than a missing row predicate.
 3. The fixed-column NPO row predicate now covers:
    - Tip5: 5-round Tip5 state transition with explicit row mode, new-start,
      Merkle-path direction, carry/zero derivation, hidden-lane embedding, MMCS
