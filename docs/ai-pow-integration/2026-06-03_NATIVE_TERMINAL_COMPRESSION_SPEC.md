@@ -733,7 +733,7 @@ polynomialized argument.
 Recursive proving uses 5-round Tip5 only. This terminal path must not be read as
 a change to Nockchain's canonical non-recursive 7-round Tip5 hash path.
 
-Literature checkpoint as of 2026-06-03:
+Literature checkpoint as of 2026-06-04:
 
 - Tip5 was specified for recursive STARK use with paper-spec round count `N=5`
   (IACR ePrint 2023/107, "The Tip5 Hash Function for Recursive STARKs",
@@ -794,8 +794,8 @@ Completion audit against the active terminal-compression requirements:
 | Public values, parameters, relation, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile and column layout, prelude parameters, relation profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
 | Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against a prelude-bound witness oracle. | satisfied for supported NPO row validity |
-| Supported NPO/table rows are polynomialized into a final proximity backend | Current production uses exhaustive Merkle openings for NPO rows, not a low-degree/proximity argument for a polynomialized Tip5/recompose relation. | not complete |
-| Full terminal proof has a source-backed soundness calculation | Current doc records 60 pure-query Johnson accounting for the terminal profile and tests verifier binding, but it does not yet derive a complete theorem for the hybrid row-product plus exhaustive-NPO Merkle backend. | incomplete |
+| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns and verifier-side row residual evaluation now exist, including Tip5/MMCS/recompose tamper tests, but current production still uses exhaustive Merkle openings rather than a low-degree/proximity proof over those columns. | not complete |
+| Full terminal proof has a source-backed soundness calculation | Current doc records 60 pure-query Johnson accounting for the terminal profile and tests verifier binding, but it does not yet derive a complete theorem for the row-product plus NPO-column plus PCS/proximity backend. | incomplete |
 | Zero-knowledge or witness hiding for recursive-verifier witness values | Current production opens 1,377 full-width verifier-circuit witness values plus packed MMCS direction bits for exhaustive NPO checking. That is smaller than full witness serialization, but it is not a zero-knowledge terminal backend. | incomplete if ZK is required |
 
 Security-audit conclusions for the current implementation checkpoint:
@@ -1014,6 +1014,10 @@ Primary references used for the current design audit:
   https://www.microsoft.com/en-us/research/publication/spartan-efficient-and-general-purpose-zksnarks-without-trusted-setup/
 - Fast Reed-Solomon Interactive Oracle Proofs of Proximity, ICALP 2018:
   https://doi.org/10.4230/LIPIcs.ICALP.2018.14
+- DEEP-FRI, Ben-Sasson/Goldberg/Kopparty/Saraf, ePrint 2019/336:
+  https://eprint.iacr.org/2019/336
+- Fiat-Shamir for FRI and batched FRI, Block/Garreta/Katz/Thaler/Tiwari/Zajac,
+  ePrint 2023/1071: https://eprint.iacr.org/2023/1071
 - STIR, Arnon/Chiesa/Fenzi/Yogev, ePrint 2024/390:
   https://eprint.iacr.org/2024/390.pdf
 - WHIR, Arnon/Chiesa/Fenzi/Yogev, EUROCRYPT 2025 / ePrint 2024/1586:
@@ -1035,20 +1039,23 @@ Design conclusions for this codebase:
    domain, `terminal_npo_exhaustive_residual_values_goldilocks` constructs that
    concrete residual vector from a real witness,
    `terminal_npo_polynomial_table_goldilocks` materializes the row table whose
-   residual flattening matches that oracle, and
-   `TerminalNpoExhaustiveResidualFoldProof` folds the residual oracle under
-   dedicated transcript domains. The legacy local sampled validity oracle
-   remains an input/output residual checkpoint rather than the final NPO table
-   argument.
-3. The NPO replacement must first define low-degree row predicates for the
-   terminal NPO relation:
+   residual flattening matches that oracle,
+   `TerminalNpoPolynomialColumns` projects the row table into fixed columns, and
+   `terminal_npo_polynomial_column_residual_values_goldilocks` reconstructs the
+   row predicate from those columns. `TerminalNpoExhaustiveResidualFoldProof`
+   still folds the residual oracle under dedicated transcript domains, so the
+   remaining gap is a PCS/proximity argument over these columns rather than a
+   missing row predicate.
+3. The fixed-column NPO row predicate now covers:
    - Tip5: 5-round Tip5 state transition with explicit row mode, new-start,
-     Merkle-path direction, carry/zero derivation, and exact call-site witness
-     wiring;
+     Merkle-path direction, carry/zero derivation, hidden-lane embedding, MMCS
+     direction-bit booleanity, and exact call-site witness wiring;
    - Recompose: base-to-extension coefficient reconstruction and optional
      coefficient-lookup row kind;
-   - all rows: stable NPO row IDs, op keys, local row numbers, public relation
-     digest binding, and no prover-supplied query indices.
+   - all rows: stable NPO row IDs, op keys, local row numbers, selector bits,
+     present bits, zero padding, duplicate witness-slot consistency, public
+     relation digest binding, and no prover-supplied query indices.
+   This is still row algebra, not a Reed-Solomon proximity proof.
 4. The proximity layer is a separate requirement from algebraic row checking.
    FRI is the in-tree conservative choice because the code already implements
    15 pure queries at blowup 16 for 60 bits. STIR and WHIR are relevant future
@@ -1091,8 +1098,10 @@ Completion evidence required before this section can be marked satisfied:
    recursive verifier, primitive sparse-R1CS row-product proof, and exhaustive
    supported-NPO verification.
 2. Replace the exhaustive Merkle-opening supported-NPO proof with a native
-   polynomialized Tip5/recompose argument that preserves exact call-site
-   binding and relation-digest binding.
+   polynomialized Tip5/recompose argument. The fixed columns and row predicate
+   now preserve exact call-site binding and relation-digest binding; the open
+   work is committing them through the final PCS/proximity proof instead of the
+   current exhaustive witness-opening proof.
 3. Add the final proximity/PCS backend for the primitive and NPO relations
    under an explicit 60-bit-or-higher soundness calculation while preserving the
    canonical production parameter tuple unless a new production profile is
