@@ -488,6 +488,27 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         )
         .expect("terminal NPO polynomial FRI opening proof must verify");
     let npo_fri_verify_elapsed = npo_fri_verify_start.elapsed();
+    let npo_fri_compressed =
+        NativeTerminalCompiler::compress_terminal_npo_polynomial_fri_opening_proof(
+            &production_proof.prelude,
+            &npo_fri_proof,
+        )
+        .expect("terminal NPO polynomial FRI proof must compact");
+    let npo_fri_compressed_size = postcard::to_allocvec(&npo_fri_compressed)
+        .expect("terminal NPO polynomial compact FRI proof must serialize")
+        .len();
+    let mut npo_fri_restored = npo_fri_proof.clone();
+    npo_fri_restored.proof =
+        NativeTerminalCompiler::decompress_terminal_fri_proof(&npo_fri_compressed)
+            .expect("terminal NPO polynomial compact FRI proof must restore");
+    compiler
+        .verify_terminal_npo_polynomial_fri_opening_goldilocks::<Challenge>(
+            &vk,
+            &terminal_witness.public_inputs,
+            &production_proof.prelude,
+            &npo_fri_restored,
+        )
+        .expect("terminal NPO polynomial restored compact FRI proof must verify");
 
     let npo_value_fri_prove_start = std::time::Instant::now();
     let npo_value_fri_proof = compiler
@@ -519,6 +540,27 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         )
         .expect("terminal NPO value-column FRI opening proof must verify");
     let npo_value_fri_verify_elapsed = npo_value_fri_verify_start.elapsed();
+    let npo_value_fri_compressed =
+        NativeTerminalCompiler::compress_terminal_npo_polynomial_fri_opening_proof(
+            &production_proof.prelude,
+            &npo_value_fri_proof,
+        )
+        .expect("terminal NPO value-column FRI proof must compact");
+    let npo_value_fri_compressed_size = postcard::to_allocvec(&npo_value_fri_compressed)
+        .expect("terminal NPO value-column compact FRI proof must serialize")
+        .len();
+    let mut npo_value_fri_restored = npo_value_fri_proof.clone();
+    npo_value_fri_restored.proof =
+        NativeTerminalCompiler::decompress_terminal_fri_proof(&npo_value_fri_compressed)
+            .expect("terminal NPO value-column compact FRI proof must restore");
+    compiler
+        .verify_terminal_npo_polynomial_value_fri_opening_goldilocks::<Challenge>(
+            &vk,
+            &terminal_witness.public_inputs,
+            &production_proof.prelude,
+            &npo_value_fri_restored,
+        )
+        .expect("terminal NPO value-column restored compact FRI proof must verify");
 
     let npo_residual_zero_measurement =
         if std::env::var_os("NOCK_TERMINAL_MEASURE_NPO_RESIDUAL_ZERO").is_some() {
@@ -750,24 +792,26 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         production_npo_hidden_inputs_size,
     );
     eprintln!(
-        "terminal NPO polynomial FRI candidate: rows={} field_columns={} proof={} bytes ({:.1} KiB) inner_proof={} opened_values={} basis_columns={} prove={:.3}s verify={:.3}s",
+        "terminal NPO polynomial FRI candidate: rows={} field_columns={} proof={} bytes ({:.1} KiB) inner_proof={} compact_inner={} opened_values={} basis_columns={} prove={:.3}s verify={:.3}s",
         npo_fri_proof.profile.rows,
         npo_fri_proof.profile.field_columns,
         npo_fri_size,
         npo_fri_size as f64 / 1024.0,
         npo_fri_inner_proof_size,
+        npo_fri_compressed_size,
         npo_fri_opened_values_size,
         npo_fri_proof.profile.basis_columns,
         npo_fri_prove_elapsed.as_secs_f64(),
         npo_fri_verify_elapsed.as_secs_f64(),
     );
     eprintln!(
-        "terminal NPO value-column FRI candidate: rows={} field_columns={} proof={} bytes ({:.1} KiB) inner_proof={} opened_values={} basis_columns={} prove={:.3}s verify={:.3}s",
+        "terminal NPO value-column FRI candidate: rows={} field_columns={} proof={} bytes ({:.1} KiB) inner_proof={} compact_inner={} opened_values={} basis_columns={} prove={:.3}s verify={:.3}s",
         npo_value_fri_proof.profile.rows,
         npo_value_fri_proof.profile.field_columns,
         npo_value_fri_size,
         npo_value_fri_size as f64 / 1024.0,
         npo_value_fri_inner_proof_size,
+        npo_value_fri_compressed_size,
         npo_value_fri_opened_values_size,
         npo_value_fri_proof.profile.basis_columns,
         npo_value_fri_prove_elapsed.as_secs_f64(),

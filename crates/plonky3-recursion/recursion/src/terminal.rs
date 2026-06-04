@@ -13529,6 +13529,29 @@ impl NativeTerminalCompiler {
         })
     }
 
+    pub fn compress_terminal_npo_polynomial_fri_opening_proof(
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoPolynomialFriOpeningProof,
+    ) -> Result<TerminalCompressedFriProof, NativeTerminalVerifyError> {
+        let mut opened_values = Vec::with_capacity(proof.opened_values_basis.len());
+        for basis in &proof.opened_values_basis {
+            opened_values
+                .push(Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(basis)?);
+        }
+
+        let (_pcs, mut challenger) = Self::terminal_fri_pcs_and_challenger(proof.profile.proximity)?;
+        Self::seed_terminal_npo_polynomial_fri_challenger(&mut challenger, prelude, &proof.profile);
+        challenger.observe(proof.commitment.clone());
+        let _: TerminalFriChallenge = challenger.sample_algebra_element();
+        challenger.observe_algebra_slice(&opened_values);
+        let query_indices = Self::derive_terminal_fri_query_indices_from_challenger(
+            &mut challenger,
+            &proof.proof,
+            proof.profile.proximity,
+        )?;
+        Self::compress_terminal_fri_proof(&proof.proof, &query_indices)
+    }
+
     pub fn derive_terminal_fri_query_indices_from_challenger(
         challenger: &mut TerminalFriChallenger,
         proof: &TerminalFriProof,
