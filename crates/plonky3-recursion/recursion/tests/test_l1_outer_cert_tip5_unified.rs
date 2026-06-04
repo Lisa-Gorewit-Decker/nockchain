@@ -430,7 +430,12 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
     let production_npo_witness_sparse_basis_coefficients = production_proof
         .npo_exhaustive_proof
         .as_ref()
-        .map(|proof| proof.assignment_witness_multi_opening.value_basis_flat.len())
+        .map(|proof| {
+            proof
+                .assignment_witness_multi_opening
+                .value_basis_flat
+                .len()
+        })
         .unwrap_or(0);
     let production_npo_witness_multi_opening_size = production_proof
         .npo_exhaustive_proof
@@ -552,10 +557,9 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
     let npo_value_fri_size = postcard::to_allocvec(&npo_value_fri_proof)
         .expect("terminal NPO value-column FRI opening proof must serialize")
         .len();
-    let npo_value_fri_compact_inner_proof_size =
-        postcard::to_allocvec(&npo_value_fri_proof.proof)
-            .expect("terminal NPO value-column compact FRI inner proof must serialize")
-            .len();
+    let npo_value_fri_compact_inner_proof_size = postcard::to_allocvec(&npo_value_fri_proof.proof)
+        .expect("terminal NPO value-column compact FRI inner proof must serialize")
+        .len();
     let npo_value_fri_plain_inner_proof =
         NativeTerminalCompiler::decompress_terminal_fri_proof(&npo_value_fri_proof.proof)
             .expect("terminal NPO value-column compact FRI proof must restore");
@@ -592,283 +596,342 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
     );
     assert!(npo_value_fri_compressed_size < npo_value_fri_plain_inner_proof_size);
 
-    let npo_residual_zero_measurement =
-        if std::env::var_os("NOCK_TERMINAL_MEASURE_NPO_RESIDUAL_ZERO").is_some() {
-            let npo_column_commit_start = std::time::Instant::now();
-            let npo_column_oracles = compiler
-                .commit_terminal_npo_polynomial_columns_goldilocks(&vk, &terminal_witness)
-                .expect(
-                    "terminal NPO polynomial columns must commit for real Tip5 L0 verifier circuit",
-                );
-            let npo_column_commit_elapsed = npo_column_commit_start.elapsed();
-            let npo_column_commitments = npo_column_oracles.commitments();
-            let npo_column_commitments_size = postcard::to_allocvec(&npo_column_commitments)
-                .expect("terminal NPO column commitments must serialize")
-                .len();
-            let npo_column_roots = npo_column_commitments
-                .iter()
-                .map(|commitment| commitment.root)
-                .collect::<Vec<_>>();
-            let npo_polynomial_prelude = compiler
-                .build_proof_prelude_goldilocks(
-                    &vk,
-                    &terminal_witness.public_inputs,
-                    parameters,
-                    npo_column_roots,
-                )
-                .expect("terminal NPO polynomial prelude must build");
+    let npo_residual_zero_measurement = if std::env::var_os(
+        "NOCK_TERMINAL_MEASURE_NPO_RESIDUAL_ZERO",
+    )
+    .is_some()
+    {
+        let npo_column_commit_start = std::time::Instant::now();
+        let npo_column_oracles = compiler
+            .commit_terminal_npo_polynomial_columns_goldilocks(&vk, &terminal_witness)
+            .expect(
+                "terminal NPO polynomial columns must commit for real Tip5 L0 verifier circuit",
+            );
+        let npo_column_commit_elapsed = npo_column_commit_start.elapsed();
+        let npo_column_commitments = npo_column_oracles.commitments();
+        let npo_column_commitments_size = postcard::to_allocvec(&npo_column_commitments)
+            .expect("terminal NPO column commitments must serialize")
+            .len();
+        let npo_column_roots = npo_column_commitments
+            .iter()
+            .map(|commitment| commitment.root)
+            .collect::<Vec<_>>();
+        let npo_polynomial_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &terminal_witness.public_inputs,
+                parameters,
+                npo_column_roots,
+            )
+            .expect("terminal NPO polynomial prelude must build");
 
-            let npo_residual_zero_prove_start = std::time::Instant::now();
-            let npo_residual_zero_proof = compiler
-                .prove_terminal_npo_polynomial_residual_zero_goldilocks(
-                    &vk,
-                    &terminal_witness,
-                    &npo_polynomial_prelude,
-                )
-                .expect("terminal NPO polynomial residual-zero proof must build");
-            let npo_residual_zero_prove_elapsed = npo_residual_zero_prove_start.elapsed();
-            let npo_residual_zero_size = postcard::to_allocvec(&npo_residual_zero_proof)
-                .expect("terminal NPO polynomial residual-zero proof must serialize")
+        let npo_residual_zero_prove_start = std::time::Instant::now();
+        let npo_residual_zero_proof = compiler
+            .prove_terminal_npo_polynomial_residual_zero_goldilocks(
+                &vk,
+                &terminal_witness,
+                &npo_polynomial_prelude,
+            )
+            .expect("terminal NPO polynomial residual-zero proof must build");
+        let npo_residual_zero_prove_elapsed = npo_residual_zero_prove_start.elapsed();
+        let npo_residual_zero_size = postcard::to_allocvec(&npo_residual_zero_proof)
+            .expect("terminal NPO polynomial residual-zero proof must serialize")
+            .len();
+        let npo_residual_zero_column_opening_size =
+            postcard::to_allocvec(&npo_residual_zero_proof.column_opening_proof)
+                .expect("terminal NPO residual-zero column openings must serialize")
                 .len();
-            let npo_residual_zero_column_opening_size =
-                postcard::to_allocvec(&npo_residual_zero_proof.column_opening_proof)
-                    .expect("terminal NPO residual-zero column openings must serialize")
-                    .len();
-            let npo_residual_zero_fold_openings_size =
-                postcard::to_allocvec(&npo_residual_zero_proof.round_openings)
-                    .expect("terminal NPO residual-zero fold openings must serialize")
-                    .len();
-            let npo_residual_zero_verify_start = std::time::Instant::now();
-            compiler
-                .verify_terminal_npo_polynomial_residual_zero_goldilocks::<Challenge>(
-                    &vk,
-                    &npo_polynomial_prelude,
-                    &npo_residual_zero_proof,
-                )
-                .expect("terminal NPO polynomial residual-zero proof must verify");
-            let npo_residual_zero_verify_elapsed = npo_residual_zero_verify_start.elapsed();
+        let npo_residual_zero_fold_openings_size =
+            postcard::to_allocvec(&npo_residual_zero_proof.round_openings)
+                .expect("terminal NPO residual-zero fold openings must serialize")
+                .len();
+        let npo_residual_zero_verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_polynomial_residual_zero_goldilocks::<Challenge>(
+                &vk,
+                &npo_polynomial_prelude,
+                &npo_residual_zero_proof,
+            )
+            .expect("terminal NPO polynomial residual-zero proof must verify");
+        let npo_residual_zero_verify_elapsed = npo_residual_zero_verify_start.elapsed();
 
-            let npo_selected_column_indices =
-                NativeTerminalCompiler::terminal_npo_polynomial_prover_dependent_column_indices(
-                    &npo_polynomial_columns,
-                );
-            let npo_selected_column_oracles =
+        let npo_selected_column_indices =
+            NativeTerminalCompiler::terminal_npo_polynomial_prover_dependent_column_indices(
+                &npo_polynomial_columns,
+            );
+        let npo_selected_column_oracles =
                 NativeTerminalCompiler::commit_terminal_npo_polynomial_selected_column_values_goldilocks(
                     &npo_polynomial_columns,
                     &npo_selected_column_indices,
                 )
                 .expect("terminal selected NPO polynomial columns must commit");
-            let npo_selected_column_commitments = npo_selected_column_oracles.commitments();
-            let npo_selected_column_commitments_size =
-                postcard::to_allocvec(&npo_selected_column_commitments)
-                    .expect("terminal selected NPO column commitments must serialize")
-                    .len();
-            let npo_selected_prelude = compiler
-                .build_proof_prelude_goldilocks(
-                    &vk,
-                    &terminal_witness.public_inputs,
-                    parameters,
-                    npo_selected_column_commitments
-                        .iter()
-                        .map(|commitment| commitment.root)
-                        .collect(),
-                )
-                .expect("terminal selected NPO polynomial prelude must build");
-            let npo_compact_residual_zero_prove_start = std::time::Instant::now();
-            let npo_compact_residual_zero_proof = compiler
-                .prove_terminal_npo_polynomial_compact_residual_zero_goldilocks(
+        let npo_selected_column_commitments = npo_selected_column_oracles.commitments();
+        let npo_selected_column_commitments_size =
+            postcard::to_allocvec(&npo_selected_column_commitments)
+                .expect("terminal selected NPO column commitments must serialize")
+                .len();
+        let npo_selected_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &terminal_witness.public_inputs,
+                parameters,
+                npo_selected_column_commitments
+                    .iter()
+                    .map(|commitment| commitment.root)
+                    .collect(),
+            )
+            .expect("terminal selected NPO polynomial prelude must build");
+        let npo_compact_residual_zero_prove_start = std::time::Instant::now();
+        let npo_compact_residual_zero_proof = compiler
+            .prove_terminal_npo_polynomial_compact_residual_zero_goldilocks(
+                &vk,
+                &terminal_witness,
+                &npo_selected_prelude,
+            )
+            .expect("terminal NPO compact residual-zero proof must build");
+        let npo_compact_residual_zero_prove_elapsed =
+            npo_compact_residual_zero_prove_start.elapsed();
+        let npo_compact_residual_zero_size =
+            postcard::to_allocvec(&npo_compact_residual_zero_proof)
+                .expect("terminal NPO compact residual-zero proof must serialize")
+                .len();
+        let npo_compact_residual_zero_column_opening_size =
+            postcard::to_allocvec(&npo_compact_residual_zero_proof.column_opening_proof)
+                .expect("terminal NPO compact residual-zero column openings must serialize")
+                .len();
+        let npo_compact_residual_zero_fri_size =
+            postcard::to_allocvec(&npo_compact_residual_zero_proof.proof)
+                .expect("terminal NPO compact residual-zero FRI proof must serialize")
+                .len();
+        let npo_compact_residual_zero_verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_polynomial_compact_residual_zero_goldilocks(
+                &vk,
+                &npo_selected_prelude,
+                &npo_compact_residual_zero_proof,
+            )
+            .expect("terminal NPO compact residual-zero proof must verify");
+        let npo_compact_residual_zero_verify_elapsed =
+            npo_compact_residual_zero_verify_start.elapsed();
+
+        let npo_fri_compact_residual_zero_roots =
+            NativeTerminalCompiler::terminal_npo_polynomial_fri_prelude_commitments_goldilocks(
+                &npo_polynomial_columns,
+                TerminalNpoPolynomialFriColumnSet::ProverDependent,
+            )
+            .expect("terminal NPO prover-dependent FRI root must commit");
+        let npo_fri_compact_residual_zero_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &terminal_witness.public_inputs,
+                parameters,
+                npo_fri_compact_residual_zero_roots,
+            )
+            .expect("terminal NPO FRI-native compact residual-zero prelude must build");
+        let npo_fri_compact_residual_zero_prove_start = std::time::Instant::now();
+        let npo_fri_compact_residual_zero_proof = compiler
+            .prove_terminal_npo_polynomial_fri_compact_residual_zero_goldilocks(
+                &vk,
+                &terminal_witness.public_inputs,
+                &terminal_witness,
+                &npo_fri_compact_residual_zero_prelude,
+            )
+            .expect("terminal NPO FRI-native compact residual-zero proof must build");
+        let npo_fri_compact_residual_zero_prove_elapsed =
+            npo_fri_compact_residual_zero_prove_start.elapsed();
+        let npo_fri_compact_residual_zero_size =
+            postcard::to_allocvec(&npo_fri_compact_residual_zero_proof)
+                .expect("terminal NPO FRI-native compact residual-zero proof must serialize")
+                .len();
+        let npo_fri_compact_residual_zero_opened_selected_size = postcard::to_allocvec(
+            &npo_fri_compact_residual_zero_proof.opened_selected_basis,
+        )
+        .expect("terminal NPO FRI-native compact residual-zero selected openings must serialize")
+        .len();
+        let npo_fri_compact_residual_zero_fri_size =
+            postcard::to_allocvec(&npo_fri_compact_residual_zero_proof.proof)
+                .expect("terminal NPO FRI-native compact residual-zero FRI proof must serialize")
+                .len();
+        let npo_fri_compact_residual_zero_verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_polynomial_fri_compact_residual_zero_goldilocks::<Challenge>(
+                &vk,
+                &terminal_witness.public_inputs,
+                &npo_fri_compact_residual_zero_prelude,
+                &npo_fri_compact_residual_zero_proof,
+            )
+            .expect("terminal NPO FRI-native compact residual-zero proof must verify");
+        let npo_fri_compact_residual_zero_verify_elapsed =
+            npo_fri_compact_residual_zero_verify_start.elapsed();
+
+        let npo_recompose_residual_quotient_prove_start = std::time::Instant::now();
+        let npo_recompose_residual_quotient_proof = compiler
+            .prove_terminal_npo_polynomial_recompose_residual_quotient_goldilocks(
+                &vk,
+                &terminal_witness.public_inputs,
+                &terminal_witness,
+                &npo_fri_compact_residual_zero_prelude,
+            )
+            .expect("terminal NPO recompose residual quotient proof must build");
+        let npo_recompose_residual_quotient_prove_elapsed =
+            npo_recompose_residual_quotient_prove_start.elapsed();
+        let npo_recompose_residual_quotient_size =
+            postcard::to_allocvec(&npo_recompose_residual_quotient_proof)
+                .expect("terminal NPO recompose residual quotient proof must serialize")
+                .len();
+        let npo_recompose_residual_quotient_opened_selected_size =
+            postcard::to_allocvec(&npo_recompose_residual_quotient_proof.opened_selected_basis)
+                .expect("terminal NPO recompose residual quotient selected openings must serialize")
+                .len();
+        let npo_recompose_residual_quotient_fri_size =
+            postcard::to_allocvec(&npo_recompose_residual_quotient_proof.proof)
+                .expect("terminal NPO recompose residual quotient FRI proof must serialize")
+                .len();
+        let npo_recompose_residual_quotient_verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_polynomial_recompose_residual_quotient_goldilocks::<Challenge>(
+                &vk,
+                &terminal_witness.public_inputs,
+                &npo_fri_compact_residual_zero_prelude,
+                &npo_recompose_residual_quotient_proof,
+            )
+            .expect("terminal NPO recompose residual quotient proof must verify");
+        let npo_recompose_residual_quotient_verify_elapsed =
+            npo_recompose_residual_quotient_verify_start.elapsed();
+
+        let npo_combined_residual_recompose_prove_start = std::time::Instant::now();
+        let npo_combined_residual_recompose_proof = compiler
+            .prove_terminal_npo_polynomial_fri_residual_zero_recompose_goldilocks(
+                &vk,
+                &terminal_witness.public_inputs,
+                &terminal_witness,
+                &npo_fri_compact_residual_zero_prelude,
+            )
+            .expect("terminal NPO combined residual-zero/recompose proof must build");
+        let npo_combined_residual_recompose_prove_elapsed =
+            npo_combined_residual_recompose_prove_start.elapsed();
+        let npo_combined_residual_recompose_size =
+            postcard::to_allocvec(&npo_combined_residual_recompose_proof)
+                .expect("terminal NPO combined residual-zero/recompose proof must serialize")
+                .len();
+        let npo_combined_residual_recompose_opened_selected_size = postcard::to_allocvec(
+            &npo_combined_residual_recompose_proof.opened_selected_basis,
+        )
+        .expect("terminal NPO combined residual-zero/recompose selected openings must serialize")
+        .len();
+        let npo_combined_residual_recompose_fri_size =
+            postcard::to_allocvec(&npo_combined_residual_recompose_proof.proof)
+                .expect("terminal NPO combined residual-zero/recompose FRI proof must serialize")
+                .len();
+        let npo_combined_residual_recompose_verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_polynomial_fri_residual_zero_recompose_goldilocks::<Challenge>(
+                &vk,
+                &terminal_witness.public_inputs,
+                &npo_fri_compact_residual_zero_prelude,
+                &npo_combined_residual_recompose_proof,
+            )
+            .expect("terminal NPO combined residual-zero/recompose proof must verify");
+        let npo_combined_residual_recompose_verify_elapsed =
+            npo_combined_residual_recompose_verify_start.elapsed();
+
+        let npo_combined_residual_recompose_value_bridge_roots = compiler
+                .terminal_npo_fri_residual_zero_recompose_value_bridge_prelude_commitments_from_witness_goldilocks(
                     &vk,
                     &terminal_witness,
-                    &npo_selected_prelude,
                 )
-                .expect("terminal NPO compact residual-zero proof must build");
-            let npo_compact_residual_zero_prove_elapsed =
-                npo_compact_residual_zero_prove_start.elapsed();
-            let npo_compact_residual_zero_size =
-                postcard::to_allocvec(&npo_compact_residual_zero_proof)
-                    .expect("terminal NPO compact residual-zero proof must serialize")
-                    .len();
-            let npo_compact_residual_zero_column_opening_size =
-                postcard::to_allocvec(&npo_compact_residual_zero_proof.column_opening_proof)
-                    .expect("terminal NPO compact residual-zero column openings must serialize")
-                    .len();
-            let npo_compact_residual_zero_fri_size =
-                postcard::to_allocvec(&npo_compact_residual_zero_proof.proof)
-                    .expect("terminal NPO compact residual-zero FRI proof must serialize")
-                    .len();
-            let npo_compact_residual_zero_verify_start = std::time::Instant::now();
-            compiler
-                .verify_terminal_npo_polynomial_compact_residual_zero_goldilocks(
-                    &vk,
-                    &npo_selected_prelude,
-                    &npo_compact_residual_zero_proof,
-                )
-                .expect("terminal NPO compact residual-zero proof must verify");
-            let npo_compact_residual_zero_verify_elapsed =
-                npo_compact_residual_zero_verify_start.elapsed();
-
-            let npo_fri_compact_residual_zero_roots =
-                NativeTerminalCompiler::terminal_npo_polynomial_fri_prelude_commitments_goldilocks(
-                    &npo_polynomial_columns,
-                    TerminalNpoPolynomialFriColumnSet::ProverDependent,
-                )
-                .expect("terminal NPO prover-dependent FRI root must commit");
-            let npo_fri_compact_residual_zero_prelude = compiler
-                .build_proof_prelude_goldilocks(
-                    &vk,
-                    &terminal_witness.public_inputs,
-                    parameters,
-                    npo_fri_compact_residual_zero_roots,
-                )
-                .expect("terminal NPO FRI-native compact residual-zero prelude must build");
-            let npo_fri_compact_residual_zero_prove_start = std::time::Instant::now();
-            let npo_fri_compact_residual_zero_proof = compiler
-                .prove_terminal_npo_polynomial_fri_compact_residual_zero_goldilocks(
-                    &vk,
-                    &terminal_witness.public_inputs,
-                    &terminal_witness,
-                    &npo_fri_compact_residual_zero_prelude,
-                )
-                .expect("terminal NPO FRI-native compact residual-zero proof must build");
-            let npo_fri_compact_residual_zero_prove_elapsed =
-                npo_fri_compact_residual_zero_prove_start.elapsed();
-            let npo_fri_compact_residual_zero_size =
-                postcard::to_allocvec(&npo_fri_compact_residual_zero_proof)
-                    .expect("terminal NPO FRI-native compact residual-zero proof must serialize")
-                    .len();
-            let npo_fri_compact_residual_zero_opened_selected_size = postcard::to_allocvec(
-                &npo_fri_compact_residual_zero_proof.opened_selected_basis,
+                .expect("terminal NPO merged value-bridge FRI roots must commit");
+        let npo_combined_residual_recompose_value_bridge_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &terminal_witness.public_inputs,
+                parameters,
+                npo_combined_residual_recompose_value_bridge_roots,
             )
-            .expect("terminal NPO FRI-native compact residual-zero selected openings must serialize")
-            .len();
-            let npo_fri_compact_residual_zero_fri_size =
-                postcard::to_allocvec(&npo_fri_compact_residual_zero_proof.proof)
-                    .expect("terminal NPO FRI-native compact residual-zero FRI proof must serialize")
-                    .len();
-            let npo_fri_compact_residual_zero_verify_start = std::time::Instant::now();
-            compiler
-                .verify_terminal_npo_polynomial_fri_compact_residual_zero_goldilocks::<Challenge>(
-                    &vk,
-                    &terminal_witness.public_inputs,
-                    &npo_fri_compact_residual_zero_prelude,
-                    &npo_fri_compact_residual_zero_proof,
-                )
-                .expect("terminal NPO FRI-native compact residual-zero proof must verify");
-            let npo_fri_compact_residual_zero_verify_elapsed =
-                npo_fri_compact_residual_zero_verify_start.elapsed();
-
-            let npo_recompose_residual_quotient_prove_start = std::time::Instant::now();
-            let npo_recompose_residual_quotient_proof = compiler
-                .prove_terminal_npo_polynomial_recompose_residual_quotient_goldilocks(
-                    &vk,
-                    &terminal_witness.public_inputs,
-                    &terminal_witness,
-                    &npo_fri_compact_residual_zero_prelude,
-                )
-                .expect("terminal NPO recompose residual quotient proof must build");
-            let npo_recompose_residual_quotient_prove_elapsed =
-                npo_recompose_residual_quotient_prove_start.elapsed();
-            let npo_recompose_residual_quotient_size =
-                postcard::to_allocvec(&npo_recompose_residual_quotient_proof)
-                    .expect("terminal NPO recompose residual quotient proof must serialize")
-                    .len();
-            let npo_recompose_residual_quotient_opened_selected_size = postcard::to_allocvec(
-                &npo_recompose_residual_quotient_proof.opened_selected_basis,
+            .expect("terminal NPO merged value-bridge FRI prelude must build");
+        let npo_combined_residual_recompose_value_bridge_prove_start = std::time::Instant::now();
+        let npo_combined_residual_recompose_value_bridge_proof = compiler
+            .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks(
+                &vk,
+                &terminal_witness.public_inputs,
+                &terminal_witness,
+                &npo_combined_residual_recompose_value_bridge_prelude,
             )
-            .expect("terminal NPO recompose residual quotient selected openings must serialize")
-            .len();
-            let npo_recompose_residual_quotient_fri_size =
-                postcard::to_allocvec(&npo_recompose_residual_quotient_proof.proof)
-                    .expect("terminal NPO recompose residual quotient FRI proof must serialize")
-                    .len();
-            let npo_recompose_residual_quotient_verify_start = std::time::Instant::now();
-            compiler
-                .verify_terminal_npo_polynomial_recompose_residual_quotient_goldilocks::<Challenge>(
+            .expect("terminal NPO merged residual-zero/recompose/value-bridge proof must build");
+        let npo_combined_residual_recompose_value_bridge_prove_elapsed =
+            npo_combined_residual_recompose_value_bridge_prove_start.elapsed();
+        let npo_combined_residual_recompose_value_bridge_size =
+            postcard::to_allocvec(&npo_combined_residual_recompose_value_bridge_proof)
+                .expect(
+                    "terminal NPO merged residual-zero/recompose/value-bridge proof must serialize",
+                )
+                .len();
+        let npo_combined_residual_recompose_value_bridge_opened_selected_size =
+                postcard::to_allocvec(
+                    &npo_combined_residual_recompose_value_bridge_proof.opened_selected_basis,
+                )
+                .expect(
+                    "terminal NPO merged residual-zero/recompose/value-bridge selected openings must serialize",
+                )
+                .len();
+        let npo_combined_residual_recompose_value_bridge_fri_size = postcard::to_allocvec(
+            &npo_combined_residual_recompose_value_bridge_proof.proof,
+        )
+        .expect("terminal NPO merged residual-zero/recompose/value-bridge FRI proof must serialize")
+        .len();
+        let npo_combined_residual_recompose_value_bridge_verify_start = std::time::Instant::now();
+        compiler
+                .verify_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks::<Challenge>(
                     &vk,
                     &terminal_witness.public_inputs,
-                    &npo_fri_compact_residual_zero_prelude,
-                    &npo_recompose_residual_quotient_proof,
+                    &npo_combined_residual_recompose_value_bridge_prelude,
+                    &npo_combined_residual_recompose_value_bridge_proof,
                 )
-                .expect("terminal NPO recompose residual quotient proof must verify");
-            let npo_recompose_residual_quotient_verify_elapsed =
-                npo_recompose_residual_quotient_verify_start.elapsed();
+                .expect("terminal NPO merged residual-zero/recompose/value-bridge proof must verify");
+        let npo_combined_residual_recompose_value_bridge_verify_elapsed =
+            npo_combined_residual_recompose_value_bridge_verify_start.elapsed();
 
-            let npo_combined_residual_recompose_prove_start = std::time::Instant::now();
-            let npo_combined_residual_recompose_proof = compiler
-                .prove_terminal_npo_polynomial_fri_residual_zero_recompose_goldilocks(
-                    &vk,
-                    &terminal_witness.public_inputs,
-                    &terminal_witness,
-                    &npo_fri_compact_residual_zero_prelude,
-                )
-                .expect("terminal NPO combined residual-zero/recompose proof must build");
-            let npo_combined_residual_recompose_prove_elapsed =
-                npo_combined_residual_recompose_prove_start.elapsed();
-            let npo_combined_residual_recompose_size =
-                postcard::to_allocvec(&npo_combined_residual_recompose_proof)
-                    .expect("terminal NPO combined residual-zero/recompose proof must serialize")
-                    .len();
-            let npo_combined_residual_recompose_opened_selected_size = postcard::to_allocvec(
-                &npo_combined_residual_recompose_proof.opened_selected_basis,
-            )
-            .expect(
-                "terminal NPO combined residual-zero/recompose selected openings must serialize",
-            )
-            .len();
-            let npo_combined_residual_recompose_fri_size =
-                postcard::to_allocvec(&npo_combined_residual_recompose_proof.proof)
-                    .expect(
-                        "terminal NPO combined residual-zero/recompose FRI proof must serialize",
-                    )
-                    .len();
-            let npo_combined_residual_recompose_verify_start = std::time::Instant::now();
-            compiler
-                .verify_terminal_npo_polynomial_fri_residual_zero_recompose_goldilocks::<Challenge>(
-                    &vk,
-                    &terminal_witness.public_inputs,
-                    &npo_fri_compact_residual_zero_prelude,
-                    &npo_combined_residual_recompose_proof,
-                )
-                .expect("terminal NPO combined residual-zero/recompose proof must verify");
-            let npo_combined_residual_recompose_verify_elapsed =
-                npo_combined_residual_recompose_verify_start.elapsed();
-
-            Some((
-                npo_column_oracles.layout.rows,
-                npo_column_oracles.layout.column_count,
-                npo_column_commitments_size,
-                npo_column_commit_elapsed,
-                npo_residual_zero_size,
-                npo_residual_zero_column_opening_size,
-                npo_residual_zero_fold_openings_size,
-                npo_residual_zero_prove_elapsed,
-                npo_residual_zero_verify_elapsed,
-                npo_selected_column_indices.len(),
-                npo_selected_column_commitments_size,
-                npo_compact_residual_zero_size,
-                npo_compact_residual_zero_column_opening_size,
-                npo_compact_residual_zero_fri_size,
-                npo_compact_residual_zero_prove_elapsed,
-                npo_compact_residual_zero_verify_elapsed,
-                npo_fri_compact_residual_zero_size,
-                npo_fri_compact_residual_zero_opened_selected_size,
-                npo_fri_compact_residual_zero_fri_size,
-                npo_fri_compact_residual_zero_prove_elapsed,
-                npo_fri_compact_residual_zero_verify_elapsed,
-                npo_recompose_residual_quotient_size,
-                npo_recompose_residual_quotient_opened_selected_size,
-                npo_recompose_residual_quotient_fri_size,
-                npo_recompose_residual_quotient_prove_elapsed,
-                npo_recompose_residual_quotient_verify_elapsed,
-                npo_combined_residual_recompose_size,
-                npo_combined_residual_recompose_opened_selected_size,
-                npo_combined_residual_recompose_fri_size,
-                npo_combined_residual_recompose_prove_elapsed,
-                npo_combined_residual_recompose_verify_elapsed,
-            ))
-        } else {
-            None
-        };
+        Some((
+            npo_column_oracles.layout.rows,
+            npo_column_oracles.layout.column_count,
+            npo_column_commitments_size,
+            npo_column_commit_elapsed,
+            npo_residual_zero_size,
+            npo_residual_zero_column_opening_size,
+            npo_residual_zero_fold_openings_size,
+            npo_residual_zero_prove_elapsed,
+            npo_residual_zero_verify_elapsed,
+            npo_selected_column_indices.len(),
+            npo_selected_column_commitments_size,
+            npo_compact_residual_zero_size,
+            npo_compact_residual_zero_column_opening_size,
+            npo_compact_residual_zero_fri_size,
+            npo_compact_residual_zero_prove_elapsed,
+            npo_compact_residual_zero_verify_elapsed,
+            npo_fri_compact_residual_zero_size,
+            npo_fri_compact_residual_zero_opened_selected_size,
+            npo_fri_compact_residual_zero_fri_size,
+            npo_fri_compact_residual_zero_prove_elapsed,
+            npo_fri_compact_residual_zero_verify_elapsed,
+            npo_recompose_residual_quotient_size,
+            npo_recompose_residual_quotient_opened_selected_size,
+            npo_recompose_residual_quotient_fri_size,
+            npo_recompose_residual_quotient_prove_elapsed,
+            npo_recompose_residual_quotient_verify_elapsed,
+            npo_combined_residual_recompose_size,
+            npo_combined_residual_recompose_opened_selected_size,
+            npo_combined_residual_recompose_fri_size,
+            npo_combined_residual_recompose_prove_elapsed,
+            npo_combined_residual_recompose_verify_elapsed,
+            npo_combined_residual_recompose_value_bridge_size,
+            npo_combined_residual_recompose_value_bridge_opened_selected_size,
+            npo_combined_residual_recompose_value_bridge_fri_size,
+            npo_combined_residual_recompose_value_bridge_prove_elapsed,
+            npo_combined_residual_recompose_value_bridge_verify_elapsed,
+        ))
+    } else {
+        None
+    };
 
     let assignment_oracle = compiler
         .commit_terminal_assignment_goldilocks(
@@ -1086,6 +1149,11 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         npo_combined_residual_recompose_fri_size,
         npo_combined_residual_recompose_prove_elapsed,
         npo_combined_residual_recompose_verify_elapsed,
+        npo_combined_residual_recompose_value_bridge_size,
+        npo_combined_residual_recompose_value_bridge_opened_selected_size,
+        npo_combined_residual_recompose_value_bridge_fri_size,
+        npo_combined_residual_recompose_value_bridge_prove_elapsed,
+        npo_combined_residual_recompose_value_bridge_verify_elapsed,
     )) = npo_residual_zero_measurement
     {
         eprintln!(
@@ -1141,9 +1209,17 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
             npo_combined_residual_recompose_verify_elapsed.as_secs_f64(),
         );
         eprintln!(
+            "terminal NPO FRI-native residual-zero+recompose+value-bridge candidate: proof={} bytes ({:.1} KiB) opened_selected={} compact_fri={} prove={:.3}s verify={:.3}s",
+            npo_combined_residual_recompose_value_bridge_size,
+            npo_combined_residual_recompose_value_bridge_size as f64 / 1024.0,
+            npo_combined_residual_recompose_value_bridge_opened_selected_size,
+            npo_combined_residual_recompose_value_bridge_fri_size,
+            npo_combined_residual_recompose_value_bridge_prove_elapsed.as_secs_f64(),
+            npo_combined_residual_recompose_value_bridge_verify_elapsed.as_secs_f64(),
+        );
+        eprintln!(
             "terminal NPO selected columns: columns={} commitments={} bytes",
-            npo_selected_column_count,
-            npo_selected_column_commitments_size,
+            npo_selected_column_count, npo_selected_column_commitments_size,
         );
     }
     eprintln!(

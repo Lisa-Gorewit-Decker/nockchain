@@ -36,6 +36,22 @@
 >   target-status table reanchored.
 > - Memory `proof_size_target_2026_05_21.md`: project-level note
 >   of the change + rationale.
+>
+> **2026-06-04 terminal backend checkpoint.** The production terminal
+> proximity profile now uses pure FRI queries for the 60-bit floor:
+> `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`
+> (`pure_query_bits=60`). The latest opt-in real Tip5-L0 verifier
+> measurement (`NOCK_TERMINAL_MEASURE_NPO_RESIDUAL_ZERO=1 cargo test
+> --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --test
+> test_l1_outer_cert_tip5_unified
+> terminal_production_certificate_measures_real_tip5_l0_verifier_circuit
+> -- --nocapture`) reports the production compact recursive certificate
+> at **86,446 bytes (84.4 KiB)** with prove **4.627 s** / verify
+> **3.587 s**. The FRI-native NPO
+> residual-zero+recompose+value-bridge candidate, at the same pure
+> 60-bit profile, reports **111,943 bytes (109.3 KiB)** with prove
+> **8.641 s** / verify **0.670 s**. This checkpoint is near the
+> ≤100 KiB bar but does **not** claim a production-profile ≤100 KiB hit.
 
 ---
 
