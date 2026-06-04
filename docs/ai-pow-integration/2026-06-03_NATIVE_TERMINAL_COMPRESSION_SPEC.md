@@ -274,8 +274,10 @@ for this route.
   identity `sum alpha^i * (1 - present_i(zeta)) * value_i(zeta) =
   quotient(zeta) * Z_H(zeta)`, plus MMCS-bit constraints `present(zeta) *
   bit(zeta) * (bit(zeta) - 1)` for the base lane and `present(zeta) *
-  bit_tail(zeta)` for non-base lanes, plus Merkle capacity-zero constraints
-  forcing hidden Tip5 lanes 10 through 15 to zero under verifier-derived
+  bit_tail(zeta)` for non-base lanes, plus Tip5 chain-start zero constraints
+  for verifier-selected hidden lanes under `mode_new_start`, plus Merkle
+  capacity-zero constraints forcing hidden Tip5 lanes 10 through 15 to zero
+  under verifier-derived
   `is_tip5 * mode_merkle_path * hidden_tip5_present_limb` selectors, plus
   recompose constraints forcing non-base input tails to zero and
   `output_basis_i = input_i_base` under the combined
@@ -283,9 +285,9 @@ for this route.
   the value-column trace domain so the degree-3 booleanity relation has a
   low-degree quotient. This is the Plonky3-style
   quotient/vanishing-polynomial form needed for mixed present-bit padding,
-  MMCS direction-bit booleanity, Merkle capacity-zero lanes, and recompose
-  value-column semantics; it is still a checkpoint, not yet the complete
-  production NPO relation proof.
+  MMCS direction-bit booleanity, Tip5 chain-start zero lanes, Merkle
+  capacity-zero lanes, and recompose value-column semantics; it is still a
+  checkpoint, not yet the complete production NPO relation proof.
 - `TerminalNpoPolynomialColumnOracleSet`: the commit-ready 5-round Tip5 oracle
   set for those fixed columns. Each column uses a verifier-derived
   `npo_polynomial_column/<column-label>` oracle label and the shared row count.
@@ -890,9 +892,10 @@ adding a second Merkle-heavy proof. The FRI verifier now exposes exactly that
 checked value-column opening handoff. The padding quotient checkpoint now
 checks mixed present-bit value padding and MMCS direction-bit booleanity with a
 quotient/vanishing identity over the same opened value columns, and it now
-checks Merkle capacity-zero lanes plus recompose value-column semantics under
-verifier-derived row selectors. Tip5 permutation, chain, and residual-zero
-constraints over those openings are still pending.
+checks Tip5 chain-start zero lanes, Merkle capacity-zero lanes, and recompose
+value-column semantics under verifier-derived row selectors. Tip5 permutation,
+prior-output chain transitions, and residual-zero constraints over those
+openings are still pending.
 
 Recursive proving uses 5-round Tip5 only. This terminal path must not be read as
 a change to Nockchain's canonical non-recursive 7-round Tip5 hash path.
