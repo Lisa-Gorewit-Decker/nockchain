@@ -26002,6 +26002,59 @@ mod tests {
             Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
         ));
 
+        let mut malformed_commit_order = proof.proof.clone();
+        let mut commit_order_tampered = false;
+        for round in &mut malformed_commit_order.commit_rounds {
+            if let Some(slot) = round.pruned_opening_proof.original_order.first_mut() {
+                *slot = u32::MAX;
+                commit_order_tampered = true;
+                break;
+            }
+        }
+        assert!(
+            commit_order_tampered,
+            "compressed FRI commit proof must carry query order"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&malformed_commit_order),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+        ));
+
+        let mut shortened_commit_order = proof.proof.clone();
+        let mut shortened_commit_order_tampered = false;
+        for round in &mut shortened_commit_order.commit_rounds {
+            if round.pruned_opening_proof.original_order.pop().is_some() {
+                shortened_commit_order_tampered = true;
+                break;
+            }
+        }
+        assert!(
+            shortened_commit_order_tampered,
+            "compressed FRI commit proof must carry query order"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&shortened_commit_order),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+        ));
+
+        let mut overlong_commit_order = proof.proof.clone();
+        let mut overlong_commit_order_tampered = false;
+        for round in &mut overlong_commit_order.commit_rounds {
+            if !round.pruned_opening_proof.original_order.is_empty() {
+                round.pruned_opening_proof.original_order.push(0);
+                overlong_commit_order_tampered = true;
+                break;
+            }
+        }
+        assert!(
+            overlong_commit_order_tampered,
+            "compressed FRI commit proof must carry query order"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&overlong_commit_order),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+        ));
+
         let mut corrupted_path = proof.proof.clone();
         let mut path_tampered = false;
         for batch in &mut corrupted_path.input_batches {
