@@ -238,6 +238,13 @@ for this route.
   verifier-expanded segment row, and requires opened residual columns to match
   the derived residuals. Tests build an internally Merkle-consistent tampered
   column proof and reject it at this residual-consistency layer.
+- `TerminalNpoPolynomialColumnEvaluationProof`: a Merkle-backed multilinear
+  evaluation proof for one fixed NPO column. It folds the committed column with
+  transcript challenges that bind the terminal prelude, column label, column
+  root, and prior fold roots, then verifies compact sampled fold openings with
+  dedicated NPO-column transcript domains. This is the PCS-style primitive the
+  final NPO backend needs, but it is not yet batched across all columns or
+  combined with the full proximity/soundness theorem.
 - `TerminalNpoExhaustiveResidualFoldProof`: a Merkle-backed folded zero check
   for the production-equivalent supported-NPO residual oracle, with transcript
   domains distinct from both primitive residual folding and legacy sampled NPO
