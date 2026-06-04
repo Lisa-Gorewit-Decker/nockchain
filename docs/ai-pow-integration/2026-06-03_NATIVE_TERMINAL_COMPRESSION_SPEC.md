@@ -262,12 +262,12 @@ multilinear extension of the row products. The remaining primitive-relation
 step is therefore a row-product sumcheck over
 `eq(r, x) * (A(x) * B(x) - C(x))`.
 
-Performance note: the first correct matrix-vector round evaluator uses dense
-partial sums of the product of the matrix MLE and assignment MLE. A real Tip5
-Layer-0 verifier measurement was started and manually stopped after it exceeded
-two minutes, so this evaluator is not production-acceptable. The next pass must
-replace it with a sparse/dynamic-programming evaluator before integrating it
-into the real-circuit performance test.
+Performance note: the first correct matrix-vector round evaluator used dense
+partial sums of the product of the matrix MLE and assignment MLE and was stopped
+after exceeding two minutes on the real Tip5 Layer-0 verifier. That path has
+been replaced by a folded-vector evaluator: the prover builds the batched sparse
+matrix coefficient vector once, pads the assignment vector once, then folds both
+vectors in lockstep through the sumcheck rounds.
 
 Those supported NPO rows now also project into `TerminalNpoRelation`: a stable
 global row domain over `tip5_perm/goldilocks_w16_r5`, `recompose`, and
@@ -611,6 +611,19 @@ serializes the 3,043-value witness basis and hidden Tip5 inputs. The remaining
 production-backend task is to replace that exposed witness material with a
 non-witness polynomial/sumcheck/FRI commitment argument while preserving the
 same relation checks and transcript bindings.
+
+The optimized sparse-R1CS matrix-vector sumcheck component measures separately
+on the same real Tip5-L0 verifier circuit:
+
+| component | bytes |
+|---|---:|
+| sparse R1CS matrix sumcheck proof | 90,962 |
+
+The debug-profile measurement is `prove=1.678 s, verify=1.054 s`. This is not
+a complete terminal relation proof; it proves only the batched matrix-vector
+evaluation claims and consumes the assignment evaluation proof at the final
+sumcheck point. The primitive row-product sumcheck and NPO/table global
+arguments remain required before this can replace the direct production proof.
 
 Recursive proving uses 5-round Tip5 only. This terminal path must not be read as
 a change to Nockchain's canonical non-recursive 7-round Tip5 hash path.

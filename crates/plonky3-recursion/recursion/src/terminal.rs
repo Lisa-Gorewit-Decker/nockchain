@@ -5273,16 +5273,16 @@ impl NativeTerminalCompiler {
         let mut current_claim = claimed_a + alpha * claimed_b + alpha_sq * claimed_c;
         let mut variable_point = Vec::with_capacity(sparse_relation.log_variables);
         let mut rounds = Vec::with_capacity(sparse_relation.log_variables);
+        let mut current_matrix_values =
+            Self::sparse_r1cs_matrix_combo_values(&sparse_relation, &row_point, alpha);
+        let mut current_assignment_values =
+            Self::pad_terminal_values_to_mle_len(&assignment_values, sparse_relation.log_variables);
 
         for round in 0..sparse_relation.log_variables {
-            let evals = Self::sparse_r1cs_sumcheck_round_evaluations(
-                &sparse_relation,
-                &row_point,
-                &assignment_values,
-                alpha,
-                round,
-                &variable_point,
-            )?;
+            let evals = Self::sparse_r1cs_folded_round_evaluations(
+                &current_matrix_values,
+                &current_assignment_values,
+            );
             if evals[0] + evals[1] != current_claim {
                 return Err(
                     NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
@@ -5309,6 +5309,9 @@ impl NativeTerminalCompiler {
             )?;
             variable_point.push(challenge);
             current_claim = Self::interpolate_degree_two_at(evals, challenge);
+            current_matrix_values = Self::fold_terminal_values(&current_matrix_values, challenge);
+            current_assignment_values =
+                Self::fold_terminal_values(&current_assignment_values, challenge);
         }
 
         let assignment_evaluation = self.prove_terminal_assignment_evaluation_at_point_goldilocks(
@@ -5321,12 +5324,12 @@ impl NativeTerminalCompiler {
         )?;
         let assignment_eval =
             Self::field_from_goldilocks_basis_u64::<F>(&assignment_evaluation.final_value_basis)?;
-        let matrix_eval = Self::evaluate_sparse_r1cs_matrix_combo_at_point(
-            &sparse_relation,
-            &row_point,
-            &variable_point,
-            alpha,
-        );
+        let matrix_eval = current_matrix_values.first().copied().ok_or(
+            NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
+                query: 0,
+                round: sparse_relation.log_variables,
+            },
+        )?;
         if current_claim != matrix_eval * assignment_eval {
             return Err(
                 NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
@@ -6167,46 +6170,53 @@ impl NativeTerminalCompiler {
         Ok((a, b, c))
     }
 
-    fn sparse_r1cs_sumcheck_round_evaluations<F>(
+    fn sparse_r1cs_matrix_combo_values<F>(
         relation: &TerminalSparseR1csRelation<F>,
         row_point: &[F],
-        assignment_values: &[F],
         alpha: F,
-        round: usize,
-        prefix_point: &[F],
-    ) -> Result<[F; 3], NativeTerminalVerifyError>
+    ) -> Vec<F>
+    where
+        F: Field + Copy,
+    {
+        let alpha_sq = alpha.square();
+        let mut values = vec![F::ZERO; 1usize << relation.log_variables];
+        for entry in &relation.entries {
+            let matrix_weight = match entry.matrix {
+                TerminalSparseR1csMatrix::A => F::ONE,
+                TerminalSparseR1csMatrix::B => alpha,
+                TerminalSparseR1csMatrix::C => alpha_sq,
+            };
+            values[entry.variable_index] +=
+                entry.coeff * matrix_weight * Self::terminal_eq_index_point(entry.row, row_point);
+        }
+        values
+    }
+
+    fn sparse_r1cs_folded_round_evaluations<F>(
+        matrix_values: &[F],
+        assignment_values: &[F],
+    ) -> [F; 3]
     where
         F: Field + Copy,
     {
         let mut evals = [F::ZERO; 3];
-        let remaining_bits = relation.log_variables.checked_sub(round + 1).ok_or(
-            NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch { query: 0, round },
-        )?;
-        let suffix_count = 1usize << remaining_bits;
-        let points = [F::ZERO, F::ONE, F::ONE + F::ONE];
-        for (eval, point) in evals.iter_mut().zip(points) {
-            for suffix in 0..suffix_count {
-                let matrix_eval = Self::evaluate_sparse_r1cs_matrix_combo_at_sumcheck_point(
-                    relation,
-                    row_point,
-                    prefix_point,
-                    round,
-                    point,
-                    suffix,
-                    alpha,
-                );
-                let assignment_eval = Self::evaluate_assignment_at_sumcheck_point(
-                    assignment_values,
-                    relation.log_variables,
-                    prefix_point,
-                    round,
-                    point,
-                    suffix,
-                );
-                *eval += matrix_eval * assignment_eval;
-            }
+        for pair_index in 0..matrix_values.len().div_ceil(2) {
+            let left_index = pair_index * 2;
+            let right_index = left_index + 1;
+            let matrix_left = matrix_values[left_index];
+            let matrix_right = matrix_values.get(right_index).copied().unwrap_or(F::ZERO);
+            let assignment_left = assignment_values[left_index];
+            let assignment_right = assignment_values
+                .get(right_index)
+                .copied()
+                .unwrap_or(F::ZERO);
+
+            evals[0] += matrix_left * assignment_left;
+            evals[1] += matrix_right * assignment_right;
+            evals[2] += (matrix_right + matrix_right - matrix_left)
+                * (assignment_right + assignment_right - assignment_left);
         }
-        Ok(evals)
+        evals
     }
 
     fn evaluate_sparse_r1cs_matrix_combo_at_point<F>(
@@ -6234,70 +6244,26 @@ impl NativeTerminalCompiler {
         acc
     }
 
-    fn evaluate_sparse_r1cs_matrix_combo_at_sumcheck_point<F>(
-        relation: &TerminalSparseR1csRelation<F>,
-        row_point: &[F],
-        prefix_point: &[F],
-        round: usize,
-        point: F,
-        suffix: usize,
-        alpha: F,
-    ) -> F
+    fn pad_terminal_values_to_mle_len<F>(values: &[F], log_len: usize) -> Vec<F>
     where
         F: Field + Copy,
     {
-        let alpha_sq = alpha.square();
-        let mut acc = F::ZERO;
-        for entry in &relation.entries {
-            let matrix_weight = match entry.matrix {
-                TerminalSparseR1csMatrix::A => F::ONE,
-                TerminalSparseR1csMatrix::B => alpha,
-                TerminalSparseR1csMatrix::C => alpha_sq,
-            };
-            acc += entry.coeff
-                * matrix_weight
-                * Self::terminal_eq_index_point(entry.row, row_point)
-                * Self::terminal_eq_index_sumcheck_point(
-                    entry.variable_index,
-                    relation.log_variables,
-                    prefix_point,
-                    round,
-                    point,
-                    suffix,
-                );
-        }
-        acc
+        let mut out = values.to_vec();
+        out.resize(1usize << log_len, F::ZERO);
+        out
     }
 
-    fn evaluate_assignment_at_sumcheck_point<F>(
-        assignment_values: &[F],
-        log_variables: usize,
-        prefix_point: &[F],
-        round: usize,
-        point: F,
-        suffix: usize,
-    ) -> F
+    fn fold_terminal_values<F>(values: &[F], challenge: F) -> Vec<F>
     where
         F: Field + Copy,
     {
-        let padded_len = 1usize << log_variables;
-        let mut acc = F::ZERO;
-        for index in 0..padded_len {
-            let value = assignment_values.get(index).copied().unwrap_or(F::ZERO);
-            if value == F::ZERO {
-                continue;
-            }
-            acc += value
-                * Self::terminal_eq_index_sumcheck_point(
-                    index,
-                    log_variables,
-                    prefix_point,
-                    round,
-                    point,
-                    suffix,
-                );
+        let mut out = Vec::with_capacity(values.len().div_ceil(2));
+        for pair in values.chunks(2) {
+            let left = pair[0];
+            let right = pair.get(1).copied().unwrap_or(F::ZERO);
+            out.push(left * (F::ONE - challenge) + right * challenge);
         }
-        acc
+        out
     }
 
     fn terminal_eq_index_point<F>(index: usize, point: &[F]) -> F
@@ -6317,44 +6283,6 @@ impl NativeTerminalCompiler {
                 acc *= challenge;
             } else {
                 acc *= F::ONE - challenge;
-            }
-        }
-        acc
-    }
-
-    fn terminal_eq_index_sumcheck_point<F>(
-        index: usize,
-        log_variables: usize,
-        prefix_point: &[F],
-        round: usize,
-        point: F,
-        suffix: usize,
-    ) -> F
-    where
-        F: Field + Copy,
-    {
-        let mut acc = Self::terminal_eq_index_point_prefix(index, prefix_point);
-        if ((index >> round) & 1) == 1 {
-            acc *= point;
-        } else {
-            acc *= F::ONE - point;
-        }
-        for suffix_bit in 0..log_variables.saturating_sub(round + 1) {
-            let bit_index = round + 1 + suffix_bit;
-            let selector = if ((suffix >> suffix_bit) & 1) == 1 {
-                if ((index >> bit_index) & 1) == 1 {
-                    F::ONE
-                } else {
-                    F::ZERO
-                }
-            } else if ((index >> bit_index) & 1) == 1 {
-                F::ZERO
-            } else {
-                F::ONE
-            };
-            acc *= selector;
-            if acc == F::ZERO {
-                break;
             }
         }
         acc
