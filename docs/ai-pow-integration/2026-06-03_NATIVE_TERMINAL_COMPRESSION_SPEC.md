@@ -93,8 +93,9 @@ for this route.
   digest of the backend proof body, an aggregate `TerminalBindingDigest` over
   header + proof kind + public digest + proof body digest, and the
   backend-specific proof body bytes. The public certificate path is production
-  only and uses `TerminalProofKind::Production`; local checkpoint helpers are
-  internal regression machinery, not an integration or wire path.
+  only and uses `TerminalProofKind::Production`; the local checkpoint kind and
+  helpers are compiled only for tests as internal regression machinery, not as
+  an integration or wire path.
 - `TerminalProofParameters`: production terminal parameters committed before
   any backend challenge is sampled. The active native-terminal checkpoint
   profile is `security_bits=60, log_blowup=4, num_queries=15,
@@ -546,8 +547,8 @@ but they are no longer maintained as a public certificate profile. The active
 60-bit terminal benchmark prints only the production certificate and its
 production subcomponents. Internal tests still exercise the local fold and
 consistency components so regressions in shared transcript/oracle machinery are
-caught, but integration code cannot assemble or verify a `LocalCheckpoint`
-certificate.
+caught, but production integration code cannot construct a `LocalCheckpoint`
+certificate kind.
 
 The second local relation proof component samples supported non-primitive rows
 with domain `nock-terminal-npo-query-v1`. The verifier recomputes the NPO-row
@@ -589,7 +590,7 @@ Tip5-L0 verifier circuit:
 | compact production proof body | 88,577 |
 | compact production certificate | 88,798 |
 
-The debug-profile measurement is `prove=5.392 s, verify=3.399 s` for the
+The debug-profile measurement is `prove=4.876 s, verify=3.136 s` for the
 production proof body and certificate, with terminal parameters
 `security_bits=60, log_blowup=4, num_queries=15, query_pow_bits=0`. This removes
 the sampled production NPO validity layer and verifies all 668 supported
@@ -624,8 +625,8 @@ component includes that matrix-vector subproof:
 | assignment fold query indices | 46 |
 | assignment fold round multiproofs | 20,791 |
 
-The latest debug-profile measurements are `prove=2.279 s, verify=1.460 s` for
-the matrix-vector component and `prove=2.300 s, verify=1.459 s` for the
+The latest debug-profile measurements are `prove=2.111 s, verify=1.349 s` for
+the matrix-vector component and `prove=2.136 s, verify=1.350 s` for the
 row-product component. This now proves the primitive sparse-R1CS row relation
 against the assignment commitment with compact public-prefix authentication, but
 NPO/table global arguments and the final polynomial proximity backend remain
@@ -691,8 +692,8 @@ Completion audit against the active terminal-compression requirements:
 |---|---|---|
 | Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
-| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `88,798` bytes / `86.7 KiB`, debug-profile `prove=5.392s`, `verify=3.399s`. | satisfied on the measured production fixture |
-| No confusing low-soundness testing production path | Production certificate verifier accepts only `TerminalProofKind::Production`; `LocalCheckpoint` is rejected by kind mismatch and query domains must support all 15 production queries. | satisfied for public production verifier dispatch |
+| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `88,798` bytes / `86.7 KiB`, debug-profile `prove=4.876s`, `verify=3.136s`. | satisfied on the measured production fixture |
+| No confusing low-soundness testing production path | Production builds expose only `TerminalProofKind::Production`; local checkpoint proof-kind helpers are `cfg(test)`, and public production verification requires all 15 production queries. | satisfied for public production verifier dispatch |
 | Public values, parameters, relation, and commitments are bound before challenges | Header, public-values digest, backend relation digest, prelude parameters, relation profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
 | Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against a prelude-bound witness oracle. | satisfied for supported NPO row validity |
@@ -823,8 +824,8 @@ Security-audit conclusions for the current implementation checkpoint:
 - The binding-only terminal certificate checker is private. The public
   production verifier now accepts only typed `TerminalProductionProof` bodies
   after no-trailing-bytes decoding and relation verification. It rejects
-  malformed production bodies and rejects `LocalCheckpoint` certificates by
-  proof-kind mismatch.
+  malformed production bodies. The local checkpoint proof kind is test-only, so
+  production integration code has no local-certificate kind to select.
 - The mixed combined-validity verifier has explicit regression coverage for
   branch confusion (`Quadratic` vs `Npo`) and NPO-index confusion. This protects
   the current aggregate local proof from accepting a row opened under the wrong

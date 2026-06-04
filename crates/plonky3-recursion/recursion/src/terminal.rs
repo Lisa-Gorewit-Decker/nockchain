@@ -121,8 +121,9 @@ pub enum TerminalProofKind {
     /// verifies the implemented local proof components, but does not by itself
     /// establish a complete polynomial IOP/proximity argument for the terminal
     /// relation.
+    #[cfg(test)]
     LocalCheckpoint,
-    /// Reserved for the completed production terminal proof backend.
+    /// Production terminal proof backend.
     Production,
 }
 
@@ -10635,6 +10636,7 @@ impl NativeTerminalCompiler {
         proof_kind: TerminalProofKind,
     ) {
         sponge.absorb_u64(match proof_kind {
+            #[cfg(test)]
             TerminalProofKind::LocalCheckpoint => 1,
             TerminalProofKind::Production => 2,
         });
