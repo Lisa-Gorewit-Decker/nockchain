@@ -430,6 +430,18 @@ for this route.
   regression test measures `12,282` bytes / `12.0 KiB` for a 16-row fixture and
   rejects transcript-label substitution, profile substitution, and tampered
   opened values.
+- `TerminalNpoExhaustiveResidualCompactCompositionProof`: a residual-zero
+  checkpoint built on `TerminalCompactCompositionFriProof`. It maps the
+  exhaustive Goldilocks residual vector into the first basis column of the
+  compact composition matrix, pads the second basis column with zeroes, and
+  requires every transcript-sampled extension opening to be zero. The focused
+  regression test measures `17,018` bytes / `16.6 KiB` for a 17-row residual
+  domain padded to 32 rows, debug-profile `prove=18.0ms`, `verify=17.8ms`, and
+  rejects a valid FRI proof for nonzero residual values. This is still only a
+  proximity/zero-opening checkpoint: it does not replace the production
+  exhaustive path until a separate relation proof ties this composition
+  polynomial to the committed `npo_exhaustive_residual` oracle and the
+  witness-derived row table.
 - `TerminalNpoTip5LookupNpoRowsValueBridgeQuotientProof`: an NPO-row-domain
   value-binding checkpoint for the optimized lookup terminal IO. Instead of
   trusting a prover-supplied lookup-domain NPO projection, it commits the 26
@@ -692,6 +704,14 @@ exact residual component, compares it to the base value authenticated by
 residual. This closes the sampled substitution gap for the folded exhaustive
 NPO residual oracle, while still leaving the final low-degree/proximity proof
 for unsampled rows as a separate obligation.
+
+A separate compact-composition residual-zero checkpoint now measures the
+15-query, 60-pure-bit FRI cost of proving a residual vector is zero: `17,018`
+bytes / `16.6 KiB` for a 17-row fixture padded to 32 rows, with debug
+`prove=18.0ms` and `verify=17.8ms`. That checkpoint is not production-sound by
+itself because it does not yet prove equality between the compact composition
+polynomial and the committed residual oracle; it is the measured zero/proximity
+component the next combined backend should absorb.
 
 `TerminalBackendRelationDigest` is the explicit commitment to those backend
 projections. It has its own domain and absorbs `TerminalQuadraticRelation`,
@@ -1094,8 +1114,11 @@ plain, 58.1 KiB with raw terminal compact FRI, and 59.2 KiB as the reusable
 `TerminalCompactCompositionFriProof` object, so the next backend needs one
 shared composition/proximity proof for Tip5 algebra, NPO value binding,
 residual-zero, and primitive row products; separate FRI proofs for each
-subrelation will exceed the target. The LogUp/global-bus byte lookup relation
-remains a separate soundness obligation.
+subrelation will exceed the target. The residual-zero compact-composition
+checkpoint is only 16.6 KiB on the 17-row residual fixture, but it is cheap
+because it proves only the zero/proximity opening and not the equality between
+that polynomial, the committed residual oracle, and the NPO row table. The
+LogUp/global-bus byte lookup relation remains a separate soundness obligation.
 The NPO-row value-bridge quotient closes the projection-to-value-column binding
 checkpoint in isolation at 16.1 KiB, while the terminal compact-FRI wrapper
 reduces that component's FRI payload from 15.6 KiB to 10.0 KiB by pruning shared

@@ -1302,6 +1302,18 @@ pub struct TerminalCompactCompositionFriProof {
     pub proof: TerminalCompressedFriProof,
 }
 
+/// Compact composition checkpoint that proves the exhaustive NPO residual
+/// polynomial has a zero opening at the transcript-derived challenge.
+///
+/// This is a proximity primitive, not the final production residual backend:
+/// it must be paired with a separate relation proof tying the composition
+/// polynomial to the committed residual oracle before replacing the exhaustive
+/// residual path.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TerminalNpoExhaustiveResidualCompactCompositionProof {
+    pub composition: TerminalCompactCompositionFriProof,
+}
+
 /// NPO-row-domain profile for the terminal-IO columns selected from the
 /// optimized Tip5 lookup trace.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -13985,6 +13997,87 @@ impl NativeTerminalCompiler {
         Ok(opened_values)
     }
 
+    pub fn terminal_npo_exhaustive_residual_compact_composition_profile_goldilocks<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+    ) -> Result<TerminalCompactCompositionFriProfile, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let rows = Self::terminal_npo_polynomial_profile::<F>(verifying_key).residual_components;
+        let padded_rows = rows.next_power_of_two();
+        Self::terminal_compact_composition_fri_profile(rows, padded_rows)
+    }
+
+    pub fn prove_terminal_npo_exhaustive_residual_compact_composition_from_values_goldilocks(
+        prelude: &TerminalProofPrelude,
+        residual_values: &[Goldilocks],
+    ) -> Result<TerminalNpoExhaustiveResidualCompactCompositionProof, NativeTerminalVerifyError>
+    {
+        let profile = Self::terminal_compact_composition_fri_profile(
+            residual_values.len(),
+            residual_values.len().next_power_of_two(),
+        )?;
+        let matrix = Self::terminal_compact_composition_matrix_from_goldilocks_values(
+            residual_values,
+            &profile,
+        )?;
+        let composition = Self::prove_terminal_compact_composition_fri_goldilocks(
+            prelude,
+            Self::terminal_npo_exhaustive_residual_compact_composition_label(),
+            profile,
+            matrix,
+        )?;
+        Ok(TerminalNpoExhaustiveResidualCompactCompositionProof { composition })
+    }
+
+    pub fn prove_terminal_npo_exhaustive_residual_compact_composition_goldilocks(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<Goldilocks>,
+        prelude: &TerminalProofPrelude,
+        witness: &TerminalWitness<Goldilocks>,
+    ) -> Result<TerminalNpoExhaustiveResidualCompactCompositionProof, NativeTerminalVerifyError>
+    {
+        let residual_values =
+            self.terminal_npo_exhaustive_residual_values_goldilocks(verifying_key, witness)?;
+        Self::prove_terminal_npo_exhaustive_residual_compact_composition_from_values_goldilocks(
+            prelude,
+            &residual_values,
+        )
+    }
+
+    pub fn verify_terminal_npo_exhaustive_residual_compact_composition_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoExhaustiveResidualCompactCompositionProof,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let expected_profile =
+            Self::terminal_npo_exhaustive_residual_compact_composition_profile_goldilocks(
+                verifying_key,
+            )?;
+        let opened = Self::verify_terminal_compact_composition_fri_goldilocks(
+            prelude,
+            Self::terminal_npo_exhaustive_residual_compact_composition_label(),
+            &expected_profile,
+            &proof.composition,
+        )?;
+        if opened
+            .iter()
+            .any(|value| *value != TerminalFriChallenge::ZERO)
+        {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: Self::terminal_npo_exhaustive_residual_compact_composition_label()
+                        .into(),
+                },
+            );
+        }
+        Ok(())
+    }
+
     pub fn compress_terminal_fri_proof(
         proof: &TerminalFriProof,
         query_indices: &[usize],
@@ -15055,6 +15148,37 @@ impl NativeTerminalCompiler {
             .iter()
             .map(Self::goldilocks_basis_u64)
             .collect::<Vec<_>>())
+    }
+
+    fn terminal_compact_composition_matrix_from_goldilocks_values(
+        values: &[Goldilocks],
+        profile: &TerminalCompactCompositionFriProfile,
+    ) -> Result<RowMajorMatrix<Goldilocks>, NativeTerminalVerifyError> {
+        if values.len() != profile.rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compact_composition_values".into(),
+                    expected: profile.rows,
+                    got: values.len(),
+                },
+            );
+        }
+        let expected_basis_columns =
+            <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        if profile.basis_columns != expected_basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compact_composition_basis_columns".into(),
+                    expected: expected_basis_columns,
+                    got: profile.basis_columns,
+                },
+            );
+        }
+        let mut matrix_values = vec![Goldilocks::ZERO; profile.padded_rows * profile.basis_columns];
+        for (row, value) in values.iter().copied().enumerate() {
+            matrix_values[row * profile.basis_columns] = value;
+        }
+        Ok(RowMajorMatrix::new(matrix_values, profile.basis_columns))
     }
 
     pub fn verify_terminal_npo_polynomial_fri_opening_goldilocks<F>(
@@ -19015,6 +19139,10 @@ impl NativeTerminalCompiler {
 
     fn npo_exhaustive_residual_oracle_label() -> &'static str {
         "npo_exhaustive_residual"
+    }
+
+    fn terminal_npo_exhaustive_residual_compact_composition_label() -> &'static str {
+        "nock-terminal-npo-exhaustive-residual-compact-zero-v1"
     }
 
     fn npo_exhaustive_residual_fold_oracle_label(round: usize) -> String {
@@ -25056,6 +25184,85 @@ mod tests {
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+        ));
+    }
+
+    #[test]
+    fn goldilocks_npo_residual_compact_zero_rejects_nonzero() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(1);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness_with_private_data(
+            &circuit,
+            public_inputs.clone(),
+            private_data,
+        );
+        let residual_values = compiler
+            .terminal_npo_exhaustive_residual_values_goldilocks(&vk, &witness)
+            .expect("exhaustive residual values must compute");
+        assert!(
+            residual_values
+                .iter()
+                .all(|value| *value == Goldilocks::ZERO)
+        );
+        let residual_root = compiler
+            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
+            .expect("exhaustive NPO residual oracle must commit")
+            .commitment()
+            .root;
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![residual_root],
+            )
+            .expect("prelude must bind exhaustive NPO residual oracle");
+
+        let prove_start = std::time::Instant::now();
+        let proof = compiler
+            .prove_terminal_npo_exhaustive_residual_compact_composition_goldilocks(
+                &vk, &prelude, &witness,
+            )
+            .expect("compact residual-zero composition proof must build");
+        let prove_elapsed = prove_start.elapsed();
+        let verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_exhaustive_residual_compact_composition_goldilocks::<Goldilocks>(
+                &vk, &prelude, &proof,
+            )
+            .expect("compact residual-zero composition proof must verify");
+        let verify_elapsed = verify_start.elapsed();
+        let serialized = postcard::to_allocvec(&proof)
+            .expect("compact residual-zero composition proof must serialize");
+        println!(
+            "terminal NPO exhaustive residual compact-zero composition: {} bytes ({:.1} KiB), rows={}, padded_rows={}, prove={:?}, verify={:?}",
+            serialized.len(),
+            serialized.len() as f64 / 1024.0,
+            proof.composition.profile.rows,
+            proof.composition.profile.padded_rows,
+            prove_elapsed,
+            verify_elapsed,
+        );
+
+        let bad_values = vec![Goldilocks::ONE; residual_values.len()];
+        let bad_proof =
+            NativeTerminalCompiler::prove_terminal_npo_exhaustive_residual_compact_composition_from_values_goldilocks(
+                &prelude,
+                &bad_values,
+            )
+            .expect("valid FRI proof for nonzero residual values must build");
+        let err = compiler
+            .verify_terminal_npo_exhaustive_residual_compact_composition_goldilocks::<Goldilocks>(
+                &vk,
+                &prelude,
+                &bad_proof,
+            )
+            .expect_err("compact residual-zero verifier must reject nonzero residual values");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
+                if label == NativeTerminalCompiler::terminal_npo_exhaustive_residual_compact_composition_label()
         ));
     }
 
