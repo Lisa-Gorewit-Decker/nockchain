@@ -26,13 +26,15 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_fri::{CommitPhaseProofStep, FriParameters, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_goldilocks::Goldilocks;
+use p3_matrix::interpolation::Interpolate;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 use p3_tip5_circuit_air::{
     NUM_ROUNDS as TIP5_PERM_ROUNDS, TABLE_ROWS as TIP5_LOOKUP_TABLE_ROWS, Tip5Perm,
-    generate_lookup_trace, generate_trace_rows, tip5_lookup_air_width,
+    ROUND_CONSTANTS as TIP5_ROUND_CONSTANTS, generate_lookup_trace, generate_trace_rows,
+    mds_matrix as tip5_mds_matrix, rc_precomp as tip5_rc_precomp, tip5_lookup_air_width,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1240,6 +1242,36 @@ pub struct TerminalNpoTip5LookupIoSupportBridgeQuotientProof {
     pub quotient_commitment: TerminalFriCommitment,
     pub opened_lookup_io_basis: Vec<Vec<u64>>,
     pub opened_npo_io_basis: Vec<Vec<u64>>,
+    pub opened_quotient_basis: Vec<Vec<u64>>,
+    pub proof: TerminalFriProof,
+}
+
+/// Quotient profile for the optimized Tip5 lookup AIR's internal algebraic
+/// constraints. This does not include the global LogUp byte-table argument;
+/// it checks the low-degree local relations over the committed main trace:
+/// kind booleanity, split-byte recomposition, the Goldilocks canonical guard,
+/// x2/x3 power-lane auxiliaries, and every round's MDS/constant output row.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalNpoTip5LookupAirAlgebraQuotientProfile {
+    pub trace: TerminalNpoTip5LookupTraceProfile,
+    pub rows: usize,
+    pub padded_rows: usize,
+    pub log_rows: usize,
+    pub field_basis_dimension: usize,
+    pub field_columns: usize,
+    pub basis_columns: usize,
+    pub proximity: TerminalProximityProfile,
+}
+
+/// FRI proof that the optimized Tip5 lookup AIR main trace satisfies its
+/// internal algebraic constraints on the trace domain.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TerminalNpoTip5LookupAirAlgebraQuotientProof {
+    pub trace_profile: TerminalNpoTip5LookupFriProfile,
+    pub quotient_profile: TerminalNpoTip5LookupAirAlgebraQuotientProfile,
+    pub trace_commitment: TerminalFriCommitment,
+    pub quotient_commitment: TerminalFriCommitment,
+    pub opened_trace_basis: Vec<Vec<u64>>,
     pub opened_quotient_basis: Vec<Vec<u64>>,
     pub proof: TerminalFriProof,
 }
@@ -5562,6 +5594,109 @@ impl NativeTerminalCompiler {
             quotient_commitment,
             opened_lookup_io_basis,
             opened_npo_io_basis,
+            opened_quotient_basis,
+            proof,
+        })
+    }
+
+    pub fn prove_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        witness: &TerminalWitness<F>,
+        prelude: &TerminalProofPrelude,
+    ) -> Result<TerminalNpoTip5LookupAirAlgebraQuotientProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let (_, trace, _) =
+            self.terminal_npo_tip5_lookup_air_trace_goldilocks(verifying_key, witness)?;
+        Self::prove_terminal_npo_tip5_lookup_air_algebra_quotient_from_trace_goldilocks(
+            prelude,
+            &Self::terminal_npo_tip5_lookup_trace_profile(verifying_key),
+            &trace,
+        )
+    }
+
+    fn prove_terminal_npo_tip5_lookup_air_algebra_quotient_from_trace_goldilocks(
+        prelude: &TerminalProofPrelude,
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+        trace: &RowMajorMatrix<Goldilocks>,
+    ) -> Result<TerminalNpoTip5LookupAirAlgebraQuotientProof, NativeTerminalVerifyError> {
+        let (trace_fri_profile, trace_matrix) =
+            Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(
+                trace_profile,
+                trace,
+                TerminalNpoTip5LookupFriColumnSet::FullMain,
+            )?;
+        if trace_fri_profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: trace_fri_profile.proximity.proof_parameters(),
+                },
+            );
+        }
+        let quotient_profile =
+            Self::terminal_npo_tip5_lookup_air_algebra_quotient_profile(&trace_fri_profile)?;
+
+        let (pcs, mut challenger) =
+            Self::terminal_fri_pcs_and_challenger(trace_fri_profile.proximity)?;
+        Self::seed_terminal_npo_tip5_lookup_air_algebra_quotient_challenger(
+            &mut challenger,
+            prelude,
+            &trace_fri_profile,
+            &quotient_profile,
+        );
+        let trace_domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                trace_fri_profile.padded_rows,
+            );
+        let (trace_commitment, trace_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(trace_domain, trace_matrix.clone())],
+            );
+        challenger.observe(trace_commitment.clone());
+        let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
+
+        let quotient_domain = trace_domain.create_disjoint_domain(quotient_profile.padded_rows);
+        let quotient_matrix =
+            Self::terminal_npo_tip5_lookup_air_algebra_quotient_matrix_goldilocks(
+                trace_domain,
+                quotient_domain,
+                &trace_fri_profile,
+                &trace_matrix,
+                alpha,
+            )?;
+        let (quotient_commitment, quotient_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(quotient_domain, quotient_matrix)],
+            );
+        challenger.observe(quotient_commitment.clone());
+        let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let (opened_values, proof) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
+                &pcs,
+                vec![
+                    (&trace_data, vec![vec![zeta]]),
+                    (&quotient_data, vec![vec![zeta]]),
+                ],
+                &mut challenger,
+            );
+        let opened_trace_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
+        let opened_quotient_basis =
+            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 1)?;
+
+        Ok(TerminalNpoTip5LookupAirAlgebraQuotientProof {
+            trace_profile: trace_fri_profile,
+            quotient_profile,
+            trace_commitment,
+            quotient_commitment,
+            opened_trace_basis,
             opened_quotient_basis,
             proof,
         })
@@ -12429,6 +12564,237 @@ impl NativeTerminalCompiler {
         })
     }
 
+    fn terminal_npo_tip5_lookup_air_algebra_quotient_profile(
+        trace_profile: &TerminalNpoTip5LookupFriProfile,
+    ) -> Result<TerminalNpoTip5LookupAirAlgebraQuotientProfile, NativeTerminalVerifyError> {
+        if trace_profile.column_set != TerminalNpoTip5LookupFriColumnSet::FullMain {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_air_algebra_quotient_column_set".into(),
+                    expected: TerminalNpoTip5LookupFriColumnSet::FullMain as usize,
+                    got: trace_profile.column_set as usize,
+                },
+            );
+        }
+        if trace_profile.padded_rows == 0 {
+            return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
+        }
+        let degree = trace_profile.trace.max_constraint_degree.max(1);
+        let padded_rows = trace_profile.padded_rows.checked_mul(degree).ok_or(
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: "terminal Tip5 lookup AIR quotient domain overflow".into(),
+            },
+        )?;
+        Ok(TerminalNpoTip5LookupAirAlgebraQuotientProfile {
+            trace: trace_profile.trace.clone(),
+            rows: trace_profile.rows,
+            padded_rows,
+            log_rows: padded_rows.trailing_zeros() as usize,
+            field_basis_dimension:
+                <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION,
+            field_columns: 1,
+            basis_columns: <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION,
+            proximity: trace_profile.proximity,
+        })
+    }
+
+    fn terminal_npo_tip5_lookup_air_algebra_quotient_matrix_goldilocks(
+        trace_domain: <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::Domain,
+        quotient_domain: <TerminalFriPcs as Pcs<
+            TerminalFriChallenge,
+            TerminalFriChallenger,
+        >>::Domain,
+        trace_profile: &TerminalNpoTip5LookupFriProfile,
+        trace_matrix: &RowMajorMatrix<Goldilocks>,
+        alpha: TerminalFriChallenge,
+    ) -> Result<RowMajorMatrix<Goldilocks>, NativeTerminalVerifyError> {
+        if trace_profile.column_set != TerminalNpoTip5LookupFriColumnSet::FullMain {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_air_algebra_trace_column_set".into(),
+                    expected: TerminalNpoTip5LookupFriColumnSet::FullMain as usize,
+                    got: trace_profile.column_set as usize,
+                },
+            );
+        }
+        if trace_matrix.width() != trace_profile.basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_air_algebra_trace_width".into(),
+                    expected: trace_profile.basis_columns,
+                    got: trace_matrix.width(),
+                },
+            );
+        }
+        if trace_matrix.height() != trace_profile.padded_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_air_algebra_trace_rows".into(),
+                    expected: trace_profile.padded_rows,
+                    got: trace_matrix.height(),
+                },
+            );
+        }
+        let quotient_basis_dimension =
+            <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let mut quotient_values = Vec::with_capacity(quotient_domain.size());
+        let mut point = TerminalFriChallenge::from(quotient_domain.first_point());
+        for _ in 0..quotient_domain.size() {
+            let opened_trace = trace_matrix.interpolate_coset(trace_domain.shift(), point);
+            let relation = Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(
+                &opened_trace,
+                alpha,
+            )?;
+            let quotient = relation / trace_domain.vanishing_poly_at_point(point);
+            quotient_values.push(quotient);
+            point = quotient_domain.next_point(point).ok_or_else(|| {
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                    reason: "terminal Tip5 lookup AIR algebra quotient domain has no successor"
+                        .into(),
+                }
+            })?;
+        }
+        let quotient = RowMajorMatrix::new_col(quotient_values).flatten_to_base();
+        if quotient.width() != quotient_basis_dimension {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: quotient_basis_dimension,
+                    got: quotient.width(),
+                },
+            );
+        }
+        Ok(quotient)
+    }
+
+    fn terminal_npo_tip5_lookup_air_algebra_folded_relation(
+        trace: &[TerminalFriChallenge],
+        alpha: TerminalFriChallenge,
+    ) -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
+        const STATE_SIZE: usize = 16;
+        const NS: usize = 4;
+        const NBYTES: usize = 8;
+        const SPLIT_BC: usize = NS * 2 * NBYTES;
+        const PWR: usize = STATE_SIZE - NS;
+        const C_KIND: usize = 0;
+        const C_IN: usize = 2;
+        const RB0: usize = C_IN + STATE_SIZE;
+        const ROUND_GROUP: usize = SPLIT_BC + NS + PWR + PWR + STATE_SIZE;
+        const ROUND_OUTPUT_OFFSET: usize = SPLIT_BC + NS + 2 * PWR;
+
+        #[inline]
+        const fn rb(round: usize) -> usize {
+            RB0 + round * ROUND_GROUP
+        }
+        #[inline]
+        const fn b_col(round: usize, lane: usize, byte: usize) -> usize {
+            rb(round) + lane * (2 * NBYTES) + byte
+        }
+        #[inline]
+        const fn c_col(round: usize, lane: usize, byte: usize) -> usize {
+            rb(round) + lane * (2 * NBYTES) + NBYTES + byte
+        }
+        #[inline]
+        const fn inv_col(round: usize, lane: usize) -> usize {
+            rb(round) + SPLIT_BC + lane
+        }
+        #[inline]
+        const fn x2_col(round: usize, lane: usize) -> usize {
+            rb(round) + SPLIT_BC + NS + (lane - NS)
+        }
+        #[inline]
+        const fn x3_col(round: usize, lane: usize) -> usize {
+            rb(round) + SPLIT_BC + NS + PWR + (lane - NS)
+        }
+        #[inline]
+        const fn rout_col(round: usize, lane: usize) -> usize {
+            rb(round) + ROUND_OUTPUT_OFFSET + lane
+        }
+        #[inline]
+        const fn sbox_in_col(round: usize, lane: usize) -> usize {
+            if round == 0 {
+                C_IN + lane
+            } else {
+                rout_col(round - 1, lane)
+            }
+        }
+
+        let required_width = RB0 + TIP5_PERM_ROUNDS * ROUND_GROUP;
+        if trace.len() != required_width {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_air_algebra_opened_trace_width".into(),
+                    expected: required_width,
+                    got: trace.len(),
+                },
+            );
+        }
+        let fe = |value: u64| TerminalFriChallenge::from(Goldilocks::from_u64(value));
+        let pow8 = |byte: usize| fe(1u64 << (8 * byte));
+        let two32_minus_one = fe((1u64 << 32) - 1);
+        let mds = tip5_mds_matrix();
+
+        let mut folded = TerminalFriChallenge::ZERO;
+        let mut coeff = TerminalFriChallenge::ONE;
+        let mut absorb = |constraint: TerminalFriChallenge| {
+            folded += coeff * constraint;
+            coeff *= alpha;
+        };
+
+        let kind = trace[C_KIND];
+        absorb(kind * (kind - TerminalFriChallenge::ONE));
+
+        for round in 0..TIP5_PERM_ROUNDS {
+            let mut sbox_outputs = Vec::with_capacity(STATE_SIZE);
+            for lane in 0..NS {
+                let mut recompose_b = TerminalFriChallenge::ZERO;
+                let mut recompose_c = TerminalFriChallenge::ZERO;
+                let mut low = TerminalFriChallenge::ZERO;
+                let mut high = TerminalFriChallenge::ZERO;
+                for byte in 0..NBYTES {
+                    let b = trace[b_col(round, lane, byte)];
+                    let c = trace[c_col(round, lane, byte)];
+                    recompose_b += b * pow8(byte);
+                    recompose_c += c * pow8(byte);
+                    if byte < 4 {
+                        low += b * pow8(byte);
+                    } else {
+                        high += b * pow8(byte - 4);
+                    }
+                }
+                absorb(kind * (recompose_b - trace[sbox_in_col(round, lane)]));
+                sbox_outputs.push(recompose_c);
+
+                let g = high - two32_minus_one;
+                let inv = trace[inv_col(round, lane)];
+                let prod = g * inv;
+                absorb(kind * g * (prod - TerminalFriChallenge::ONE));
+                absorb(kind * (TerminalFriChallenge::ONE - prod) * low);
+            }
+
+            for lane in NS..STATE_SIZE {
+                let x = trace[sbox_in_col(round, lane)];
+                let x2 = trace[x2_col(round, lane)];
+                let x3 = trace[x3_col(round, lane)];
+                absorb(kind * (x2 - x * x));
+                absorb(kind * (x3 - x2 * x));
+                sbox_outputs.push(x3 * x3 * x);
+            }
+
+            for lane in 0..STATE_SIZE {
+                let mut acc = TerminalFriChallenge::ZERO;
+                for column in 0..STATE_SIZE {
+                    acc += fe(mds[lane][column]) * sbox_outputs[column];
+                }
+                let rc = fe(tip5_rc_precomp(
+                    TIP5_ROUND_CONSTANTS[round * STATE_SIZE + lane],
+                ));
+                absorb(kind * (trace[rout_col(round, lane)] - acc - rc));
+            }
+        }
+
+        Ok(folded)
+    }
+
     fn terminal_npo_tip5_lookup_npo_rows_io_profile(
         trace_profile: &TerminalNpoTip5LookupTraceProfile,
         layout: &TerminalNpoPolynomialColumnLayout,
@@ -14978,6 +15344,152 @@ impl NativeTerminalCompiler {
         })
     }
 
+    pub fn verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoTip5LookupAirAlgebraQuotientProof,
+    ) -> Result<TerminalNpoTip5LookupFriOpenedColumns, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
+        let expected_trace_profile = Self::terminal_npo_tip5_lookup_fri_profile_for_column_set(
+            &trace_profile,
+            TerminalNpoTip5LookupFriColumnSet::FullMain,
+        )?;
+        if proof.trace_profile != expected_trace_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_air_algebra_trace_profile".into(),
+                    expected: expected_trace_profile.basis_columns,
+                    got: proof.trace_profile.basis_columns,
+                },
+            );
+        }
+        let expected_quotient_profile =
+            Self::terminal_npo_tip5_lookup_air_algebra_quotient_profile(
+                &expected_trace_profile,
+            )?;
+        if proof.quotient_profile != expected_quotient_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_air_algebra_quotient_profile".into(),
+                    expected: expected_quotient_profile.basis_columns,
+                    got: proof.quotient_profile.basis_columns,
+                },
+            );
+        }
+        if proof.trace_profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: proof.trace_profile.proximity.proof_parameters(),
+                },
+            );
+        }
+        if proof.opened_trace_basis.len() != proof.trace_profile.basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof.trace_profile.basis_columns,
+                    got: proof.opened_trace_basis.len(),
+                },
+            );
+        }
+        if proof.opened_quotient_basis.len() != proof.quotient_profile.basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof.quotient_profile.basis_columns,
+                    got: proof.opened_quotient_basis.len(),
+                },
+            );
+        }
+        let mut opened_trace = Vec::with_capacity(proof.opened_trace_basis.len());
+        for basis in &proof.opened_trace_basis {
+            opened_trace.push(Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(
+                basis,
+            )?);
+        }
+        let mut opened_quotient_flat = Vec::with_capacity(proof.opened_quotient_basis.len());
+        for basis in &proof.opened_quotient_basis {
+            opened_quotient_flat.push(Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(
+                basis,
+            )?);
+        }
+
+        let (pcs, mut challenger) =
+            Self::terminal_fri_pcs_and_challenger(proof.trace_profile.proximity)?;
+        Self::seed_terminal_npo_tip5_lookup_air_algebra_quotient_challenger(
+            &mut challenger,
+            prelude,
+            &proof.trace_profile,
+            &proof.quotient_profile,
+        );
+        let trace_domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                proof.trace_profile.padded_rows,
+            );
+        let quotient_domain =
+            trace_domain.create_disjoint_domain(proof.quotient_profile.padded_rows);
+        challenger.observe(proof.trace_commitment.clone());
+        let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
+        challenger.observe(proof.quotient_commitment.clone());
+        let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
+            &pcs,
+            vec![
+                (
+                    proof.trace_commitment.clone(),
+                    vec![(trace_domain, vec![(zeta, opened_trace.clone())])],
+                ),
+                (
+                    proof.quotient_commitment.clone(),
+                    vec![(quotient_domain, vec![(zeta, opened_quotient_flat.clone())])],
+                ),
+            ],
+            &proof.proof,
+            &mut challenger,
+        )
+        .map_err(|err| {
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: format!(
+                    "terminal Tip5 lookup AIR algebra quotient FRI verification failed: {err:?}"
+                ),
+            }
+        })?;
+
+        let quotient =
+            <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
+                &opened_quotient_flat,
+            )
+            .ok_or(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof.quotient_profile.field_basis_dimension,
+                    got: opened_quotient_flat.len(),
+                },
+            )?;
+        let folded =
+            Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(&opened_trace, alpha)?;
+        let expected = quotient * trace_domain.vanishing_poly_at_point(zeta);
+        if folded != expected {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: "tip5_lookup_air_algebra_quotient".into(),
+                },
+            );
+        }
+
+        Ok(TerminalNpoTip5LookupFriOpenedColumns {
+            profile: proof.trace_profile.clone(),
+            zeta,
+            labels: Self::terminal_npo_tip5_lookup_fri_column_labels(&proof.trace_profile)?,
+            values: opened_trace,
+        })
+    }
+
     pub fn verify_terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -16166,6 +16678,34 @@ impl NativeTerminalCompiler {
         );
     }
 
+    fn seed_terminal_npo_tip5_lookup_air_algebra_quotient_challenger(
+        challenger: &mut TerminalFriChallenger,
+        prelude: &TerminalProofPrelude,
+        trace_profile: &TerminalNpoTip5LookupFriProfile,
+        quotient_profile: &TerminalNpoTip5LookupAirAlgebraQuotientProfile,
+    ) {
+        Self::observe_terminal_fri_str(
+            challenger,
+            "nock-terminal-npo-tip5-lookup-air-algebra-quotient-v1",
+        );
+        for limb in prelude.challenge_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
+        for limb in prelude.public_values_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.security_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
+        Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_profile);
+        Self::observe_terminal_npo_tip5_lookup_air_algebra_quotient_profile(
+            challenger,
+            quotient_profile,
+        );
+    }
+
     fn seed_terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_challenger(
         challenger: &mut TerminalFriChallenger,
         prelude: &TerminalProofPrelude,
@@ -16260,6 +16800,26 @@ impl NativeTerminalCompiler {
     fn observe_terminal_npo_tip5_lookup_io_support_bridge_quotient_profile(
         challenger: &mut TerminalFriChallenger,
         profile: &TerminalNpoTip5LookupIoSupportBridgeQuotientProfile,
+    ) {
+        Self::observe_terminal_npo_tip5_lookup_trace_profile(challenger, &profile.trace);
+        Self::observe_terminal_fri_u64(challenger, profile.rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.padded_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.log_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.field_basis_dimension as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.field_columns as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.basis_columns as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.scheme_id as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.log_blowup as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.num_queries as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.max_log_arity as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.log_final_poly_len as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.pure_query_bits as u64);
+    }
+
+    fn observe_terminal_npo_tip5_lookup_air_algebra_quotient_profile(
+        challenger: &mut TerminalFriChallenger,
+        profile: &TerminalNpoTip5LookupAirAlgebraQuotientProfile,
     ) {
         Self::observe_terminal_npo_tip5_lookup_trace_profile(challenger, &profile.trace);
         Self::observe_terminal_fri_u64(challenger, profile.rows as u64);
@@ -23717,6 +24277,133 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
                 if label == "tip5_lookup_io_support_bridge_quotient"
+        ));
+    }
+
+    #[test]
+    fn goldilocks_npo_tip5_lookup_air_algebra_quotient_rejects_bad_trace_internals() {
+        let (circuit, public_inputs) = build_npo_only_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+        let residual_root = compiler
+            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
+            .expect("NPO-only residual oracle must commit")
+            .commitment()
+            .root;
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![residual_root],
+            )
+            .expect("NPO-only lookup AIR algebra prelude must build");
+
+        let prove_start = std::time::Instant::now();
+        let proof = compiler
+            .prove_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &prelude,
+            )
+            .expect("terminal Tip5 lookup AIR algebra proof must build");
+        let prove_elapsed = prove_start.elapsed();
+        assert_eq!(
+            proof.trace_profile.column_set,
+            TerminalNpoTip5LookupFriColumnSet::FullMain
+        );
+        assert_eq!(proof.trace_profile.proximity.pure_query_bits, 60);
+        assert_eq!(proof.quotient_profile.log_rows, proof.trace_profile.log_rows + 2);
+
+        let verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &proof,
+            )
+            .expect("terminal Tip5 lookup AIR algebra proof must verify");
+        let verify_elapsed = verify_start.elapsed();
+        let serialized = postcard::to_allocvec(&proof)
+            .expect("terminal Tip5 lookup AIR algebra proof must serialize");
+        println!(
+            "terminal Tip5 lookup AIR algebra candidate: {} bytes ({:.1} KiB), trace_columns={}, quotient_rows={}, prove={:?}, verify={:?}",
+            serialized.len(),
+            serialized.len() as f64 / 1024.0,
+            proof.trace_profile.field_columns,
+            proof.quotient_profile.padded_rows,
+            prove_elapsed,
+            verify_elapsed,
+        );
+        let (roundtrip, trailing): (
+            TerminalNpoTip5LookupAirAlgebraQuotientProof,
+            &[u8],
+        ) = postcard::take_from_bytes(&serialized)
+            .expect("terminal Tip5 lookup AIR algebra proof must deserialize");
+        assert!(trailing.is_empty());
+        compiler
+            .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &roundtrip,
+            )
+            .expect("round-tripped terminal Tip5 lookup AIR algebra proof must verify");
+
+        let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
+        let (_, mut bad_c_trace, _) = compiler
+            .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
+            .expect("terminal Tip5 lookup trace must rebuild");
+        let bad_row = trace_profile.permutation_row_offset;
+        let width = bad_c_trace.width();
+        bad_c_trace.values[bad_row * width + 26] += Goldilocks::ONE;
+        let bad_c_proof =
+            NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_air_algebra_quotient_from_trace_goldilocks(
+                &prelude,
+                &trace_profile,
+                &bad_c_trace,
+            )
+            .expect("FRI-valid but algebra-invalid S-box image proof must build");
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_c_proof,
+            )
+            .expect_err("tampered S-box image must fail AIR algebra quotient");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
+                if label == "tip5_lookup_air_algebra_quotient"
+        ));
+
+        let (_, mut bad_x2_trace, _) = compiler
+            .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
+            .expect("terminal Tip5 lookup trace must rebuild");
+        bad_x2_trace.values[bad_row * width + 86] += Goldilocks::ONE;
+        let bad_x2_proof =
+            NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_air_algebra_quotient_from_trace_goldilocks(
+                &prelude,
+                &trace_profile,
+                &bad_x2_trace,
+            )
+            .expect("FRI-valid but algebra-invalid power-lane proof must build");
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_x2_proof,
+            )
+            .expect_err("tampered x2 auxiliary must fail AIR algebra quotient");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
+                if label == "tip5_lookup_air_algebra_quotient"
         ));
     }
 
