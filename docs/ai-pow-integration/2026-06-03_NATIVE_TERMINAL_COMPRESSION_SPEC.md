@@ -398,15 +398,15 @@ for this route.
   folded kind-booleanity, split-byte recomposition, Goldilocks canonical guard,
   x2/x3 auxiliary, and MDS/round-constant output identities, batched with
   `V_perm_window * terminal_io` so table/padding rows cannot hide terminal IO
-  values in the full trace. The focused regression test measures `171,066`
-  bytes / `167.1 KiB`, debug-profile `prove=15.061s`, `verify=73.3ms`, and
-  rejects nonzero table-row terminal IO, tampered S-box image bytes, and
-  tampered x2 auxiliaries. The terminal compact-FRI wrapper reduces this
-  component's inner FRI payload from `161,457` bytes / `157.7 KiB` to
-  `135,641` bytes / `132.5 KiB`, and the restored proof verifies. This closes
-  a real internal-AIR algebra/support checkpoint, but it is too large to combine
-  naively with the current terminal backend and still excludes the global LogUp
-  byte-table argument. Component accounting shows why: zeta openings are
+  values in the full trace. The focused regression test now stores the
+  compressed terminal FRI payload directly and measures `145,250` bytes /
+  `141.8 KiB`, debug-profile `prove=15.277s`, `verify=72.8ms`, and rejects
+  nonzero table-row terminal IO, tampered S-box image bytes, and tampered x2
+  auxiliaries. The terminal compact-FRI payload is `135,641` bytes / `132.5 KiB`
+  after decompression restores a `161,457` byte / `157.7 KiB` Plonky3 FRI proof.
+  This closes a real internal-AIR algebra/support checkpoint, but it is too
+  large to combine naively with the current terminal backend and still excludes
+  the global LogUp byte-table argument. Component accounting shows why: zeta openings are
   `9,449` bytes, transcript-query input row values are `66,694` bytes, input
   Merkle paths are `19,944` bytes, commit-phase sibling values are `3,476`
   bytes, commit-phase Merkle paths are `70,802` bytes, and the remaining
@@ -1119,8 +1119,8 @@ proofs. It still depends on the same unresolved NPO-derived projection binding
 and internal Tip5 lookup/AIR relation work.
 The full-trace Tip5 lookup AIR algebra/support quotient now enforces the local
 permutation algebra and rejects stale internal trace columns plus off-window
-terminal IO, but at 167.1 KiB for the component by itself it is a
-measurement-driven rejection for naive composition. Compact terminal FRI helps
+terminal IO, but at 141.8 KiB for the stored-compressed component by itself it is
+a measurement-driven rejection for naive composition. Compact terminal FRI helps
 but only lowers the inner FRI payload to 132.5 KiB, still above target before
 the primitive and NPO value-binding components are included. The next production
 route must either share the trace opening with the boundary/value bridge, commit
