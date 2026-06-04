@@ -184,6 +184,7 @@ pub struct TerminalOracleMultiProof {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalOracleKnownIndexMultiProof {
     pub value_basis_flat: Vec<u64>,
+    pub boolean_value_bits: Vec<u8>,
     pub frontier: Vec<TerminalCommitmentDigest>,
 }
 
@@ -1917,6 +1918,17 @@ impl TerminalOracleMerkleTree {
     where
         F: BasedVectorSpace<Goldilocks>,
     {
+        self.open_goldilocks_known_index_multi_values_with_boolean_indices(values, &[])
+    }
+
+    pub fn open_goldilocks_known_index_multi_values_with_boolean_indices<F>(
+        &self,
+        values: &[(usize, &F)],
+        boolean_indices: &[usize],
+    ) -> Result<TerminalOracleKnownIndexMultiProof, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
         let mut previous = None;
         for (opening, (index, _)) in values.iter().enumerate() {
             if *index >= self.values_len {
@@ -1936,12 +1948,56 @@ impl TerminalOracleMerkleTree {
             }
             previous = Some(*index);
         }
+        let mut previous_boolean = None;
+        for (opening, index) in boolean_indices.iter().copied().enumerate() {
+            if previous_boolean.is_some_and(|previous| index <= previous) {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleQueryIndexMismatch {
+                        query: opening,
+                        expected: previous_boolean.expect("previous index exists") + 1,
+                        got: index,
+                    },
+                );
+            }
+            if values
+                .binary_search_by_key(&index, |(index, _)| *index)
+                .is_err()
+            {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleOpeningIndexOutOfBounds {
+                        index,
+                        values_len: self.values_len,
+                    },
+                );
+            }
+            previous_boolean = Some(index);
+        }
 
         let mut value_basis_flat = Vec::with_capacity(
-            values.len() * <F as BasedVectorSpace<Goldilocks>>::DIMENSION,
+            values.len().saturating_sub(boolean_indices.len())
+                * <F as BasedVectorSpace<Goldilocks>>::DIMENSION,
         );
-        for (_, value) in values {
-            value_basis_flat.extend(NativeTerminalCompiler::goldilocks_basis_u64(*value));
+        let mut boolean_value_bits = vec![0u8; boolean_indices.len().div_ceil(8)];
+        let mut boolean_index = 0usize;
+        for (index, value) in values {
+            let basis = NativeTerminalCompiler::goldilocks_basis_u64(*value);
+            if boolean_index < boolean_indices.len() && *index == boolean_indices[boolean_index] {
+                if basis.first().copied().unwrap_or(2) > 1 || basis.iter().skip(1).any(|v| *v != 0)
+                {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical {
+                            limb: 0,
+                            value: basis.first().copied().unwrap_or(2),
+                        },
+                    );
+                }
+                if basis[0] == 1 {
+                    boolean_value_bits[boolean_index / 8] |= 1u8 << (boolean_index % 8);
+                }
+                boolean_index += 1;
+            } else {
+                value_basis_flat.extend(basis);
+            }
         }
 
         let mut frontier = Vec::new();
@@ -1949,6 +2005,7 @@ impl TerminalOracleMerkleTree {
         self.collect_multi_frontier(root_level, 0, values, &mut frontier);
         Ok(TerminalOracleKnownIndexMultiProof {
             value_basis_flat,
+            boolean_value_bits,
             frontier,
         })
     }
@@ -2625,6 +2682,24 @@ impl NativeTerminalCompiler {
     where
         F: BasedVectorSpace<Goldilocks>,
     {
+        self.verify_terminal_oracle_known_index_multi_proof_goldilocks_with_boolean_indices(
+            commitment,
+            indices,
+            &[],
+            proof,
+        )
+    }
+
+    pub fn verify_terminal_oracle_known_index_multi_proof_goldilocks_with_boolean_indices<F>(
+        &self,
+        commitment: &TerminalOracleCommitment,
+        indices: &[usize],
+        boolean_indices: &[usize],
+        proof: &TerminalOracleKnownIndexMultiProof,
+    ) -> Result<Vec<(usize, F)>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
         if commitment.values_len == 0 {
             return Err(NativeTerminalVerifyError::TerminalOracleEmpty);
         }
@@ -2650,9 +2725,30 @@ impl NativeTerminalCompiler {
             }
             previous = Some(index);
         }
+        let mut previous_boolean = None;
+        for (query, index) in boolean_indices.iter().copied().enumerate() {
+            if previous_boolean.is_some_and(|previous| index <= previous) {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleQueryIndexMismatch {
+                        query,
+                        expected: previous_boolean.expect("previous opening exists") + 1,
+                        got: index,
+                    },
+                );
+            }
+            if indices.binary_search(&index).is_err() {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleOpeningIndexOutOfBounds {
+                        index,
+                        values_len: commitment.values_len,
+                    },
+                );
+            }
+            previous_boolean = Some(index);
+        }
 
         let dimension = <F as BasedVectorSpace<Goldilocks>>::DIMENSION;
-        let expected_basis_len = indices.len() * dimension;
+        let expected_basis_len = indices.len().saturating_sub(boolean_indices.len()) * dimension;
         if proof.value_basis_flat.len() != expected_basis_len {
             return Err(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
@@ -2661,19 +2757,59 @@ impl NativeTerminalCompiler {
                 },
             );
         }
+        let expected_boolean_bytes = boolean_indices.len().div_ceil(8);
+        if proof.boolean_value_bits.len() != expected_boolean_bytes {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: expected_boolean_bytes,
+                    got: proof.boolean_value_bits.len(),
+                },
+            );
+        }
+        if let Some(last_byte) = proof.boolean_value_bits.last().copied() {
+            let used_bits = boolean_indices.len() % 8;
+            if used_bits != 0 {
+                let unused_mask = u8::MAX << used_bits;
+                if last_byte & unused_mask != 0 {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical {
+                            limb: boolean_indices.len(),
+                            value: last_byte as u64,
+                        },
+                    );
+                }
+            }
+        }
 
         let mut values = Vec::with_capacity(indices.len());
         let mut openings = Vec::with_capacity(indices.len());
-        for (index, basis) in indices
-            .iter()
-            .copied()
-            .zip(proof.value_basis_flat.chunks_exact(dimension))
-        {
-            values.push((index, Self::field_from_goldilocks_basis_u64::<F>(basis)?));
-            openings.push(TerminalOracleMultiValueOpening {
+        let mut basis_chunks = proof.value_basis_flat.chunks_exact(dimension);
+        let mut boolean_index = 0usize;
+        for index in indices.iter().copied() {
+            let value_basis = if boolean_index < boolean_indices.len()
+                && index == boolean_indices[boolean_index]
+            {
+                let bit = (proof.boolean_value_bits[boolean_index / 8] >> (boolean_index % 8)) & 1;
+                boolean_index += 1;
+                let mut basis = vec![0u64; dimension];
+                basis[0] = bit as u64;
+                basis
+            } else {
+                basis_chunks
+                    .next()
+                    .ok_or(
+                        NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                            expected: expected_basis_len,
+                            got: proof.value_basis_flat.len(),
+                        },
+                    )?
+                    .to_vec()
+            };
+            values.push((
                 index,
-                value_basis: basis.to_vec(),
-            });
+                Self::field_from_goldilocks_basis_u64::<F>(&value_basis)?,
+            ));
+            openings.push(TerminalOracleMultiValueOpening { index, value_basis });
         }
 
         let root_level = Self::terminal_oracle_path_len(commitment.values_len);
@@ -4686,6 +4822,7 @@ impl NativeTerminalCompiler {
         let mut tip5_hidden_input_nonzero_masks = Vec::with_capacity(npo_rows);
         let mut tip5_hidden_input_values_le = Vec::new();
         let mut witness_ids = Vec::new();
+        let mut boolean_witness_ids = Vec::new();
         for npo_index in 0..npo_rows {
             let (npo_opening, row_witness_ids) =
                 self.terminal_npo_local_opening_goldilocks(verifying_key, witness, npo_index)?;
@@ -4697,6 +4834,9 @@ impl NativeTerminalCompiler {
             if let Some(NativeTerminalNpoRowRef::Tip5 { callsite, .. }) =
                 Self::terminal_npo_row(verifying_key, npo_index)
             {
+                if let Some(witness_id) = callsite.tip5_mmcs_bit {
+                    Self::push_unique_witness(&mut boolean_witness_ids, witness_id);
+                }
                 let mode = callsite.tip5_mode.ok_or(
                     NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
                         op_type: Self::tip5_op_type().as_str().into(),
@@ -4746,6 +4886,7 @@ impl NativeTerminalCompiler {
         }
 
         witness_ids.sort_by_key(|witness_id| witness_id.0);
+        boolean_witness_ids.sort_by_key(|witness_id| witness_id.0);
         let mut witness_values = Vec::with_capacity(witness_ids.len());
         for witness_id in &witness_ids {
             let value = witness.traces.witness_trace.get_value(*witness_id).ok_or(
@@ -4755,8 +4896,15 @@ impl NativeTerminalCompiler {
             )?;
             witness_values.push((witness_id.0 as usize, value));
         }
-        let witness_multi_opening =
-            witness_oracle.open_goldilocks_known_index_multi_values(&witness_values)?;
+        let boolean_witness_indices = boolean_witness_ids
+            .iter()
+            .map(|witness_id| witness_id.0 as usize)
+            .collect::<Vec<_>>();
+        let witness_multi_opening = witness_oracle
+            .open_goldilocks_known_index_multi_values_with_boolean_indices(
+                &witness_values,
+                &boolean_witness_indices,
+            )?;
         Ok(TerminalNpoExhaustiveProof {
             tip5_hidden_input_nonzero_masks,
             tip5_hidden_input_values_le,
@@ -4800,6 +4948,7 @@ impl NativeTerminalCompiler {
         }
 
         let mut expected_global_witness_ids = Vec::new();
+        let mut expected_global_boolean_witness_ids = Vec::new();
         for npo_index in 0..npo_rows {
             let row_ref = Self::terminal_npo_row(verifying_key, npo_index).ok_or(
                 NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
@@ -4809,8 +4958,18 @@ impl NativeTerminalCompiler {
                 },
             )?;
             match row_ref {
-                NativeTerminalNpoRowRef::Tip5 { callsite, .. }
-                | NativeTerminalNpoRowRef::Recompose { callsite, .. } => {
+                NativeTerminalNpoRowRef::Tip5 { callsite, .. } => {
+                    for witness_id in Self::npo_callsite_witness_ids(callsite) {
+                        Self::push_unique_witness(&mut expected_global_witness_ids, witness_id);
+                    }
+                    if let Some(witness_id) = callsite.tip5_mmcs_bit {
+                        Self::push_unique_witness(
+                            &mut expected_global_boolean_witness_ids,
+                            witness_id,
+                        );
+                    }
+                }
+                NativeTerminalNpoRowRef::Recompose { callsite, .. } => {
                     for witness_id in Self::npo_callsite_witness_ids(callsite) {
                         Self::push_unique_witness(&mut expected_global_witness_ids, witness_id);
                     }
@@ -4818,15 +4977,22 @@ impl NativeTerminalCompiler {
             }
         }
         expected_global_witness_ids.sort_by_key(|witness_id| witness_id.0);
+        expected_global_boolean_witness_ids.sort_by_key(|witness_id| witness_id.0);
         let expected_global_witness_indices = expected_global_witness_ids
             .iter()
             .map(|witness_id| witness_id.0 as usize)
             .collect::<Vec<_>>();
-        let witness_values = self.verify_terminal_oracle_known_index_multi_proof_goldilocks::<F>(
-            witness_commitment,
-            &expected_global_witness_indices,
-            &proof.witness_multi_opening,
-        )?;
+        let expected_global_boolean_witness_indices = expected_global_boolean_witness_ids
+            .iter()
+            .map(|witness_id| witness_id.0 as usize)
+            .collect::<Vec<_>>();
+        let witness_values = self
+            .verify_terminal_oracle_known_index_multi_proof_goldilocks_with_boolean_indices::<F>(
+                witness_commitment,
+                &expected_global_witness_indices,
+                &expected_global_boolean_witness_indices,
+                &proof.witness_multi_opening,
+            )?;
 
         let mut hidden_value_offset = 0usize;
         let mut previous_normal_tip5_output = None;
@@ -7815,16 +7981,17 @@ impl NativeTerminalCompiler {
                 got: values_le.len(),
             });
         }
-        let mode = callsite
-            .tip5_mode
-            .ok_or(NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
-                op_type: Self::tip5_op_type().as_str().into(),
-                row,
-                field: "tip5_mode",
-                limb: 0,
-                expected: Some(1),
-                got: None,
-            })?;
+        let mode =
+            callsite
+                .tip5_mode
+                .ok_or(NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                    op_type: Self::tip5_op_type().as_str().into(),
+                    row,
+                    field: "tip5_mode",
+                    limb: 0,
+                    expected: Some(1),
+                    got: None,
+                })?;
         let mmcs_bit = if mode.merkle_path {
             let witness_id = callsite.tip5_mmcs_bit.ok_or(
                 NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
@@ -8058,8 +8225,12 @@ impl NativeTerminalCompiler {
         if callsite.inputs[trace_limb].is_some() || !mode.merkle_path {
             return false;
         }
-        let bus_limb =
-            Self::terminal_tip5_bus_limb_from_trace_limb(mode, has_ctl_output, mmcs_bit, trace_limb);
+        let bus_limb = Self::terminal_tip5_bus_limb_from_trace_limb(
+            mode,
+            has_ctl_output,
+            mmcs_bit,
+            trace_limb,
+        );
         (5..10).contains(&bus_limb)
     }
 
@@ -8306,16 +8477,17 @@ impl NativeTerminalCompiler {
             opened_values,
         )?;
 
-        let mode = callsite
-            .tip5_mode
-            .ok_or(NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
-                op_type: Self::tip5_op_type().as_str().into(),
-                row,
-                field: "tip5_mode",
-                limb: 0,
-                expected: Some(1),
-                got: None,
-            })?;
+        let mode =
+            callsite
+                .tip5_mode
+                .ok_or(NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                    op_type: Self::tip5_op_type().as_str().into(),
+                    row,
+                    field: "tip5_mode",
+                    limb: 0,
+                    expected: Some(1),
+                    got: None,
+                })?;
         let opened_value = |wanted: WitnessId, limb: usize| {
             Self::tip5_opened_goldilocks_value(
                 row,
@@ -8370,9 +8542,9 @@ impl NativeTerminalCompiler {
                     let expected = if mode.new_start {
                         Goldilocks::ZERO
                     } else {
-                        previous_merkle_output.ok_or(
-                            NativeTerminalVerifyError::Tip5InputMismatch { row, limb },
-                        )?[limb]
+                        previous_merkle_output
+                            .ok_or(NativeTerminalVerifyError::Tip5InputMismatch { row, limb })?
+                            [limb]
                     };
                     if bus_state[limb] != expected {
                         return Err(NativeTerminalVerifyError::Tip5InputMismatch { row, limb });
@@ -8397,9 +8569,9 @@ impl NativeTerminalCompiler {
                     let expected = if mode.new_start {
                         Goldilocks::ZERO
                     } else {
-                        previous_normal_output.ok_or(
-                            NativeTerminalVerifyError::Tip5InputMismatch { row, limb },
-                        )?[limb]
+                        previous_normal_output
+                            .ok_or(NativeTerminalVerifyError::Tip5InputMismatch { row, limb })?
+                            [limb]
                     };
                     if trace_state[limb] != expected {
                         return Err(NativeTerminalVerifyError::Tip5InputMismatch { row, limb });
@@ -11516,7 +11688,9 @@ mod tests {
         let NativeTerminalConstraint::Tip5Goldilocks { callsites, .. } = vk
             .constraints
             .iter_mut()
-            .find(|constraint| matches!(constraint, NativeTerminalConstraint::Tip5Goldilocks { .. }))
+            .find(|constraint| {
+                matches!(constraint, NativeTerminalConstraint::Tip5Goldilocks { .. })
+            })
             .expect("Tip5 constraint must be present")
         else {
             unreachable!("matched Tip5 constraint");
@@ -11879,7 +12053,6 @@ mod tests {
         compiler
             .verify_terminal_production_goldilocks(&vk, &public_inputs, &proof)
             .expect("honest production proof with exhaustive NPO rows must verify");
-
         let mut missing_value = proof.clone();
         missing_value
             .npo_exhaustive_proof
@@ -12692,6 +12865,82 @@ mod tests {
         compiler
             .verify_proof_prelude_goldilocks(&vk, &public_inputs, &prelude)
             .expect("prelude with oracle root must verify");
+    }
+
+    #[test]
+    fn goldilocks_terminal_known_index_multi_proof_compacts_boolean_values() {
+        let values = vec![
+            Goldilocks::from_u64(11),
+            Goldilocks::ONE,
+            Goldilocks::from_u64(13),
+            Goldilocks::ZERO,
+            Goldilocks::from_u64(17),
+        ];
+        let tree = TerminalOracleMerkleTree::commit_goldilocks_values("witness", &values)
+            .expect("non-empty terminal oracle must commit");
+        let commitment = tree.commitment();
+        let opening_values = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| (index, value))
+            .collect::<Vec<_>>();
+        let proof = tree
+            .open_goldilocks_known_index_multi_values_with_boolean_indices(&opening_values, &[1, 3])
+            .expect("known-index proof with compact booleans must open");
+        assert_eq!(proof.boolean_value_bits, vec![1]);
+        assert_eq!(proof.value_basis_flat.len(), 3);
+
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let verified = compiler
+            .verify_terminal_oracle_known_index_multi_proof_goldilocks_with_boolean_indices::<
+                Goldilocks,
+            >(&commitment, &[0, 1, 2, 3, 4], &[1, 3], &proof)
+            .expect("compact boolean known-index proof must verify");
+        assert_eq!(
+            verified.iter().map(|(_, value)| *value).collect::<Vec<_>>(),
+            values
+        );
+
+        let mut missing_bits = proof.clone();
+        missing_bits.boolean_value_bits.pop();
+        let err = compiler
+            .verify_terminal_oracle_known_index_multi_proof_goldilocks_with_boolean_indices::<
+                Goldilocks,
+            >(&commitment, &[0, 1, 2, 3, 4], &[1, 3], &missing_bits)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
+
+        let mut bad_bit = proof;
+        bad_bit.boolean_value_bits[0] ^= 1;
+        let err = compiler
+            .verify_terminal_oracle_known_index_multi_proof_goldilocks_with_boolean_indices::<
+                Goldilocks,
+            >(&commitment, &[0, 1, 2, 3, 4], &[1, 3], &bad_bit)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
+        ));
+
+        let mut noncanonical_tail = bad_bit;
+        noncanonical_tail.boolean_value_bits[0] = 0b1000_0001;
+        let err = compiler
+            .verify_terminal_oracle_known_index_multi_proof_goldilocks_with_boolean_indices::<
+                Goldilocks,
+            >(
+                &commitment,
+                &[0, 1, 2, 3, 4],
+                &[1, 3],
+                &noncanonical_tail,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical { .. }
+        ));
     }
 
     #[test]
@@ -13818,7 +14067,10 @@ mod tests {
             .openings
             .iter()
             .position(|opening| {
-                matches!(opening, TerminalCombinedValidityConsistencyOpening::Npo { .. })
+                matches!(
+                    opening,
+                    TerminalCombinedValidityConsistencyOpening::Npo { .. }
+                )
             })
             .expect("NPO-only proof must sample an NPO row");
         let validity_index = match &proof.combined_validity_consistency_proof.openings[npo_query] {
@@ -13864,7 +14116,10 @@ mod tests {
             .openings
             .iter()
             .position(|opening| {
-                matches!(opening, TerminalCombinedValidityConsistencyOpening::Npo { .. })
+                matches!(
+                    opening,
+                    TerminalCombinedValidityConsistencyOpening::Npo { .. }
+                )
             })
             .expect("NPO-only proof must sample an NPO row");
         let TerminalCombinedValidityConsistencyOpening::Npo {
@@ -15110,7 +15365,9 @@ mod tests {
         let NativeTerminalConstraint::Tip5Goldilocks { callsites, .. } = stale_mode_vk
             .constraints
             .iter_mut()
-            .find(|constraint| matches!(constraint, NativeTerminalConstraint::Tip5Goldilocks { .. }))
+            .find(|constraint| {
+                matches!(constraint, NativeTerminalConstraint::Tip5Goldilocks { .. })
+            })
             .expect("Tip5 constraint must be present")
         else {
             unreachable!("matched Tip5 constraint");
@@ -15120,8 +15377,9 @@ mod tests {
             .as_mut()
             .expect("Tip5 callsite must carry terminal mode");
         mode.new_start = !mode.new_start;
-        stale_mode_vk.header.relation_digest =
-            Some(NativeTerminalCompiler::relation_digest_goldilocks(&stale_mode_vk));
+        stale_mode_vk.header.relation_digest = Some(
+            NativeTerminalCompiler::relation_digest_goldilocks(&stale_mode_vk),
+        );
         let err = compiler
             .verify_assignment_with_tip5_goldilocks(&stale_mode_vk, &witness)
             .unwrap_err();
@@ -15311,7 +15569,10 @@ mod tests {
                 &mut merkle_state,
             )
             .unwrap_err();
-        assert_eq!(err, NativeTerminalVerifyError::Tip5InputMismatch { row: 1, limb: 3 });
+        assert_eq!(
+            err,
+            NativeTerminalVerifyError::Tip5InputMismatch { row: 1, limb: 3 }
+        );
 
         let merkle_callsite = NativeTerminalNpoCallsite {
             inputs: vec![None; 16],
@@ -15363,7 +15624,10 @@ mod tests {
                 &mut merkle_state,
             )
             .unwrap_err();
-        assert_eq!(err, NativeTerminalVerifyError::Tip5InputMismatch { row: 0, limb: 12 });
+        assert_eq!(
+            err,
+            NativeTerminalVerifyError::Tip5InputMismatch { row: 0, limb: 12 }
+        );
 
         let mut normal_state = None;
         let mut merkle_state = None;
@@ -15379,7 +15643,10 @@ mod tests {
                 &mut merkle_state,
             )
             .unwrap_err();
-        assert_eq!(err, NativeTerminalVerifyError::Tip5InputMismatch { row: 0, limb: 16 });
+        assert_eq!(
+            err,
+            NativeTerminalVerifyError::Tip5InputMismatch { row: 0, limb: 16 }
+        );
     }
 
     #[test]
