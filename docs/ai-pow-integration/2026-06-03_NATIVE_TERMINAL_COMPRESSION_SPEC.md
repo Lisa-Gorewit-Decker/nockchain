@@ -692,9 +692,17 @@ Literature checkpoint as of 2026-06-03:
   evaluation domain while retaining linear proving and logarithmic verifier
   arithmetic complexity (Ben-Sasson, Goldberg, Kopparty, Saraf,
   arXiv:1903.12243 / ePrint 2019/336,
-  https://arxiv.org/abs/1903.12243). Our current terminal baseline is still
-  Plonky3 FRI rather than a new DEEP-FRI terminal proof, so parameter changes
-  must continue to use the active Plonky3 FRI verifier's query/PoW accounting.
+  https://eprint.iacr.org/2019/336 and https://arxiv.org/abs/1903.12243). Our
+  current terminal baseline is still Plonky3 FRI rather than a new DEEP-FRI
+  terminal proof, so parameter changes must continue to use the active Plonky3
+  FRI verifier's query/PoW accounting.
+- FRI itself is an interactive oracle proof of proximity for Reed-Solomon
+  codes, with linear prover arithmetic and logarithmic verifier arithmetic in
+  the original Fast RS IOPP formulation (ECCC TR17-134,
+  https://eccc.weizmann.ac.il/report/2017/134/). Any replacement terminal
+  proximity layer must therefore state exactly which code, rate, query count,
+  and Fiat-Shamir transcript it is instantiating; a Merkle opening protocol over
+  arbitrary witness values is not a FRI proximity proof by itself.
 - Fiat-Shamir security for FRI and batched FRI is treated in Block, Garreta,
   Katz, Thaler, Tiwari, Zajac (IACR ePrint 2023/1071,
   https://eprint.iacr.org/2023/1071). The terminal certificate therefore has to
@@ -719,6 +727,21 @@ Literature checkpoint as of 2026-06-03:
   polynomial IOP; the existing `lb=4, nq=9, query_pow=24` number cannot be
   copied over unless the terminal backend uses the same FRI verifier model.
 
+Completion audit against the active terminal-compression requirements:
+
+| requirement | current evidence | status |
+|---|---|---|
+| Production profile gets at least 60 bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests. | satisfied for the current terminal profile |
+| Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
+| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `98,814` bytes / `96.5 KiB`, debug-profile `prove=4.904s`, `verify=3.109s`. | satisfied on the measured production fixture |
+| No confusing low-soundness testing production path | Production certificate verifier accepts only `TerminalProofKind::Production`; `LocalCheckpoint` is rejected by kind mismatch and query domains must support all 15 production queries. | satisfied for public production verifier dispatch |
+| Public values, parameters, relation, and commitments are bound before challenges | Header, public-values digest, backend relation digest, prelude parameters, relation profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
+| Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
+| Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against a prelude-bound witness oracle. | satisfied for supported NPO row validity |
+| Supported NPO/table rows are polynomialized into a final proximity backend | Current production uses exhaustive Merkle openings for NPO rows, not a low-degree/proximity argument for a polynomialized Tip5/recompose relation. | not complete |
+| Full terminal proof has a source-backed soundness calculation | Current doc records 60 pure-query Johnson accounting for the terminal profile and tests verifier binding, but it does not yet derive a complete theorem for the hybrid row-product plus exhaustive-NPO Merkle backend. | incomplete |
+| Zero-knowledge or witness hiding for recursive-verifier witness values | Current production opens 1,377 verifier-circuit witness values for exhaustive NPO checking. That is smaller than full witness serialization, but it is not a zero-knowledge terminal backend. | incomplete if ZK is required |
+
 Security-audit conclusions for the current implementation checkpoint:
 
 - The typed compact production proof now gives native terminal certificates a
@@ -727,6 +750,11 @@ Security-audit conclusions for the current implementation checkpoint:
   serialization baseline and removes the sampled NPO production path, but the
   exhaustive NPO layer is still not the final polynomialized Tip5/recompose
   terminal backend.
+- The current production proof is therefore a hybrid terminal backend: a
+  sumcheck-backed primitive sparse-R1CS argument plus exhaustive Merkle-backed
+  supported-NPO checking. This is a production-only proof shape under the
+  current implementation, but it must not be described as the final
+  polynomial/proximity backend requested for terminal completion.
 - The terminal proof prelude is now an implemented transcript-binding prefix,
   not a standalone argument. It prevents challenge grinding across relation,
   public input, parameter, and commitment substitutions. In the compact
@@ -768,11 +796,22 @@ Security-audit conclusions for the current implementation checkpoint:
   serialization for primitive rows and exhaustively checks supported NPO rows;
   the remaining backend must replace Merkle-heavy NPO openings with a
   polynomialized PCS/sumcheck argument at >=60-bit soundness.
+- The known-index exhaustive NPO multiproof is sound only because the verifier
+  derives the exact sorted witness-ID set from the committed terminal relation
+  before recomputing the Merkle root. It is not a generic replacement for
+  indexed multiproofs: generic transcript-query proofs must continue to carry
+  and check their opened indices, because their indices are part of the
+  challenge-derived proof instance.
 - The terminal query plan is now verifier-derived and commitment-bound, which
   removes serialized-query steering. It does not by itself justify the 60-bit
   soundness claim; the final backend still needs the algebraic proximity or
   sumcheck argument that makes sampled openings imply global relation
   satisfaction.
+- The current NPO production verifier avoids a sampled-row soundness gap by
+  checking all supported rows, not by relying on a proximity test. This is
+  acceptable as a row-validity checkpoint for the measured terminal circuit, but
+  it is linear in the supported-NPO witness opening surface and therefore not
+  the literature-style terminal PCS/proximity construction.
 - The sampled primitive and supported-NPO local proofs check real committed
   witness openings, but they are only components. A witness that violates a
   small number of unsampled primitive or NPO rows, or violates a global
@@ -851,6 +890,12 @@ Security-audit conclusions for the current implementation checkpoint:
   batch-STARK layer. The remaining size work is a real polynomialized
   NPO/proximity backend that preserves the checks above without carrying 1,377
   NPO witness openings.
+- Completion status: the measured production certificate now meets the user's
+  size and 60-bit pure-query constraints, but the broader goal remains open
+  until the terminal backend either implements the final polynomial/proximity
+  argument for supported NPO/table rows or the project explicitly accepts the
+  current exhaustive-Merkle NPO verifier as the production terminal backend with
+  a complete, written soundness theorem.
 
 ## Certificate Binding Requirements
 
