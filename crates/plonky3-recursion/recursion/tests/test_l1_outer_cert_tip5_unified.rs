@@ -478,15 +478,6 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
                 .len()
         })
         .unwrap_or(0);
-    let production_npo_exhaustive_masks_size = production_proof
-        .npo_exhaustive_proof
-        .as_ref()
-        .map(|proof| {
-            postcard::to_allocvec(&proof.tip5_hidden_input_nonzero_masks)
-                .expect("terminal production exhaustive NPO masks must serialize")
-                .len()
-        })
-        .unwrap_or(0);
     let production_npo_witness_multi_opening_count = production_proof
         .npo_exhaustive_proof
         .as_ref()
@@ -693,8 +684,7 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
         production_r1cs_size, production_npo_exhaustive_size,
     );
     eprintln!(
-        "terminal production NPO breakdown: exhaustive_masks={} witness_multiproof={} witness_multi_opening_count={} hidden_inputs={}",
-        production_npo_exhaustive_masks_size,
+        "terminal production NPO breakdown: witness_multiproof={} witness_multi_opening_count={} hidden_inputs={}",
         production_npo_witness_multi_opening_size,
         production_npo_witness_multi_opening_count,
         production_npo_hidden_inputs_size,
