@@ -1423,6 +1423,30 @@ pub enum NativeTerminalVerifyError {
         npo_index: usize,
         limb: usize,
     },
+    TerminalNpoPolynomialColumnLayoutMismatch {
+        expected: TerminalNpoPolynomialColumnLayout,
+        got: TerminalNpoPolynomialColumnLayout,
+    },
+    TerminalNpoPolynomialColumnMissing {
+        label: String,
+    },
+    TerminalNpoPolynomialColumnLengthMismatch {
+        label: String,
+        expected: usize,
+        got: usize,
+    },
+    TerminalNpoPolynomialColumnValueMismatch {
+        label: String,
+        row: usize,
+    },
+    TerminalNpoPolynomialColumnDuplicateWitnessMismatch {
+        npo_index: usize,
+        witness_id: u32,
+    },
+    TerminalNpoPolynomialResidualMismatch {
+        npo_index: usize,
+        component_offset: usize,
+    },
     TerminalConstraintOpeningCountMismatch {
         constraint_index: usize,
         expected: usize,
@@ -4397,6 +4421,70 @@ impl NativeTerminalCompiler {
     {
         let columns = self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
         Self::commit_terminal_npo_polynomial_column_values_goldilocks(&columns)
+    }
+
+    pub fn terminal_npo_polynomial_column_residual_values_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        columns: &TerminalNpoPolynomialColumns<F>,
+    ) -> Result<Vec<F>, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let layout = Self::terminal_npo_polynomial_column_layout::<F>(verifying_key);
+        if columns.layout != layout {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLayoutMismatch {
+                    expected: layout,
+                    got: columns.layout.clone(),
+                },
+            );
+        }
+        Self::validate_terminal_npo_polynomial_columns(&columns.layout, columns)?;
+
+        let mut previous_normal_tip5_output = None;
+        let mut previous_merkle_tip5_output = None;
+        let mut residual_values = Vec::with_capacity(
+            Self::terminal_npo_polynomial_profile::<F>(verifying_key).residual_components,
+        );
+        for npo_index in 0..columns.layout.rows {
+            let expected_npo_index =
+                Self::terminal_npo_polynomial_column_value(columns, "npo_index", npo_index)?;
+            if expected_npo_index != Self::embed_goldilocks(Goldilocks::from_u64(npo_index as u64))
+            {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                        label: "npo_index".into(),
+                        row: npo_index,
+                    },
+                );
+            }
+            let evaluation = self.evaluate_terminal_npo_polynomial_column_row_goldilocks(
+                verifying_key,
+                columns,
+                npo_index,
+                &mut previous_normal_tip5_output,
+                &mut previous_merkle_tip5_output,
+            )?;
+            let derived = Self::terminal_npo_row_evaluation_component_values::<F>(&evaluation);
+            let committed =
+                Self::terminal_npo_polynomial_column_row_residual_values(columns, npo_index)?;
+            if committed != derived {
+                let component_offset = committed
+                    .iter()
+                    .zip(&derived)
+                    .position(|(committed, derived)| committed != derived)
+                    .unwrap_or(committed.len().min(derived.len()));
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialResidualMismatch {
+                        npo_index,
+                        component_offset,
+                    },
+                );
+            }
+            residual_values.extend(derived);
+        }
+        Ok(residual_values)
     }
 
     pub fn commit_terminal_combined_validity_goldilocks<F>(
@@ -9103,6 +9191,465 @@ impl NativeTerminalCompiler {
             labels: columns.labels.clone(),
             trees,
         })
+    }
+
+    fn evaluate_terminal_npo_polynomial_column_row_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        columns: &TerminalNpoPolynomialColumns<F>,
+        npo_index: usize,
+        previous_normal_tip5_output: &mut Option<[Goldilocks; 16]>,
+        previous_merkle_tip5_output: &mut Option<[Goldilocks; 16]>,
+    ) -> Result<TerminalNpoRowEvaluation, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let row_ref = Self::terminal_npo_row(verifying_key, npo_index).ok_or(
+            NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                query: 0,
+                expected: npo_index,
+                got: npo_index,
+            },
+        )?;
+        match row_ref {
+            NativeTerminalNpoRowRef::Tip5 { row, callsite, .. } => {
+                Self::expect_terminal_npo_polynomial_bool_column(
+                    columns, "is_tip5", npo_index, true,
+                )?;
+                Self::expect_terminal_npo_polynomial_bool_column(
+                    columns,
+                    "is_recompose",
+                    npo_index,
+                    false,
+                )?;
+                Self::expect_terminal_npo_polynomial_bool_column(
+                    columns,
+                    "is_recompose_coeff",
+                    npo_index,
+                    false,
+                )?;
+                let mode = callsite.tip5_mode.ok_or(
+                    NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                        op_type: Self::tip5_op_type().as_str().into(),
+                        row,
+                        field: "tip5_mode",
+                        limb: 0,
+                        expected: Some(1),
+                        got: None,
+                    },
+                )?;
+                Self::expect_terminal_npo_polynomial_bool_column(
+                    columns,
+                    "mode_new_start",
+                    npo_index,
+                    mode.new_start,
+                )?;
+                Self::expect_terminal_npo_polynomial_bool_column(
+                    columns,
+                    "mode_merkle_path",
+                    npo_index,
+                    mode.merkle_path,
+                )?;
+                let (expected_witness_ids, opened_values) =
+                    Self::terminal_npo_polynomial_column_opened_values(
+                        columns, npo_index, callsite,
+                    )?;
+                let hidden_inputs = Self::terminal_npo_polynomial_column_hidden_tip5_inputs(
+                    columns, npo_index, callsite,
+                )?;
+                self.evaluate_exhaustive_tip5_npo_row_values::<F>(
+                    npo_index,
+                    row,
+                    callsite,
+                    &hidden_inputs,
+                    &expected_witness_ids,
+                    &opened_values,
+                    previous_normal_tip5_output,
+                    previous_merkle_tip5_output,
+                )
+            }
+            NativeTerminalNpoRowRef::Recompose {
+                op_type,
+                row,
+                callsite,
+            } => {
+                Self::expect_terminal_npo_polynomial_bool_column(
+                    columns, "is_tip5", npo_index, false,
+                )?;
+                let is_standard = op_type == NpoTypeId::recompose().as_str();
+                Self::expect_terminal_npo_polynomial_bool_column(
+                    columns,
+                    "is_recompose",
+                    npo_index,
+                    is_standard,
+                )?;
+                Self::expect_terminal_npo_polynomial_bool_column(
+                    columns,
+                    "is_recompose_coeff",
+                    npo_index,
+                    !is_standard,
+                )?;
+                Self::expect_terminal_npo_polynomial_bool_column(
+                    columns,
+                    "mode_new_start",
+                    npo_index,
+                    false,
+                )?;
+                Self::expect_terminal_npo_polynomial_bool_column(
+                    columns,
+                    "mode_merkle_path",
+                    npo_index,
+                    false,
+                )?;
+                Self::expect_terminal_npo_polynomial_no_hidden_tip5_columns(columns, npo_index)?;
+                let (expected_witness_ids, opened_values) =
+                    Self::terminal_npo_polynomial_column_opened_values(
+                        columns, npo_index, callsite,
+                    )?;
+                self.evaluate_sampled_recompose_npo_row_values::<F>(
+                    npo_index,
+                    op_type,
+                    row,
+                    callsite,
+                    &[],
+                    &expected_witness_ids,
+                    &opened_values,
+                )
+            }
+        }
+    }
+
+    fn terminal_npo_polynomial_column_opened_values<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        npo_index: usize,
+        callsite: &NativeTerminalNpoCallsite,
+    ) -> Result<(Vec<WitnessId>, Vec<F>), NativeTerminalVerifyError>
+    where
+        F: Field,
+    {
+        let mut pairs = Vec::<(WitnessId, F)>::new();
+        for limb in 0..columns.layout.input_value_columns {
+            let witness_id = callsite.inputs.get(limb).copied().flatten();
+            let label = format!("input_present_{limb}");
+            let expected = witness_id.is_some();
+            Self::expect_terminal_npo_polynomial_bool_column(columns, &label, npo_index, expected)?;
+            let value_label = format!("input_value_{limb}");
+            let value =
+                Self::terminal_npo_polynomial_column_value(columns, &value_label, npo_index)?;
+            if let Some(witness_id) = witness_id {
+                Self::push_terminal_npo_polynomial_opened_value(
+                    npo_index, &mut pairs, witness_id, value,
+                )?;
+            } else if value != F::ZERO {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                        label: value_label,
+                        row: npo_index,
+                    },
+                );
+            }
+        }
+        for limb in 0..columns.layout.output_value_columns {
+            let witness_id = callsite.outputs.get(limb).copied().flatten();
+            let label = format!("output_present_{limb}");
+            let expected = witness_id.is_some();
+            Self::expect_terminal_npo_polynomial_bool_column(columns, &label, npo_index, expected)?;
+            let value_label = format!("output_value_{limb}");
+            let value =
+                Self::terminal_npo_polynomial_column_value(columns, &value_label, npo_index)?;
+            if let Some(witness_id) = witness_id {
+                Self::push_terminal_npo_polynomial_opened_value(
+                    npo_index, &mut pairs, witness_id, value,
+                )?;
+            } else if value != F::ZERO {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                        label: value_label,
+                        row: npo_index,
+                    },
+                );
+            }
+        }
+        let mmcs_value =
+            Self::terminal_npo_polynomial_column_value(columns, "mmcs_bit", npo_index)?;
+        if let Some(witness_id) = callsite.tip5_mmcs_bit {
+            Self::expect_terminal_npo_polynomial_bool_column(
+                columns,
+                "mmcs_bit_present",
+                npo_index,
+                true,
+            )?;
+            Self::push_terminal_npo_polynomial_opened_value(
+                npo_index, &mut pairs, witness_id, mmcs_value,
+            )?;
+        } else {
+            Self::expect_terminal_npo_polynomial_bool_column(
+                columns,
+                "mmcs_bit_present",
+                npo_index,
+                false,
+            )?;
+            if mmcs_value != F::ZERO {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                        label: "mmcs_bit".into(),
+                        row: npo_index,
+                    },
+                );
+            }
+        }
+
+        let expected_witness_ids = Self::npo_callsite_witness_ids(callsite);
+        let opened_values = expected_witness_ids
+            .iter()
+            .map(|expected| {
+                pairs
+                    .iter()
+                    .find(|(witness_id, _)| witness_id == expected)
+                    .map(|(_, value)| *value)
+                    .ok_or(NativeTerminalVerifyError::MissingWitness {
+                        witness_id: expected.0,
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((expected_witness_ids, opened_values))
+    }
+
+    fn push_terminal_npo_polynomial_opened_value<F>(
+        npo_index: usize,
+        pairs: &mut Vec<(WitnessId, F)>,
+        witness_id: WitnessId,
+        value: F,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: Field,
+    {
+        if let Some((_, existing)) = pairs.iter().find(|(existing, _)| *existing == witness_id) {
+            if *existing != value {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnDuplicateWitnessMismatch {
+                        npo_index,
+                        witness_id: witness_id.0,
+                    },
+                );
+            }
+        } else {
+            pairs.push((witness_id, value));
+        }
+        Ok(())
+    }
+
+    fn terminal_npo_polynomial_column_hidden_tip5_inputs<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        npo_index: usize,
+        callsite: &NativeTerminalNpoCallsite,
+    ) -> Result<Vec<TerminalTip5HiddenInputValue>, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        let mut hidden_inputs = Vec::new();
+        for limb in 0..columns.layout.hidden_tip5_value_columns {
+            let expected = callsite.inputs.get(limb).copied().flatten().is_none();
+            let present_label = format!("hidden_tip5_present_{limb}");
+            Self::expect_terminal_npo_polynomial_bool_column(
+                columns,
+                &present_label,
+                npo_index,
+                expected,
+            )?;
+            let value_label = format!("hidden_tip5_value_{limb}");
+            let value =
+                Self::terminal_npo_polynomial_column_value(columns, &value_label, npo_index)?;
+            if expected {
+                let basis = value.as_basis_coefficients_slice();
+                if basis
+                    .iter()
+                    .copied()
+                    .skip(1)
+                    .any(|coeff| coeff != Goldilocks::ZERO)
+                {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                            label: value_label,
+                            row: npo_index,
+                        },
+                    );
+                }
+                let first = basis.first().copied().unwrap_or(Goldilocks::ZERO);
+                hidden_inputs.push(TerminalTip5HiddenInputValue {
+                    limb,
+                    value_basis: vec![first.as_canonical_u64()],
+                });
+            } else if value != F::ZERO {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                        label: value_label,
+                        row: npo_index,
+                    },
+                );
+            }
+        }
+        Ok(hidden_inputs)
+    }
+
+    fn expect_terminal_npo_polynomial_no_hidden_tip5_columns<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        npo_index: usize,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: Field,
+    {
+        for limb in 0..columns.layout.hidden_tip5_value_columns {
+            let present_label = format!("hidden_tip5_present_{limb}");
+            Self::expect_terminal_npo_polynomial_bool_column(
+                columns,
+                &present_label,
+                npo_index,
+                false,
+            )?;
+            let value_label = format!("hidden_tip5_value_{limb}");
+            let value =
+                Self::terminal_npo_polynomial_column_value(columns, &value_label, npo_index)?;
+            if value != F::ZERO {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                        label: value_label,
+                        row: npo_index,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn terminal_npo_polynomial_column_row_residual_values<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        row: usize,
+    ) -> Result<Vec<F>, NativeTerminalVerifyError>
+    where
+        F: Field,
+    {
+        let mut values = Vec::new();
+        for slot in 0..columns.layout.residual_value_columns {
+            let present_label = format!("residual_present_{slot}");
+            let present = Self::terminal_npo_polynomial_column_value(columns, &present_label, row)?;
+            let value_label = format!("residual_value_{slot}");
+            let value = Self::terminal_npo_polynomial_column_value(columns, &value_label, row)?;
+            if present == F::ONE {
+                values.push(value);
+            } else if present == F::ZERO {
+                if value != F::ZERO {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                            label: value_label,
+                            row,
+                        },
+                    );
+                }
+            } else {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                        label: present_label,
+                        row,
+                    },
+                );
+            }
+        }
+        Ok(values)
+    }
+
+    fn validate_terminal_npo_polynomial_columns<F>(
+        layout: &TerminalNpoPolynomialColumnLayout,
+        columns: &TerminalNpoPolynomialColumns<F>,
+    ) -> Result<(), NativeTerminalVerifyError> {
+        if columns.labels.len() != layout.column_count
+            || columns.columns.len() != layout.column_count
+        {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "columns".into(),
+                    expected: layout.column_count,
+                    got: columns.columns.len(),
+                },
+            );
+        }
+        for (label, column) in columns.labels.iter().zip(&columns.columns) {
+            if columns
+                .labels
+                .iter()
+                .filter(|candidate| *candidate == label)
+                .count()
+                != 1
+            {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                        label: label.clone(),
+                        row: 0,
+                    },
+                );
+            }
+            if column.len() != layout.rows {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                        label: label.clone(),
+                        expected: layout.rows,
+                        got: column.len(),
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn expect_terminal_npo_polynomial_bool_column<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        label: &str,
+        row: usize,
+        expected: bool,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: Field,
+    {
+        let expected = if expected { F::ONE } else { F::ZERO };
+        let got = Self::terminal_npo_polynomial_column_value(columns, label, row)?;
+        if got != expected {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                    label: label.into(),
+                    row,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn terminal_npo_polynomial_column_value<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        label: &str,
+        row: usize,
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: Copy,
+    {
+        let column_index = columns
+            .labels
+            .iter()
+            .position(|candidate| candidate == label)
+            .ok_or_else(
+                || NativeTerminalVerifyError::TerminalNpoPolynomialColumnMissing {
+                    label: label.into(),
+                },
+            )?;
+        columns.columns[column_index]
+            .get(row)
+            .copied()
+            .ok_or_else(
+                || NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: label.into(),
+                    expected: row + 1,
+                    got: columns.columns[column_index].len(),
+                },
+            )
     }
 
     fn max_serialized_tip5_hidden_input_slots(
@@ -14451,6 +14998,10 @@ mod tests {
         let columns = compiler
             .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
             .expect("NPO polynomial columns must build");
+        let derived_residuals = compiler
+            .terminal_npo_polynomial_column_residual_values_goldilocks(&vk, &columns)
+            .expect("NPO polynomial column predicate must evaluate");
+        assert_eq!(derived_residuals, table.residual_values);
 
         assert_eq!(columns.layout.rows, table.rows.len());
         assert_eq!(columns.layout.log_rows, 1);
@@ -14527,6 +15078,36 @@ mod tests {
                 .iter()
                 .all(|value| *value == Goldilocks::ZERO)
         );
+
+        let mut tampered_columns = columns.clone();
+        let output_column = tampered_columns
+            .labels
+            .iter()
+            .position(|label| label == "output_value_0")
+            .expect("output column must exist");
+        tampered_columns.columns[output_column][0] += Goldilocks::ONE;
+        let err = compiler
+            .terminal_npo_polynomial_column_residual_values_goldilocks(&vk, &tampered_columns)
+            .expect_err("tampered output column must change derived residuals");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialResidualMismatch { npo_index: 0, .. }
+        ));
+
+        let mut tampered_columns = columns.clone();
+        let mmcs_column = tampered_columns
+            .labels
+            .iter()
+            .position(|label| label == "mmcs_bit")
+            .expect("MMCS-bit column must exist");
+        tampered_columns.columns[mmcs_column][0] = Goldilocks::from_u64(2);
+        let err = compiler
+            .terminal_npo_polynomial_column_residual_values_goldilocks(&vk, &tampered_columns)
+            .expect_err("tampered MMCS-bit column must change derived residuals");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialResidualMismatch { npo_index: 0, .. }
+        ));
     }
 
     #[test]
@@ -14631,6 +15212,11 @@ mod tests {
             npo_polynomial_column(&columns, "residual_present_10"),
             &[Goldilocks::ONE]
         );
+
+        let derived_residuals = compiler
+            .terminal_npo_polynomial_column_residual_values_goldilocks(&vk, &columns)
+            .expect("bad NPO polynomial column predicate must still evaluate");
+        assert_eq!(derived_residuals, table.residual_values);
     }
 
     #[test]
@@ -18552,6 +19138,10 @@ mod tests {
         let columns = compiler
             .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
             .expect("D2 recompose NPO polynomial columns must build");
+        let derived_residuals = compiler
+            .terminal_npo_polynomial_column_residual_values_goldilocks(&vk, &columns)
+            .expect("D2 recompose NPO polynomial column predicate must evaluate");
+        assert_eq!(derived_residuals, table.residual_values);
 
         assert_eq!(columns.layout.rows, 2);
         assert_eq!(columns.layout.input_value_columns, 2);
@@ -18609,6 +19199,21 @@ mod tests {
                 .iter()
                 .all(|value| *value == GoldilocksD2::ZERO)
         );
+
+        let mut tampered_columns = columns.clone();
+        let input_column = tampered_columns
+            .labels
+            .iter()
+            .position(|label| label == "input_value_0")
+            .expect("input column must exist");
+        tampered_columns.columns[input_column][0] += GoldilocksD2::ONE;
+        let err = compiler
+            .terminal_npo_polynomial_column_residual_values_goldilocks(&vk, &tampered_columns)
+            .expect_err("tampered recompose input column must change derived residuals");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialResidualMismatch { npo_index: 0, .. }
+        ));
     }
 
     #[test]

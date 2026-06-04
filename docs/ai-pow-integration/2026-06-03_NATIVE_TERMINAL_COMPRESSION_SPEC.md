@@ -211,6 +211,13 @@ for this route.
   `npo_polynomial_column/<column-label>` oracle label and the shared row count.
   This is a transcript-binding checkpoint for the final backend; it is not a
   substitute for the missing low-degree/proximity proof.
+- `TerminalNpoPolynomialColumnResidual` evaluation: the verifier-side row
+  predicate reconstructed from fixed columns. It validates row-kind selectors,
+  mode bits, present bits, zero padding, duplicate witness-slot consistency,
+  hidden Tip5 lane embedding, MMCS-bit binding, Tip5 chain state, and
+  recompose coefficient reconstruction, then requires the derived residual
+  vector to match the committed residual columns. Tests tamper Tip5 output
+  columns, MMCS-bit columns, and D2 recompose input columns.
 - `TerminalNpoExhaustiveResidualFoldProof`: a Merkle-backed folded zero check
   for the production-equivalent supported-NPO residual oracle, with transcript
   domains distinct from both primitive residual folding and legacy sampled NPO
@@ -680,7 +687,7 @@ Tip5-L0 verifier circuit:
 | compact production proof body | 86,420 |
 | compact production certificate | 86,642 |
 
-The debug-profile measurement is `prove=4.927 s, verify=3.212 s` for the
+The debug-profile measurement is `prove=4.932 s, verify=3.214 s` for the
 production proof body and certificate, with terminal parameters
 `security_bits=60, log_blowup=4, num_queries=15, query_pow_bits=0`. This removes
 the sampled production NPO validity layer and verifies all 668 supported
@@ -782,7 +789,7 @@ Completion audit against the active terminal-compression requirements:
 |---|---|---|
 | Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
-| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `86,642` bytes / `84.6 KiB`, debug-profile `prove=4.927s`, `verify=3.212s`. | satisfied on the measured production fixture |
+| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `86,642` bytes / `84.6 KiB`, debug-profile `prove=4.932s`, `verify=3.214s`. | satisfied on the measured production fixture |
 | No confusing low-soundness testing production path | Production builds expose only `TerminalProofKind::Production`; local checkpoint proof-kind helpers are `cfg(test)`, and public production verification requires all 15 production queries. | satisfied for public production verifier dispatch |
 | Public values, parameters, relation, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile and column layout, prelude parameters, relation profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
