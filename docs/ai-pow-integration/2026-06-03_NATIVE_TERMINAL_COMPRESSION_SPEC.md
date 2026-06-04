@@ -232,6 +232,12 @@ for this route.
   rejects missing column openings, and checks every column multiproof opens
   exactly the verifier-derived row set. This is still a Merkle-backed opening
   checkpoint, not the final low-degree PCS/proximity proof.
+- `TerminalNpoPolynomialColumnSampledResidual` verification: a sampled checker
+  that reconstructs dense verifier-side column rows from the authenticated
+  sparse openings, evaluates the fixed-column Tip5/recompose predicate on every
+  verifier-expanded segment row, and requires opened residual columns to match
+  the derived residuals. Tests build an internally Merkle-consistent tampered
+  column proof and reject it at this residual-consistency layer.
 - `TerminalNpoExhaustiveResidualFoldProof`: a Merkle-backed folded zero check
   for the production-equivalent supported-NPO residual oracle, with transcript
   domains distinct from both primitive residual folding and legacy sampled NPO
