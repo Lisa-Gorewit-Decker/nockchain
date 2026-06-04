@@ -459,6 +459,138 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         .expect("terminal production certificate must verify");
     let production_verify_elapsed = production_verify_start.elapsed();
 
+    let npo_fri_prove_start = std::time::Instant::now();
+    let npo_fri_proof = compiler
+        .prove_terminal_npo_polynomial_fri_opening_goldilocks(
+            &vk,
+            &terminal_witness.public_inputs,
+            &terminal_witness,
+            &production_proof.prelude,
+        )
+        .expect("terminal NPO polynomial FRI opening proof must build");
+    let npo_fri_prove_elapsed = npo_fri_prove_start.elapsed();
+    let npo_fri_size = postcard::to_allocvec(&npo_fri_proof)
+        .expect("terminal NPO polynomial FRI opening proof must serialize")
+        .len();
+    let npo_fri_inner_proof_size = postcard::to_allocvec(&npo_fri_proof.proof)
+        .expect("terminal NPO polynomial FRI inner proof must serialize")
+        .len();
+    let npo_fri_opened_values_size = postcard::to_allocvec(&npo_fri_proof.opened_values_basis)
+        .expect("terminal NPO polynomial FRI opened values must serialize")
+        .len();
+    let npo_fri_verify_start = std::time::Instant::now();
+    compiler
+        .verify_terminal_npo_polynomial_fri_opening_goldilocks::<Challenge>(
+            &vk,
+            &terminal_witness.public_inputs,
+            &production_proof.prelude,
+            &npo_fri_proof,
+        )
+        .expect("terminal NPO polynomial FRI opening proof must verify");
+    let npo_fri_verify_elapsed = npo_fri_verify_start.elapsed();
+
+    let npo_value_fri_prove_start = std::time::Instant::now();
+    let npo_value_fri_proof = compiler
+        .prove_terminal_npo_polynomial_value_fri_opening_goldilocks(
+            &vk,
+            &terminal_witness.public_inputs,
+            &terminal_witness,
+            &production_proof.prelude,
+        )
+        .expect("terminal NPO value-column FRI opening proof must build");
+    let npo_value_fri_prove_elapsed = npo_value_fri_prove_start.elapsed();
+    let npo_value_fri_size = postcard::to_allocvec(&npo_value_fri_proof)
+        .expect("terminal NPO value-column FRI opening proof must serialize")
+        .len();
+    let npo_value_fri_inner_proof_size = postcard::to_allocvec(&npo_value_fri_proof.proof)
+        .expect("terminal NPO value-column FRI inner proof must serialize")
+        .len();
+    let npo_value_fri_opened_values_size =
+        postcard::to_allocvec(&npo_value_fri_proof.opened_values_basis)
+            .expect("terminal NPO value-column FRI opened values must serialize")
+            .len();
+    let npo_value_fri_verify_start = std::time::Instant::now();
+    compiler
+        .verify_terminal_npo_polynomial_value_fri_opening_goldilocks::<Challenge>(
+            &vk,
+            &terminal_witness.public_inputs,
+            &production_proof.prelude,
+            &npo_value_fri_proof,
+        )
+        .expect("terminal NPO value-column FRI opening proof must verify");
+    let npo_value_fri_verify_elapsed = npo_value_fri_verify_start.elapsed();
+
+    let npo_residual_zero_measurement =
+        if std::env::var_os("NOCK_TERMINAL_MEASURE_NPO_RESIDUAL_ZERO").is_some() {
+            let npo_column_commit_start = std::time::Instant::now();
+            let npo_column_oracles = compiler
+                .commit_terminal_npo_polynomial_columns_goldilocks(&vk, &terminal_witness)
+                .expect(
+                    "terminal NPO polynomial columns must commit for real Tip5 L0 verifier circuit",
+                );
+            let npo_column_commit_elapsed = npo_column_commit_start.elapsed();
+            let npo_column_commitments = npo_column_oracles.commitments();
+            let npo_column_commitments_size = postcard::to_allocvec(&npo_column_commitments)
+                .expect("terminal NPO column commitments must serialize")
+                .len();
+            let npo_column_roots = npo_column_commitments
+                .iter()
+                .map(|commitment| commitment.root)
+                .collect::<Vec<_>>();
+            let npo_polynomial_prelude = compiler
+                .build_proof_prelude_goldilocks(
+                    &vk,
+                    &terminal_witness.public_inputs,
+                    parameters,
+                    npo_column_roots,
+                )
+                .expect("terminal NPO polynomial prelude must build");
+
+            let npo_residual_zero_prove_start = std::time::Instant::now();
+            let npo_residual_zero_proof = compiler
+                .prove_terminal_npo_polynomial_residual_zero_goldilocks(
+                    &vk,
+                    &terminal_witness,
+                    &npo_polynomial_prelude,
+                )
+                .expect("terminal NPO polynomial residual-zero proof must build");
+            let npo_residual_zero_prove_elapsed = npo_residual_zero_prove_start.elapsed();
+            let npo_residual_zero_size = postcard::to_allocvec(&npo_residual_zero_proof)
+                .expect("terminal NPO polynomial residual-zero proof must serialize")
+                .len();
+            let npo_residual_zero_column_opening_size =
+                postcard::to_allocvec(&npo_residual_zero_proof.column_opening_proof)
+                    .expect("terminal NPO residual-zero column openings must serialize")
+                    .len();
+            let npo_residual_zero_fold_openings_size =
+                postcard::to_allocvec(&npo_residual_zero_proof.round_openings)
+                    .expect("terminal NPO residual-zero fold openings must serialize")
+                    .len();
+            let npo_residual_zero_verify_start = std::time::Instant::now();
+            compiler
+                .verify_terminal_npo_polynomial_residual_zero_goldilocks::<Challenge>(
+                    &vk,
+                    &npo_polynomial_prelude,
+                    &npo_residual_zero_proof,
+                )
+                .expect("terminal NPO polynomial residual-zero proof must verify");
+            let npo_residual_zero_verify_elapsed = npo_residual_zero_verify_start.elapsed();
+
+            Some((
+                npo_column_oracles.layout.rows,
+                npo_column_oracles.layout.column_count,
+                npo_column_commitments_size,
+                npo_column_commit_elapsed,
+                npo_residual_zero_size,
+                npo_residual_zero_column_opening_size,
+                npo_residual_zero_fold_openings_size,
+                npo_residual_zero_prove_elapsed,
+                npo_residual_zero_verify_elapsed,
+            ))
+        } else {
+            None
+        };
+
     let assignment_oracle = compiler
         .commit_terminal_assignment_goldilocks(
             &vk,
@@ -617,6 +749,59 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         production_npo_witness_sparse_basis_coefficients,
         production_npo_hidden_inputs_size,
     );
+    eprintln!(
+        "terminal NPO polynomial FRI candidate: rows={} field_columns={} proof={} bytes ({:.1} KiB) inner_proof={} opened_values={} basis_columns={} prove={:.3}s verify={:.3}s",
+        npo_fri_proof.profile.rows,
+        npo_fri_proof.profile.field_columns,
+        npo_fri_size,
+        npo_fri_size as f64 / 1024.0,
+        npo_fri_inner_proof_size,
+        npo_fri_opened_values_size,
+        npo_fri_proof.profile.basis_columns,
+        npo_fri_prove_elapsed.as_secs_f64(),
+        npo_fri_verify_elapsed.as_secs_f64(),
+    );
+    eprintln!(
+        "terminal NPO value-column FRI candidate: rows={} field_columns={} proof={} bytes ({:.1} KiB) inner_proof={} opened_values={} basis_columns={} prove={:.3}s verify={:.3}s",
+        npo_value_fri_proof.profile.rows,
+        npo_value_fri_proof.profile.field_columns,
+        npo_value_fri_size,
+        npo_value_fri_size as f64 / 1024.0,
+        npo_value_fri_inner_proof_size,
+        npo_value_fri_opened_values_size,
+        npo_value_fri_proof.profile.basis_columns,
+        npo_value_fri_prove_elapsed.as_secs_f64(),
+        npo_value_fri_verify_elapsed.as_secs_f64(),
+    );
+    if let Some((
+        npo_column_rows,
+        npo_column_count,
+        npo_column_commitments_size,
+        npo_column_commit_elapsed,
+        npo_residual_zero_size,
+        npo_residual_zero_column_opening_size,
+        npo_residual_zero_fold_openings_size,
+        npo_residual_zero_prove_elapsed,
+        npo_residual_zero_verify_elapsed,
+    )) = npo_residual_zero_measurement
+    {
+        eprintln!(
+            "terminal NPO polynomial columns: rows={} columns={} commitments={} bytes commit={:.3}s",
+            npo_column_rows,
+            npo_column_count,
+            npo_column_commitments_size,
+            npo_column_commit_elapsed.as_secs_f64(),
+        );
+        eprintln!(
+            "terminal NPO residual-zero Merkle candidate: proof={} bytes ({:.1} KiB) column_openings={} fold_round_openings={} prove={:.3}s verify={:.3}s",
+            npo_residual_zero_size,
+            npo_residual_zero_size as f64 / 1024.0,
+            npo_residual_zero_column_opening_size,
+            npo_residual_zero_fold_openings_size,
+            npo_residual_zero_prove_elapsed.as_secs_f64(),
+            npo_residual_zero_verify_elapsed.as_secs_f64(),
+        );
+    }
     eprintln!(
         "terminal sparse R1CS matrix sumcheck component: proof={} bytes ({:.1} KiB) prove={:.3}s verify={:.3}s",
         r1cs_sumcheck_size,

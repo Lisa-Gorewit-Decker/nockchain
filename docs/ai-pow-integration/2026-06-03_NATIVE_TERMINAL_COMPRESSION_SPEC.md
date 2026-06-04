@@ -220,15 +220,19 @@ for this route.
   verifier-circuit field columns are expanded into Goldilocks basis columns and
   padded to the verifier-key-derived two-adic row domain, then committed with
   recursive 5-round Tip5 and the canonical `log_blowup=4`, `num_queries=15`,
-  `query_pow_bits=0` schedule. The typed opening proof seeds the FRI challenger
-  with the terminal-prelude challenge digest, public-values digest, proof
-  parameters, zero query-PoW nonce, and full NPO FRI profile before observing
-  the column commitment and sampling the extension opening point. A regression
-  test commits D=2 recompose NPO columns through this native FRI PCS, verifies
-  the typed proof, round-trips its serialized form, and rejects tampered opened
-  values and stale profile metadata. This is the proximity substrate for the
-  final backend; production still does not accept it as the full NPO relation
-  proof until the row-polynomial constraints are connected to the FRI openings.
+  `query_pow_bits=0` schedule. The profile now distinguishes the full fixed
+  table from the witness-value column subset so deterministic metadata, present
+  bits, and residual columns can be measured separately from witness-bearing
+  values. The typed opening proof seeds the FRI challenger with the
+  terminal-prelude challenge digest, public-values digest, proof parameters,
+  zero query-PoW nonce, column-set selector, and full NPO FRI profile before
+  observing the column commitment and sampling the extension opening point. A
+  regression test commits D=2 recompose NPO columns through this native FRI
+  PCS, verifies the typed proof, round-trips its serialized form, and rejects
+  tampered opened values and stale profile metadata. This is the proximity
+  substrate for the final backend; production still does not accept it as the
+  full NPO relation proof until the row-polynomial constraints are connected to
+  the FRI openings.
 - `TerminalNpoPolynomialColumnOracleSet`: the commit-ready 5-round Tip5 oracle
   set for those fixed columns. Each column uses a verifier-derived
   `npo_polynomial_column/<column-label>` oracle label and the shared row count.
@@ -808,6 +812,26 @@ against the assignment commitment with compact public-prefix authentication, but
 NPO/table global arguments and the final polynomial proximity backend remain
 required before the exhaustive NPO verifier can be replaced by a smaller
 polynomialized argument.
+
+The 2026-06-04 NPO polynomial/proximity measurement pass on the same real
+Tip5-L0 verifier circuit produced:
+
+| NPO candidate | bytes | prove | verify |
+|---|---:|---:|---:|
+| full-table NPO FRI opening proof, 186 field columns / 372 basis columns | 99,904 | 2.312 s | 0.484 s |
+| witness-value-column NPO FRI opening proof, 43 field columns / 86 basis columns | 81,538 | 1.046 s | 0.469 s |
+| Merkle residual-zero candidate, opt-in measurement | 691,173 | 53.486 s | 4.955 s |
+
+The full-table FRI candidate is too large to combine with the primitive
+row-product proof. The witness-value column split is a real table optimization
+but still not enough by itself: `81,538 + 23,858` bytes is already above 100
+KiB before adding the missing NPO row-polynomial relation checks. The
+Merkle-backed residual-zero proof is rejected as a production route because its
+column-opening payload alone was 678,443 bytes and the prover spent about 53 s
+inside that component. The next viable direction is a shared/batched terminal
+proximity backend that amortizes FRI proof material across primitive and NPO
+relations, or an NPO relation check that consumes the value-column FRI openings
+without adding a second Merkle-heavy proof.
 
 Recursive proving uses 5-round Tip5 only. This terminal path must not be read as
 a change to Nockchain's canonical non-recursive 7-round Tip5 hash path.
