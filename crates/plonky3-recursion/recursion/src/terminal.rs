@@ -14719,6 +14719,29 @@ impl NativeTerminalCompiler {
                         },
                     );
                 }
+                let log_arity = round.log_arity as usize;
+                let max_log_arity =
+                    TerminalProximityProfile::production_60bit().max_log_arity as usize;
+                if !(1..=max_log_arity).contains(&log_arity) {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                            reason: "terminal compressed FRI invalid commit-round log arity"
+                                .into(),
+                        },
+                    );
+                }
+                let expected_sibling_values = (1usize << log_arity) - 1;
+                for siblings in &round.sibling_values {
+                    if siblings.len() != expected_sibling_values {
+                        return Err(
+                            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                                reason:
+                                    "terminal compressed FRI commit-round sibling value count mismatch"
+                                        .into(),
+                            },
+                        );
+                    }
+                }
                 Self::terminal_restore_binary_merkle_paths(&round.pruned_opening_proof)
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -26005,6 +26028,56 @@ mod tests {
         assert!(matches!(
             NativeTerminalCompiler::decompress_terminal_fri_proof(&shortened_commit_rounds),
             Err(NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. })
+        ));
+
+        let mut zero_log_arity = proof.proof.clone();
+        let mut zero_log_arity_tampered = false;
+        for round in &mut zero_log_arity.commit_rounds {
+            round.log_arity = 0;
+            zero_log_arity_tampered = true;
+            break;
+        }
+        assert!(
+            zero_log_arity_tampered,
+            "compressed FRI proof must carry commit rounds"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&zero_log_arity),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+        ));
+
+        let mut overmax_log_arity = proof.proof.clone();
+        let mut overmax_log_arity_tampered = false;
+        for round in &mut overmax_log_arity.commit_rounds {
+            round.log_arity = TerminalProximityProfile::production_60bit().max_log_arity + 1;
+            overmax_log_arity_tampered = true;
+            break;
+        }
+        assert!(
+            overmax_log_arity_tampered,
+            "compressed FRI proof must carry commit rounds"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&overmax_log_arity),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+        ));
+
+        let mut malformed_sibling_values = proof.proof.clone();
+        let mut sibling_values_tampered = false;
+        for round in &mut malformed_sibling_values.commit_rounds {
+            if let Some(siblings) = round.sibling_values.first_mut() {
+                siblings.push(TerminalFriChallenge::ZERO);
+                sibling_values_tampered = true;
+                break;
+            }
+        }
+        assert!(
+            sibling_values_tampered,
+            "compressed FRI proof must carry commit-round sibling values"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&malformed_sibling_values),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
         ));
 
         let mut malformed_order = proof.proof.clone();

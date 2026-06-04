@@ -1232,9 +1232,12 @@ Literature checkpoint as of 2026-06-04:
   that would otherwise panic on query-path indexing and overlong dictionaries
   that would otherwise carry ignored authentication material, and it rejects
   compressed proofs whose commit-phase commitments, commit PoW witnesses, and
-  commit-round opening dictionaries have inconsistent lengths. Focused
-  regression tests cover out-of-range, shortened, overlong, path-corrupted, and
-  commit-shape-mismatched compressed proofs.
+  commit-round opening dictionaries have inconsistent lengths. Because the
+  production terminal profile is binary FRI (`max_log_arity=1`), it also
+  rejects zero or over-max commit-round arities and sibling-value vectors whose
+  length is not `2^log_arity - 1`. Focused regression tests cover out-of-range,
+  shortened, overlong, path-corrupted, commit-shape-mismatched, arity-mismatched,
+  and sibling-count-mismatched compressed proofs.
 - The native terminal proof must bind the full Fiat-Shamir transcript domain,
   FRI parameters, query/PoW counts, verifier-circuit fingerprint, public input
   vector, Tip5 variant key, primitive quadratic relation, and all NPO relation
