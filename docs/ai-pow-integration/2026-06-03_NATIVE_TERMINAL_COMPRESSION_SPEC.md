@@ -264,12 +264,14 @@ for this route.
 - `TerminalNpoPolynomialResidualZeroProof`: one random linear-combination
   zero check over the fixed `residual_value_*` NPO columns. Verification derives
   a residual-combination challenge from the same ordered column commitments,
-  checks sampled combined residual openings against authenticated residual-value
-  column rows, verifies one folded MLE proof for the combined residual oracle,
-  and requires the folded final value to be zero. Tests reject an internally
-  Merkle-consistent wrong residual-combination oracle and tampered residual-fold
-  labels. This is an algebraic zero-check checkpoint for the NPO residual
-  columns, not the final Reed-Solomon proximity theorem.
+  recomputes sampled row predicates from the authenticated fixed columns before
+  accepting the opened residual-value columns, checks sampled combined residual
+  openings against authenticated residual-value column rows, verifies one
+  folded MLE proof for the combined residual oracle, and requires the folded
+  final value to be zero. Tests reject internally Merkle-consistent stale
+  zero-residual columns, a wrong residual-combination oracle, and tampered
+  residual-fold labels. This is an algebraic zero-check checkpoint for the NPO
+  residual columns, not the final Reed-Solomon proximity theorem.
 - `TerminalNpoExhaustiveResidualFoldProof`: a Merkle-backed folded zero check
   for the production-equivalent supported-NPO residual oracle, with transcript
   domains distinct from both primitive residual folding and legacy sampled NPO

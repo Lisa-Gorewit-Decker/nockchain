@@ -5164,8 +5164,24 @@ impl NativeTerminalCompiler {
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
         let columns = self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
-        Self::validate_terminal_npo_polynomial_columns(&columns.layout, &columns)?;
-        let oracle_set = Self::commit_terminal_npo_polynomial_column_values_goldilocks(&columns)?;
+        self.prove_terminal_npo_polynomial_residual_zero_from_columns_goldilocks(
+            verifying_key,
+            prelude,
+            &columns,
+        )
+    }
+
+    fn prove_terminal_npo_polynomial_residual_zero_from_columns_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        prelude: &TerminalProofPrelude,
+        columns: &TerminalNpoPolynomialColumns<F>,
+    ) -> Result<TerminalNpoPolynomialResidualZeroProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        Self::validate_terminal_npo_polynomial_columns(&columns.layout, columns)?;
+        let oracle_set = Self::commit_terminal_npo_polynomial_column_values_goldilocks(columns)?;
         let commitments = oracle_set.commitments();
         let plan = self.derive_terminal_npo_polynomial_column_query_plan::<F>(
             verifying_key,
@@ -5177,10 +5193,8 @@ impl NativeTerminalCompiler {
                 prelude,
                 &commitments,
             )?;
-        let combined_residual_values = Self::terminal_npo_polynomial_combined_residual_values(
-            &columns,
-            combination_challenge,
-        )?;
+        let combined_residual_values =
+            Self::terminal_npo_polynomial_combined_residual_values(columns, combination_challenge)?;
         let combined_residual_tree = TerminalOracleMerkleTree::commit_goldilocks_values(
             Self::npo_polynomial_combined_residual_oracle_label(),
             &combined_residual_values,
@@ -5300,7 +5314,7 @@ impl NativeTerminalCompiler {
         proof: &TerminalNpoPolynomialResidualZeroProof,
     ) -> Result<TerminalNpoPolynomialColumnQueryPlan, NativeTerminalVerifyError>
     where
-        F: Field + BasedVectorSpace<Goldilocks>,
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
         let (plan, opened_columns) = self
             .verify_terminal_npo_polynomial_column_opening_values_goldilocks::<F>(
@@ -5313,6 +5327,41 @@ impl NativeTerminalCompiler {
             &proof.fold_commitments,
             opened_columns.layout.rows,
         )?;
+        for sampled in &plan.sampled_indices {
+            let segment = Self::terminal_npo_exhaustive_residual_segment_indices::<F>(
+                verifying_key,
+                *sampled,
+            )?;
+            let mut previous_normal_tip5_output = None;
+            let mut previous_merkle_tip5_output = None;
+            for npo_index in segment {
+                let evaluation = self.evaluate_terminal_npo_polynomial_column_row_goldilocks(
+                    verifying_key,
+                    &opened_columns,
+                    npo_index,
+                    &mut previous_normal_tip5_output,
+                    &mut previous_merkle_tip5_output,
+                )?;
+                let derived = Self::terminal_npo_row_evaluation_component_values::<F>(&evaluation);
+                let opened = Self::terminal_npo_polynomial_column_row_residual_values(
+                    &opened_columns,
+                    npo_index,
+                )?;
+                if opened != derived {
+                    let component_offset = opened
+                        .iter()
+                        .zip(&derived)
+                        .position(|(opened, derived)| opened != derived)
+                        .unwrap_or(opened.len().min(derived.len()));
+                    return Err(
+                        NativeTerminalVerifyError::TerminalNpoPolynomialResidualMismatch {
+                            npo_index,
+                            component_offset,
+                        },
+                    );
+                }
+            }
+        }
 
         let combined_values = self.verify_terminal_oracle_multi_proof_goldilocks::<F>(
             &proof.combined_residual_commitment,
@@ -17499,6 +17548,25 @@ mod tests {
                 &bad_proof,
             )
             .expect_err("sampled residual check must reject inconsistent NPO columns");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialResidualMismatch { npo_index: 0, .. }
+        ));
+
+        let bad_residual_zero_proof = compiler
+            .prove_terminal_npo_polynomial_residual_zero_from_columns_goldilocks(
+                &single_vk,
+                &bad_prelude,
+                &bad_columns,
+            )
+            .expect("Merkle-consistent bad residual-zero proof must build");
+        let err = compiler
+            .verify_terminal_npo_polynomial_residual_zero_goldilocks::<Goldilocks>(
+                &single_vk,
+                &bad_prelude,
+                &bad_residual_zero_proof,
+            )
+            .expect_err("residual-zero check must reject stale residual columns");
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialResidualMismatch { npo_index: 0, .. }
