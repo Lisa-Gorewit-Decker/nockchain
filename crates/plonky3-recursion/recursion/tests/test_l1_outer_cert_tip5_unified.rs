@@ -424,6 +424,77 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
         .expect("terminal local certificate must verify");
     let verify_elapsed = verify_start.elapsed();
 
+    let production_prove_start = std::time::Instant::now();
+    let production_proof = compiler
+        .prove_terminal_production_goldilocks(
+            &vk,
+            &terminal_witness.public_inputs,
+            &terminal_witness,
+        )
+        .expect("terminal production proof must build for real Tip5 L0 verifier circuit");
+    let production_prove_elapsed = production_prove_start.elapsed();
+    let production_certificate = compiler
+        .assemble_goldilocks_production_certificate(
+            &vk,
+            &terminal_witness.public_inputs,
+            &production_proof,
+        )
+        .expect("terminal production certificate must assemble");
+    let production_body_size = production_certificate.proof_body.len();
+    let production_certificate_size = postcard::to_allocvec(&production_certificate)
+        .expect("terminal production certificate must serialize")
+        .len();
+    let production_verify_start = std::time::Instant::now();
+    compiler
+        .verify_goldilocks_production_certificate(
+            &vk,
+            &production_certificate,
+            &terminal_witness.public_inputs,
+        )
+        .expect("terminal production certificate must verify");
+    let production_verify_elapsed = production_verify_start.elapsed();
+
+    if let Some((hidden_row, hidden_value)) = production_proof
+        .tip5_hidden_inputs
+        .iter()
+        .enumerate()
+        .find_map(|(row, hidden)| (!hidden.values.is_empty()).then_some((row, hidden)))
+    {
+        let mut tampered_hidden = production_proof.clone();
+        tampered_hidden.tip5_hidden_inputs[hidden_row].values[0].value_basis[0] ^= 1;
+        let err = compiler
+            .verify_terminal_production_goldilocks(
+                &vk,
+                &terminal_witness.public_inputs,
+                &tampered_hidden,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                p3_recursion::terminal::NativeTerminalVerifyError::Tip5OutputMismatch { .. }
+                    | p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical { .. }
+            ),
+            "tampered hidden Tip5 input at NPO row {} must be rejected, got {err:?}",
+            hidden_value.npo_index,
+        );
+    }
+    if production_proof.tip5_hidden_inputs.len() > 1 {
+        let mut reordered_hidden = production_proof.clone();
+        reordered_hidden.tip5_hidden_inputs.swap(0, 1);
+        let err = compiler
+            .verify_terminal_production_goldilocks(
+                &vk,
+                &terminal_witness.public_inputs,
+                &reordered_hidden,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            p3_recursion::terminal::NativeTerminalVerifyError::TerminalProductionTip5HiddenInputOrder { .. }
+        ));
+    }
+
     eprintln!(
         "terminal local certificate: body={} bytes ({:.1} KiB) certificate={} bytes ({:.1} KiB) prove={:.3}s verify={:.3}s parameters={{security_bits:{}, log_blowup:{}, num_queries:{}, query_pow_bits:{}}}",
         body_size,
@@ -441,8 +512,18 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
         "terminal local components: prelude={} combined_validity_consistency={} combined_validity_fold={}",
         prelude_size, combined_validity_consistency_size, combined_validity_fold_size,
     );
+    eprintln!(
+        "terminal production direct certificate: body={} bytes ({:.1} KiB) certificate={} bytes ({:.1} KiB) prove={:.3}s verify={:.3}s",
+        production_body_size,
+        production_body_size as f64 / 1024.0,
+        production_certificate_size,
+        production_certificate_size as f64 / 1024.0,
+        production_prove_elapsed.as_secs_f64(),
+        production_verify_elapsed.as_secs_f64(),
+    );
 
     assert!(certificate_size > body_size);
+    assert!(production_certificate_size > production_body_size);
 }
 
 // ---------------------------------------------------------------------

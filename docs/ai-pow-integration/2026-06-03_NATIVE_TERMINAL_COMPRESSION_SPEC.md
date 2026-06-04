@@ -144,6 +144,13 @@ for this route.
   prelude, witness commitment, combined-validity commitment, mixed consistency
   proof, and combined-validity fold proof as one serializable object. It is an
   integration checkpoint, not the final global terminal proof.
+- `TerminalProductionProof`: the typed production proof body for the current
+  direct-relation backend. It binds a full witness oracle, serializes witness
+  basis limbs and hidden Tip5 input limbs, recomputes every primitive
+  quadratic row and every supported Tip5/recompose row, and verifies the
+  witness commitment before accepting a `Production` certificate. This is a
+  production-sound direct checker, but not the final non-witness-exposing
+  polynomial/sumcheck backend.
 - `TerminalQuadraticRelation`: backend-ready R1CS-style primitive relation.
   Primitive terminal gates lower to equations `A * B = C` over linear
   combinations of `{1, public input, witness}`. `BoolCheck` lowers to two
@@ -303,8 +310,10 @@ future backend, but the proof kind is committed and the local-proof checkpoint
 no longer treats typed local proof material as an opaque blob once the local
 verifier is selected. The raw binding checker is not a public production
 verifier; `verify_goldilocks_production_certificate` checks for a
-`Production`-kind envelope and then fails closed with
-`TerminalProductionProofUnsupported` until the real production backend exists.
+`Production`-kind envelope, decodes a typed `TerminalProductionProof` with
+explicit trailing-byte rejection, and reruns the production direct-relation
+verifier. Malformed production bodies are rejected before relation checks, and
+`LocalCheckpoint` certificates still fail by proof-kind mismatch.
 
 Goldilocks terminal proof prelude assembly now rejects:
 
@@ -531,13 +540,22 @@ multi-opening commitment layer; the current local-checkpoint measurement is
 already below 100 KiB and beats the current 200.6 KiB production recursive
 certificate size, but it is not yet production terminal soundness.
 
-This fail-closed behavior is required. The production recursive verifier uses
-cryptographic non-primitive operations, so a compact terminal backend is not
-production-complete until those operation constraints are implemented and tested.
-The production certificate verifier is therefore explicitly fail-closed: a
-well-bound `Production` proof body is rejected until the production backend is
-implemented, and a `LocalCheckpoint` certificate cannot be routed through that
-entrypoint.
+The typed direct production checker measures as follows on the same real
+Tip5-L0 verifier circuit:
+
+| component | bytes |
+|---|---:|
+| direct production proof body | 92,707 |
+| direct production certificate | 92,929 |
+
+The debug-profile measurement is `prove=1.275 s, verify=1.451 s`. This meets
+the ~100 KiB certificate target and is exact-sound for the compiled terminal
+relation because the verifier recomputes every primitive and supported NPO row
+from committed witness values. It is not the final target backend because it
+serializes the 3,043-value witness basis and hidden Tip5 inputs. The remaining
+production-backend task is to replace that exposed witness material with a
+non-witness polynomial/sumcheck/FRI commitment argument while preserving the
+same relation checks and transcript bindings.
 
 Recursive proving uses 5-round Tip5 only. This terminal path must not be read as
 a change to Nockchain's canonical non-recursive 7-round Tip5 hash path.
@@ -586,14 +604,17 @@ Literature checkpoint as of 2026-06-03:
 
 Security-audit conclusions for the current implementation checkpoint:
 
-- Soundness is still provided by the production batch-STARK terminal proof, not
-  by the native terminal relation checker. The checker is a fail-closed
-  compiler/verifier-relation gate for the future compact backend.
+- The typed direct production proof now gives native terminal certificates an
+  exact relation checker: it recomputes every primitive quadratic row and every
+  supported 5-round Tip5/recompose row from committed witness values. This is
+  sound for the compiled terminal relation, but it exposes witness material and
+  is therefore a baseline, not the final polynomial/sumcheck terminal backend.
 - The terminal proof prelude is now an implemented transcript-binding prefix,
   not a standalone argument. It prevents challenge grinding across relation,
-  public input, parameter, and commitment substitutions, but the remaining
-  backend proof still has to show that the committed witness satisfies the
-  terminal relation.
+  public input, parameter, and commitment substitutions. In the direct
+  production proof it binds the witness commitment; in the future
+  polynomial/sumcheck backend it must also bind the replacement PCS/sumcheck
+  commitments before any verifier challenges are sampled.
 - Oracle roots passed to local proof verifiers must now be prelude-bound. This
   includes the generic terminal query-opening verifier and closes the immediate
   post-challenge oracle-substitution bug for witness, residual, NPO validity,
@@ -613,10 +634,10 @@ Security-audit conclusions for the current implementation checkpoint:
   one implied by the compiled verifier circuit. It is still only a commitment;
   the proof system must enforce the committed relation globally.
 - The terminal oracle Merkle layer is binding to opened values under the
-  recursive 5-round Tip5 assumption, but it is not yet a polynomial commitment
-  or relation argument. It gives the backend authenticated oracle access; the
-  remaining proof must still make enough openings/algebraic checks to establish
-  the full terminal relation at ≥60-bit soundness.
+  recursive 5-round Tip5 assumption, but it is not itself a polynomial
+  commitment. The direct production proof recomputes the relation from the full
+  serialized witness vector; the remaining non-witness backend must replace
+  that vector with a PCS/sumcheck argument at ≥60-bit soundness.
 - The terminal query plan is now verifier-derived and commitment-bound, which
   removes serialized-query steering. It does not by itself justify the 60-bit
   soundness claim; the final backend still needs the algebraic proximity or
@@ -658,9 +679,10 @@ Security-audit conclusions for the current implementation checkpoint:
   direct verifier entrypoint fail-closed even if it is called outside the
   aggregate `TerminalLocalProof` verifier.
 - The binding-only terminal certificate checker is private. The public
-  production verifier rejects well-bound production envelopes with
-  `TerminalProductionProofUnsupported` until the actual backend is implemented,
-  and rejects `LocalCheckpoint` certificates by proof-kind mismatch.
+  production verifier now accepts only typed `TerminalProductionProof` bodies
+  after no-trailing-bytes decoding and relation verification. It rejects
+  malformed production bodies and rejects `LocalCheckpoint` certificates by
+  proof-kind mismatch.
 - `TerminalLocalProof` prevents a proof body from omitting one implemented local
   component while still passing a single local verifier entrypoint. It is still
   a local-proof envelope; it must be extended with the global

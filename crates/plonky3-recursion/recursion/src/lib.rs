@@ -44,10 +44,10 @@ pub use terminal::{
     TerminalCircuitFingerprint, TerminalCommitmentDigest, TerminalCompressor,
     TerminalConstraintQueryPlan, TerminalMerkleSibling, TerminalOracleCommitment,
     TerminalOracleMerkleTree, TerminalOracleOpening, TerminalPrimitiveConstraintOpening,
-    TerminalPrimitiveConstraintProof, TerminalProofBodyDigest, TerminalProofKind,
-    TerminalProofParameters, TerminalProofPrelude, TerminalPublicValuesDigest, TerminalQueryPlan,
-    TerminalRelationDigest, TerminalRelationProfile, TerminalTranscriptChallengeDigest,
-    TerminalWitness,
+    TerminalPrimitiveConstraintProof, TerminalProductionProof, TerminalProductionTip5HiddenInputs,
+    TerminalProofBodyDigest, TerminalProofKind, TerminalProofParameters, TerminalProofPrelude,
+    TerminalPublicValuesDigest, TerminalQueryPlan, TerminalRelationDigest, TerminalRelationProfile,
+    TerminalTranscriptChallengeDigest, TerminalWitness,
 };
 pub use traits::{
     Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,
