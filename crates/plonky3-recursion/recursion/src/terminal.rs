@@ -761,11 +761,60 @@ pub struct TerminalSparseR1csRelation<F> {
 }
 
 /// Supported external NPO row kind for backend arithmetization.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TerminalNpoRowKind {
     Tip5Goldilocks,
     Recompose,
     RecomposeWithCoeffLookups,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalNpoResidualKind {
+    Tip5Input,
+    Tip5Output,
+    Tip5ChainInput,
+    Tip5MmcsBit,
+    RecomposeInput,
+    RecomposeOutput,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalNpoRowResidual {
+    pub kind: TerminalNpoResidualKind,
+    pub limb: usize,
+    pub basis: Vec<Goldilocks>,
+}
+
+impl TerminalNpoRowResidual {
+    pub fn is_zero(&self) -> bool {
+        self.basis
+            .iter()
+            .copied()
+            .all(|coeff| coeff == Goldilocks::ZERO)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalNpoRowEvaluation {
+    pub row_kind: TerminalNpoRowKind,
+    pub residuals: Vec<TerminalNpoRowResidual>,
+}
+
+impl TerminalNpoRowEvaluation {
+    pub fn new(row_kind: TerminalNpoRowKind) -> Self {
+        Self {
+            row_kind,
+            residuals: Vec::new(),
+        }
+    }
+
+    pub fn is_satisfied(&self) -> bool {
+        self.residuals.iter().all(TerminalNpoRowResidual::is_zero)
+    }
+
+    pub fn first_nonzero(&self) -> Option<&TerminalNpoRowResidual> {
+        self.residuals.iter().find(|residual| !residual.is_zero())
+    }
 }
 
 /// One deterministic external NPO relation row.
@@ -8376,6 +8425,85 @@ impl NativeTerminalCompiler {
         "witness"
     }
 
+    fn terminal_goldilocks_residual(
+        kind: TerminalNpoResidualKind,
+        limb: usize,
+        actual: Goldilocks,
+        expected: Goldilocks,
+    ) -> TerminalNpoRowResidual {
+        TerminalNpoRowResidual {
+            kind,
+            limb,
+            basis: vec![actual - expected],
+        }
+    }
+
+    fn terminal_field_residual<F>(
+        kind: TerminalNpoResidualKind,
+        limb: usize,
+        actual: F,
+        expected: F,
+    ) -> TerminalNpoRowResidual
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        TerminalNpoRowResidual {
+            kind,
+            limb,
+            basis: (actual - expected).as_basis_coefficients_slice().to_vec(),
+        }
+    }
+
+    fn push_terminal_npo_residual(
+        evaluation: &mut TerminalNpoRowEvaluation,
+        residual: TerminalNpoRowResidual,
+    ) {
+        if !residual.is_zero() {
+            evaluation.residuals.push(residual);
+        }
+    }
+
+    fn reject_nonzero_terminal_npo_residual(
+        row: usize,
+        residual: &TerminalNpoRowResidual,
+    ) -> Result<(), NativeTerminalVerifyError> {
+        match residual.kind {
+            TerminalNpoResidualKind::Tip5Input
+            | TerminalNpoResidualKind::Tip5ChainInput
+            | TerminalNpoResidualKind::Tip5MmcsBit => {
+                Err(NativeTerminalVerifyError::Tip5InputMismatch {
+                    row,
+                    limb: residual.limb,
+                })
+            }
+            TerminalNpoResidualKind::Tip5Output => {
+                Err(NativeTerminalVerifyError::Tip5OutputMismatch {
+                    row,
+                    limb: residual.limb,
+                })
+            }
+            TerminalNpoResidualKind::RecomposeInput => {
+                Err(NativeTerminalVerifyError::RecomposeInputMismatch {
+                    row,
+                    limb: residual.limb,
+                })
+            }
+            TerminalNpoResidualKind::RecomposeOutput => {
+                Err(NativeTerminalVerifyError::RecomposeOutputMismatch { row })
+            }
+        }
+    }
+
+    fn reject_nonzero_terminal_npo_evaluation(
+        row: usize,
+        evaluation: &TerminalNpoRowEvaluation,
+    ) -> Result<(), NativeTerminalVerifyError> {
+        if let Some(residual) = evaluation.first_nonzero() {
+            return Self::reject_nonzero_terminal_npo_residual(row, residual);
+        }
+        Ok(())
+    }
+
     fn verify_sampled_tip5_npo_row<F>(
         &self,
         npo_index: usize,
@@ -8483,13 +8611,15 @@ impl NativeTerminalCompiler {
                 },
             )?;
             let value = opened_value(witness_id, 16)?;
-            if value == Goldilocks::ZERO {
-                false
-            } else if value == Goldilocks::ONE {
-                true
-            } else {
-                return Err(NativeTerminalVerifyError::Tip5InputMismatch { row, limb: 16 });
+            let residual = TerminalNpoRowResidual {
+                kind: TerminalNpoResidualKind::Tip5MmcsBit,
+                limb: 16,
+                basis: vec![value * (value - Goldilocks::ONE)],
+            };
+            if !residual.is_zero() {
+                return Self::reject_nonzero_terminal_npo_residual(row, &residual);
             }
+            value == Goldilocks::ONE
         } else {
             false
         };
@@ -8509,14 +8639,28 @@ impl NativeTerminalCompiler {
                             .ok_or(NativeTerminalVerifyError::Tip5InputMismatch { row, limb })?
                             [limb]
                     };
-                    if bus_state[limb] != expected {
-                        return Err(NativeTerminalVerifyError::Tip5InputMismatch { row, limb });
+                    let residual = Self::terminal_goldilocks_residual(
+                        TerminalNpoResidualKind::Tip5ChainInput,
+                        limb,
+                        bus_state[limb],
+                        expected,
+                    );
+                    if !residual.is_zero() {
+                        return Self::reject_nonzero_terminal_npo_residual(row, &residual);
                     }
                 }
             }
             for limb in 10..16 {
-                if callsite.inputs[limb].is_none() && bus_state[limb] != Goldilocks::ZERO {
-                    return Err(NativeTerminalVerifyError::Tip5InputMismatch { row, limb });
+                if callsite.inputs[limb].is_none() {
+                    let residual = Self::terminal_goldilocks_residual(
+                        TerminalNpoResidualKind::Tip5ChainInput,
+                        limb,
+                        bus_state[limb],
+                        Goldilocks::ZERO,
+                    );
+                    if !residual.is_zero() {
+                        return Self::reject_nonzero_terminal_npo_residual(row, &residual);
+                    }
                 }
             }
 
@@ -8536,8 +8680,14 @@ impl NativeTerminalCompiler {
                             .ok_or(NativeTerminalVerifyError::Tip5InputMismatch { row, limb })?
                             [limb]
                     };
-                    if trace_state[limb] != expected {
-                        return Err(NativeTerminalVerifyError::Tip5InputMismatch { row, limb });
+                    let residual = Self::terminal_goldilocks_residual(
+                        TerminalNpoResidualKind::Tip5ChainInput,
+                        limb,
+                        trace_state[limb],
+                        expected,
+                    );
+                    if !residual.is_zero() {
+                        return Self::reject_nonzero_terminal_npo_residual(row, &residual);
                     }
                 }
             }
@@ -8560,6 +8710,29 @@ impl NativeTerminalCompiler {
     where
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
+        let evaluation = self.evaluate_sampled_tip5_npo_row_values::<F>(
+            npo_index,
+            row,
+            callsite,
+            tip5_hidden_input_values,
+            expected_witness_ids,
+            opened_values,
+        )?;
+        Self::reject_nonzero_terminal_npo_evaluation(row, &evaluation)
+    }
+
+    fn evaluate_sampled_tip5_npo_row_values<F>(
+        &self,
+        npo_index: usize,
+        row: usize,
+        callsite: &NativeTerminalNpoCallsite,
+        tip5_hidden_input_values: &[TerminalTip5HiddenInputValue],
+        expected_witness_ids: &[WitnessId],
+        opened_values: &[F],
+    ) -> Result<TerminalNpoRowEvaluation, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
         let hidden_input_count = callsite
             .inputs
             .iter()
@@ -8572,6 +8745,7 @@ impl NativeTerminalCompiler {
                 got: tip5_hidden_input_values.len(),
             });
         }
+        let mut evaluation = TerminalNpoRowEvaluation::new(TerminalNpoRowKind::Tip5Goldilocks);
         let opened_value = |wanted: WitnessId| {
             expected_witness_ids
                 .iter()
@@ -8587,15 +8761,19 @@ impl NativeTerminalCompiler {
             if let Some(witness_id) = witness_id {
                 let opened = opened_value(witness_id)?;
                 let opened_basis = opened.as_basis_coefficients_slice();
-                if opened_basis
-                    .iter()
-                    .copied()
-                    .skip(1)
-                    .any(|coeff| coeff != Goldilocks::ZERO)
-                {
+                if opened_basis.is_empty() {
                     return Err(NativeTerminalVerifyError::Tip5InputMismatch { row, limb });
                 }
                 state[limb] = opened_basis[0];
+                Self::push_terminal_npo_residual(
+                    &mut evaluation,
+                    Self::terminal_field_residual(
+                        TerminalNpoResidualKind::Tip5Input,
+                        limb,
+                        opened,
+                        Self::embed_goldilocks(state[limb]),
+                    ),
+                );
             }
         }
 
@@ -8649,12 +8827,18 @@ impl NativeTerminalCompiler {
         Tip5Perm.permute_mut(&mut state);
         for (limb, witness_id) in callsite.outputs.iter().copied().enumerate() {
             if let Some(witness_id) = witness_id {
-                if opened_value(witness_id)? != Self::embed_goldilocks(state[limb]) {
-                    return Err(NativeTerminalVerifyError::Tip5OutputMismatch { row, limb });
-                }
+                Self::push_terminal_npo_residual(
+                    &mut evaluation,
+                    Self::terminal_field_residual(
+                        TerminalNpoResidualKind::Tip5Output,
+                        limb,
+                        opened_value(witness_id)?,
+                        Self::embed_goldilocks(state[limb]),
+                    ),
+                );
             }
         }
-        Ok(())
+        Ok(evaluation)
     }
 
     fn verify_sampled_recompose_npo_row<F>(
@@ -8719,6 +8903,31 @@ impl NativeTerminalCompiler {
     where
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
+        let evaluation = self.evaluate_sampled_recompose_npo_row_values::<F>(
+            npo_index,
+            op_type,
+            row,
+            callsite,
+            tip5_hidden_input_values,
+            expected_witness_ids,
+            opened_values,
+        )?;
+        Self::reject_nonzero_terminal_npo_evaluation(row, &evaluation)
+    }
+
+    fn evaluate_sampled_recompose_npo_row_values<F>(
+        &self,
+        npo_index: usize,
+        op_type: &str,
+        row: usize,
+        callsite: &NativeTerminalNpoCallsite,
+        tip5_hidden_input_values: &[TerminalTip5HiddenInputValue],
+        expected_witness_ids: &[WitnessId],
+        opened_values: &[F],
+    ) -> Result<TerminalNpoRowEvaluation, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
         if !tip5_hidden_input_values.is_empty() {
             return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
                 npo_index,
@@ -8737,6 +8946,12 @@ impl NativeTerminalCompiler {
             });
         };
         let _ = expected_kind;
+        let row_kind = if op_type == NpoTypeId::recompose().as_str() {
+            TerminalNpoRowKind::Recompose
+        } else {
+            TerminalNpoRowKind::RecomposeWithCoeffLookups
+        };
+        let mut evaluation = TerminalNpoRowEvaluation::new(row_kind);
 
         let opened_value = |wanted: WitnessId| {
             expected_witness_ids
@@ -8764,15 +8979,19 @@ impl NativeTerminalCompiler {
             };
             let value = opened_value(witness_id)?;
             let basis = value.as_basis_coefficients_slice();
-            if basis.is_empty()
-                || basis[1..]
-                    .iter()
-                    .copied()
-                    .any(|coeff| coeff != Goldilocks::ZERO)
-            {
+            if basis.is_empty() {
                 return Err(NativeTerminalVerifyError::RecomposeInputMismatch { row, limb });
             }
             coeffs.push(basis[0]);
+            Self::push_terminal_npo_residual(
+                &mut evaluation,
+                Self::terminal_field_residual(
+                    TerminalNpoResidualKind::RecomposeInput,
+                    limb,
+                    value,
+                    Self::embed_goldilocks(basis[0]),
+                ),
+            );
         }
 
         let expected_output = <F as BasedVectorSpace<Goldilocks>>::from_basis_coefficients_slice(
@@ -8786,10 +9005,16 @@ impl NativeTerminalCompiler {
         let Some(output_witness_id) = callsite.outputs.first().copied().flatten() else {
             return Err(NativeTerminalVerifyError::RecomposeOutputMismatch { row });
         };
-        if opened_value(output_witness_id)? != expected_output {
-            return Err(NativeTerminalVerifyError::RecomposeOutputMismatch { row });
-        }
-        Ok(())
+        Self::push_terminal_npo_residual(
+            &mut evaluation,
+            Self::terminal_field_residual(
+                TerminalNpoResidualKind::RecomposeOutput,
+                0,
+                opened_value(output_witness_id)?,
+                expected_output,
+            ),
+        );
+        Ok(evaluation)
     }
 
     fn validate_terminal_residual_fold_commitments<F>(
@@ -15115,6 +15340,131 @@ mod tests {
         compiler
             .verify_npo_relation_goldilocks(&vk, &relation, &witness)
             .expect("projected recompose NPO relation must verify");
+    }
+
+    #[test]
+    fn goldilocks_terminal_npo_row_evaluations_report_tip5_residuals() {
+        let (circuit, public_inputs) = build_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs);
+        let witness_values = witness_values(&witness);
+        let relation = vk.npo_relation();
+        let row = relation
+            .rows
+            .iter()
+            .find(|row| row.kind == TerminalNpoRowKind::Tip5Goldilocks)
+            .expect("Tip5 NPO row must be projected");
+        let expected_witness_ids = NativeTerminalCompiler::npo_callsite_witness_ids(&row.callsite);
+        let opened_values = expected_witness_ids
+            .iter()
+            .map(|witness_id| witness_values[witness_id.0 as usize])
+            .collect::<Vec<_>>();
+
+        let evaluation = compiler
+            .evaluate_sampled_tip5_npo_row_values::<Goldilocks>(
+                row.npo_index,
+                row.local_row,
+                &row.callsite,
+                &[],
+                &expected_witness_ids,
+                &opened_values,
+            )
+            .expect("honest Tip5 row must evaluate");
+        assert!(evaluation.is_satisfied());
+
+        let output_witness_id = row
+            .callsite
+            .outputs
+            .iter()
+            .copied()
+            .flatten()
+            .next()
+            .expect("Tip5 row must bind an output witness");
+        let output_pos = expected_witness_ids
+            .iter()
+            .position(|witness_id| *witness_id == output_witness_id)
+            .expect("output witness must be opened");
+        let mut bad_opened_values = opened_values;
+        bad_opened_values[output_pos] += Goldilocks::ONE;
+        let evaluation = compiler
+            .evaluate_sampled_tip5_npo_row_values::<Goldilocks>(
+                row.npo_index,
+                row.local_row,
+                &row.callsite,
+                &[],
+                &expected_witness_ids,
+                &bad_opened_values,
+            )
+            .expect("tampered Tip5 row still has a well-formed evaluation");
+        let residual = evaluation
+            .first_nonzero()
+            .expect("tampered Tip5 output must produce a residual");
+        assert_eq!(residual.kind, TerminalNpoResidualKind::Tip5Output);
+        assert!(!residual.is_zero());
+    }
+
+    #[test]
+    fn goldilocks_terminal_npo_row_evaluations_report_recompose_residuals() {
+        let (circuit, public_inputs) = build_recompose_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_recompose_terminal_witness(&circuit, public_inputs);
+        let witness_values = witness_values(&witness);
+        let relation = vk.npo_relation();
+        let row = relation
+            .rows
+            .iter()
+            .find(|row| row.kind == TerminalNpoRowKind::Recompose)
+            .expect("recompose NPO row must be projected");
+        let expected_witness_ids = NativeTerminalCompiler::npo_callsite_witness_ids(&row.callsite);
+        let opened_values = expected_witness_ids
+            .iter()
+            .map(|witness_id| witness_values[witness_id.0 as usize])
+            .collect::<Vec<_>>();
+
+        let evaluation = compiler
+            .evaluate_sampled_recompose_npo_row_values::<GoldilocksD2>(
+                row.npo_index,
+                &row.op_type,
+                row.local_row,
+                &row.callsite,
+                &[],
+                &expected_witness_ids,
+                &opened_values,
+            )
+            .expect("honest recompose row must evaluate");
+        assert!(evaluation.is_satisfied());
+
+        let output_witness_id = row
+            .callsite
+            .outputs
+            .first()
+            .copied()
+            .flatten()
+            .expect("recompose row must bind an output witness");
+        let output_pos = expected_witness_ids
+            .iter()
+            .position(|witness_id| *witness_id == output_witness_id)
+            .expect("output witness must be opened");
+        let mut bad_opened_values = opened_values;
+        bad_opened_values[output_pos] += GoldilocksD2::ONE;
+        let evaluation = compiler
+            .evaluate_sampled_recompose_npo_row_values::<GoldilocksD2>(
+                row.npo_index,
+                &row.op_type,
+                row.local_row,
+                &row.callsite,
+                &[],
+                &expected_witness_ids,
+                &bad_opened_values,
+            )
+            .expect("tampered recompose row still has a well-formed evaluation");
+        let residual = evaluation
+            .first_nonzero()
+            .expect("tampered recompose output must produce a residual");
+        assert_eq!(residual.kind, TerminalNpoResidualKind::RecomposeOutput);
+        assert!(!residual.is_zero());
     }
 
     #[test]
