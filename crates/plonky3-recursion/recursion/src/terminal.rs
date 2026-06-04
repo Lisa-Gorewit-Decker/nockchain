@@ -179,6 +179,14 @@ pub struct TerminalOracleMultiProof {
     pub frontier: Vec<TerminalCommitmentDigest>,
 }
 
+/// Sparse Merkle multiproof for terminal oracle values whose indices are
+/// verifier-derived from the surrounding relation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalOracleKnownIndexMultiProof {
+    pub value_basis_flat: Vec<u64>,
+    pub frontier: Vec<TerminalCommitmentDigest>,
+}
+
 /// Authenticated opening of a contiguous oracle prefix starting at index 0.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalOraclePrefixProof {
@@ -345,7 +353,7 @@ pub struct TerminalNpoValidityConsistencyProof {
 pub struct TerminalNpoExhaustiveProof {
     pub tip5_hidden_input_nonzero_masks: Vec<u16>,
     pub tip5_hidden_input_values_le: Vec<[u8; 8]>,
-    pub witness_multi_opening: TerminalOracleMultiProof,
+    pub witness_multi_opening: TerminalOracleKnownIndexMultiProof,
 }
 
 /// Opened row material for one sampled combined-validity row.
@@ -1896,6 +1904,49 @@ impl TerminalOracleMerkleTree {
         Ok(TerminalOracleMultiProof { openings, frontier })
     }
 
+    pub fn open_goldilocks_known_index_multi_values<F>(
+        &self,
+        values: &[(usize, &F)],
+    ) -> Result<TerminalOracleKnownIndexMultiProof, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let mut previous = None;
+        for (opening, (index, _)) in values.iter().enumerate() {
+            if *index >= self.values_len {
+                return Err(NativeTerminalVerifyError::TerminalOracleIndexOutOfBounds {
+                    index: *index,
+                    values_len: self.values_len,
+                });
+            }
+            if previous.is_some_and(|previous| *index <= previous) {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleQueryIndexMismatch {
+                        query: opening,
+                        expected: previous.expect("previous index exists") + 1,
+                        got: *index,
+                    },
+                );
+            }
+            previous = Some(*index);
+        }
+
+        let mut value_basis_flat = Vec::with_capacity(
+            values.len() * <F as BasedVectorSpace<Goldilocks>>::DIMENSION,
+        );
+        for (_, value) in values {
+            value_basis_flat.extend(NativeTerminalCompiler::goldilocks_basis_u64(*value));
+        }
+
+        let mut frontier = Vec::new();
+        let root_level = self.levels.len().saturating_sub(1);
+        self.collect_multi_frontier(root_level, 0, values, &mut frontier);
+        Ok(TerminalOracleKnownIndexMultiProof {
+            value_basis_flat,
+            frontier,
+        })
+    }
+
     pub fn open_goldilocks_prefix<F>(
         &self,
         values: &[F],
@@ -2535,6 +2586,96 @@ impl NativeTerminalCompiler {
             &commitment.label,
             commitment.values_len,
             &proof.openings,
+            root_level,
+            0,
+            &mut frontier,
+        )?;
+        let remaining = frontier.count();
+        if remaining != 0 {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningPathLengthMismatch {
+                    expected: proof.frontier.len() - remaining,
+                    got: proof.frontier.len(),
+                },
+            );
+        }
+        if got != commitment.root {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch {
+                    expected: commitment.root,
+                    got,
+                },
+            );
+        }
+        Ok(values)
+    }
+
+    pub fn verify_terminal_oracle_known_index_multi_proof_goldilocks<F>(
+        &self,
+        commitment: &TerminalOracleCommitment,
+        indices: &[usize],
+        proof: &TerminalOracleKnownIndexMultiProof,
+    ) -> Result<Vec<(usize, F)>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        if commitment.values_len == 0 {
+            return Err(NativeTerminalVerifyError::TerminalOracleEmpty);
+        }
+
+        let mut previous = None;
+        for (query, index) in indices.iter().copied().enumerate() {
+            if index >= commitment.values_len {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleOpeningIndexOutOfBounds {
+                        index,
+                        values_len: commitment.values_len,
+                    },
+                );
+            }
+            if previous.is_some_and(|previous| index <= previous) {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleQueryIndexMismatch {
+                        query,
+                        expected: previous.expect("previous opening exists") + 1,
+                        got: index,
+                    },
+                );
+            }
+            previous = Some(index);
+        }
+
+        let dimension = <F as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let expected_basis_len = indices.len() * dimension;
+        if proof.value_basis_flat.len() != expected_basis_len {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: expected_basis_len,
+                    got: proof.value_basis_flat.len(),
+                },
+            );
+        }
+
+        let mut values = Vec::with_capacity(indices.len());
+        let mut openings = Vec::with_capacity(indices.len());
+        for (index, basis) in indices
+            .iter()
+            .copied()
+            .zip(proof.value_basis_flat.chunks_exact(dimension))
+        {
+            values.push((index, Self::field_from_goldilocks_basis_u64::<F>(basis)?));
+            openings.push(TerminalOracleMultiValueOpening {
+                index,
+                value_basis: basis.to_vec(),
+            });
+        }
+
+        let root_level = Self::terminal_oracle_path_len(commitment.values_len);
+        let mut frontier = proof.frontier.iter().copied();
+        let got = Self::terminal_oracle_multi_root_goldilocks(
+            &commitment.label,
+            commitment.values_len,
+            &openings,
             root_level,
             0,
             &mut frontier,
@@ -4559,7 +4700,8 @@ impl NativeTerminalCompiler {
             )?;
             witness_values.push((witness_id.0 as usize, value));
         }
-        let witness_multi_opening = witness_oracle.open_goldilocks_multi_values(&witness_values)?;
+        let witness_multi_opening =
+            witness_oracle.open_goldilocks_known_index_multi_values(&witness_values)?;
         Ok(TerminalNpoExhaustiveProof {
             tip5_hidden_input_nonzero_masks,
             tip5_hidden_input_values_le,
@@ -4602,10 +4744,6 @@ impl NativeTerminalCompiler {
             });
         }
 
-        let witness_values = self.verify_terminal_oracle_multi_proof_goldilocks::<F>(
-            witness_commitment,
-            &proof.witness_multi_opening,
-        )?;
         let mut expected_global_witness_ids = Vec::new();
         for npo_index in 0..npo_rows {
             let row_ref = Self::terminal_npo_row(verifying_key, npo_index).ok_or(
@@ -4625,29 +4763,15 @@ impl NativeTerminalCompiler {
             }
         }
         expected_global_witness_ids.sort_by_key(|witness_id| witness_id.0);
-        if witness_values.len() != expected_global_witness_ids.len() {
-            return Err(
-                NativeTerminalVerifyError::TerminalOracleQueryLengthMismatch {
-                    expected: expected_global_witness_ids.len(),
-                    got: witness_values.len(),
-                },
-            );
-        }
-        for (query, (expected_witness, (got_index, _))) in expected_global_witness_ids
+        let expected_global_witness_indices = expected_global_witness_ids
             .iter()
-            .zip(&witness_values)
-            .enumerate()
-        {
-            if *got_index != expected_witness.0 as usize {
-                return Err(
-                    NativeTerminalVerifyError::TerminalOracleQueryIndexMismatch {
-                        query,
-                        expected: expected_witness.0 as usize,
-                        got: *got_index,
-                    },
-                );
-            }
-        }
+            .map(|witness_id| witness_id.0 as usize)
+            .collect::<Vec<_>>();
+        let witness_values = self.verify_terminal_oracle_known_index_multi_proof_goldilocks::<F>(
+            witness_commitment,
+            &expected_global_witness_indices,
+            &proof.witness_multi_opening,
+        )?;
 
         let mut hidden_value_offset = 0usize;
         for (npo_index, nonzero_mask) in proof
@@ -11183,6 +11307,54 @@ mod tests {
     }
 
     #[test]
+    fn goldilocks_terminal_production_exhaustive_npo_known_index_proof_rejects_tampering() {
+        let (circuit, public_inputs) = build_many_tip5_test_circuit(15);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+
+        let proof = compiler
+            .prove_terminal_production_goldilocks(&vk, &public_inputs, &witness)
+            .expect("production proof with exhaustive NPO rows must build");
+        compiler
+            .verify_terminal_production_goldilocks(&vk, &public_inputs, &proof)
+            .expect("honest production proof with exhaustive NPO rows must verify");
+
+        let mut missing_value = proof.clone();
+        missing_value
+            .npo_exhaustive_proof
+            .as_mut()
+            .expect("fixture must include exhaustive NPO proof")
+            .witness_multi_opening
+            .value_basis_flat
+            .pop();
+        let err = compiler
+            .verify_terminal_production_goldilocks(&vk, &public_inputs, &missing_value)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
+
+        let mut bad_value = proof;
+        let value = &mut bad_value
+            .npo_exhaustive_proof
+            .as_mut()
+            .expect("fixture must include exhaustive NPO proof")
+            .witness_multi_opening
+            .value_basis_flat[0];
+        *value = if *value == 0 { 1 } else { 0 };
+        let err = compiler
+            .verify_terminal_production_goldilocks(&vk, &public_inputs, &bad_value)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
+                | NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical { .. }
+        ));
+    }
+
+    #[test]
     fn goldilocks_terminal_assignment_evaluation_proof_round_trips_and_binds_public_prefix() {
         let circuit = build_goldilocks_const_circuit(5);
         let public_inputs = vec![Goldilocks::from_u64(5)];
@@ -14746,6 +14918,42 @@ mod tests {
         public_inputs.extend_from_slice(&input_state_b);
         public_inputs.extend_from_slice(&output_state_b[..10]);
         (builder.build().unwrap(), public_inputs)
+    }
+
+    fn build_many_tip5_test_circuit(rows: usize) -> (Circuit<Goldilocks>, Vec<Goldilocks>) {
+        let mut builder = CircuitBuilder::<Goldilocks>::new();
+        builder.enable_tip5_perm::<Tip5Goldilocks, _>(
+            generate_tip5_trace::<Goldilocks, Tip5Goldilocks>,
+            Tip5Perm,
+        );
+
+        let mut expected_public_inputs = Vec::with_capacity(rows * 26);
+        for row in 0..rows {
+            let inputs: [ExprId; 16] = core::array::from_fn(|_| builder.public_input());
+            let expected: [ExprId; 10] = core::array::from_fn(|_| builder.public_input());
+            let outputs = builder
+                .add_tip5_perm(&Tip5PermCall {
+                    config: Tip5Config::GOLDILOCKS_W16,
+                    new_start: true,
+                    inputs: inputs.map(Some),
+                    out_ctl: [true; 10],
+                    return_all_outputs: false,
+                })
+                .unwrap()
+                .1;
+            for (output, expected) in outputs.iter().take(10).zip(expected) {
+                let diff = builder.sub(output.expect("rate output must be allocated"), expected);
+                builder.assert_zero(diff);
+            }
+
+            let input_state: [Goldilocks; 16] =
+                core::array::from_fn(|i| Goldilocks::from_u64(0x700 + (row * 16 + i) as u64));
+            let output_state = Tip5Perm.permute(input_state);
+            expected_public_inputs.extend_from_slice(&input_state);
+            expected_public_inputs.extend_from_slice(&output_state[..10]);
+        }
+
+        (builder.build().unwrap(), expected_public_inputs)
     }
 
     fn build_npo_only_tip5_test_circuit() -> (Circuit<Goldilocks>, Vec<Goldilocks>) {

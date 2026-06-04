@@ -112,6 +112,11 @@ for this route.
   back to the committed 5-round Tip5 Merkle root, and is now used by production
   supported-NPO verification so the exhaustive row check does not repeat the
   same witness-path siblings.
+- `TerminalOracleKnownIndexMultiProof`: the sparse multi-opening form for
+  oracle values whose indices are verifier-derived from the surrounding
+  relation. Production exhaustive NPO witness openings use this form: the
+  verifier derives the exact sorted witness-ID set from every supported NPO
+  callsite, so serializing the same 1,377 witness indices would be redundant.
 - `TerminalQueryPlan`: verifier-derived query indices for a committed terminal
   oracle. Query positions are sampled from the bound terminal prelude and oracle
   root; they are not accepted from serialized proof-body data. When the queried
@@ -178,11 +183,11 @@ for this route.
   openings, an assignment oracle for primitive sparse-R1CS, the primitive
   row-product sumcheck, and an optional exhaustive supported-NPO proof for keys
   with supported NPO rows. The exhaustive NPO proof verifies every flattened
-  Tip5/recompose NPO row against one shared witness multiproof and compact
-  hidden Tip5-input payloads. It no longer serializes the full witness and no
-  longer accepts sampled NPO validity as the production NPO soundness boundary.
-  The remaining production-backend gap is replacing the Merkle-heavy exhaustive
-  NPO row check with a polynomialized Tip5/recompose argument.
+  Tip5/recompose NPO row against one shared known-index witness multiproof and
+  compact hidden Tip5-input payloads. It no longer serializes the full witness
+  and no longer accepts sampled NPO validity as the production NPO soundness
+  boundary. The remaining production-backend gap is replacing the Merkle-heavy
+  exhaustive NPO row check with a polynomialized Tip5/recompose argument.
 - `TerminalQuadraticRelation`: backend-ready R1CS-style primitive relation.
   Primitive terminal gates lower to equations `A * B = C` over linear
   combinations of `{1, public input, witness}`. `BoolCheck` lowers to two
@@ -306,9 +311,11 @@ witness oracle by `TerminalNpoValidityConsistencyProof`. The production form no
 longer accepts this sampled NPO validity layer. Instead,
 `TerminalNpoExhaustiveProof` verifies every supported Tip5/recompose row in the
 flattened NPO relation against the committed witness oracle with one shared
-witness multiproof. This closes the sampled supported-NPO gap for the current
-production checkpoint, but it is still Merkle-heavy and should be replaced by a
-polynomialized Tip5/recompose arithmetization and proximity/sumcheck proof.
+known-index witness multiproof. The verifier derives those witness indices from
+the committed terminal relation before checking the multiproof root. This
+closes the sampled supported-NPO gap for the current production checkpoint, but
+it is still Merkle-heavy and should be replaced by a polynomialized
+Tip5/recompose arithmetization and proximity/sumcheck proof.
 
 `TerminalBackendRelationDigest` is the explicit commitment to those backend
 projections. It has its own domain and absorbs both `TerminalQuadraticRelation`
@@ -622,26 +629,26 @@ Tip5-L0 verifier circuit:
 
 | component | bytes |
 |---|---:|
-| primitive R1CS row-product proof | 22,160 |
-| exhaustive NPO proof | 81,539 |
+| primitive R1CS row-product proof | 20,734 |
+| exhaustive NPO proof | 77,519 |
 | exhaustive NPO nonzero masks | 1,123 |
 | exhaustive NPO hidden Tip5 input bytes | 32,234 |
-| exhaustive NPO witness multiproof | 48,182 |
+| exhaustive NPO known-index witness multiproof | 44,162 |
 | exhaustive NPO witness openings | 1,377 |
-| compact production proof body | 104,031 |
-| compact production certificate | 104,250 |
+| compact production proof body | 98,593 |
+| compact production certificate | 98,814 |
 
-The debug-profile measurement is `prove=4.757 s, verify=3.051 s` for the
+The debug-profile measurement is `prove=4.904 s, verify=3.109 s` for the
 production proof body and certificate, with terminal parameters
 `security_bits=60, log_blowup=4, num_queries=15, query_pow_bits=0`. This removes
 the sampled production NPO validity layer and verifies all 668 supported
 Tip5/recompose NPO rows against the committed witness oracle. The NPO proof is
-large because it carries 1,377 distinct witness openings plus compact hidden
-Tip5 input data, but it closes the previously confusing sampled-NPO production
-path while staying near the ~100 KiB target at the required 60 pure-query bits.
-The remaining production-backend size task is to replace this exhaustive
-Merkle-opening NPO proof with a polynomialized Tip5/recompose relation and the
-final terminal proximity backend.
+still the dominant component, but the witness multiproof no longer serializes
+indices that the verifier can derive from the committed terminal relation. This
+puts the production certificate below the ~100 KiB target while retaining the
+required 60 pure-query bits. The remaining production-backend size task is to
+replace this exhaustive Merkle-opening NPO proof with a polynomialized
+Tip5/recompose relation and the final terminal proximity backend.
 
 The optimized sparse-R1CS matrix-vector sumcheck component measures separately
 on the same real Tip5-L0 verifier circuit. The completed primitive row-product
@@ -649,18 +656,18 @@ component includes that matrix-vector subproof:
 
 | component | bytes |
 |---|---:|
-| sparse R1CS matrix sumcheck proof | 23,586 |
-| R1CS row-product sumcheck proof | 24,306 |
-| row-product rounds | 846 |
-| matrix-sumcheck rounds | 716 |
-| assignment evaluation proof | 22,683 |
-| assignment public-prefix proof | 476 |
-| assignment fold commitments | 801 |
+| sparse R1CS matrix sumcheck proof | 22,349 |
+| R1CS row-product sumcheck proof | 23,810 |
+| row-product rounds | 840 |
+| matrix-sumcheck rounds | 719 |
+| assignment evaluation proof | 22,191 |
+| assignment public-prefix proof | 477 |
+| assignment fold commitments | 804 |
 | assignment fold query indices | 46 |
-| assignment fold round multiproofs | 21,340 |
+| assignment fold round multiproofs | 20,844 |
 
-The latest debug-profile measurements are `prove=2.068 s, verify=1.315 s` for
-the matrix-vector component and `prove=2.254 s, verify=1.325 s` for the
+The latest debug-profile measurements are `prove=2.209 s, verify=1.363 s` for
+the matrix-vector component and `prove=2.153 s, verify=1.351 s` for the
 row-product component. This now proves the primitive sparse-R1CS row relation
 against the assignment commitment with compact public-prefix authentication, but
 NPO/table global arguments and the final polynomial proximity backend remain
@@ -835,13 +842,15 @@ Security-audit conclusions for the current implementation checkpoint:
 - Fixed-int bincode serialization is size-only: it changes the Rust helper's
   byte encoding and rejects trailing bytes on decode, but does not alter the
   proof relation, Fiat-Shamir transcript, FRI parameters, or public inputs.
-- The terminal production checkpoint is now 104,250 bytes, or 101.8 KiB, with
-  60 pure-query bits and exhaustive supported-NPO verification. It got close to
-  the ~100 KiB size target through structural proof-body changes, not generic
-  compression, digest dictionaries, fixed-width integer serialization,
-  Pearl/Plonky2-style Merkle path compression, or another batch-STARK layer.
-  The remaining size work is a real polynomialized NPO/proximity backend that
-  preserves the checks above without carrying 1,377 NPO witness openings.
+- The terminal production checkpoint is now 98,814 bytes, or 96.5 KiB, with 60
+  pure-query bits and exhaustive supported-NPO verification. It reached the
+  ~100 KiB size target through structural proof-body changes, especially
+  omitting verifier-derived witness indices from the exhaustive NPO multiproof,
+  not generic compression, digest dictionaries, fixed-width integer
+  serialization, Pearl/Plonky2-style Merkle path compression, or another
+  batch-STARK layer. The remaining size work is a real polynomialized
+  NPO/proximity backend that preserves the checks above without carrying 1,377
+  NPO witness openings.
 
 ## Certificate Binding Requirements
 

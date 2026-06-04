@@ -490,7 +490,10 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
     let production_npo_witness_multi_opening_count = production_proof
         .npo_exhaustive_proof
         .as_ref()
-        .map(|proof| proof.witness_multi_opening.openings.len())
+        .map(|proof| {
+            proof.witness_multi_opening.value_basis_flat.len()
+                / <Challenge as BasedVectorSpace<Goldilocks>>::DIMENSION
+        })
         .unwrap_or(0);
     let production_npo_witness_multi_opening_size = production_proof
         .npo_exhaustive_proof
@@ -641,7 +644,7 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
             .as_mut()
             .expect("real production proof must carry exhaustive NPO proof")
             .witness_multi_opening
-            .openings
+            .value_basis_flat
             .pop();
         let err = compiler
             .verify_terminal_production_goldilocks(
@@ -654,6 +657,7 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
             err,
             p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleOpeningPathLengthMismatch { .. }
                 | p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
+                | p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
                 | p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleQueryLengthMismatch { .. }
         ));
     }
