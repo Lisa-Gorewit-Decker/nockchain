@@ -218,6 +218,14 @@ for this route.
   recompose coefficient reconstruction, then requires the derived residual
   vector to match the committed residual columns. Tests tamper Tip5 output
   columns, MMCS-bit columns, and D2 recompose input columns.
+- `TerminalNpoPolynomialColumnQueryPlan`: the verifier-derived row schedule for
+  future NPO-column openings. It validates that every fixed column commitment
+  has the verifier-derived label, shared row count, and a root already bound in
+  the terminal prelude, then samples rows from a transcript block absorbing the
+  full ordered column commitment list. Sampled Tip5 rows expand to the
+  verifier-known same-mode chain segment from the last `new_start`; recompose
+  rows expand to themselves. Serialized NPO-column query indices remain
+  forbidden.
 - `TerminalNpoExhaustiveResidualFoldProof`: a Merkle-backed folded zero check
   for the production-equivalent supported-NPO residual oracle, with transcript
   domains distinct from both primitive residual folding and legacy sampled NPO
