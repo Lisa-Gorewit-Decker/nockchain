@@ -5338,12 +5338,6 @@ impl NativeTerminalCompiler {
             Self::terminal_npo_tip5_lookup_io_zero_quotient_profile(&io_profile)?;
 
         let (pcs, mut challenger) = Self::terminal_fri_pcs_and_challenger(io_profile.proximity)?;
-        Self::seed_terminal_npo_tip5_lookup_io_zero_quotient_challenger(
-            &mut challenger,
-            prelude,
-            &io_profile,
-            &quotient_profile,
-        );
         let io_domain =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
                 &pcs,
@@ -5354,6 +5348,14 @@ impl NativeTerminalCompiler {
                 &pcs,
                 [(io_domain, io_matrix.clone())],
             );
+        let io_commitment_digest = Self::terminal_fri_commitment_digest(&io_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(prelude, &[io_commitment_digest])?;
+        Self::seed_terminal_npo_tip5_lookup_io_zero_quotient_challenger(
+            &mut challenger,
+            prelude,
+            &io_profile,
+            &quotient_profile,
+        );
         challenger.observe(io_commitment.clone());
         let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
 
@@ -5482,13 +5484,6 @@ impl NativeTerminalCompiler {
 
         let (pcs, mut challenger) =
             Self::terminal_fri_pcs_and_challenger(lookup_io_profile.proximity)?;
-        Self::seed_terminal_npo_tip5_lookup_io_bridge_quotient_challenger(
-            &mut challenger,
-            prelude,
-            &lookup_io_profile,
-            &npo_io_profile,
-            &quotient_profile,
-        );
         let io_domain =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
                 &pcs,
@@ -5499,12 +5494,26 @@ impl NativeTerminalCompiler {
                 &pcs,
                 [(io_domain, lookup_io_matrix.clone())],
             );
-        challenger.observe(lookup_io_commitment.clone());
         let (npo_io_commitment, npo_io_data) =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
                 &pcs,
                 [(io_domain, npo_io_matrix.clone())],
             );
+        let lookup_io_commitment_digest =
+            Self::terminal_fri_commitment_digest(&lookup_io_commitment)?;
+        let npo_io_commitment_digest = Self::terminal_fri_commitment_digest(&npo_io_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(
+            prelude,
+            &[lookup_io_commitment_digest, npo_io_commitment_digest],
+        )?;
+        Self::seed_terminal_npo_tip5_lookup_io_bridge_quotient_challenger(
+            &mut challenger,
+            prelude,
+            &lookup_io_profile,
+            &npo_io_profile,
+            &quotient_profile,
+        );
+        challenger.observe(lookup_io_commitment.clone());
         challenger.observe(npo_io_commitment.clone());
         let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
 
@@ -5647,13 +5656,6 @@ impl NativeTerminalCompiler {
 
         let (pcs, mut challenger) =
             Self::terminal_fri_pcs_and_challenger(lookup_io_profile.proximity)?;
-        Self::seed_terminal_npo_tip5_lookup_io_support_bridge_quotient_challenger(
-            &mut challenger,
-            prelude,
-            &lookup_io_profile,
-            &npo_io_profile,
-            &quotient_profile,
-        );
         let io_domain =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
                 &pcs,
@@ -5664,12 +5666,26 @@ impl NativeTerminalCompiler {
                 &pcs,
                 [(io_domain, lookup_io_matrix.clone())],
             );
-        challenger.observe(lookup_io_commitment.clone());
         let (npo_io_commitment, npo_io_data) =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
                 &pcs,
                 [(io_domain, npo_io_matrix.clone())],
             );
+        let lookup_io_commitment_digest =
+            Self::terminal_fri_commitment_digest(&lookup_io_commitment)?;
+        let npo_io_commitment_digest = Self::terminal_fri_commitment_digest(&npo_io_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(
+            prelude,
+            &[lookup_io_commitment_digest, npo_io_commitment_digest],
+        )?;
+        Self::seed_terminal_npo_tip5_lookup_io_support_bridge_quotient_challenger(
+            &mut challenger,
+            prelude,
+            &lookup_io_profile,
+            &npo_io_profile,
+            &quotient_profile,
+        );
+        challenger.observe(lookup_io_commitment.clone());
         challenger.observe(npo_io_commitment.clone());
         let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
         let beta: TerminalFriChallenge = challenger.sample_algebra_element();
@@ -5794,12 +5810,6 @@ impl NativeTerminalCompiler {
 
         let (pcs, mut challenger) =
             Self::terminal_fri_pcs_and_challenger(trace_fri_profile.proximity)?;
-        Self::seed_terminal_npo_tip5_lookup_air_algebra_quotient_challenger(
-            &mut challenger,
-            prelude,
-            &trace_fri_profile,
-            &quotient_profile,
-        );
         let trace_domain =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
                 &pcs,
@@ -5809,6 +5819,14 @@ impl NativeTerminalCompiler {
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
                 &pcs,
                 [(trace_domain, trace_matrix.clone())],
+        );
+        let trace_commitment_digest = Self::terminal_fri_commitment_digest(&trace_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(prelude, &[trace_commitment_digest])?;
+        Self::seed_terminal_npo_tip5_lookup_air_algebra_quotient_challenger(
+            &mut challenger,
+            prelude,
+            &trace_fri_profile,
+            &quotient_profile,
         );
         challenger.observe(trace_commitment.clone());
         let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
@@ -5946,13 +5964,6 @@ impl NativeTerminalCompiler {
 
         let (pcs, mut challenger) =
             Self::terminal_fri_pcs_and_challenger(lookup_io_profile.proximity)?;
-        Self::seed_terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_challenger(
-            &mut challenger,
-            prelude,
-            &lookup_io_profile,
-            &value_profile,
-            &quotient_profile,
-        );
         let value_domain =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
                 &pcs,
@@ -5963,12 +5974,26 @@ impl NativeTerminalCompiler {
                 &pcs,
                 [(value_domain, lookup_io_matrix.clone())],
             );
-        challenger.observe(lookup_io_commitment.clone());
         let (value_commitment, value_data) =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
                 &pcs,
                 [(value_domain, value_matrix)],
             );
+        let lookup_io_commitment_digest =
+            Self::terminal_fri_commitment_digest(&lookup_io_commitment)?;
+        let value_commitment_digest = Self::terminal_fri_commitment_digest(&value_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(
+            prelude,
+            &[lookup_io_commitment_digest, value_commitment_digest],
+        )?;
+        Self::seed_terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_challenger(
+            &mut challenger,
+            prelude,
+            &lookup_io_profile,
+            &value_profile,
+            &quotient_profile,
+        );
+        challenger.observe(lookup_io_commitment.clone());
         challenger.observe(value_commitment.clone());
         let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
         let quotient_domain = value_domain.create_disjoint_domain(quotient_profile.padded_rows);
@@ -6069,7 +6094,6 @@ impl NativeTerminalCompiler {
         }
 
         let (pcs, mut challenger) = Self::terminal_fri_pcs_and_challenger(profile.proximity)?;
-        Self::seed_terminal_npo_tip5_lookup_fri_challenger(&mut challenger, prelude, &profile);
         let domain =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
                 &pcs,
@@ -6080,6 +6104,9 @@ impl NativeTerminalCompiler {
                 &pcs,
                 [(domain, matrix)],
             );
+        let commitment_digest = Self::terminal_fri_commitment_digest(&commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(prelude, &[commitment_digest])?;
+        Self::seed_terminal_npo_tip5_lookup_fri_challenger(&mut challenger, prelude, &profile);
         challenger.observe(commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
         let (opened_values, plain_proof) =
@@ -14272,18 +14299,111 @@ impl NativeTerminalCompiler {
             Self::terminal_npo_polynomial_basis_matrix_for_column_set_goldilocks(
                 columns, column_set,
             )?;
-        let (pcs, _) = Self::terminal_fri_pcs_and_challenger(profile.proximity)?;
+        Ok(vec![Self::terminal_fri_matrix_commitment_digest(
+            profile.proximity,
+            profile.padded_rows,
+            matrix,
+        )?])
+    }
+
+    fn terminal_fri_matrix_commitment_digest(
+        proximity: TerminalProximityProfile,
+        padded_rows: usize,
+        matrix: RowMajorMatrix<Goldilocks>,
+    ) -> Result<TerminalCommitmentDigest, NativeTerminalVerifyError> {
+        let (pcs, _) = Self::terminal_fri_pcs_and_challenger(proximity)?;
         let domain =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
                 &pcs,
-                profile.padded_rows,
+                padded_rows,
             );
         let (commitment, _) =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
                 &pcs,
                 [(domain, matrix)],
             );
-        Ok(vec![Self::terminal_fri_commitment_digest(&commitment)?])
+        Self::terminal_fri_commitment_digest(&commitment)
+    }
+
+    pub fn terminal_npo_tip5_lookup_fri_prelude_commitments_goldilocks(
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+        trace: &RowMajorMatrix<Goldilocks>,
+        column_set: TerminalNpoTip5LookupFriColumnSet,
+    ) -> Result<Vec<TerminalCommitmentDigest>, NativeTerminalVerifyError> {
+        let (profile, matrix) =
+            Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(
+                trace_profile,
+                trace,
+                column_set,
+            )?;
+        Ok(vec![Self::terminal_fri_matrix_commitment_digest(
+            profile.proximity,
+            profile.padded_rows,
+            matrix,
+        )?])
+    }
+
+    pub fn terminal_npo_tip5_lookup_io_bridge_prelude_commitments_goldilocks<F>(
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+        columns: &TerminalNpoPolynomialColumns<F>,
+        trace: &RowMajorMatrix<Goldilocks>,
+    ) -> Result<Vec<TerminalCommitmentDigest>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let (lookup_io_profile, lookup_io_matrix) =
+            Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(
+                trace_profile,
+                trace,
+                TerminalNpoTip5LookupFriColumnSet::TerminalIo,
+            )?;
+        let (npo_io_profile, npo_io_matrix) =
+            Self::terminal_npo_tip5_lookup_io_projection_matrix_from_columns_goldilocks(
+                trace_profile,
+                columns,
+            )?;
+        Ok(vec![
+            Self::terminal_fri_matrix_commitment_digest(
+                lookup_io_profile.proximity,
+                lookup_io_profile.padded_rows,
+                lookup_io_matrix,
+            )?,
+            Self::terminal_fri_matrix_commitment_digest(
+                npo_io_profile.proximity,
+                npo_io_profile.padded_rows,
+                npo_io_matrix,
+            )?,
+        ])
+    }
+
+    pub fn terminal_npo_tip5_lookup_npo_rows_value_bridge_prelude_commitments_goldilocks<F>(
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+        columns: &TerminalNpoPolynomialColumns<F>,
+        trace: &RowMajorMatrix<Goldilocks>,
+    ) -> Result<Vec<TerminalCommitmentDigest>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let (lookup_io_profile, lookup_io_matrix) =
+            Self::terminal_npo_tip5_lookup_npo_rows_io_matrix_goldilocks(
+                trace_profile,
+                columns,
+                trace,
+            )?;
+        let (value_profile, value_matrix) =
+            Self::terminal_npo_polynomial_value_basis_matrix_goldilocks(columns)?;
+        Ok(vec![
+            Self::terminal_fri_matrix_commitment_digest(
+                lookup_io_profile.proximity,
+                lookup_io_profile.padded_rows,
+                lookup_io_matrix,
+            )?,
+            Self::terminal_fri_matrix_commitment_digest(
+                value_profile.proximity,
+                value_profile.padded_rows,
+                value_matrix,
+            )?,
+        ])
     }
 
     fn terminal_npo_polynomial_basis_matrix_for_column_set_goldilocks<F>(
@@ -16058,6 +16178,8 @@ impl NativeTerminalCompiler {
         F: Field + BasedVectorSpace<Goldilocks>,
     {
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let io_commitment_digest = Self::terminal_fri_commitment_digest(&proof.io_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(prelude, &[io_commitment_digest])?;
         let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
         let expected_io_profile = Self::terminal_npo_tip5_lookup_fri_profile_for_column_set(
             &trace_profile,
@@ -16213,6 +16335,14 @@ impl NativeTerminalCompiler {
         F: Field + BasedVectorSpace<Goldilocks>,
     {
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let lookup_io_commitment_digest =
+            Self::terminal_fri_commitment_digest(&proof.lookup_io_commitment)?;
+        let npo_io_commitment_digest =
+            Self::terminal_fri_commitment_digest(&proof.npo_io_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(
+            prelude,
+            &[lookup_io_commitment_digest, npo_io_commitment_digest],
+        )?;
         let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
         let expected_io_profile = Self::terminal_npo_tip5_lookup_fri_profile_for_column_set(
             &trace_profile,
@@ -16391,6 +16521,14 @@ impl NativeTerminalCompiler {
         F: Field + BasedVectorSpace<Goldilocks>,
     {
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let lookup_io_commitment_digest =
+            Self::terminal_fri_commitment_digest(&proof.lookup_io_commitment)?;
+        let npo_io_commitment_digest =
+            Self::terminal_fri_commitment_digest(&proof.npo_io_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(
+            prelude,
+            &[lookup_io_commitment_digest, npo_io_commitment_digest],
+        )?;
         let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
         let expected_io_profile = Self::terminal_npo_tip5_lookup_fri_profile_for_column_set(
             &trace_profile,
@@ -16580,6 +16718,9 @@ impl NativeTerminalCompiler {
         F: Field + BasedVectorSpace<Goldilocks>,
     {
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let trace_commitment_digest =
+            Self::terminal_fri_commitment_digest(&proof.trace_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(prelude, &[trace_commitment_digest])?;
         let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
         let expected_trace_profile = Self::terminal_npo_tip5_lookup_fri_profile_for_column_set(
             &trace_profile,
@@ -16739,6 +16880,14 @@ impl NativeTerminalCompiler {
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let lookup_io_commitment_digest =
+            Self::terminal_fri_commitment_digest(&proof.lookup_io_commitment)?;
+        let value_commitment_digest =
+            Self::terminal_fri_commitment_digest(&proof.value_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(
+            prelude,
+            &[lookup_io_commitment_digest, value_commitment_digest],
+        )?;
         let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
         let layout = Self::terminal_npo_polynomial_column_layout::<F>(verifying_key);
         let expected_lookup_profile =
@@ -17073,6 +17222,8 @@ impl NativeTerminalCompiler {
         F: Field + BasedVectorSpace<Goldilocks>,
     {
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let commitment_digest = Self::terminal_fri_commitment_digest(&proof.commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(prelude, &[commitment_digest])?;
         let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
         let expected_profile =
             Self::terminal_npo_tip5_lookup_fri_profile_for_column_set(&trace_profile, column_set)?;
@@ -25053,19 +25204,13 @@ mod tests {
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
         let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
         let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
-        let residual_root = compiler
-            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
-            .expect("NPO-only residual oracle must commit")
-            .commitment()
-            .root;
-        let prelude = compiler
-            .build_proof_prelude_goldilocks(
-                &vk,
-                &public_inputs,
-                TerminalProofParameters::production_60bit(),
-                vec![residual_root],
-            )
-            .expect("NPO-only lookup FRI prelude must build");
+        let prelude = terminal_test_tip5_lookup_fri_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &witness,
+            TerminalNpoTip5LookupFriColumnSet::FullMain,
+        );
         let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
         let expected_profile =
             NativeTerminalCompiler::terminal_npo_tip5_lookup_fri_profile_for_column_set(
@@ -25145,6 +25290,50 @@ mod tests {
             )
             .expect("round-tripped terminal Tip5 lookup FRI opening proof must verify");
 
+        let io_prelude = terminal_test_tip5_lookup_fri_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &witness,
+            TerminalNpoTip5LookupFriColumnSet::TerminalIo,
+        );
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_fri_opening_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &io_prelude,
+                &proof,
+            )
+            .expect_err("terminal Tip5 lookup FRI must reject stale prelude root");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch { .. }
+        ));
+
+        let mut extra_roots = prelude.commitments.clone();
+        extra_roots.push(prelude.commitments[0]);
+        let extra_prelude = terminal_test_prelude_from_roots(
+            &compiler,
+            &vk,
+            &public_inputs,
+            extra_roots,
+        );
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_fri_opening_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &extra_prelude,
+                &proof,
+            )
+            .expect_err("terminal Tip5 lookup FRI must reject extra prelude root");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
+                expected: 1,
+                got: 2
+            }
+        ));
+
         let mut tampered_opening = proof.clone();
         tampered_opening.opened_values_basis[0][0] =
             tampered_opening.opened_values_basis[0][0].wrapping_add(1);
@@ -25183,19 +25372,13 @@ mod tests {
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
         let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
         let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
-        let residual_root = compiler
-            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
-            .expect("NPO-only residual oracle must commit")
-            .commitment()
-            .root;
-        let prelude = compiler
-            .build_proof_prelude_goldilocks(
-                &vk,
-                &public_inputs,
-                TerminalProofParameters::production_60bit(),
-                vec![residual_root],
-            )
-            .expect("NPO-only lookup IO FRI prelude must build");
+        let prelude = terminal_test_tip5_lookup_fri_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &witness,
+            TerminalNpoTip5LookupFriColumnSet::TerminalIo,
+        );
         let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
         let expected_profile =
             NativeTerminalCompiler::terminal_npo_tip5_lookup_fri_profile_for_column_set(
@@ -25294,19 +25477,13 @@ mod tests {
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
         let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
         let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
-        let residual_root = compiler
-            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
-            .expect("NPO-only residual oracle must commit")
-            .commitment()
-            .root;
-        let prelude = compiler
-            .build_proof_prelude_goldilocks(
-                &vk,
-                &public_inputs,
-                TerminalProofParameters::production_60bit(),
-                vec![residual_root],
-            )
-            .expect("NPO-only lookup IO zero-quotient prelude must build");
+        let prelude = terminal_test_tip5_lookup_fri_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &witness,
+            TerminalNpoTip5LookupFriColumnSet::TerminalIo,
+        );
 
         let prove_start = std::time::Instant::now();
         let proof = compiler
@@ -25374,10 +25551,20 @@ mod tests {
             .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
             .expect("terminal Tip5 lookup trace must build");
         bad_trace.values[2] = Goldilocks::ONE;
+        let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
+        let bad_roots =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_fri_prelude_commitments_goldilocks(
+                &trace_profile,
+                &bad_trace,
+                TerminalNpoTip5LookupFriColumnSet::TerminalIo,
+            )
+            .expect("bad terminal IO prelude roots must build");
+        let bad_prelude =
+            terminal_test_prelude_from_roots(&compiler, &vk, &public_inputs, bad_roots);
         let bad_proof =
             NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_io_zero_quotient_from_trace_goldilocks(
-                &prelude,
-                &NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk),
+                &bad_prelude,
+                &trace_profile,
                 &bad_trace,
             )
             .expect("FRI-valid but support-invalid terminal IO quotient proof must build");
@@ -25385,7 +25572,7 @@ mod tests {
             .verify_terminal_npo_tip5_lookup_io_zero_quotient_goldilocks::<Goldilocks>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_prelude,
                 &bad_proof,
             )
             .expect_err("nonzero terminal IO table-row value must fail the quotient identity");
@@ -25405,19 +25592,15 @@ mod tests {
         let columns = compiler
             .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
             .expect("NPO-only polynomial columns must build");
-        let residual_root = compiler
-            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
-            .expect("NPO-only residual oracle must commit")
-            .commitment()
-            .root;
-        let prelude = compiler
-            .build_proof_prelude_goldilocks(
-                &vk,
-                &public_inputs,
-                TerminalProofParameters::production_60bit(),
-                vec![residual_root],
-            )
-            .expect("NPO-only lookup IO bridge prelude must build");
+        let (trace_profile, trace) = terminal_test_tip5_lookup_trace(&compiler, &vk, &witness);
+        let prelude = terminal_test_tip5_lookup_io_bridge_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &columns,
+            &trace_profile,
+            &trace,
+        );
 
         let prove_start = std::time::Instant::now();
         let proof = compiler
@@ -25516,13 +25699,20 @@ mod tests {
         let (_, mut bad_trace, _) = compiler
             .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
             .expect("terminal Tip5 lookup trace must build");
-        let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
         let bad_row = trace_profile.permutation_row_offset;
         let bad_width = bad_trace.width();
         bad_trace.values[bad_row * bad_width + 2] += Goldilocks::ONE;
+        let bad_prelude = terminal_test_tip5_lookup_io_bridge_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &columns,
+            &trace_profile,
+            &bad_trace,
+        );
         let bad_proof =
             NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_io_bridge_quotient_from_columns_goldilocks(
-                &prelude,
+                &bad_prelude,
                 &trace_profile,
                 &columns,
                 &bad_trace,
@@ -25532,7 +25722,7 @@ mod tests {
             .verify_terminal_npo_tip5_lookup_io_bridge_quotient_goldilocks::<Goldilocks>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_prelude,
                 &bad_proof,
             )
             .expect_err("stale lookup IO value must fail bridge quotient identity");
@@ -25552,19 +25742,15 @@ mod tests {
         let columns = compiler
             .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
             .expect("NPO-only polynomial columns must build");
-        let residual_root = compiler
-            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
-            .expect("NPO-only residual oracle must commit")
-            .commitment()
-            .root;
-        let prelude = compiler
-            .build_proof_prelude_goldilocks(
-                &vk,
-                &public_inputs,
-                TerminalProofParameters::production_60bit(),
-                vec![residual_root],
-            )
-            .expect("NPO-only lookup IO support bridge prelude must build");
+        let (trace_profile, trace) = terminal_test_tip5_lookup_trace(&compiler, &vk, &witness);
+        let prelude = terminal_test_tip5_lookup_io_bridge_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &columns,
+            &trace_profile,
+            &trace,
+        );
 
         let prove_start = std::time::Instant::now();
         let proof = compiler
@@ -25639,14 +25825,21 @@ mod tests {
             )
             .expect("round-tripped terminal Tip5 lookup IO support bridge quotient proof must verify");
 
-        let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
         let (_, mut bad_table_trace, _) = compiler
             .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
             .expect("terminal Tip5 lookup trace must build");
         bad_table_trace.values[2] = Goldilocks::ONE;
+        let bad_table_prelude = terminal_test_tip5_lookup_io_bridge_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &columns,
+            &trace_profile,
+            &bad_table_trace,
+        );
         let bad_table_proof =
             NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_io_support_bridge_quotient_from_columns_goldilocks(
-                &prelude,
+                &bad_table_prelude,
                 &trace_profile,
                 &columns,
                 &bad_table_trace,
@@ -25656,7 +25849,7 @@ mod tests {
             .verify_terminal_npo_tip5_lookup_io_support_bridge_quotient_goldilocks::<Goldilocks>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_table_prelude,
                 &bad_table_proof,
             )
             .expect_err("nonzero terminal IO table-row value must fail support bridge quotient");
@@ -25672,9 +25865,17 @@ mod tests {
         let bad_row = trace_profile.permutation_row_offset;
         let bad_width = bad_perm_trace.width();
         bad_perm_trace.values[bad_row * bad_width + 2] += Goldilocks::ONE;
+        let bad_perm_prelude = terminal_test_tip5_lookup_io_bridge_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &columns,
+            &trace_profile,
+            &bad_perm_trace,
+        );
         let bad_perm_proof =
             NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_io_support_bridge_quotient_from_columns_goldilocks(
-                &prelude,
+                &bad_perm_prelude,
                 &trace_profile,
                 &columns,
                 &bad_perm_trace,
@@ -25684,7 +25885,7 @@ mod tests {
             .verify_terminal_npo_tip5_lookup_io_support_bridge_quotient_goldilocks::<Goldilocks>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_perm_prelude,
                 &bad_perm_proof,
             )
             .expect_err("stale lookup IO permutation-row value must fail support bridge quotient");
@@ -25701,19 +25902,14 @@ mod tests {
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
         let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
         let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
-        let residual_root = compiler
-            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
-            .expect("NPO-only residual oracle must commit")
-            .commitment()
-            .root;
-        let prelude = compiler
-            .build_proof_prelude_goldilocks(
-                &vk,
-                &public_inputs,
-                TerminalProofParameters::production_60bit(),
-                vec![residual_root],
-            )
-            .expect("NPO-only lookup AIR algebra prelude must build");
+        let (trace_profile, trace) = terminal_test_tip5_lookup_trace(&compiler, &vk, &witness);
+        let prelude = terminal_test_tip5_lookup_fri_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &witness,
+            TerminalNpoTip5LookupFriColumnSet::FullMain,
+        );
 
         let prove_start = std::time::Instant::now();
         let proof = compiler
@@ -25936,14 +26132,22 @@ mod tests {
             compressed_fri_bytes.len() < plain_fri_bytes.len(),
             "terminal compressed FRI should reduce AIR algebra path material"
         );
-        let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
-        let (_, mut bad_table_trace, _) = compiler
-            .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
-            .expect("terminal Tip5 lookup trace must rebuild");
+        let mut bad_table_trace = trace.clone();
         bad_table_trace.values[2] = Goldilocks::ONE;
+        let bad_table_prelude = terminal_test_prelude_from_roots(
+            &compiler,
+            &vk,
+            &public_inputs,
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_fri_prelude_commitments_goldilocks(
+                &trace_profile,
+                &bad_table_trace,
+                TerminalNpoTip5LookupFriColumnSet::FullMain,
+            )
+            .expect("bad table AIR algebra prelude roots must build"),
+        );
         let bad_table_proof =
             NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_air_algebra_quotient_from_trace_goldilocks(
-                &prelude,
+                &bad_table_prelude,
                 &trace_profile,
                 &bad_table_trace,
             )
@@ -25952,7 +26156,7 @@ mod tests {
             .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_table_prelude,
                 &bad_table_proof,
             )
             .expect_err("nonzero terminal IO table-row value must fail AIR algebra quotient");
@@ -25962,15 +26166,24 @@ mod tests {
                 if label == "tip5_lookup_air_algebra_quotient"
         ));
 
-        let (_, mut bad_c_trace, _) = compiler
-            .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
-            .expect("terminal Tip5 lookup trace must rebuild");
+        let mut bad_c_trace = trace.clone();
         let bad_row = trace_profile.permutation_row_offset;
         let width = bad_c_trace.width();
         bad_c_trace.values[bad_row * width + 26] += Goldilocks::ONE;
+        let bad_c_prelude = terminal_test_prelude_from_roots(
+            &compiler,
+            &vk,
+            &public_inputs,
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_fri_prelude_commitments_goldilocks(
+                &trace_profile,
+                &bad_c_trace,
+                TerminalNpoTip5LookupFriColumnSet::FullMain,
+            )
+            .expect("bad S-box AIR algebra prelude roots must build"),
+        );
         let bad_c_proof =
             NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_air_algebra_quotient_from_trace_goldilocks(
-                &prelude,
+                &bad_c_prelude,
                 &trace_profile,
                 &bad_c_trace,
             )
@@ -25979,7 +26192,7 @@ mod tests {
             .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_c_prelude,
                 &bad_c_proof,
             )
             .expect_err("tampered S-box image must fail AIR algebra quotient");
@@ -25989,13 +26202,22 @@ mod tests {
                 if label == "tip5_lookup_air_algebra_quotient"
         ));
 
-        let (_, mut bad_x2_trace, _) = compiler
-            .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
-            .expect("terminal Tip5 lookup trace must rebuild");
+        let mut bad_x2_trace = trace;
         bad_x2_trace.values[bad_row * width + 86] += Goldilocks::ONE;
+        let bad_x2_prelude = terminal_test_prelude_from_roots(
+            &compiler,
+            &vk,
+            &public_inputs,
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_fri_prelude_commitments_goldilocks(
+                &trace_profile,
+                &bad_x2_trace,
+                TerminalNpoTip5LookupFriColumnSet::FullMain,
+            )
+            .expect("bad power-lane AIR algebra prelude roots must build"),
+        );
         let bad_x2_proof =
             NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_air_algebra_quotient_from_trace_goldilocks(
-                &prelude,
+                &bad_x2_prelude,
                 &trace_profile,
                 &bad_x2_trace,
             )
@@ -26004,7 +26226,7 @@ mod tests {
             .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
                 &vk,
                 &public_inputs,
-                &prelude,
+                &bad_x2_prelude,
                 &bad_x2_proof,
             )
             .expect_err("tampered x2 auxiliary must fail AIR algebra quotient");
@@ -26200,19 +26422,15 @@ mod tests {
         let verifier_columns = compiler
             .terminal_npo_polynomial_verifier_derived_columns_goldilocks::<Goldilocks>(&vk)
             .expect("NPO-only verifier-derived columns must build");
-        let residual_root = compiler
-            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
-            .expect("NPO-only residual oracle must commit")
-            .commitment()
-            .root;
-        let prelude = compiler
-            .build_proof_prelude_goldilocks(
-                &vk,
-                &public_inputs,
-                TerminalProofParameters::production_60bit(),
-                vec![residual_root],
-            )
-            .expect("NPO-only lookup NPO-row value bridge prelude must build");
+        let (trace_profile, trace) = terminal_test_tip5_lookup_trace(&compiler, &vk, &witness);
+        let prelude = terminal_test_tip5_lookup_npo_rows_value_bridge_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &columns,
+            &trace_profile,
+            &trace,
+        );
 
         let prove_start = std::time::Instant::now();
         let proof = compiler
@@ -26590,10 +26808,6 @@ mod tests {
             NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
         ));
 
-        let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
-        let (_, trace, _) = compiler
-            .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
-            .expect("terminal Tip5 lookup trace must build");
         let mut bad_columns = columns.clone();
         let hidden_column = bad_columns
             .labels
@@ -26601,9 +26815,17 @@ mod tests {
             .position(|label| label == "hidden_tip5_value_3")
             .expect("hidden Tip5 value column must exist");
         bad_columns.columns[hidden_column][0] += Goldilocks::ONE;
+        let bad_value_prelude = terminal_test_tip5_lookup_npo_rows_value_bridge_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &bad_columns,
+            &trace_profile,
+            &trace,
+        );
         let bad_value_proof =
             NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_from_columns_goldilocks(
-                &prelude,
+                &bad_value_prelude,
                 &trace_profile,
                 &bad_columns,
                 &verifier_columns,
@@ -26613,7 +26835,7 @@ mod tests {
         let err = compiler
             .verify_terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_goldilocks::<
                 Goldilocks,
-            >(&vk, &public_inputs, &prelude, &bad_value_proof)
+            >(&vk, &public_inputs, &bad_value_prelude, &bad_value_proof)
             .expect_err("stale committed NPO value column must fail value bridge quotient");
         assert!(matches!(
             err,
@@ -26621,15 +26843,21 @@ mod tests {
                 if label == "tip5_lookup_npo_rows_value_bridge_quotient"
         ));
 
-        let (_, mut bad_trace, _) = compiler
-            .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
-            .expect("terminal Tip5 lookup trace must rebuild");
+        let mut bad_trace = trace;
         let bad_row = trace_profile.permutation_row_offset;
         let bad_width = bad_trace.width();
         bad_trace.values[bad_row * bad_width + 2] += Goldilocks::ONE;
+        let bad_lookup_prelude = terminal_test_tip5_lookup_npo_rows_value_bridge_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &columns,
+            &trace_profile,
+            &bad_trace,
+        );
         let bad_lookup_proof =
             NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_from_columns_goldilocks(
-                &prelude,
+                &bad_lookup_prelude,
                 &trace_profile,
                 &columns,
                 &verifier_columns,
@@ -26639,7 +26867,7 @@ mod tests {
         let err = compiler
             .verify_terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_goldilocks::<
                 Goldilocks,
-            >(&vk, &public_inputs, &prelude, &bad_lookup_proof)
+            >(&vk, &public_inputs, &bad_lookup_prelude, &bad_lookup_proof)
             .expect_err("stale lookup IO must fail value bridge quotient");
         assert!(matches!(
             err,
@@ -33900,6 +34128,107 @@ mod tests {
                     .expect("witness value must exist")
             })
             .collect()
+    }
+
+    fn terminal_test_prelude_from_roots<F>(
+        compiler: &NativeTerminalCompiler,
+        vk: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        roots: Vec<TerminalCommitmentDigest>,
+    ) -> TerminalProofPrelude
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        compiler
+            .build_proof_prelude_goldilocks(
+                vk,
+                public_inputs,
+                TerminalProofParameters::production_60bit(),
+                roots,
+            )
+            .expect("terminal test prelude must build")
+    }
+
+    fn terminal_test_tip5_lookup_trace<F>(
+        compiler: &NativeTerminalCompiler,
+        vk: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+    ) -> (
+        TerminalNpoTip5LookupTraceProfile,
+        RowMajorMatrix<Goldilocks>,
+    )
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let (_, trace, _) = compiler
+            .terminal_npo_tip5_lookup_air_trace_goldilocks(vk, witness)
+            .expect("terminal Tip5 lookup trace must build");
+        (
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(vk),
+            trace,
+        )
+    }
+
+    fn terminal_test_tip5_lookup_fri_prelude<F>(
+        compiler: &NativeTerminalCompiler,
+        vk: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        witness: &TerminalWitness<F>,
+        column_set: TerminalNpoTip5LookupFriColumnSet,
+    ) -> TerminalProofPrelude
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let (trace_profile, trace) = terminal_test_tip5_lookup_trace(compiler, vk, witness);
+        let roots =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_fri_prelude_commitments_goldilocks(
+                &trace_profile,
+                &trace,
+                column_set,
+            )
+            .expect("terminal Tip5 lookup FRI prelude roots must build");
+        terminal_test_prelude_from_roots(compiler, vk, public_inputs, roots)
+    }
+
+    fn terminal_test_tip5_lookup_io_bridge_prelude<F>(
+        compiler: &NativeTerminalCompiler,
+        vk: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        columns: &TerminalNpoPolynomialColumns<F>,
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+        trace: &RowMajorMatrix<Goldilocks>,
+    ) -> TerminalProofPrelude
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        let roots = NativeTerminalCompiler::terminal_npo_tip5_lookup_io_bridge_prelude_commitments_goldilocks(
+            trace_profile,
+            columns,
+            trace,
+        )
+        .expect("terminal Tip5 lookup IO bridge prelude roots must build");
+        terminal_test_prelude_from_roots(compiler, vk, public_inputs, roots)
+    }
+
+    fn terminal_test_tip5_lookup_npo_rows_value_bridge_prelude<F>(
+        compiler: &NativeTerminalCompiler,
+        vk: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        columns: &TerminalNpoPolynomialColumns<F>,
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+        trace: &RowMajorMatrix<Goldilocks>,
+    ) -> TerminalProofPrelude
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        let roots =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_npo_rows_value_bridge_prelude_commitments_goldilocks(
+                trace_profile,
+                columns,
+                trace,
+            )
+            .expect("terminal Tip5 lookup NPO-row value bridge prelude roots must build");
+        terminal_test_prelude_from_roots(compiler, vk, public_inputs, roots)
     }
 
     fn npo_polynomial_column<'a, F>(

@@ -349,10 +349,13 @@ for this route.
   profile from the verifying key, rejects profile/proximity mismatches,
   reconstructs canonical extension-field openings from serialized Goldilocks
   limbs, and returns verifier-derived column labels plus checked openings for
-  future lookup-AIR quotient checks. A regression test round-trips the proof and
-  rejects tampered opened values and stale profile metadata. This is still a
-  backend checkpoint; production does not yet replace exhaustive NPO checking
-  with this lookup trace commitment.
+  future lookup-AIR quotient checks. Its standalone prelude commitment vector
+  is exactly the one FRI Merkle-cap root for the selected lookup column set; a
+  stale IO/full-main root or any extra root is rejected before verifier
+  challenges are sampled. A regression test round-trips the proof and rejects
+  tampered opened values, stale profile metadata, stale prelude roots, and
+  extra prelude roots. This is still a backend checkpoint; production does not
+  yet replace exhaustive NPO checking with this lookup trace commitment.
 - `TerminalNpoTip5LookupFriColumnSet::TerminalIo`: a measured IO-projection
   variant for the same lookup trace. It commits only the terminal boundary
   columns, namely the 16 Tip5 input lanes and the first 10 final-round output
@@ -366,7 +369,10 @@ for this route.
   constraint for the terminal-IO lookup projection. The prover commits the
   26-column IO projection, samples a folding challenge, commits one
   extension-valued quotient over a disjoint doubled domain, and opens both at
-  one transcript point. Verification checks
+  one transcript point. Its standalone prelude commitment vector is exactly the
+  terminal-IO FRI root; the quotient root depends on the IO-root-derived
+  folding challenge and is therefore observed later inside the FRI transcript.
+  Verification checks
   `V_perm_window(zeta) * sum alpha^i * io_i(zeta) =
   quotient(zeta) * Z_H(zeta)`, where `V_perm_window` vanishes exactly on the
   verifier-derived terminal Tip5 permutation rows. This forces the IO
@@ -387,23 +393,29 @@ for this route.
   `sum alpha^i * (lookup_io_i(zeta) - npo_io_i(zeta)) =
   quotient(zeta) * Z_H(zeta)`. Tests round-trip the proof and reject a stale
   lookup trace whose terminal IO value no longer matches the NPO-derived
-  projection. This is the bridge needed to replace exhaustive NPO openings, but
-  the NPO-derived projection still has to be tied to the final value-column
-  proximity backend before production can rely on it.
+  projection. Its standalone prelude commitment vector is exactly
+  `[lookup_io_root, npo_io_root]`, in transcript order, with the quotient root
+  observed later after the folding challenge. This is the bridge needed to
+  replace exhaustive NPO openings, but the NPO-derived projection still has to
+  be tied to the final value-column proximity backend before production can
+  rely on it.
 - `TerminalNpoTip5LookupIoSupportBridgeQuotientProof`: a single-quotient
   batching of the two terminal-IO boundary relations above. After committing
   the lookup IO projection and the NPO-derived IO projection, the prover samples
   `alpha` to fold the 26 IO columns and `beta` to batch the bridge identity
   with the off-window support identity, then commits one extension-valued
-  quotient over a disjoint doubled domain. Verification checks
+  quotient over a disjoint doubled domain. Its standalone prelude commitment
+  vector is also exactly `[lookup_io_root, npo_io_root]`; the quotient root is
+  challenge-dependent and is observed later inside the FRI transcript.
+  Verification checks
   `folded_diff(zeta) + beta * V_perm_window(zeta) * folded_lookup(zeta) =
   quotient(zeta) * Z_H(zeta)`. The focused regression test round-trips the
-  proof, stores the compressed FRI payload directly, measures `74,685` bytes /
-  `72.9 KiB` at the production `log_blowup=4, num_queries=15,
+  proof, stores the compressed FRI payload directly, measures `73,327` bytes /
+  `71.6 KiB` at the production `log_blowup=4, num_queries=15,
   query_pow_bits=0` profile, and rejects both a nonzero lookup-table-row IO
   value and a stale permutation-row lookup IO value. The stored FRI payload is
-  `73,925` bytes / `72.2 KiB`, down from the restored raw payload's `96,234`
-  bytes / `94.0 KiB`. This is the current preferred boundary-check candidate
+  `72,564` bytes / `70.9 KiB`, down from the restored raw payload's `96,378`
+  bytes / `94.1 KiB`. This is the current preferred boundary-check candidate
   because it replaces the separate zero-support and bridge proofs with one FRI
   proof; it still is not a complete production NPO proof until the NPO-derived
   projection is tied to the final value-column proximity backend and the
@@ -415,12 +427,15 @@ for this route.
   folded kind-booleanity, split-byte recomposition, Goldilocks canonical guard,
   x2/x3 auxiliary, and MDS/round-constant output identities, batched with
   `V_perm_window * terminal_io` so table/padding rows cannot hide terminal IO
-  values in the full trace. The focused regression test now stores the
-  compressed terminal FRI payload directly and measures `145,250` bytes /
+  values in the full trace. Its standalone prelude commitment vector is
+  exactly the full-main lookup trace FRI root; the quotient root is
+  challenge-dependent and is absorbed later by the FRI transcript. The focused
+  regression test now stores the compressed terminal FRI payload directly and
+  measures `145,166` bytes /
   `141.8 KiB`, debug-profile `prove=15.277s`, `verify=72.8ms`, and rejects
   nonzero table-row terminal IO, tampered S-box image bytes, and tampered x2
-  auxiliaries. The terminal compact-FRI payload is `135,641` bytes / `132.5 KiB`
-  after decompression restores a `161,457` byte / `157.7 KiB` Plonky3 FRI proof.
+  auxiliaries. The terminal compact-FRI payload is `135,552` bytes / `132.4 KiB`
+  after decompression restores a `161,245` byte / `157.5 KiB` Plonky3 FRI proof.
   This closes a real internal-AIR algebra/support checkpoint, but it is too
   large to combine naively with the current terminal backend and still excludes
   the global LogUp byte-table argument. Component accounting shows why: zeta openings are
@@ -477,9 +492,12 @@ for this route.
   terminal IO columns on the supported-NPO row domain alongside the committed
   NPO witness-value columns. A single quotient proves that each lookup IO lane
   equals the verifier-derived selector-weighted value-column expression on
-  Tip5 rows and is zero off those rows. The focused regression test now stores
-  the compressed terminal FRI payload directly and measures `10,823` bytes /
-  `10.6 KiB` for this binding component, rejects stale committed value columns,
+  Tip5 rows and is zero off those rows. Its standalone prelude commitment
+  vector is exactly `[lookup_io_root, value_root]`, in transcript order; its
+  quotient root is absorbed later after the folding challenge. The focused
+  regression test now stores the compressed terminal FRI payload directly and
+  measures `9,624` bytes /
+  `9.4 KiB` for this binding component, rejects stale committed value columns,
   rejects stale lookup IO, and round-trips the proof.
   This closes the specific "NPO projection not tied to value columns" checkpoint
   in isolation, but production still needs the internal Tip5 lookup/AIR
@@ -492,19 +510,19 @@ for this route.
   and same-tree binary Merkle paths are sorted, deduplicated, and pruned by
   shared ancestors. On the NPO-row value-bridge checkpoint, the plain FRI
   payload measured `15,957` bytes / `15.6 KiB`; the compressed wrapper measured
-  `10,245` bytes / `10.0 KiB` and decompresses to a proof accepted by the
+  `9,046` bytes / `8.8 KiB` and decompresses to a proof accepted by the
   existing verifier. On the real 668-row Tip5-L0 NPO FRI candidates, the full
   table inner FRI payload compresses from `96,669` bytes to `75,736` bytes, and
   the witness-value-column inner FRI payload compresses from `80,471` bytes to
   `58,759` bytes; both decompressed proofs are accepted by the existing
   verifier. The optimized Tip5 lookup full-main opening compresses its inner
-  FRI from `130,403` bytes to `106,676` bytes, and the terminal-IO projection
-  compresses its inner FRI from `65,736` bytes to `47,632` bytes. On the
+  FRI from `130,206` bytes to `109,977` bytes, and the terminal-IO projection
+  compresses its inner FRI from `65,781` bytes to `48,474` bytes. On the
   padding-quotient checkpoint, the restored raw FRI payload measured `15,482`
   bytes / `15.1 KiB` while the stored compressed payload measured `8,153` bytes
   / `8.0 KiB`. On the standalone terminal-IO quotient checkpoints, zero-support
-  FRI compresses from `85,328` bytes to `62,246` bytes, and bridge FRI
-  compresses from `96,059` bytes to `67,608` bytes. This is not yet the
+  FRI compresses from `85,385` bytes to `61,704` bytes, and bridge FRI
+  compresses from `96,188` bytes to `69,481` bytes. This is not yet the
   production verifier path, but it demonstrates a concrete route to terminal
   path compression inside the vendored Plonky3-recursion stack.
 - `TerminalNpoPolynomialColumnQueryPlan`: the verifier-derived row schedule for
@@ -773,7 +791,13 @@ The standalone NPO polynomial FRI and padding-quotient checkpoints apply the
 same rule to terminal FRI roots: full-table/value-column FRI openings bind the
 single committed FRI root in the prelude, while the padding quotient binds the
 value-column root and absorbs the quotient root later after its challenge
-dependency is resolved.
+dependency is resolved. The Tip5 lookup terminal checkpoints now follow the
+same exact-shape discipline: lookup FRI openings bind one selected trace root,
+IO-zero and AIR-algebra quotients bind their pre-challenge IO/full-trace root,
+bridge and support-bridge quotients bind `[lookup_io_root, npo_io_root]`, and
+the NPO-row value bridge binds `[lookup_io_root, value_root]`; all quotient
+roots are absorbed later because they depend on challenges derived from those
+prelude-bound roots.
 
 `TerminalBackendRelationDigest` is the explicit commitment to those backend
 projections. It has its own domain and absorbs `TerminalQuadraticRelation`,
@@ -1119,10 +1143,10 @@ Tip5-L0 verifier circuit produced:
 |---|---:|---:|---:|---:|---:|
 | full-table NPO FRI opening proof, 186 field columns / 372 basis columns | 79,088 | 96,669 | 75,736 | 2.371 s | 0.512 s |
 | witness-value-column NPO FRI opening proof, 43 field columns / 86 basis columns | 59,727 | 80,471 | 58,759 | 1.072 s | 0.496 s |
-| optimized Tip5 lookup main-trace FRI opening proof, 558 Goldilocks columns | 116,119 | 130,403 | 106,676 | 1.378 s | 0.057 s |
-| optimized Tip5 lookup terminal-IO FRI projection, 26 Goldilocks columns | 47,959 | 65,736 | 47,632 | 0.166 s | 0.035 s |
-| optimized Tip5 lookup terminal-IO zero-support quotient, 26 columns + 1 quotient | 62,684 | 85,328 | 62,246 | 1.754 s | 0.045 s |
-| optimized Tip5 lookup terminal-IO bridge quotient, lookup IO + NPO-derived IO + 1 quotient | 68,351 | 96,059 | 67,608 | 1.796 s | 0.050 s |
+| optimized Tip5 lookup main-trace FRI opening proof, 558 Goldilocks columns | 119,448 | 130,206 | 109,977 | 3.294 s | 0.060 s |
+| optimized Tip5 lookup terminal-IO FRI projection, 26 Goldilocks columns | 48,801 | 65,781 | 48,474 | 5.354 s | 0.047 s |
+| optimized Tip5 lookup terminal-IO zero-support quotient, 26 columns + 1 quotient | 62,132 | 85,385 | 61,704 | 14.050 s | 0.050 s |
+| optimized Tip5 lookup terminal-IO bridge quotient, lookup IO + NPO-derived IO + 1 quotient | 70,220 | 96,188 | 69,481 | 11.804 s | 0.074 s |
 | Merkle residual-zero candidate, opt-in measurement | 691,173 | - | - | 53.486 s | 4.955 s |
 
 The full-table FRI candidate is too large to combine with the primitive
@@ -1145,29 +1169,29 @@ checks Tip5 chain-start zero lanes, Merkle capacity-zero lanes, and recompose
 value-column semantics under verifier-derived row selectors. The optimized
 lookup-trace FRI checkpoint proves the preferred Tip5 table source can be
 committed and opened with the production 60-bit FRI tuple, but its standalone
-113.4 KiB compressed proof is still too large to combine with the rest of the
+116.6 KiB compressed proof is still too large to combine with the rest of the
 terminal backend.
-The terminal-IO projection reaches 46.8 KiB and shows the boundary-opening
+The terminal-IO projection reaches 47.7 KiB and shows the boundary-opening
 floor is compatible with the 100 KiB target, but it is intentionally not
 sound by itself because the internal lookup-AIR relation columns are omitted.
 Adding the now-compressed zero-support quotient keeps that projection under
-target at 61.2 KiB and removes table/padding-row hiding capacity with about
-1.8 s debug-profile prove time after folding the 26 IO columns before quotient
+target at 60.7 KiB and removes table/padding-row hiding capacity with about
+14.0 s debug-profile prove time after folding the 26 IO columns before quotient
 evaluation.
 The padding-quotient checkpoint now also stores compressed FRI
 material directly, reducing its focused restored raw FRI payload from 15.1 KiB
 to 8.0 KiB, but it remains a component proof rather than the final production
 terminal proximity backend.
 The now-compressed bridge quotient ties lookup IO to the supported-NPO table
-projection at 66.7 KiB, inside the 100 KiB component target, and rejects stale
+projection at 68.6 KiB, inside the 100 KiB component target, and rejects stale
 lookup IO against the NPO table. This bridge is not yet a standalone replacement
 for production exhaustive NPO openings because the NPO-derived projection must
 be bound to the final NPO value-column/proximity proof.
 The combined support+bridge quotient batches both boundary relations into one
-FRI proof at 74,685 bytes / 72.9 KiB, with about 3.20 s debug-profile prove
-time and 50.1 ms verify time in the focused NPO-only fixture after storing the
-compressed FRI payload directly. The compressed FRI payload is 73,925 bytes /
-72.2 KiB versus a restored raw payload of 96,234 bytes / 94.0 KiB. It rejects
+FRI proof at 73,327 bytes / 71.6 KiB, with about 19.4 s debug-profile prove
+time and 71.6 ms verify time in the focused NPO-only fixture after storing the
+compressed FRI payload directly. The compressed FRI payload is 72,564 bytes /
+70.9 KiB versus a restored raw payload of 96,378 bytes / 94.1 KiB. It rejects
 both off-window table-row IO and stale permutation-row IO while staying under
 the component target, so it supersedes carrying the separate zero-support and
 bridge proofs. It still depends on the same unresolved NPO-derived projection
@@ -1176,13 +1200,13 @@ The full-trace Tip5 lookup AIR algebra/support quotient now enforces the local
 permutation algebra and rejects stale internal trace columns plus off-window
 terminal IO, but at 141.8 KiB for the stored-compressed component by itself it is
 a measurement-driven rejection for naive composition. Compact terminal FRI helps
-but only lowers the inner FRI payload to 132.5 KiB, still above target before
+but only lowers the inner FRI payload to 132.4 KiB, still above target before
 the primitive and NPO value-binding components are included. The next production
 route must either share the trace opening with the boundary/value bridge, commit
 only a relation-specific projection, or fold the lookup AIR algebra into a
 larger batched proximity proof; simply appending this proof would overshoot the
-100 KiB certificate target. The measured row-value cost (`66.7 KiB`) and
-commit-phase path cost (`70.8 KiB`) show that Merkle path compression alone is
+100 KiB certificate target. The measured row-value cost (`65.0 KiB`) and
+commit-phase path cost (`69.1 KiB`) show that Merkle path compression alone is
 not enough; the production design must avoid opening all 558 trace columns at
 every terminal FRI query. The measured single-composition floor is 80.9 KiB
 plain, 58.1 KiB with raw terminal compact FRI, and 59.2 KiB as the reusable
@@ -1199,8 +1223,8 @@ residual-column openings, but it is still a component proof; appending it next
 to the value bridge and Tip5 AIR components is not the final 100 KiB route. The
 LogUp/global-bus byte lookup relation remains a separate soundness obligation.
 The NPO-row value-bridge quotient closes the projection-to-value-column binding
-checkpoint in isolation at 10.6 KiB after storing the compressed terminal FRI
-payload directly; the FRI payload itself shrinks from 15.6 KiB to 10.0 KiB by
+checkpoint in isolation at 9.4 KiB after storing the compressed terminal FRI
+payload directly; the FRI payload itself shrinks from 15.6 KiB to 8.8 KiB by
 pruning shared binary Merkle authentication paths across the 15
 transcript-derived queries.
 Shared commitment binding across these components, LogUp byte-table soundness,
@@ -1305,7 +1329,7 @@ Completion audit against the active terminal-compression requirements:
 | Public values, parameters, relation, proximity schedule, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile and column layout, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
 | Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against the same prelude-bound assignment oracle used by primitive R1CS. | satisfied for supported NPO row validity |
-| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 72.9 KiB proof, a random linear-combination MLE checkpoint, and a residual-column zero-check checkpoint now exist, including Tip5/MMCS/recompose tamper tests, FRI tampered-claim rejection, stale-profile/column-set rejection, table-row IO hiding rejection, stale lookup-IO bridge rejection, and Merkle-consistent wrong-combination rejection. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over the NPO row constraints. | not complete |
+| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 71.6 KiB proof, a random linear-combination MLE checkpoint, and a residual-column zero-check checkpoint now exist, including Tip5/MMCS/recompose tamper tests, FRI tampered-claim rejection, stale-profile/column-set rejection, table-row IO hiding rejection, stale lookup-IO bridge rejection, and Merkle-consistent wrong-combination rejection. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over the NPO row constraints. | not complete |
 | Full terminal proof has a source-backed soundness calculation | Current doc records 60 pure-query Johnson accounting for the terminal profile and tests verifier binding, but it does not yet derive a complete theorem for the row-product plus NPO-column plus PCS/proximity backend. | incomplete |
 | Zero-knowledge or witness hiding for recursive-verifier witness values | Current production opens 1,377 full-width verifier-circuit witness values plus packed MMCS direction bits for exhaustive NPO checking. That is smaller than full witness serialization, but it is not a zero-knowledge terminal backend. | incomplete if ZK is required |
 
