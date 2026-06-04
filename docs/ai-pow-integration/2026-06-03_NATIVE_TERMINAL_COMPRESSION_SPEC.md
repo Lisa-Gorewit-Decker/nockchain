@@ -283,7 +283,11 @@ for this route.
   `output_basis_i = input_i_base` under the combined
   `is_recompose + is_recompose_coeff` selector. The quotient domain is twice
   the value-column trace domain so the degree-3 booleanity relation has a
-  low-degree quotient. This is the Plonky3-style
+  low-degree quotient. The proof now stores the terminal FRI opening in the
+  compressed terminal wrapper rather than serializing raw path material; the
+  focused 2-row fixture measured `8,378` bytes / `8.2 KiB`, with restored raw
+  FRI payload `15,482` bytes / `15.1 KiB` and stored compressed FRI payload
+  `8,153` bytes / `8.0 KiB`. This is the Plonky3-style
   quotient/vanishing-polynomial form needed for mixed present-bit padding,
   MMCS direction-bit booleanity, Tip5 chain-start zero lanes, Merkle
   capacity-zero lanes, and recompose value-column semantics; it is still a
@@ -482,9 +486,11 @@ for this route.
   table inner FRI payload compresses from `96,300` bytes to `79,357` bytes, and
   the witness-value-column inner FRI payload compresses from `80,645` bytes to
   `60,312` bytes; both decompressed proofs are accepted by the existing
-  verifier. This is not yet the production verifier path, but it demonstrates a
-  concrete route to terminal path compression inside the vendored
-  Plonky3-recursion stack.
+  verifier. On the padding-quotient checkpoint, the restored raw FRI payload
+  measured `15,482` bytes / `15.1 KiB` while the stored compressed payload
+  measured `8,153` bytes / `8.0 KiB`. This is not yet the production verifier
+  path, but it demonstrates a concrete route to terminal path compression
+  inside the vendored Plonky3-recursion stack.
 - `TerminalNpoPolynomialColumnQueryPlan`: the verifier-derived row schedule for
   future NPO-column openings. It validates that every fixed column commitment
   has the verifier-derived label, shared row count, and a root already bound in
@@ -1107,6 +1113,10 @@ sound by itself because the internal lookup-AIR relation columns are omitted.
 Adding the zero-support quotient keeps that projection under target at 83.8 KiB
 and removes table/padding-row hiding capacity with about 1.8 s debug-profile
 prove time after folding the 26 IO columns before quotient evaluation.
+The padding-quotient checkpoint now also stores compressed FRI
+material directly, reducing its focused restored raw FRI payload from 15.1 KiB
+to 8.0 KiB, but it remains a component proof rather than the final production
+terminal proximity backend.
 The bridge quotient ties lookup IO to the supported-NPO table projection at
 94.5 KiB, still inside the 100 KiB component target, and rejects stale lookup
 IO against the NPO table. This bridge is not yet a standalone replacement for

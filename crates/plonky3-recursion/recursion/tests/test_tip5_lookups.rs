@@ -88,13 +88,17 @@ fn build_and_prove() -> (
 
     let circuit = builder.build().unwrap();
     let cfg = config::goldilocks_tip5_60bit();
+    let table_packing = TablePacking::default().with_fri_params(
+        config::GOLDILOCKS_TIP5_RECURSIVE_LOG_FINAL_POLY_LEN,
+        config::GOLDILOCKS_TIP5_RECURSIVE_LOG_BLOWUP,
+    );
 
     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![Box::new(Tip5Preprocessor)];
     let air_builders = tip5_air_builders::<GoldilocksTipsConfig, 1>();
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<GoldilocksTipsConfig, F, 1>(
             &circuit,
-            &TablePacking::default(),
+            &table_packing,
             &npo_prep,
             &air_builders,
             ConstraintProfile::Standard,
@@ -121,7 +125,7 @@ fn build_and_prove() -> (
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
-    let mut prover = BatchStarkProver::new(cfg);
+    let mut prover = BatchStarkProver::new(cfg).with_table_packing(table_packing);
     prover.register_tip5_table::<1>(tip5_config);
 
     let proof = prover
