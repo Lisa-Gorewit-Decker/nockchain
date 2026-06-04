@@ -487,6 +487,74 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
                 .len()
         })
         .unwrap_or(0);
+    let production_npo_consistency_openings_size = production_proof
+        .npo_validity_consistency_proof
+        .as_ref()
+        .map(|proof| {
+            postcard::to_allocvec(&proof.openings)
+                .expect("terminal production NPO validity consistency openings must serialize")
+                .len()
+        })
+        .unwrap_or(0);
+    let production_npo_witness_opening_count = production_proof
+        .npo_validity_consistency_proof
+        .as_ref()
+        .map(|proof| {
+            proof
+                .openings
+                .iter()
+                .map(|opening| opening.npo_opening.witness_openings.len())
+                .sum::<usize>()
+        })
+        .unwrap_or(0);
+    let production_npo_witness_openings_size = production_proof
+        .npo_validity_consistency_proof
+        .as_ref()
+        .map(|proof| {
+            proof
+                .openings
+                .iter()
+                .map(|opening| {
+                    postcard::to_allocvec(&opening.npo_opening.witness_openings)
+                        .expect("terminal production NPO witness openings must serialize")
+                        .len()
+                })
+                .sum::<usize>()
+        })
+        .unwrap_or(0);
+    let production_npo_hidden_inputs_size = production_proof
+        .npo_validity_consistency_proof
+        .as_ref()
+        .map(|proof| {
+            proof
+                .openings
+                .iter()
+                .map(|opening| {
+                    postcard::to_allocvec(&opening.npo_opening.tip5_hidden_input_values)
+                        .expect("terminal production NPO hidden inputs must serialize")
+                        .len()
+                })
+                .sum::<usize>()
+        })
+        .unwrap_or(0);
+    let production_npo_fold_commitments_size = production_proof
+        .npo_validity_fold_proof
+        .as_ref()
+        .map(|proof| {
+            postcard::to_allocvec(&proof.fold_commitments)
+                .expect("terminal production NPO validity fold commitments must serialize")
+                .len()
+        })
+        .unwrap_or(0);
+    let production_npo_fold_openings_size = production_proof
+        .npo_validity_fold_proof
+        .as_ref()
+        .map(|proof| {
+            postcard::to_allocvec(&proof.openings)
+                .expect("terminal production NPO validity fold openings must serialize")
+                .len()
+        })
+        .unwrap_or(0);
     let production_verify_start = std::time::Instant::now();
     compiler
         .verify_goldilocks_production_certificate(
@@ -655,6 +723,15 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
     eprintln!(
         "terminal production compact components: r1cs_row_product={} npo_validity_consistency={} npo_validity_fold={}",
         production_r1cs_size, production_npo_consistency_size, production_npo_fold_size,
+    );
+    eprintln!(
+        "terminal production NPO breakdown: consistency_openings={} witness_openings={} witness_opening_count={} hidden_inputs={} fold_commitments={} fold_openings={}",
+        production_npo_consistency_openings_size,
+        production_npo_witness_openings_size,
+        production_npo_witness_opening_count,
+        production_npo_hidden_inputs_size,
+        production_npo_fold_commitments_size,
+        production_npo_fold_openings_size,
     );
     eprintln!(
         "terminal sparse R1CS matrix sumcheck component: proof={} bytes ({:.1} KiB) prove={:.3}s verify={:.3}s",

@@ -552,10 +552,10 @@ quadratic residuals and supported-NPO validity residuals into one
 `combined_validity` oracle and one fold proof, ordered as
 `[primitive residuals || NPO validity residuals]`. That removes the second fold
 proof and the separate NPO consistency query set from the aggregate local proof.
-The active 60-bit pure-query checkpoint now measures 97,282 bytes (95.0 KiB)
-for the typed local certificate, with debug-profile prove/verify around 5.53 s
-and 2.03 s. This is below the 100 KiB target for the local checkpoint, but it
-is still not a production terminal certificate.
+The active 60-bit pure-query checkpoint most recently measured 83,414 bytes
+(81.5 KiB) for the typed local certificate, with debug-profile prove/verify
+around 5.51 s and 1.97 s. Recent runs remain below the 100 KiB target for the
+local checkpoint, but it is still not a production terminal certificate.
 
 `TerminalLocalProof` now packages all implemented local proof components behind
 one verifier entrypoint. The verifier rechecks the prelude, then verifies the
@@ -591,11 +591,11 @@ The current real-circuit terminal-local size profile after fold compaction is:
 
 | component | bytes |
 |---|---:|
-| prelude | 216 |
-| combined validity consistency openings | 35,628 |
-| combined validity fold | 61,094 |
-| typed local proof body | 97,062 |
-| typed local certificate | 97,282 |
+| prelude | 219 |
+| combined validity consistency openings | 21,781 |
+| combined validity fold | 61,069 |
+| typed local proof body | 83,193 |
+| typed local certificate | 83,414 |
 
 This profile says the remaining size problem is not generic serialization
 overhead. The large items are still Merkle-authenticated local openings and the
@@ -610,20 +610,22 @@ Tip5-L0 verifier circuit:
 
 | component | bytes |
 |---|---:|
-| primitive R1CS row-product proof | 72,152 |
-| NPO validity consistency proof | 52,910 |
-| NPO validity fold proof | 43,437 |
-| compact production proof body | 168,948 |
-| compact production certificate | 169,172 |
+| primitive R1CS row-product proof | 71,958 |
+| NPO validity consistency proof | 32,480 |
+| NPO validity fold proof | 43,392 |
+| compact production proof body | 148,284 |
+| compact production certificate | 148,506 |
 
-The debug-profile measurement is `prove=6.347 s, verify=3.554 s`. This removes
+The debug-profile measurement is `prove=6.309 s, verify=3.454 s`. This removes
 the witness-basis serialization from the production proof body and replaces the
 assignment public-prefix openings with a compact prefix frontier. The
 row-product component fell from about 89.6 KiB to about 70.3 KiB in the
 standalone measurement; the public-prefix authentication inside it fell from
 20,131 bytes to 478 bytes. The total production certificate is still above the
 ~100 KiB target because sampled NPO validity consistency/fold material remains
-large and varies with the transcript-derived NPO rows. The remaining
+large and varies with the transcript-derived NPO rows. In this run, NPO
+consistency serialized 52 sampled witness openings into 31,190 bytes, and the
+NPO validity fold serialized 42,706 bytes of fold openings. The remaining
 production-backend task is to replace the sampled NPO validity layer with a
 polynomialized Tip5/recompose relation and to compress or aggregate the
 remaining fold-opening material without dropping below the 60-bit pure-query
@@ -635,17 +637,17 @@ component includes that matrix-vector subproof:
 
 | component | bytes |
 |---|---:|
-| sparse R1CS matrix sumcheck proof | 71,176 |
-| R1CS row-product sumcheck proof | 71,955 |
-| row-product rounds | 847 |
-| matrix-sumcheck rounds | 724 |
-| assignment evaluation proof | 70,327 |
-| assignment public-prefix proof | 478 |
-| assignment fold commitments | 802 |
-| assignment fold openings | 69,028 |
+| sparse R1CS matrix sumcheck proof | 71,308 |
+| R1CS row-product sumcheck proof | 72,110 |
+| row-product rounds | 840 |
+| matrix-sumcheck rounds | 719 |
+| assignment evaluation proof | 70,491 |
+| assignment public-prefix proof | 477 |
+| assignment fold commitments | 804 |
+| assignment fold openings | 69,190 |
 
-The latest debug-profile measurements are `prove=2.089 s, verify=1.443 s` for
-the matrix-vector component and `prove=2.114 s, verify=1.418 s` for the
+The latest debug-profile measurements are `prove=2.170 s, verify=1.436 s` for
+the matrix-vector component and `prove=2.112 s, verify=1.407 s` for the
 row-product component. This now proves the primitive sparse-R1CS row relation
 against the assignment commitment with compact public-prefix authentication, but
 NPO/table global arguments and the final polynomial proximity backend remain
