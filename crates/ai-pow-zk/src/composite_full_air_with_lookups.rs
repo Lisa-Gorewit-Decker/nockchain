@@ -23,19 +23,20 @@
 //!     per row, with `count_weight = 1`. The chip that has u8
 //!     cells emits the queries.
 //!
-//! For co-located matrix-message rows the query side emits every
-//! `UINT8_DATA[0..64]` byte when `IS_MSG_MAT = 1`. On rows with
-//! `IS_MSG_MAT = 0` the query multiplicity is zero, so there's no
-//! contribution.
+//! For matrix-message rows, `UINT8_DATA` byte validity is enforced
+//! through the paired `i8u8` bus plus `irange8(MAT_UNPACK)`. The
+//! standalone `urange8` bus keeps one byte query as a compatibility
+//! anchor for the recursive verifier's lookup shape, but does not pay
+//! the 63 redundant extra query interactions.
 //!
 //! ## What this gives us
 //!
 //! With this wired, `prove_batch` + `verify_batch` will reject
 //! traces where:
-//!   * `URANGE8_FREQ` is over- or under-claimed relative to the
-//!     actual `UINT8_DATA[0..64]` queries.
-//!   * Any `UINT8_DATA[0..64]` cell carries a value outside
-//!     `[0, 256)` while `IS_MSG_MAT = 1`.
+//!   * `URANGE8_FREQ` is over- or under-claimed for the anchored
+//!     byte query.
+//!   * Any `UINT8_DATA[0..64]` cell is inconsistent with its signed
+//!     `MAT_UNPACK` view while `IS_MSG_MAT = 1`.
 //!
 //! Range-table integrity (TABLE column enumerates `[0..256)`)
 //! continues to be enforced by `URange8Chip`'s constraints —
@@ -209,27 +210,25 @@ mod bus_emit {
     /// `urange8` bus — u8 range check `[0, 256)`.
     ///
     /// Table: (URANGE8_TABLE, −URANGE8_FREQ).
-    /// Queries: UINT8_DATA[0..64] gated by IS_MSG_MAT (when the
-    /// BLAKE3 message buffer is loading matrix bytes, each cell is
-    /// a u8 query).
+    /// Queries: `UINT8_DATA[0]` gated by IS_MSG_MAT. The remaining
+    /// bytes' u8 validity is implied by `IRANGE8(MAT_UNPACK)` plus
+    /// the `i8u8` conversion table on `IS_MSG_MAT` rows, so the other
+    /// 63 standalone u8 queries are redundant.
     pub fn urange8<AB: AirBuilder + InteractionBuilder>(builder: &mut AB) {
         let main = builder.main();
         let cur = main.current_slice();
-        let is_msg_mat: AB::Expr = cur[IS_MSG_MAT].into();
         builder.push_interaction(
             BUS_URANGE8,
             [<AB::Var as Into<AB::Expr>>::into(cur[URANGE8_TABLE])],
             -<AB::Var as Into<AB::Expr>>::into(cur[URANGE8_FREQ]),
             0,
         );
-        for i in 0..UINT8_DATA_WIN {
-            builder.push_interaction(
-                BUS_URANGE8,
-                [<AB::Var as Into<AB::Expr>>::into(cur[UINT8_DATA_START + i])],
-                is_msg_mat.clone(),
-                1,
-            );
-        }
+        builder.push_interaction(
+            BUS_URANGE8,
+            [<AB::Var as Into<AB::Expr>>::into(cur[UINT8_DATA_START])],
+            <AB::Var as Into<AB::Expr>>::into(cur[IS_MSG_MAT]),
+            1,
+        );
     }
 
     /// `urange13` bus — u13 range check `[0, 8192)`.
@@ -513,7 +512,7 @@ mod tests {
     //! End-to-end LogUp tests on the full composite trace.
     //! `prove_batch` enforces the `urange8` bus balance at proof
     //! time. Valid traces verify; over-claimed `URANGE8_FREQ` or
-    //! out-of-range `UINT8_DATA[0..64]` queries are rejected.
+    //! out-of-range anchored `UINT8_DATA[0]` queries are rejected.
 
     use p3_batch_stark::{prove_batch, verify_batch, ProverData, StarkInstance};
     use p3_field::integers::QuotientMap;
@@ -934,33 +933,66 @@ mod tests {
         );
     }
 
-    /// Regression for the cx.2 split-view gap: byte 8 is in the
-    /// second 8-byte sub-slice. The attack leaves the unsigned
-    /// BLAKE3-facing view unchanged, mutates the signed
-    /// matmul-facing view, and recomputes the matching
-    /// `NOISED_PACKED` cell so the input chip still accepts. Full
-    /// 64-byte i8/u8 lookup activation must reject it.
-    #[test]
-    fn second_subslice_split_view_rejected_by_i8u8_logup() {
-        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+    fn assert_split_view_rejects_at_byte(cfg: &AiPowStarkConfig, byte_idx: usize) {
+        assert!(byte_idx < 64);
         let mut trace = CompositeTrace::baseline_min();
         let mut plain = [0i8; 64];
-        plain[8] = 5;
+        plain[byte_idx] = 5;
         place_full_msg_mat_row(&mut trace, 0, &plain);
 
         let base = 0 * TOTAL_TRACE_WIDTH;
-        trace.matrix.values[base + MAT_UNPACK_START + 8] = <Val as QuotientMap<i64>>::from_int(6);
+        trace.matrix.values[base + MAT_UNPACK_START + byte_idx] =
+            <Val as QuotientMap<i64>>::from_int(6);
+        let cell = byte_idx / 4;
+        let cell_base = cell * 4;
         let mut tampered = [0i8; 4];
-        tampered.copy_from_slice(&plain[8..12]);
-        tampered[0] = 6;
-        trace.matrix.values[base + NOISED_PACKED_START + 2] =
+        tampered.copy_from_slice(&plain[cell_base..cell_base + 4]);
+        tampered[byte_idx - cell_base] = 6;
+        trace.matrix.values[base + NOISED_PACKED_START + cell] =
             <Val as QuotientMap<i64>>::from_int(pack4_signed(&tampered));
 
         trace.populate_lookup_freq();
+        let res = run_batch(cfg, &trace.matrix);
+        assert!(
+            res.is_err(),
+            "MAT_UNPACK/UINT8_DATA split view at byte {byte_idx} must reject; got {:?}",
+            res
+        );
+    }
+
+    /// Regression for the cx.2 split-view gap. The attack leaves the
+    /// unsigned BLAKE3-facing view unchanged, mutates the signed
+    /// matmul-facing view, and recomputes the matching `NOISED_PACKED`
+    /// cell so the input chip still accepts. Full 64-byte i8/u8 lookup
+    /// activation must reject it in every later sub-slice, not only at
+    /// byte 8.
+    #[test]
+    fn non_first_subslice_split_view_rejected_by_i8u8_logup() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        for byte_idx in [8usize, 15, 16, 31, 32, 47, 48, 63] {
+            assert_split_view_rejects_at_byte(&cfg, byte_idx);
+        }
+    }
+
+    /// Each BLAKE3 matrix-message row self-queries all eight
+    /// `noised_packed` sub-slices. If one later MAT_FREQ slot is
+    /// dropped after frequency population, the table side no longer
+    /// balances that sub-slice's self-query and the proof must reject.
+    #[test]
+    fn non_first_subslice_mat_freq_drop_rejected_by_logup() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        let mut plain = [0i8; 64];
+        plain[63] = -7;
+        place_full_msg_mat_row(&mut trace, 0, &plain);
+        trace.populate_lookup_freq();
+
+        let target = MAT_FREQ + 7;
+        trace.matrix.values[target] = Val::default();
         let res = run_batch(&cfg, &trace.matrix);
         assert!(
             res.is_err(),
-            "second-sub-slice MAT_UNPACK/UINT8_DATA split view must reject; got {:?}",
+            "dropping a later noised_packed self-query MAT_FREQ must reject; got {:?}",
             res
         );
     }

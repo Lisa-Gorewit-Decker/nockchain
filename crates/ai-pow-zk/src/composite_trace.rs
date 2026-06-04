@@ -1150,20 +1150,17 @@ impl CompositeTrace {
     ///
     /// Constraints satisfied by this write (all are existing
     /// per-row chip constraints, no new AIR work in this helper):
-    /// - URange8 on UINT8_DATA[0..64] when IS_MSG_MAT=1 (bytes ∈ [0, 256))
+    /// - anchored URange8 on UINT8_DATA[0] when IS_MSG_MAT=1
     /// - IRange8 on MAT_UNPACK[0..64] (signed bytes ∈ [-128, 127])
     /// - i8u8 bus: MAT_UNPACK[i] (i8) ↔ UINT8_DATA[i] (u8) when IS_MSG_MAT=1
     /// - Input chip: NOISED_PACKED[i] = polyval(MAT_UNPACK[..]) + polyval(NOISE_UNPACK[..])
     /// - noised_packed bus self-query (step 4.1): MAT_FREQ on this row balances the query
     ///
-    /// **Open soundness gap (out of step 4.2 scope):** there is
-    /// not yet an AIR constraint binding `MAT_UNPACK` on staging
-    /// rows to the corresponding bytes of `BLAKE3_MSG` (or
-    /// `BLAKE3_MSG_BUFFER`) on the compression row. Until that
-    /// constraint lands, an adversary can put different bytes in
-    /// `BLAKE3_MSG` from `MAT_UNPACK` on the same row. The staging
-    /// columns are populated correctly here; the cross-column
-    /// binding is the next step.
+    /// On co-located compression rows, C3 binds every
+    /// `BLAKE3_MSG[0..16]` word to `UINT8_DATA[0..64]` under
+    /// `IS_MSG_MAT * IS_NEW_BLAKE`. Combined with the full-width
+    /// i8/u8 bus, the bytes hashed by BLAKE3 and the bytes feeding
+    /// the matrix store cannot split views across sub-slices.
     pub fn place_matrix_staging_row(
         &mut self,
         row_idx: usize,
@@ -2140,7 +2137,9 @@ impl CompositeTrace {
     /// holds that value.
     ///
     /// The current implementation handles four range buses:
-    ///   * `urange8` — UINT8_DATA[0..64] gated by IS_MSG_MAT.
+    ///   * `urange8` — anchored UINT8_DATA[0] query; remaining
+    ///     UINT8_DATA validity is implied by `irange8(MAT_UNPACK)` +
+    ///     `i8u8`.
     ///   * `urange13` — MAT_ID_LIMBS[0..2] + AB_ID_LIMBS[0..4]
     ///     unconditionally.
     ///   * `irange7p1` — NOISE_UNPACK[0..64] unconditionally.
@@ -2160,26 +2159,21 @@ impl CompositeTrace {
         let n = self.height();
 
         // ---- URange8 (u8 ∈ [0, 256)) ----
-        // Queries: UINT8_DATA[0..64] when IS_MSG_MAT = 1.
+        // One anchored query on UINT8_DATA[0] when IS_MSG_MAT=1. The
+        // other 63 bytes are checked by IRANGE8(MAT_UNPACK) + I8U8,
+        // so repeating u8 range queries for them only widens the
+        // permutation trace.
         let mut u8_count = [0u64; 256];
         for r in 0..n {
             let base = r * TOTAL_TRACE_WIDTH;
             let is_msg_mat = self.matrix.values[base + IS_MSG_MAT].as_canonical_u64();
             if is_msg_mat == 1 {
-                for i in 0..UINT8_DATA_WIN {
-                    let v = self.matrix.values[base + UINT8_DATA_START + i].as_canonical_u64();
-                    if (v as usize) < 256 {
-                        u8_count[v as usize] += 1;
-                    }
-                    // Out-of-range u8 cells are caught by the LogUp
-                    // imbalance at proof time (no table entry to
-                    // consume them).
+                let v = self.matrix.values[base + UINT8_DATA_START].as_canonical_u64();
+                if (v as usize) < 256 {
+                    u8_count[v as usize] += 1;
                 }
             }
         }
-        // Write FREQ on rows 0..256 (the URANGE8_TABLE rows). Rows
-        // 256..n have TABLE = 255 (padding); we keep their FREQ at
-        // 0 so they don't double-count.
         for v in 0..256.min(n) {
             self.matrix.values[v * TOTAL_TRACE_WIDTH + URANGE8_FREQ] =
                 <Val as QuotientMap<u64>>::from_int(u8_count[v]);
