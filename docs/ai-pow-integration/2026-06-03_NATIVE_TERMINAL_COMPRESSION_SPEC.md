@@ -769,6 +769,10 @@ Security-audit conclusions for the current implementation checkpoint:
   commitment schedule before deriving consistency query rows. This keeps the
   direct verifier entrypoint fail-closed even if it is called outside the
   aggregate `TerminalLocalProof` verifier.
+- Direct and aggregate NPO validity consistency verification also re-verifies
+  each sampled `TerminalNpoOpening` against the witness commitment. A folded
+  zero validity row is therefore not enough by itself; malformed/missing
+  witness openings or stale Merkle paths are rejected at the consistency layer.
 - The binding-only terminal certificate checker is private. The public
   production verifier now accepts only typed `TerminalProductionProof` bodies
   after no-trailing-bytes decoding and relation verification. It rejects

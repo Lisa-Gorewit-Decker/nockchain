@@ -13228,6 +13228,58 @@ mod tests {
     }
 
     #[test]
+    fn goldilocks_terminal_npo_validity_consistency_rejects_tampered_npo_opening() {
+        let (circuit, public_inputs) = build_two_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+        let (prelude, witness_commitment, validity_commitment, fold_proof, consistency_proof) =
+            standalone_npo_validity_components(&compiler, &vk, &public_inputs, &witness);
+
+        let mut missing_witness_opening = consistency_proof.clone();
+        missing_witness_opening.openings[0]
+            .npo_opening
+            .witness_openings
+            .pop();
+        let err = compiler
+            .verify_terminal_npo_validity_consistency_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &witness_commitment,
+                &validity_commitment,
+                &fold_proof,
+                &missing_witness_opening,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoOpeningCountMismatch { .. }
+        ));
+
+        let mut bad_witness_value = consistency_proof.clone();
+        let value =
+            &mut bad_witness_value.openings[0].npo_opening.witness_openings[0].value_basis[0];
+        *value = if *value == 0 { 1 } else { 0 };
+        let err = compiler
+            .verify_terminal_npo_validity_consistency_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &witness_commitment,
+                &validity_commitment,
+                &fold_proof,
+                &bad_witness_value,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
+                | NativeTerminalVerifyError::TerminalOracleOpeningValueMismatch { .. }
+        ));
+    }
+
+    #[test]
     fn goldilocks_terminal_npo_validity_fold_rejects_query_steering() {
         let (circuit, public_inputs) = build_two_tip5_test_circuit();
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
