@@ -1950,6 +1950,15 @@ pub enum NativeTerminalVerifyError {
     TerminalPreludeCommitmentNotBound {
         root: TerminalCommitmentDigest,
     },
+    TerminalPreludeCommitmentCountMismatch {
+        expected: usize,
+        got: usize,
+    },
+    TerminalPreludeCommitmentMismatch {
+        index: usize,
+        expected: TerminalCommitmentDigest,
+        got: TerminalCommitmentDigest,
+    },
     TerminalOracleEmpty,
     TerminalOracleIndexOutOfBounds {
         index: usize,
@@ -11256,6 +11265,11 @@ impl NativeTerminalCompiler {
             verifying_key,
             &proof.assignment_commitment,
         )?;
+        Self::verify_production_prelude_commitments(
+            &proof.prelude,
+            &proof.witness_commitment,
+            &proof.assignment_commitment,
+        )?;
         Self::verify_prelude_binds_commitment(&proof.prelude, &proof.assignment_commitment)?;
 
         self.verify_terminal_r1cs_row_product_sumcheck_goldilocks(
@@ -19707,6 +19721,34 @@ impl NativeTerminalCompiler {
         Ok(())
     }
 
+    fn verify_production_prelude_commitments(
+        prelude: &TerminalProofPrelude,
+        witness_commitment: &TerminalOracleCommitment,
+        assignment_commitment: &TerminalOracleCommitment,
+    ) -> Result<(), NativeTerminalVerifyError> {
+        let expected = [witness_commitment.root, assignment_commitment.root];
+        if prelude.commitments.len() != expected.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
+                    expected: expected.len(),
+                    got: prelude.commitments.len(),
+                },
+            );
+        }
+        for (index, (got, expected)) in prelude.commitments.iter().zip(expected).enumerate() {
+            if *got != expected {
+                return Err(
+                    NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch {
+                        index,
+                        expected,
+                        got: *got,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn verify_terminal_oracle_commitment_identity(
         commitment: &TerminalOracleCommitment,
         expected_label: &str,
@@ -27916,6 +27958,54 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch { .. }
         ));
+
+        let mut extra_commitment = proof.clone();
+        extra_commitment
+            .prelude
+            .commitments
+            .push(TerminalCommitmentDigest([1, 2, 3, 4, 5]));
+        extra_commitment.prelude.challenge_digest =
+            NativeTerminalCompiler::transcript_challenge_digest(
+                &vk.header,
+                extra_commitment.prelude.parameters,
+                &extra_commitment.prelude.relation_profile,
+                extra_commitment.prelude.public_values_digest,
+                &extra_commitment.prelude.commitments,
+                extra_commitment.prelude.query_pow_nonce,
+            );
+        let err = compiler
+            .verify_terminal_production_goldilocks(&vk, &public_inputs, &extra_commitment)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
+                expected: 2,
+                got: 3,
+            }
+        );
+
+        let mut reordered_commitments = proof.clone();
+        reordered_commitments.prelude.commitments.swap(0, 1);
+        reordered_commitments.prelude.challenge_digest =
+            NativeTerminalCompiler::transcript_challenge_digest(
+                &vk.header,
+                reordered_commitments.prelude.parameters,
+                &reordered_commitments.prelude.relation_profile,
+                reordered_commitments.prelude.public_values_digest,
+                &reordered_commitments.prelude.commitments,
+                reordered_commitments.prelude.query_pow_nonce,
+            );
+        let err = compiler
+            .verify_terminal_production_goldilocks(&vk, &public_inputs, &reordered_commitments)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch {
+                index: 0,
+                expected: proof.witness_commitment.root,
+                got: proof.assignment_commitment.root,
+            }
+        );
     }
 
     #[test]

@@ -1247,7 +1247,12 @@ Literature checkpoint as of 2026-06-04:
   FRI parameters, query/PoW counts, verifier-circuit fingerprint, public input
   vector, Tip5 variant key, primitive quadratic relation, and all NPO relation
   keys. These bindings are required to avoid the parameter-substitution and
-  grinding failures called out by the Fiat-Shamir/FRI literature.
+  grinding failures called out by the Fiat-Shamir/FRI literature. The
+  production proof now treats the prelude commitment vector as an exact
+  transcript shape: `[witness_root, assignment_root]`. Extra prover-selected
+  roots and reordered roots are rejected rather than merely checked for
+  membership, so the prover cannot add an otherwise unused root as a
+  challenge-steering knob.
 - Aurora (Ben-Sasson, Chiesa, Riabzev, Spooner, Virza, Ward, EUROCRYPT 2019,
   ePrint 2018/828, https://eprint.iacr.org/2018/828) is the closest transparent
   R1CS-sized route in the literature: its proof sizes are sublinear in the
