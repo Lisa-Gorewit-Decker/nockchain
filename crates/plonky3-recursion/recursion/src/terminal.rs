@@ -165,6 +165,20 @@ pub struct TerminalOracleOpening {
     pub path: Vec<TerminalMerkleSibling>,
 }
 
+/// One value opened by a terminal oracle multiproof.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalOracleMultiValueOpening {
+    pub index: usize,
+    pub value_basis: Vec<u64>,
+}
+
+/// Sparse Merkle multiproof for terminal oracle values.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalOracleMultiProof {
+    pub openings: Vec<TerminalOracleMultiValueOpening>,
+    pub frontier: Vec<TerminalCommitmentDigest>,
+}
+
 /// Authenticated opening of a contiguous oracle prefix starting at index 0.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalOraclePrefixProof {
@@ -293,6 +307,13 @@ pub struct TerminalNpoOpening {
     pub witness_openings: Vec<TerminalOracleOpening>,
 }
 
+/// Local NPO row values whose witness links are carried by a shared multiproof.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalNpoLocalOpening {
+    pub npo_index: usize,
+    pub tip5_hidden_input_values: Vec<TerminalTip5HiddenInputValue>,
+}
+
 /// Sampled local proof for supported non-primitive terminal rows.
 ///
 /// This checks transcript-derived Tip5/recompose rows against the committed
@@ -307,7 +328,7 @@ pub struct TerminalNpoProof {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalNpoValidityConsistencyOpening {
     pub npo_index: usize,
-    pub npo_opening: TerminalNpoOpening,
+    pub npo_opening: TerminalNpoLocalOpening,
 }
 
 /// Sampled consistency proof tying the NPO validity oracle to the witness
@@ -315,6 +336,7 @@ pub struct TerminalNpoValidityConsistencyOpening {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalNpoValidityConsistencyProof {
     pub openings: Vec<TerminalNpoValidityConsistencyOpening>,
+    pub witness_multi_opening: TerminalOracleMultiProof,
 }
 
 /// Opened row material for one sampled combined-validity row.
@@ -1825,6 +1847,46 @@ impl TerminalOracleMerkleTree {
         })
     }
 
+    pub fn open_goldilocks_multi_values<F>(
+        &self,
+        values: &[(usize, &F)],
+    ) -> Result<TerminalOracleMultiProof, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let mut previous = None;
+        for (opening, (index, _)) in values.iter().enumerate() {
+            if *index >= self.values_len {
+                return Err(NativeTerminalVerifyError::TerminalOracleIndexOutOfBounds {
+                    index: *index,
+                    values_len: self.values_len,
+                });
+            }
+            if previous.is_some_and(|previous| *index <= previous) {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleQueryIndexMismatch {
+                        query: opening,
+                        expected: previous.expect("previous index exists") + 1,
+                        got: *index,
+                    },
+                );
+            }
+            previous = Some(*index);
+        }
+
+        let openings = values
+            .iter()
+            .map(|(index, value)| TerminalOracleMultiValueOpening {
+                index: *index,
+                value_basis: NativeTerminalCompiler::goldilocks_basis_u64(*value),
+            })
+            .collect();
+        let mut frontier = Vec::new();
+        let root_level = self.levels.len().saturating_sub(1);
+        self.collect_multi_frontier(root_level, 0, values, &mut frontier);
+        Ok(TerminalOracleMultiProof { openings, frontier })
+    }
+
     pub fn open_goldilocks_prefix<F>(
         &self,
         values: &[F],
@@ -1865,6 +1927,29 @@ impl TerminalOracleMerkleTree {
         let half = size / 2;
         self.collect_prefix_frontier(level - 1, start, prefix_len, frontier);
         self.collect_prefix_frontier(level - 1, start + half, prefix_len, frontier);
+    }
+
+    fn collect_multi_frontier<F>(
+        &self,
+        level: usize,
+        start: usize,
+        values: &[(usize, &F)],
+        frontier: &mut Vec<TerminalCommitmentDigest>,
+    ) {
+        let size = 1usize << level;
+        if !values
+            .iter()
+            .any(|(index, _)| *index >= start && *index < start + size)
+        {
+            frontier.push(self.levels[level][start >> level]);
+            return;
+        }
+        if level == 0 {
+            return;
+        }
+        let half = size / 2;
+        self.collect_multi_frontier(level - 1, start, values, frontier);
+        self.collect_multi_frontier(level - 1, start + half, values, frontier);
     }
 }
 
@@ -2394,6 +2479,75 @@ impl NativeTerminalCompiler {
             );
         }
         self.verify_terminal_oracle_opening(commitment, opening)
+    }
+
+    pub fn verify_terminal_oracle_multi_proof_goldilocks<F>(
+        &self,
+        commitment: &TerminalOracleCommitment,
+        proof: &TerminalOracleMultiProof,
+    ) -> Result<Vec<(usize, F)>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        if commitment.values_len == 0 {
+            return Err(NativeTerminalVerifyError::TerminalOracleEmpty);
+        }
+
+        let mut previous = None;
+        let mut values = Vec::with_capacity(proof.openings.len());
+        for (opening_idx, opening) in proof.openings.iter().enumerate() {
+            if opening.index >= commitment.values_len {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleOpeningIndexOutOfBounds {
+                        index: opening.index,
+                        values_len: commitment.values_len,
+                    },
+                );
+            }
+            if previous.is_some_and(|previous| opening.index <= previous) {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleQueryIndexMismatch {
+                        query: opening_idx,
+                        expected: previous.expect("previous opening exists") + 1,
+                        got: opening.index,
+                    },
+                );
+            }
+            values.push((
+                opening.index,
+                Self::field_from_goldilocks_basis_u64::<F>(&opening.value_basis)?,
+            ));
+            previous = Some(opening.index);
+        }
+
+        let root_level = Self::terminal_oracle_path_len(commitment.values_len);
+        let mut frontier = proof.frontier.iter().copied();
+        let got = Self::terminal_oracle_multi_root_goldilocks(
+            &commitment.label,
+            commitment.values_len,
+            &proof.openings,
+            root_level,
+            0,
+            &mut frontier,
+        )?;
+        let remaining = frontier.count();
+        if remaining != 0 {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningPathLengthMismatch {
+                    expected: proof.frontier.len() - remaining,
+                    got: proof.frontier.len(),
+                },
+            );
+        }
+        if got != commitment.root {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch {
+                    expected: commitment.root,
+                    got,
+                },
+            );
+        }
+        Ok(values)
     }
 
     pub fn verify_terminal_oracle_prefix_goldilocks<F>(
@@ -4415,19 +4569,33 @@ impl NativeTerminalCompiler {
         )?;
 
         let mut openings = Vec::with_capacity(plan.indices.len());
+        let mut witness_ids = Vec::new();
         for npo_index in &plan.indices {
-            let npo_opening = self.prove_terminal_npo_opening_goldilocks(
-                verifying_key,
-                witness_oracle,
-                witness,
-                *npo_index,
-            )?;
+            let (npo_opening, row_witness_ids) =
+                self.terminal_npo_local_opening_goldilocks(verifying_key, witness, *npo_index)?;
+            for witness_id in row_witness_ids {
+                Self::push_unique_witness(&mut witness_ids, witness_id);
+            }
             openings.push(TerminalNpoValidityConsistencyOpening {
                 npo_index: *npo_index,
                 npo_opening,
             });
         }
-        Ok(TerminalNpoValidityConsistencyProof { openings })
+        witness_ids.sort_by_key(|witness_id| witness_id.0);
+        let mut witness_values = Vec::with_capacity(witness_ids.len());
+        for witness_id in &witness_ids {
+            let value = witness.traces.witness_trace.get_value(*witness_id).ok_or(
+                NativeTerminalVerifyError::MissingWitness {
+                    witness_id: witness_id.0,
+                },
+            )?;
+            witness_values.push((witness_id.0 as usize, value));
+        }
+        let witness_multi_opening = witness_oracle.open_goldilocks_multi_values(&witness_values)?;
+        Ok(TerminalNpoValidityConsistencyProof {
+            openings,
+            witness_multi_opening,
+        })
     }
 
     pub fn verify_terminal_npo_validity_consistency_goldilocks<F>(
@@ -4466,6 +4634,53 @@ impl NativeTerminalCompiler {
                     got: proof.openings.len(),
                 },
             );
+        }
+
+        let witness_values = self.verify_terminal_oracle_multi_proof_goldilocks::<F>(
+            witness_commitment,
+            &proof.witness_multi_opening,
+        )?;
+        let mut expected_global_witness_ids = Vec::new();
+        for npo_index in &plan.indices {
+            let row_ref = Self::terminal_npo_row(verifying_key, *npo_index).ok_or(
+                NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                    query: 0,
+                    expected: *npo_index,
+                    got: *npo_index,
+                },
+            )?;
+            match row_ref {
+                NativeTerminalNpoRowRef::Tip5 { callsite, .. }
+                | NativeTerminalNpoRowRef::Recompose { callsite, .. } => {
+                    for witness_id in Self::npo_callsite_witness_ids(callsite) {
+                        Self::push_unique_witness(&mut expected_global_witness_ids, witness_id);
+                    }
+                }
+            }
+        }
+        expected_global_witness_ids.sort_by_key(|witness_id| witness_id.0);
+        if witness_values.len() != expected_global_witness_ids.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleQueryLengthMismatch {
+                    expected: expected_global_witness_ids.len(),
+                    got: witness_values.len(),
+                },
+            );
+        }
+        for (query, (expected_witness, (got_index, _))) in expected_global_witness_ids
+            .iter()
+            .zip(&witness_values)
+            .enumerate()
+        {
+            if *got_index != expected_witness.0 as usize {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleQueryIndexMismatch {
+                        query,
+                        expected: expected_witness.0 as usize,
+                        got: *got_index,
+                    },
+                );
+            }
         }
 
         for (query, (opening, expected_index)) in
@@ -4513,12 +4728,19 @@ impl NativeTerminalCompiler {
             )?;
             match row_ref {
                 NativeTerminalNpoRowRef::Tip5 { row, callsite, .. } => {
-                    self.verify_sampled_tip5_npo_row::<F>(
+                    let expected_witness_ids = Self::npo_callsite_witness_ids(callsite);
+                    let opened_values = Self::verify_npo_witness_values(
+                        *expected_index,
+                        &expected_witness_ids,
+                        &witness_values,
+                    )?;
+                    self.verify_sampled_tip5_npo_row_values::<F>(
                         *expected_index,
                         row,
                         callsite,
-                        witness_commitment,
-                        &opening.npo_opening,
+                        &opening.npo_opening.tip5_hidden_input_values,
+                        &expected_witness_ids,
+                        &opened_values,
                     )?;
                 }
                 NativeTerminalNpoRowRef::Recompose {
@@ -4526,13 +4748,20 @@ impl NativeTerminalCompiler {
                     row,
                     callsite,
                 } => {
-                    self.verify_sampled_recompose_npo_row::<F>(
+                    let expected_witness_ids = Self::npo_callsite_witness_ids(callsite);
+                    let opened_values = Self::verify_npo_witness_values(
+                        *expected_index,
+                        &expected_witness_ids,
+                        &witness_values,
+                    )?;
+                    self.verify_sampled_recompose_npo_row_values::<F>(
                         *expected_index,
                         op_type,
                         row,
                         callsite,
-                        witness_commitment,
-                        &opening.npo_opening,
+                        &opening.npo_opening.tip5_hidden_input_values,
+                        &expected_witness_ids,
+                        &opened_values,
                     )?;
                 }
             }
@@ -7092,6 +7321,35 @@ impl NativeTerminalCompiler {
     where
         F: Field + BasedVectorSpace<Goldilocks>,
     {
+        let (local_opening, expected_witness_ids) =
+            self.terminal_npo_local_opening_goldilocks(verifying_key, witness, npo_index)?;
+        let mut witness_openings = Vec::new();
+        for witness_id in expected_witness_ids {
+            let value = witness.traces.witness_trace.get_value(witness_id).ok_or(
+                NativeTerminalVerifyError::MissingWitness {
+                    witness_id: witness_id.0,
+                },
+            )?;
+            witness_openings
+                .push(witness_oracle.open_goldilocks_value(witness_id.0 as usize, value)?);
+        }
+
+        Ok(TerminalNpoOpening {
+            npo_index,
+            tip5_hidden_input_values: local_opening.tip5_hidden_input_values,
+            witness_openings,
+        })
+    }
+
+    fn terminal_npo_local_opening_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+        npo_index: usize,
+    ) -> Result<(TerminalNpoLocalOpening, Vec<WitnessId>), NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
         let row_ref = Self::terminal_npo_row(verifying_key, npo_index).ok_or(
             NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
                 query: 0,
@@ -7099,9 +7357,8 @@ impl NativeTerminalCompiler {
                 got: npo_index,
             },
         )?;
-        let mut witness_openings = Vec::new();
         let mut tip5_hidden_input_values = Vec::new();
-        match row_ref {
+        let expected_witness_ids = match row_ref {
             NativeTerminalNpoRowRef::Tip5 {
                 op_type,
                 row,
@@ -7137,34 +7394,20 @@ impl NativeTerminalCompiler {
                         });
                     }
                 }
-                for witness_id in Self::npo_callsite_witness_ids(callsite) {
-                    let value = witness.traces.witness_trace.get_value(witness_id).ok_or(
-                        NativeTerminalVerifyError::MissingWitness {
-                            witness_id: witness_id.0,
-                        },
-                    )?;
-                    witness_openings
-                        .push(witness_oracle.open_goldilocks_value(witness_id.0 as usize, value)?);
-                }
+                Self::npo_callsite_witness_ids(callsite)
             }
             NativeTerminalNpoRowRef::Recompose { callsite, .. } => {
-                for witness_id in Self::npo_callsite_witness_ids(callsite) {
-                    let value = witness.traces.witness_trace.get_value(witness_id).ok_or(
-                        NativeTerminalVerifyError::MissingWitness {
-                            witness_id: witness_id.0,
-                        },
-                    )?;
-                    witness_openings
-                        .push(witness_oracle.open_goldilocks_value(witness_id.0 as usize, value)?);
-                }
+                Self::npo_callsite_witness_ids(callsite)
             }
-        }
+        };
 
-        Ok(TerminalNpoOpening {
-            npo_index,
-            tip5_hidden_input_values,
-            witness_openings,
-        })
+        Ok((
+            TerminalNpoLocalOpening {
+                npo_index,
+                tip5_hidden_input_values,
+            },
+            expected_witness_ids,
+        ))
     }
 
     fn verify_npo_witness_openings<F>(
@@ -7206,6 +7449,34 @@ impl NativeTerminalCompiler {
             values.push(Self::field_from_goldilocks_basis_u64::<F>(
                 &opening.value_basis,
             )?);
+        }
+        Ok(values)
+    }
+
+    fn verify_npo_witness_values<F>(
+        npo_index: usize,
+        expected_witness_ids: &[WitnessId],
+        opened_witness_values: &[(usize, F)],
+    ) -> Result<Vec<F>, NativeTerminalVerifyError>
+    where
+        F: Copy,
+    {
+        let mut values = Vec::with_capacity(expected_witness_ids.len());
+        for (opening_idx, expected_witness) in expected_witness_ids.iter().copied().enumerate() {
+            let index = expected_witness.0 as usize;
+            let Ok(position) =
+                opened_witness_values.binary_search_by_key(&index, |(index, _)| *index)
+            else {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoOpeningWitnessMismatch {
+                        npo_index,
+                        opening: opening_idx,
+                        expected: expected_witness.0,
+                        got: index,
+                    },
+                );
+            };
+            values.push(opened_witness_values[position].1);
         }
         Ok(values)
     }
@@ -7349,6 +7620,40 @@ impl NativeTerminalCompiler {
             witness_commitment,
             &opening.witness_openings,
         )?;
+        self.verify_sampled_tip5_npo_row_values::<F>(
+            npo_index,
+            row,
+            callsite,
+            &opening.tip5_hidden_input_values,
+            &expected_witness_ids,
+            &opened_values,
+        )
+    }
+
+    fn verify_sampled_tip5_npo_row_values<F>(
+        &self,
+        npo_index: usize,
+        row: usize,
+        callsite: &NativeTerminalNpoCallsite,
+        tip5_hidden_input_values: &[TerminalTip5HiddenInputValue],
+        expected_witness_ids: &[WitnessId],
+        opened_values: &[F],
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let hidden_input_count = callsite
+            .inputs
+            .iter()
+            .filter(|input| input.is_none())
+            .count();
+        if tip5_hidden_input_values.len() != hidden_input_count {
+            return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
+                npo_index,
+                expected: hidden_input_count,
+                got: tip5_hidden_input_values.len(),
+            });
+        }
         let opened_value = |wanted: WitnessId| {
             expected_witness_ids
                 .iter()
@@ -7377,7 +7682,7 @@ impl NativeTerminalCompiler {
         }
 
         let mut seen_hidden = [false; 16];
-        for hidden in &opening.tip5_hidden_input_values {
+        for hidden in tip5_hidden_input_values {
             if hidden.limb >= 16 {
                 return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
                     npo_index,
@@ -7472,6 +7777,49 @@ impl NativeTerminalCompiler {
             witness_commitment,
             &opening.witness_openings,
         )?;
+        self.verify_sampled_recompose_npo_row_values::<F>(
+            npo_index,
+            op_type,
+            row,
+            callsite,
+            &opening.tip5_hidden_input_values,
+            &expected_witness_ids,
+            &opened_values,
+        )
+    }
+
+    fn verify_sampled_recompose_npo_row_values<F>(
+        &self,
+        npo_index: usize,
+        op_type: &str,
+        row: usize,
+        callsite: &NativeTerminalNpoCallsite,
+        tip5_hidden_input_values: &[TerminalTip5HiddenInputValue],
+        expected_witness_ids: &[WitnessId],
+        opened_values: &[F],
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        if !tip5_hidden_input_values.is_empty() {
+            return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
+                npo_index,
+                expected: 0,
+                got: tip5_hidden_input_values.len(),
+            });
+        }
+
+        let expected_kind = if op_type == NpoTypeId::recompose().as_str() {
+            RecomposeTraceKind::Standard
+        } else if op_type == NpoTypeId::recompose_with_coeff_lookups().as_str() {
+            RecomposeTraceKind::WithCoeffLookups
+        } else {
+            return Err(NativeTerminalVerifyError::MissingNonPrimitiveTrace {
+                op_type: op_type.into(),
+            });
+        };
+        let _ = expected_kind;
+
         let opened_value = |wanted: WitnessId| {
             expected_witness_ids
                 .iter()
@@ -8893,6 +9241,67 @@ impl NativeTerminalCompiler {
         sponge.absorb_digest(&left.0);
         sponge.absorb_digest(&right.0);
         TerminalCommitmentDigest(sponge.finalize())
+    }
+
+    fn terminal_oracle_multi_root_goldilocks<I>(
+        label: &str,
+        values_len: usize,
+        openings: &[TerminalOracleMultiValueOpening],
+        level: usize,
+        start: usize,
+        frontier: &mut I,
+    ) -> Result<TerminalCommitmentDigest, NativeTerminalVerifyError>
+    where
+        I: Iterator<Item = TerminalCommitmentDigest>,
+    {
+        let size = 1usize << level;
+        if !openings
+            .iter()
+            .any(|opening| opening.index >= start && opening.index < start + size)
+        {
+            return frontier.next().ok_or(
+                NativeTerminalVerifyError::TerminalOracleOpeningPathLengthMismatch {
+                    expected: 1,
+                    got: 0,
+                },
+            );
+        }
+        if level == 0 {
+            let opening = openings
+                .iter()
+                .find(|opening| opening.index == start)
+                .ok_or(
+                    NativeTerminalVerifyError::TerminalOracleOpeningIndexOutOfBounds {
+                        index: start,
+                        values_len,
+                    },
+                )?;
+            return Ok(Self::terminal_oracle_leaf_digest_from_basis(
+                label,
+                values_len,
+                start,
+                &opening.value_basis,
+            ));
+        }
+
+        let half = size / 2;
+        let left = Self::terminal_oracle_multi_root_goldilocks(
+            label,
+            values_len,
+            openings,
+            level - 1,
+            start,
+            frontier,
+        )?;
+        let right = Self::terminal_oracle_multi_root_goldilocks(
+            label,
+            values_len,
+            openings,
+            level - 1,
+            start + half,
+            frontier,
+        )?;
+        Ok(Self::terminal_oracle_node_digest(label, left, right))
     }
 
     fn terminal_oracle_prefix_root_goldilocks<F, I>(
@@ -12972,10 +13381,7 @@ mod tests {
             standalone_npo_validity_components(&compiler, &vk, &public_inputs, &witness);
 
         let mut missing_witness_opening = consistency_proof.clone();
-        missing_witness_opening.openings[0]
-            .npo_opening
-            .witness_openings
-            .pop();
+        missing_witness_opening.witness_multi_opening.openings.pop();
         let err = compiler
             .verify_terminal_npo_validity_consistency_goldilocks::<Goldilocks>(
                 &vk,
@@ -12989,12 +13395,13 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            NativeTerminalVerifyError::TerminalNpoOpeningCountMismatch { .. }
+            NativeTerminalVerifyError::TerminalOracleOpeningPathLengthMismatch { .. }
+                | NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
+                | NativeTerminalVerifyError::TerminalOracleQueryLengthMismatch { .. }
         ));
 
         let mut bad_witness_value = consistency_proof.clone();
-        let value =
-            &mut bad_witness_value.openings[0].npo_opening.witness_openings[0].value_basis[0];
+        let value = &mut bad_witness_value.witness_multi_opening.openings[0].value_basis[0];
         *value = if *value == 0 { 1 } else { 0 };
         let err = compiler
             .verify_terminal_npo_validity_consistency_goldilocks::<Goldilocks>(
@@ -13234,17 +13641,18 @@ mod tests {
                 &fold_proof.fold_commitments,
             )
             .expect("one-row NPO validity plan must derive");
-        let openings = plan
-            .indices
-            .iter()
-            .map(|npo_index| TerminalNpoValidityConsistencyOpening {
-                npo_index: *npo_index,
-                npo_opening: compiler
-                    .prove_terminal_npo_opening_goldilocks(&vk, &witness_tree, &witness, *npo_index)
-                    .expect("honest NPO row must open"),
-            })
-            .collect();
-        let consistency_proof = TerminalNpoValidityConsistencyProof { openings };
+        assert_eq!(plan.indices.len(), 15);
+        let consistency_proof = compiler
+            .prove_terminal_npo_validity_consistency_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &witness_tree,
+                &bad_validity_tree,
+                &fold_proof,
+                &witness,
+            )
+            .expect("honest NPO consistency proof must build");
 
         let err = compiler
             .verify_terminal_npo_validity_consistency_goldilocks::<Goldilocks>(

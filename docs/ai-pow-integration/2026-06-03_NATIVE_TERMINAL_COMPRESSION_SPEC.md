@@ -107,6 +107,11 @@ for this route.
   `TerminalOracleOpening`: the first backend oracle commitment layer. It commits
   to terminal field-value vectors with 5-round Tip5 Merkle roots and verifies
   authenticated single-value openings against those roots.
+- `TerminalOracleMultiProof`: the sparse multi-opening form for terminal
+  oracle values. It requires sorted unique leaves, verifies a shared frontier
+  back to the committed 5-round Tip5 Merkle root, and is now used by production
+  NPO validity consistency so sampled rows do not repeat the same witness-path
+  siblings.
 - `TerminalQueryPlan`: verifier-derived query indices for a committed terminal
   oracle. Query positions are sampled from the bound terminal prelude and oracle
   root; they are not accepted from serialized proof-body data. When the queried
@@ -611,25 +616,25 @@ Tip5-L0 verifier circuit:
 | component | bytes |
 |---|---:|
 | primitive R1CS row-product proof | 71,958 |
-| NPO validity consistency proof | 32,480 |
+| NPO validity consistency proof | 5,863 |
 | NPO validity fold proof | 43,392 |
-| compact production proof body | 148,284 |
-| compact production certificate | 148,506 |
+| compact production proof body | 121,667 |
+| compact production certificate | 121,887 |
 
-The debug-profile measurement is `prove=6.309 s, verify=3.454 s`. This removes
-the witness-basis serialization from the production proof body and replaces the
-assignment public-prefix openings with a compact prefix frontier. The
-row-product component fell from about 89.6 KiB to about 70.3 KiB in the
-standalone measurement; the public-prefix authentication inside it fell from
-20,131 bytes to 478 bytes. The total production certificate is still above the
-~100 KiB target because sampled NPO validity consistency/fold material remains
-large and varies with the transcript-derived NPO rows. In this run, NPO
-consistency serialized 52 sampled witness openings into 31,190 bytes, and the
-NPO validity fold serialized 42,706 bytes of fold openings. The remaining
-production-backend task is to replace the sampled NPO validity layer with a
-polynomialized Tip5/recompose relation and to compress or aggregate the
-remaining fold-opening material without dropping below the 60-bit pure-query
-requirement.
+The debug-profile measurement is `prove=6.289 s, verify=3.343 s`. This removes
+the witness-basis serialization from the production proof body, replaces the
+assignment public-prefix openings with a compact prefix frontier, and replaces
+the repeated NPO-consistency witness Merkle paths with one shared sparse
+multiproof. The row-product component fell from about 89.6 KiB to about
+70.3 KiB in the standalone measurement; the public-prefix authentication inside
+it fell from 20,131 bytes to 477 bytes. The NPO consistency component fell from
+32,480 bytes to 5,863 bytes; the 52 sampled witness values now serialize as one
+4,573-byte multiproof instead of 31,190 bytes of independent paths. The total
+production certificate is still above the ~100 KiB target because the NPO
+validity fold serialized 42,706 bytes of fold openings and the primitive
+assignment evaluation still serializes 69,190 bytes of assignment-fold openings.
+The remaining production-backend task is to replace or aggregate those fold
+opening layers without dropping below the 60-bit pure-query requirement.
 
 The optimized sparse-R1CS matrix-vector sumcheck component measures separately
 on the same real Tip5-L0 verifier circuit. The completed primitive row-product

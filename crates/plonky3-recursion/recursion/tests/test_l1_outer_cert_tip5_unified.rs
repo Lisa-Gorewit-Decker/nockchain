@@ -496,30 +496,18 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
                 .len()
         })
         .unwrap_or(0);
-    let production_npo_witness_opening_count = production_proof
+    let production_npo_witness_multi_opening_count = production_proof
         .npo_validity_consistency_proof
         .as_ref()
-        .map(|proof| {
-            proof
-                .openings
-                .iter()
-                .map(|opening| opening.npo_opening.witness_openings.len())
-                .sum::<usize>()
-        })
+        .map(|proof| proof.witness_multi_opening.openings.len())
         .unwrap_or(0);
-    let production_npo_witness_openings_size = production_proof
+    let production_npo_witness_multi_opening_size = production_proof
         .npo_validity_consistency_proof
         .as_ref()
         .map(|proof| {
-            proof
-                .openings
-                .iter()
-                .map(|opening| {
-                    postcard::to_allocvec(&opening.npo_opening.witness_openings)
-                        .expect("terminal production NPO witness openings must serialize")
-                        .len()
-                })
-                .sum::<usize>()
+            postcard::to_allocvec(&proof.witness_multi_opening)
+                .expect("terminal production NPO witness multiproof must serialize")
+                .len()
         })
         .unwrap_or(0);
     let production_npo_hidden_inputs_size = production_proof
@@ -677,9 +665,8 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
             .npo_validity_consistency_proof
             .as_mut()
             .expect("real production proof must carry NPO consistency")
-            .openings[0]
-            .npo_opening
-            .witness_openings
+            .witness_multi_opening
+            .openings
             .pop();
         let err = compiler
             .verify_terminal_production_goldilocks(
@@ -690,7 +677,9 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
             .unwrap_err();
         assert!(matches!(
             err,
-            p3_recursion::terminal::NativeTerminalVerifyError::TerminalNpoOpeningCountMismatch { .. }
+            p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleOpeningPathLengthMismatch { .. }
+                | p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
+                | p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleQueryLengthMismatch { .. }
         ));
     }
 
@@ -725,10 +714,10 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
         production_r1cs_size, production_npo_consistency_size, production_npo_fold_size,
     );
     eprintln!(
-        "terminal production NPO breakdown: consistency_openings={} witness_openings={} witness_opening_count={} hidden_inputs={} fold_commitments={} fold_openings={}",
+        "terminal production NPO breakdown: consistency_openings={} witness_multiproof={} witness_multi_opening_count={} hidden_inputs={} fold_commitments={} fold_openings={}",
         production_npo_consistency_openings_size,
-        production_npo_witness_openings_size,
-        production_npo_witness_opening_count,
+        production_npo_witness_multi_opening_size,
+        production_npo_witness_multi_opening_count,
         production_npo_hidden_inputs_size,
         production_npo_fold_commitments_size,
         production_npo_fold_openings_size,
