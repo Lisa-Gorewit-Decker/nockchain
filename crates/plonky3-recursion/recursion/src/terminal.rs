@@ -338,7 +338,9 @@ pub struct TerminalNpoProof {
 /// Opened NPO row and validity-residual value for one sampled folded NPO row.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalNpoValidityConsistencyOpening {
+    pub validity_index: usize,
     pub npo_index: usize,
+    pub component_offset: usize,
     pub npo_opening: TerminalNpoLocalOpening,
 }
 
@@ -376,6 +378,7 @@ pub enum TerminalCombinedValidityConsistencyOpening {
     Npo {
         validity_index: usize,
         npo_index: usize,
+        component_offset: usize,
         npo_opening: TerminalNpoOpening,
     },
 }
@@ -3975,7 +3978,8 @@ impl NativeTerminalCompiler {
             .copied()
             .enumerate()
             .collect::<Vec<_>>();
-        let mut values = Vec::with_capacity(Self::terminal_npo_domain_len(verifying_key));
+        let mut values =
+            Vec::with_capacity(Self::terminal_npo_validity_domain_len::<F>(verifying_key));
         for npo_index in 0..Self::terminal_npo_domain_len(verifying_key) {
             let evaluation = self.evaluate_terminal_npo_row_from_witness_goldilocks(
                 verifying_key,
@@ -3983,8 +3987,7 @@ impl NativeTerminalCompiler {
                 &indexed_witness_values,
                 npo_index,
             )?;
-            values.push(Self::terminal_npo_row_evaluation_value::<F>(
-                npo_index,
+            values.extend(Self::terminal_npo_row_evaluation_component_values::<F>(
                 &evaluation,
             ));
         }
@@ -4615,9 +4618,15 @@ impl NativeTerminalCompiler {
             for round in 0..fold_commitments.len() {
                 let pair_index = (index / 2) * 2;
                 let next_index = index / 2;
-                Self::push_unique_usize(&mut expected_round_indices[round], pair_index);
+                NativeTerminalCompiler::push_unique_usize(
+                    &mut expected_round_indices[round],
+                    pair_index,
+                );
                 if pair_index + 1 < current_len {
-                    Self::push_unique_usize(&mut expected_round_indices[round], pair_index + 1);
+                    NativeTerminalCompiler::push_unique_usize(
+                        &mut expected_round_indices[round],
+                        pair_index + 1,
+                    );
                 }
                 index = next_index;
                 current_len = current_len.div_ceil(2);
@@ -4852,14 +4861,25 @@ impl NativeTerminalCompiler {
 
         let mut openings = Vec::with_capacity(plan.indices.len());
         let mut witness_ids = Vec::new();
-        for npo_index in &plan.indices {
+        for validity_index in &plan.indices {
+            let (npo_index, component_offset) =
+                Self::terminal_npo_validity_component_row::<F>(verifying_key, *validity_index)
+                    .ok_or(
+                        NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
+                            query: 0,
+                            expected: *validity_index,
+                            got: *validity_index,
+                        },
+                    )?;
             let (npo_opening, row_witness_ids) =
-                self.terminal_npo_local_opening_goldilocks(verifying_key, witness, *npo_index)?;
+                self.terminal_npo_local_opening_goldilocks(verifying_key, witness, npo_index)?;
             for witness_id in row_witness_ids {
                 Self::push_unique_witness(&mut witness_ids, witness_id);
             }
             openings.push(TerminalNpoValidityConsistencyOpening {
-                npo_index: *npo_index,
+                validity_index: *validity_index,
+                npo_index,
+                component_offset,
                 npo_opening,
             });
         }
@@ -5140,7 +5160,7 @@ impl NativeTerminalCompiler {
         Self::verify_terminal_oracle_commitment_identity(
             validity_commitment,
             Self::npo_validity_oracle_label(),
-            Self::terminal_npo_domain_len(verifying_key),
+            Self::terminal_npo_validity_domain_len::<F>(verifying_key),
         )?;
         let plan = self.verify_terminal_npo_validity_fold_goldilocks::<F>(
             verifying_key,
@@ -5165,12 +5185,21 @@ impl NativeTerminalCompiler {
             &proof.witness_multi_opening,
         )?;
         let mut expected_global_witness_ids = Vec::new();
-        for npo_index in &plan.indices {
-            let row_ref = Self::terminal_npo_row(verifying_key, *npo_index).ok_or(
-                NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+        for validity_index in &plan.indices {
+            let (npo_index, _) =
+                Self::terminal_npo_validity_component_row::<F>(verifying_key, *validity_index)
+                    .ok_or(
+                        NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
+                            query: 0,
+                            expected: *validity_index,
+                            got: *validity_index,
+                        },
+                    )?;
+            let row_ref = Self::terminal_npo_row(verifying_key, npo_index).ok_or(
+                NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
                     query: 0,
-                    expected: *npo_index,
-                    got: *npo_index,
+                    expected: *validity_index,
+                    got: *validity_index,
                 },
             )?;
             match row_ref {
@@ -5210,12 +5239,39 @@ impl NativeTerminalCompiler {
         for (query, (opening, expected_index)) in
             proof.openings.iter().zip(&plan.indices).enumerate()
         {
-            if opening.npo_index != *expected_index {
+            if opening.validity_index != *expected_index {
                 return Err(
                     NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
                         query,
                         expected: *expected_index,
+                        got: opening.validity_index,
+                    },
+                );
+            }
+            let (expected_npo_index, expected_component_offset) =
+                Self::terminal_npo_validity_component_row::<F>(verifying_key, *expected_index)
+                    .ok_or(
+                        NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
+                            query,
+                            expected: *expected_index,
+                            got: *expected_index,
+                        },
+                    )?;
+            if opening.npo_index != expected_npo_index {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
+                        query,
+                        expected: expected_npo_index,
                         got: opening.npo_index,
+                    },
+                );
+            }
+            if opening.component_offset != expected_component_offset {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
+                        query,
+                        expected: expected_component_offset,
+                        got: opening.component_offset,
                     },
                 );
             }
@@ -5230,25 +5286,25 @@ impl NativeTerminalCompiler {
                 },
             )?;
             let validity = Self::field_from_goldilocks_basis_u64::<F>(validity_basis)?;
-            if opening.npo_opening.npo_index != *expected_index {
+            if opening.npo_opening.npo_index != expected_npo_index {
                 return Err(NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
                     query,
-                    expected: *expected_index,
+                    expected: expected_npo_index,
                     got: opening.npo_opening.npo_index,
                 });
             }
-            let row_ref = Self::terminal_npo_row(verifying_key, *expected_index).ok_or(
+            let row_ref = Self::terminal_npo_row(verifying_key, expected_npo_index).ok_or(
                 NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
                     query,
-                    expected: *expected_index,
-                    got: *expected_index,
+                    expected: expected_npo_index,
+                    got: expected_npo_index,
                 },
             )?;
             match row_ref {
                 NativeTerminalNpoRowRef::Tip5 { row, callsite, .. } => {
                     let expected_witness_ids = Self::npo_callsite_witness_ids(callsite);
                     let opened_values = Self::verify_npo_witness_values(
-                        *expected_index,
+                        expected_npo_index,
                         &expected_witness_ids,
                         &witness_values,
                     )?;
@@ -5265,20 +5321,22 @@ impl NativeTerminalCompiler {
                         &expected_witness_ids,
                         &opened_values,
                     )?;
-                    let recomputed_validity =
-                        Self::terminal_npo_row_evaluation_value::<F>(*expected_index, &evaluation);
+                    let recomputed_validity = Self::terminal_npo_row_evaluation_component_value::<F>(
+                        &evaluation,
+                        expected_component_offset,
+                    )?;
                     if validity != recomputed_validity {
                         return Err(
                             NativeTerminalVerifyError::TerminalNpoValidityResidualMismatch {
                                 query,
-                                npo_index: *expected_index,
+                                npo_index: expected_npo_index,
                             },
                         );
                     }
                     if validity != F::ZERO {
                         return Err(NativeTerminalVerifyError::TerminalNpoValidityNonZero {
                             query,
-                            npo_index: *expected_index,
+                            npo_index: expected_npo_index,
                         });
                     }
                 }
@@ -5291,14 +5349,14 @@ impl NativeTerminalCompiler {
                         || !opening.npo_opening.tip5_hidden_input_values_le.is_empty()
                     {
                         return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
-                            npo_index: *expected_index,
+                            npo_index: expected_npo_index,
                             expected: 0,
                             got: opening.npo_opening.tip5_hidden_input_values_le.len(),
                         });
                     }
                     let expected_witness_ids = Self::npo_callsite_witness_ids(callsite);
                     let opened_values = Self::verify_npo_witness_values(
-                        *expected_index,
+                        expected_npo_index,
                         &expected_witness_ids,
                         &witness_values,
                     )?;
@@ -5311,20 +5369,22 @@ impl NativeTerminalCompiler {
                         &expected_witness_ids,
                         &opened_values,
                     )?;
-                    let recomputed_validity =
-                        Self::terminal_npo_row_evaluation_value::<F>(*expected_index, &evaluation);
+                    let recomputed_validity = Self::terminal_npo_row_evaluation_component_value::<F>(
+                        &evaluation,
+                        expected_component_offset,
+                    )?;
                     if validity != recomputed_validity {
                         return Err(
                             NativeTerminalVerifyError::TerminalNpoValidityResidualMismatch {
                                 query,
-                                npo_index: *expected_index,
+                                npo_index: expected_npo_index,
                             },
                         );
                     }
                     if validity != F::ZERO {
                         return Err(NativeTerminalVerifyError::TerminalNpoValidityNonZero {
                             query,
-                            npo_index: *expected_index,
+                            npo_index: expected_npo_index,
                         });
                     }
                 }
@@ -5381,7 +5441,18 @@ impl NativeTerminalCompiler {
                     witness_openings,
                 });
             } else {
-                let npo_index = *validity_index - quadratic_len;
+                let npo_validity_index = *validity_index - quadratic_len;
+                let (npo_index, component_offset) = Self::terminal_npo_validity_component_row::<F>(
+                    verifying_key,
+                    npo_validity_index,
+                )
+                .ok_or(
+                    NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
+                        query: 0,
+                        expected: npo_validity_index,
+                        got: npo_validity_index,
+                    },
+                )?;
                 let npo_opening = self.prove_terminal_npo_opening_goldilocks(
                     verifying_key,
                     witness_oracle,
@@ -5391,6 +5462,7 @@ impl NativeTerminalCompiler {
                 openings.push(TerminalCombinedValidityConsistencyOpening::Npo {
                     validity_index: *validity_index,
                     npo_index,
+                    component_offset,
                     npo_opening,
                 });
             }
@@ -5551,6 +5623,7 @@ impl NativeTerminalCompiler {
                 TerminalCombinedValidityConsistencyOpening::Npo {
                     validity_index,
                     npo_index,
+                    component_offset,
                     npo_opening,
                 } => {
                     if validity_index != expected_index {
@@ -5571,13 +5644,34 @@ impl NativeTerminalCompiler {
                             },
                         );
                     }
-                    let expected_npo_index = *validity_index - quadratic_len;
+                    let expected_npo_validity_index = *validity_index - quadratic_len;
+                    let (expected_npo_index, expected_component_offset) =
+                        Self::terminal_npo_validity_component_row::<F>(
+                            verifying_key,
+                            expected_npo_validity_index,
+                        )
+                        .ok_or(
+                            NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
+                                query,
+                                expected: expected_npo_validity_index,
+                                got: expected_npo_validity_index,
+                            },
+                        )?;
                     if *npo_index != expected_npo_index {
                         return Err(
                             NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
                                 query,
                                 expected: expected_npo_index,
                                 got: *npo_index,
+                            },
+                        );
+                    }
+                    if *component_offset != expected_component_offset {
+                        return Err(
+                            NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
+                                query,
+                                expected: expected_component_offset,
+                                got: *component_offset,
                             },
                         );
                     }
@@ -5612,10 +5706,11 @@ impl NativeTerminalCompiler {
                                 &expected_witness_ids,
                                 &opened_values,
                             )?;
-                            let recomputed_validity = Self::terminal_npo_row_evaluation_value::<F>(
-                                *npo_index,
-                                &evaluation,
-                            );
+                            let recomputed_validity =
+                                Self::terminal_npo_row_evaluation_component_value::<F>(
+                                    &evaluation,
+                                    expected_component_offset,
+                                )?;
                             if opened_validity != recomputed_validity {
                                 return Err(
                                     NativeTerminalVerifyError::TerminalNpoValidityResidualMismatch {
@@ -5654,10 +5749,11 @@ impl NativeTerminalCompiler {
                                 &expected_witness_ids,
                                 &opened_values,
                             )?;
-                            let recomputed_validity = Self::terminal_npo_row_evaluation_value::<F>(
-                                *npo_index,
-                                &evaluation,
-                            );
+                            let recomputed_validity =
+                                Self::terminal_npo_row_evaluation_component_value::<F>(
+                                    &evaluation,
+                                    expected_component_offset,
+                                )?;
                             if opened_validity != recomputed_validity {
                                 return Err(
                                     NativeTerminalVerifyError::TerminalNpoValidityResidualMismatch {
@@ -7743,6 +7839,69 @@ impl NativeTerminalCompiler {
             .sum()
     }
 
+    fn terminal_npo_validity_domain_len<F>(verifying_key: &NativeTerminalVerifyingKey<F>) -> usize
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        (0..Self::terminal_npo_domain_len(verifying_key))
+            .map(|npo_index| {
+                Self::terminal_npo_row(verifying_key, npo_index)
+                    .map(|row| Self::terminal_npo_validity_component_count::<F>(&row))
+                    .unwrap_or(0)
+            })
+            .sum()
+    }
+
+    fn terminal_npo_validity_component_count<F>(row: &NativeTerminalNpoRowRef<'_>) -> usize
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let dimension = <F as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        match row {
+            NativeTerminalNpoRowRef::Tip5 { callsite, .. } => {
+                let input_components = callsite
+                    .inputs
+                    .iter()
+                    .filter(|input| input.is_some())
+                    .count();
+                let output_components = callsite
+                    .outputs
+                    .iter()
+                    .filter(|output| output.is_some())
+                    .count();
+                (input_components + output_components) * dimension
+            }
+            NativeTerminalNpoRowRef::Recompose { callsite, .. } => {
+                let input_components = callsite.inputs.len() * dimension;
+                let output_components = if callsite.outputs.first().copied().flatten().is_some() {
+                    dimension
+                } else {
+                    0
+                };
+                input_components + output_components
+            }
+        }
+    }
+
+    fn terminal_npo_validity_component_row<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        validity_index: usize,
+    ) -> Option<(usize, usize)>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let mut base = 0usize;
+        for npo_index in 0..Self::terminal_npo_domain_len(verifying_key) {
+            let row = Self::terminal_npo_row(verifying_key, npo_index)?;
+            let count = Self::terminal_npo_validity_component_count::<F>(&row);
+            if validity_index < base + count {
+                return Some((npo_index, validity_index - base));
+            }
+            base += count;
+        }
+        None
+    }
+
     fn terminal_npo_row<F>(
         verifying_key: &NativeTerminalVerifyingKey<F>,
         npo_index: usize,
@@ -8488,7 +8647,7 @@ impl NativeTerminalCompiler {
         commitment: &TerminalOracleCommitment,
     ) -> Result<(), NativeTerminalVerifyError>
     where
-        F: Field,
+        F: Field + BasedVectorSpace<Goldilocks>,
     {
         let relation = verifying_key.primitive_quadratic_relation()?;
         Self::verify_terminal_oracle_commitment_identity(
@@ -8503,11 +8662,11 @@ impl NativeTerminalCompiler {
         commitment: &TerminalOracleCommitment,
     ) -> Result<(), NativeTerminalVerifyError>
     where
-        F: Field,
+        F: Field + BasedVectorSpace<Goldilocks>,
     {
         let relation = verifying_key.primitive_quadratic_relation()?;
         let expected_len =
-            relation.constraints.len() + Self::terminal_npo_domain_len(verifying_key);
+            relation.constraints.len() + Self::terminal_npo_validity_domain_len::<F>(verifying_key);
         Self::verify_terminal_oracle_commitment_identity(
             commitment,
             Self::combined_validity_oracle_label(),
@@ -8588,71 +8747,37 @@ impl NativeTerminalCompiler {
         }
     }
 
-    fn terminal_npo_row_evaluation_value<F>(
-        npo_index: usize,
+    fn terminal_npo_row_evaluation_component_values<F>(
         evaluation: &TerminalNpoRowEvaluation,
-    ) -> F
+    ) -> Vec<F>
     where
         F: Field + From<Goldilocks>,
     {
-        let mut acc = F::ZERO;
-        for residual in &evaluation.residuals {
-            for (basis_index, coeff) in residual.basis.iter().copied().enumerate() {
-                if coeff == Goldilocks::ZERO {
-                    continue;
-                }
-                let alpha = Self::terminal_npo_residual_composition_coeff(
-                    npo_index,
-                    evaluation.row_kind,
-                    residual.kind,
-                    residual.limb,
-                    basis_index,
-                );
-                acc += F::from(alpha) * F::from(coeff);
-            }
-        }
-        acc
+        evaluation
+            .residuals
+            .iter()
+            .flat_map(|residual| residual.basis.iter().copied())
+            .map(F::from)
+            .collect()
     }
 
-    fn terminal_npo_row_kind_code(kind: TerminalNpoRowKind) -> u64 {
-        match kind {
-            TerminalNpoRowKind::Tip5Goldilocks => 1,
-            TerminalNpoRowKind::Recompose => 2,
-            TerminalNpoRowKind::RecomposeWithCoeffLookups => 3,
-        }
-    }
-
-    fn terminal_npo_residual_kind_code(kind: TerminalNpoResidualKind) -> u64 {
-        match kind {
-            TerminalNpoResidualKind::Tip5Input => 1,
-            TerminalNpoResidualKind::Tip5Output => 2,
-            TerminalNpoResidualKind::Tip5ChainInput => 3,
-            TerminalNpoResidualKind::Tip5MmcsBit => 4,
-            TerminalNpoResidualKind::RecomposeInput => 5,
-            TerminalNpoResidualKind::RecomposeOutput => 6,
-        }
-    }
-
-    fn terminal_npo_residual_composition_coeff(
-        npo_index: usize,
-        row_kind: TerminalNpoRowKind,
-        residual_kind: TerminalNpoResidualKind,
-        limb: usize,
-        basis_index: usize,
-    ) -> Goldilocks {
-        let mut sponge = TerminalDigestSponge::new();
-        sponge.absorb_str("nock-terminal-npo-row-residual-composition-v1");
-        sponge.absorb_u64(npo_index as u64);
-        sponge.absorb_u64(Self::terminal_npo_row_kind_code(row_kind));
-        sponge.absorb_u64(Self::terminal_npo_residual_kind_code(residual_kind));
-        sponge.absorb_u64(limb as u64);
-        sponge.absorb_u64(basis_index as u64);
-        let coeff = Goldilocks::from_u64(sponge.finalize()[0]);
-        if coeff == Goldilocks::ZERO {
-            Goldilocks::ONE
-        } else {
-            coeff
-        }
+    fn terminal_npo_row_evaluation_component_value<F>(
+        evaluation: &TerminalNpoRowEvaluation,
+        component_offset: usize,
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: Field + From<Goldilocks>,
+    {
+        Self::terminal_npo_row_evaluation_component_values::<F>(evaluation)
+            .get(component_offset)
+            .copied()
+            .ok_or(
+                NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch {
+                    query: 0,
+                    expected: component_offset,
+                    got: component_offset,
+                },
+            )
     }
 
     fn terminal_goldilocks_residual(
@@ -8688,9 +8813,7 @@ impl NativeTerminalCompiler {
         evaluation: &mut TerminalNpoRowEvaluation,
         residual: TerminalNpoRowResidual,
     ) {
-        if !residual.is_zero() {
-            evaluation.residuals.push(residual);
-        }
+        evaluation.residuals.push(residual);
     }
 
     fn reject_nonzero_terminal_npo_residual(
@@ -9341,9 +9464,9 @@ impl NativeTerminalCompiler {
         fold_commitments: &[TerminalOracleCommitment],
     ) -> Result<(), NativeTerminalVerifyError>
     where
-        F: Field,
+        F: Field + BasedVectorSpace<Goldilocks>,
     {
-        let domain_len = Self::terminal_npo_domain_len(verifying_key);
+        let domain_len = Self::terminal_npo_validity_domain_len::<F>(verifying_key);
         if validity_commitment.values_len != domain_len {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoValidityDomainLengthMismatch {
@@ -9412,7 +9535,7 @@ impl NativeTerminalCompiler {
         fold_commitments: &[TerminalOracleCommitment],
     ) -> Result<(), NativeTerminalVerifyError>
     where
-        F: Field,
+        F: Field + BasedVectorSpace<Goldilocks>,
     {
         Self::verify_terminal_combined_validity_commitment_identity::<F>(
             verifying_key,
@@ -14558,6 +14681,7 @@ mod tests {
             TerminalCombinedValidityConsistencyOpening::Npo {
                 validity_index,
                 npo_index: 0,
+                component_offset: 0,
                 npo_opening: TerminalNpoOpening {
                     npo_index: 0,
                     tip5_hidden_input_values: Vec::new(),
@@ -14651,6 +14775,7 @@ mod tests {
         let TerminalCombinedValidityConsistencyOpening::Npo {
             validity_index,
             npo_index,
+            component_offset,
             npo_opening,
         } = proof.combined_validity_consistency_proof.openings[npo_query].clone()
         else {
@@ -14663,6 +14788,7 @@ mod tests {
             .openings[npo_query] = TerminalCombinedValidityConsistencyOpening::Npo {
             validity_index: validity_index + 1,
             npo_index,
+            component_offset,
             npo_opening: npo_opening.clone(),
         };
         let err = compiler
@@ -14678,13 +14804,20 @@ mod tests {
             TerminalCombinedValidityConsistencyOpening::Npo {
                 validity_index,
                 npo_index: npo_index + 1,
+                component_offset,
                 npo_opening,
             };
         let err = compiler
             .verify_terminal_local_queries_goldilocks(&vk, &public_inputs, &wrong_npo_index)
             .unwrap_err();
-        let expected_npo_index = validity_index - relation.constraints.len();
+        let (expected_npo_index, expected_component_offset) =
+            NativeTerminalCompiler::terminal_npo_validity_component_row::<Goldilocks>(
+                &vk,
+                validity_index - relation.constraints.len(),
+            )
+            .expect("combined NPO validity index must map to a component");
         assert_eq!(expected_npo_index, npo_index);
+        assert_eq!(expected_component_offset, component_offset);
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalNpoValidityQueryIndexMismatch { .. }
@@ -15124,12 +15257,15 @@ mod tests {
         let (prelude, witness_commitment, validity_commitment, fold_proof, consistency_proof) =
             standalone_npo_validity_components(&compiler, &vk, &public_inputs, &witness);
 
-        assert_eq!(validity_commitment.values_len, 2);
+        assert_eq!(
+            validity_commitment.values_len,
+            NativeTerminalCompiler::terminal_npo_validity_domain_len::<Goldilocks>(&vk)
+        );
         assert_eq!(
             fold_proof
                 .fold_commitments
                 .last()
-                .expect("two-row NPO validity oracle must fold once")
+                .expect("NPO validity oracle must fold")
                 .values_len,
             1
         );
@@ -15279,9 +15415,8 @@ mod tests {
             standalone_npo_validity_components(&compiler, &vk, &public_inputs, &witness);
         let right = fold_proof.round_openings[0]
             .openings
-            .iter_mut()
-            .find(|opening| opening.index == 1)
-            .expect("two-row validity fold must open the right leaf");
+            .first_mut()
+            .expect("validity fold must open at least one leaf");
         right.value_basis[0] = right.value_basis[0].wrapping_add(1);
 
         let err = compiler
@@ -15405,7 +15540,12 @@ mod tests {
             TerminalOracleMerkleTree::commit_goldilocks_values("witness", &witness_values)
                 .expect("witness oracle must commit");
         let witness_commitment = witness_tree.commitment();
-        let bad_validity = vec![Goldilocks::ONE];
+        let mut bad_validity =
+            vec![
+                Goldilocks::ZERO;
+                NativeTerminalCompiler::terminal_npo_validity_domain_len::<Goldilocks>(&vk)
+            ];
+        bad_validity[0] = Goldilocks::ONE;
         let bad_validity_tree = TerminalOracleMerkleTree::commit_goldilocks_values(
             NativeTerminalCompiler::npo_validity_oracle_label(),
             &bad_validity,
@@ -15420,32 +15560,19 @@ mod tests {
                 vec![witness_commitment.root, bad_validity_commitment.root],
             )
             .expect("prelude must bind bad NPO validity commitment");
-        let fold_proof = TerminalNpoValidityFoldProof {
-            fold_commitments: Vec::new(),
-            final_value_basis: vec![1],
-            round_openings: Vec::new(),
-            openings: compiler
-                .derive_terminal_npo_validity_fold_query_plan(
-                    &prelude,
-                    &bad_validity_commitment,
-                    &[],
-                )
-                .expect("one-row NPO validity plan must derive")
-                .indices
-                .iter()
-                .map(|index| TerminalResidualFoldQueryOpening {
-                    initial_index: *index,
-                    rounds: Vec::new(),
-                })
-                .collect(),
-        };
+        let fold_proof = npo_validity_fold_proof_for_values(
+            &compiler,
+            &prelude,
+            &bad_validity_commitment,
+            &bad_validity,
+        );
         let plan = compiler
             .derive_terminal_npo_validity_fold_query_plan(
                 &prelude,
                 &bad_validity_commitment,
                 &fold_proof.fold_commitments,
             )
-            .expect("one-row NPO validity plan must derive");
+            .expect("NPO validity plan must derive");
         assert_eq!(plan.indices.len(), 15);
         let consistency_proof = compiler
             .prove_terminal_npo_validity_consistency_goldilocks(
@@ -15481,7 +15608,12 @@ mod tests {
         let (circuit, public_inputs) = build_tip5_test_circuit();
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
         let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
-        let bad_validity = vec![Goldilocks::ONE];
+        let mut bad_validity =
+            vec![
+                Goldilocks::ZERO;
+                NativeTerminalCompiler::terminal_npo_validity_domain_len::<Goldilocks>(&vk)
+            ];
+        bad_validity[0] = Goldilocks::ONE;
         let bad_validity_tree = TerminalOracleMerkleTree::commit_goldilocks_values(
             NativeTerminalCompiler::npo_validity_oracle_label(),
             &bad_validity,
@@ -15496,22 +15628,12 @@ mod tests {
                 vec![bad_validity_commitment.root],
             )
             .expect("prelude must bind bad NPO validity commitment");
-        let plan = compiler
-            .derive_terminal_npo_validity_fold_query_plan(&prelude, &bad_validity_commitment, &[])
-            .expect("one-row NPO validity plan must derive");
-        let proof = TerminalNpoValidityFoldProof {
-            fold_commitments: Vec::new(),
-            final_value_basis: vec![1],
-            round_openings: Vec::new(),
-            openings: plan
-                .indices
-                .iter()
-                .map(|index| TerminalResidualFoldQueryOpening {
-                    initial_index: *index,
-                    rounds: Vec::new(),
-                })
-                .collect(),
-        };
+        let proof = npo_validity_fold_proof_for_values(
+            &compiler,
+            &prelude,
+            &bad_validity_commitment,
+            &bad_validity,
+        );
 
         let err = compiler
             .verify_terminal_npo_validity_fold_goldilocks::<Goldilocks>(
@@ -15724,20 +15846,36 @@ mod tests {
         let honest_values = compiler
             .terminal_npo_validity_values_goldilocks(&vk, &witness)
             .expect("honest NPO validity values must compute");
-        assert_eq!(honest_values, vec![Goldilocks::ZERO]);
+        assert_eq!(
+            honest_values,
+            vec![
+                Goldilocks::ZERO;
+                NativeTerminalCompiler::terminal_npo_validity_domain_len::<Goldilocks>(&vk)
+            ]
+        );
 
-        let output_wid = vk
+        let output_wids = vk
             .constraints
             .iter()
             .find_map(|constraint| match constraint {
-                NativeTerminalConstraint::Tip5Goldilocks { callsites, .. } => {
-                    callsites.first()?.outputs.first().copied().flatten()
-                }
+                NativeTerminalConstraint::Tip5Goldilocks { callsites, .. } => Some(
+                    callsites
+                        .first()?
+                        .outputs
+                        .iter()
+                        .copied()
+                        .flatten()
+                        .take(2)
+                        .collect::<Vec<_>>(),
+                ),
                 _ => None,
             })
-            .expect("Tip5 output witness must be bound");
+            .expect("Tip5 output witnesses must be bound");
+        assert_eq!(output_wids.len(), 2);
         let mut bad_witness_values = witness_values(&witness);
-        bad_witness_values[output_wid.0 as usize] += Goldilocks::ONE;
+        for output_wid in &output_wids {
+            bad_witness_values[output_wid.0 as usize] += Goldilocks::ONE;
+        }
         let mut bad_traces = witness.traces.clone();
         bad_traces.witness_trace = WitnessTrace::new(bad_witness_values);
         let bad_witness = TerminalWitness {
@@ -15749,8 +15887,18 @@ mod tests {
         let bad_values = compiler
             .terminal_npo_validity_values_goldilocks(&vk, &bad_witness)
             .expect("tampered NPO validity values must compute");
-        assert_eq!(bad_values.len(), 1);
-        assert_ne!(bad_values[0], Goldilocks::ZERO);
+        assert_eq!(
+            bad_values.len(),
+            NativeTerminalCompiler::terminal_npo_validity_domain_len::<Goldilocks>(&vk)
+        );
+        assert_eq!(
+            bad_values
+                .iter()
+                .filter(|value| **value != Goldilocks::ZERO)
+                .count(),
+            2,
+            "independent residual components must not be row-compressed"
+        );
     }
 
     #[test]
@@ -15785,9 +15933,14 @@ mod tests {
             private_inputs: witness.private_inputs.clone(),
             traces: bad_traces,
         };
+        let stale_validity =
+            vec![
+                Goldilocks::ZERO;
+                NativeTerminalCompiler::terminal_npo_validity_domain_len::<Goldilocks>(&vk)
+            ];
         let stale_validity_tree = TerminalOracleMerkleTree::commit_goldilocks_values(
             NativeTerminalCompiler::npo_validity_oracle_label(),
-            &[Goldilocks::ZERO],
+            &stale_validity,
         )
         .expect("stale zero NPO validity oracle must commit");
         let stale_validity_commitment = stale_validity_tree.commitment();
@@ -15799,22 +15952,12 @@ mod tests {
                 vec![witness_commitment.root, stale_validity_commitment.root],
             )
             .expect("prelude must bind stale zero validity oracle");
-        let fold_plan = compiler
-            .derive_terminal_npo_validity_fold_query_plan(&prelude, &stale_validity_commitment, &[])
-            .expect("one-row NPO validity fold plan must derive");
-        let fold_proof = TerminalNpoValidityFoldProof {
-            fold_commitments: Vec::new(),
-            final_value_basis: vec![0],
-            round_openings: Vec::new(),
-            openings: fold_plan
-                .indices
-                .iter()
-                .map(|index| TerminalResidualFoldQueryOpening {
-                    initial_index: *index,
-                    rounds: Vec::new(),
-                })
-                .collect(),
-        };
+        let fold_proof = npo_validity_fold_proof_for_values(
+            &compiler,
+            &prelude,
+            &stale_validity_commitment,
+            &stale_validity,
+        );
         let consistency_proof = compiler
             .prove_terminal_npo_validity_consistency_goldilocks(
                 &vk,
@@ -15838,13 +15981,10 @@ mod tests {
                 &consistency_proof,
             )
             .unwrap_err();
-        assert_eq!(
+        assert!(matches!(
             err,
-            NativeTerminalVerifyError::TerminalNpoValidityResidualMismatch {
-                query: 0,
-                npo_index: 0,
-            }
-        );
+            NativeTerminalVerifyError::TerminalNpoValidityResidualMismatch { npo_index: 0, .. }
+        ));
     }
 
     #[test]
@@ -16866,7 +17006,7 @@ mod tests {
                 config: Tip5Config::GOLDILOCKS_W16,
                 new_start: true,
                 inputs: [None; 16],
-                out_ctl: [false; 10],
+                out_ctl: [true; 10],
                 return_all_outputs: false,
             })
             .expect("NPO-only Tip5 row must build");
@@ -17103,6 +17243,110 @@ mod tests {
             fold_proof,
             consistency_proof,
         )
+    }
+
+    fn npo_validity_fold_proof_for_values(
+        compiler: &NativeTerminalCompiler,
+        prelude: &TerminalProofPrelude,
+        validity_commitment: &TerminalOracleCommitment,
+        values: &[Goldilocks],
+    ) -> TerminalNpoValidityFoldProof {
+        let mut layers = vec![values.to_vec()];
+        let mut trees = Vec::new();
+        let mut fold_commitments = Vec::new();
+        let mut round = 0usize;
+        while layers.last().expect("base validity layer exists").len() > 1 {
+            let challenge = NativeTerminalCompiler::derive_terminal_npo_validity_fold_challenge::<
+                Goldilocks,
+            >(prelude, validity_commitment, &fold_commitments, round)
+            .expect("fold challenge must derive");
+            let current = layers.last().expect("current validity layer exists");
+            let mut next = Vec::with_capacity(current.len().div_ceil(2));
+            for pair in current.chunks(2) {
+                let left = pair[0];
+                let right = pair.get(1).copied().unwrap_or(Goldilocks::ZERO);
+                next.push(left * (Goldilocks::ONE - challenge) + right * challenge);
+            }
+            let tree = TerminalOracleMerkleTree::commit_goldilocks_values(
+                NativeTerminalCompiler::npo_validity_fold_oracle_label(round),
+                &next,
+            )
+            .expect("fold layer must commit");
+            fold_commitments.push(tree.commitment());
+            trees.push(tree);
+            layers.push(next);
+            round += 1;
+        }
+
+        let final_value_basis =
+            NativeTerminalCompiler::goldilocks_basis_u64(layers.last().unwrap().first().unwrap());
+        let query_plan = compiler
+            .derive_terminal_npo_validity_fold_query_plan(
+                prelude,
+                validity_commitment,
+                &fold_commitments,
+            )
+            .expect("validity fold query plan must derive");
+        let mut expected_round_indices = vec![Vec::new(); fold_commitments.len()];
+        for initial_index in &query_plan.indices {
+            let mut index = *initial_index;
+            let mut current_len = validity_commitment.values_len;
+            for round in 0..fold_commitments.len() {
+                let pair_index = (index / 2) * 2;
+                NativeTerminalCompiler::push_unique_usize(
+                    &mut expected_round_indices[round],
+                    pair_index,
+                );
+                if pair_index + 1 < current_len {
+                    NativeTerminalCompiler::push_unique_usize(
+                        &mut expected_round_indices[round],
+                        pair_index + 1,
+                    );
+                }
+                index /= 2;
+                current_len = current_len.div_ceil(2);
+            }
+        }
+        let mut round_openings = Vec::new();
+        for (round, round_indices) in expected_round_indices.iter_mut().enumerate() {
+            round_indices.sort_unstable();
+            let tree = if round == 0 {
+                None
+            } else {
+                Some(&trees[round - 1])
+            };
+            let values = &layers[round];
+            let mut opening_values = Vec::new();
+            for index in round_indices {
+                opening_values.push((*index, &values[*index]));
+            }
+            let opening = if let Some(tree) = tree {
+                tree.open_goldilocks_multi_values(&opening_values)
+            } else {
+                TerminalOracleMerkleTree::commit_goldilocks_values(
+                    NativeTerminalCompiler::npo_validity_oracle_label(),
+                    &layers[0],
+                )
+                .expect("base validity tree must commit")
+                .open_goldilocks_multi_values(&opening_values)
+            }
+            .expect("fold opening must build");
+            round_openings.push(opening);
+        }
+        let openings = query_plan
+            .indices
+            .iter()
+            .map(|index| TerminalResidualFoldQueryOpening {
+                initial_index: *index,
+                rounds: Vec::new(),
+            })
+            .collect();
+        TerminalNpoValidityFoldProof {
+            fold_commitments,
+            final_value_basis,
+            round_openings,
+            openings,
+        }
     }
 
     fn execute_recompose_terminal_witness(

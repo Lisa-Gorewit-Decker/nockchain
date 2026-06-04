@@ -542,14 +542,16 @@ Merkle roots, samples fold paths only after all fold roots are fixed, and
 requires the final folded value to be zero. A mixed consistency component opens
 the same fold-query rows, verifies primitive rows by recomputing
 `A(w) * B(w) - C(w)`, verifies NPO rows by recomputing the sampled
-Tip5/recompose row-local residual from committed witness openings, checks that
-the committed validity value equals that recomputed residual composition, and
-rejects any nonzero validity residual. The verifier rejects combined-validity
-root omission, fold-query steering, stale zero NPO validity rows, malformed fold
-commitment schedules, malformed fold paths, nonzero final folds, and nonzero
-sampled row-validity residuals. This closes the immediate missing local NPO
-validity oracle gap, but production no longer uses this sampled NPO layer as
-its supported-NPO soundness boundary.
+Tip5/recompose row-local residual from committed witness openings, maps the
+sampled component index back to a verifier-derived `(NPO row, residual
+component)` pair, checks that the committed validity value equals that exact
+residual component, and rejects any nonzero validity residual. The verifier
+rejects combined-validity root omission, fold-query steering, stale zero NPO
+validity components, row/component-index confusion, malformed fold commitment
+schedules, malformed fold paths, nonzero final folds, and nonzero sampled
+row-validity residuals. This closes the immediate missing local NPO validity
+oracle gap, but production no longer uses this sampled NPO layer as its
+supported-NPO soundness boundary.
 Regression tests now also reject primitive rows presented as NPO rows, NPO rows
 presented as primitive rows, wrong combined-validity indices, and wrong
 NPO-index derivations inside the mixed consistency proof.
@@ -594,15 +596,15 @@ Tip5-L0 verifier circuit:
 
 | component | bytes |
 |---|---:|
-| primitive R1CS row-product proof | 24,562 |
-| exhaustive NPO proof | 63,673 |
+| primitive R1CS row-product proof | 22,792 |
+| exhaustive NPO proof | 63,665 |
 | exhaustive NPO hidden Tip5 input bytes | 17,402 |
-| exhaustive NPO known-index witness multiproof | 46,271 |
+| exhaustive NPO known-index witness multiproof | 46,263 |
 | exhaustive NPO full-width witness openings | 1,377 |
-| compact production proof body | 88,577 |
-| compact production certificate | 88,798 |
+| compact production proof body | 86,799 |
+| compact production certificate | 87,021 |
 
-The debug-profile measurement is `prove=4.833 s, verify=3.116 s` for the
+The debug-profile measurement is `prove=4.835 s, verify=3.100 s` for the
 production proof body and certificate, with terminal parameters
 `security_bits=60, log_blowup=4, num_queries=15, query_pow_bits=0`. This removes
 the sampled production NPO validity layer and verifies all 668 supported
@@ -704,7 +706,7 @@ Completion audit against the active terminal-compression requirements:
 |---|---|---|
 | Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
-| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `88,798` bytes / `86.7 KiB`, debug-profile `prove=4.833s`, `verify=3.116s`. | satisfied on the measured production fixture |
+| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `87,021` bytes / `85.0 KiB`, debug-profile `prove=4.835s`, `verify=3.100s`. | satisfied on the measured production fixture |
 | No confusing low-soundness testing production path | Production builds expose only `TerminalProofKind::Production`; local checkpoint proof-kind helpers are `cfg(test)`, and public production verification requires all 15 production queries. | satisfied for public production verifier dispatch |
 | Public values, parameters, relation, and commitments are bound before challenges | Header, public-values digest, backend relation digest, prelude parameters, relation profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
@@ -817,23 +819,24 @@ Security-audit conclusions for the current implementation checkpoint:
   one-row aggregate fold is rejected by the final-value nonzero check.
 - The NPO validity fold proof gives supported NPO rows the matching
   transcript-bound validity-vector checkpoint. Its base oracle is now computed
-  from explicit Tip5/recompose row-local residual compositions rather than a
-  placeholder zero vector after a full assignment check. A nonzero NPO validity
-  vector must survive random folding or break sampled fold-layer/row
-  consistency. This remains useful local/checkpoint coverage, but production no
-  longer relies on it as the supported-NPO soundness boundary. The final
-  production proof still needs a polynomialized Tip5/recompose relation and full
-  soundness accounting to replace the exhaustive Merkle-opening verifier.
+  over explicit Tip5/recompose residual components rather than one
+  cancellation-prone scalar per row or a placeholder zero vector after a full
+  assignment check. A nonzero NPO validity component must survive random folding
+  or break sampled fold-layer/component consistency. This remains useful
+  local/checkpoint coverage, but production no longer relies on it as the
+  supported-NPO soundness boundary. The final production proof still needs a
+  polynomialized Tip5/recompose relation and full soundness accounting to
+  replace the exhaustive Merkle-opening verifier.
 - Direct NPO validity consistency verification now validates the referenced fold
   commitment schedule before deriving consistency query rows. This keeps the
   internal regression verifier fail-closed even when exercised directly by
   tests.
 - Direct and aggregate NPO validity consistency verification also re-verifies
   each sampled `TerminalNpoOpening` against the witness commitment and compares
-  the opened validity value with the recomputed row-local residual composition.
-  A folded zero validity row is therefore not enough by itself; stale zero
-  residual rows, malformed/missing witness openings, or stale Merkle paths are
-  rejected at the consistency layer.
+  the opened validity value with the recomputed row-local residual component.
+  A folded zero validity component is therefore not enough by itself; stale zero
+  residual components, malformed/missing witness openings, or stale Merkle paths
+  are rejected at the consistency layer.
   The production exhaustive NPO verifier applies the same row semantics to every
   flattened supported NPO row and rejects missing/stale witness multiproof
   openings.
@@ -857,7 +860,7 @@ Security-audit conclusions for the current implementation checkpoint:
 - Fixed-int bincode serialization is size-only: it changes the Rust helper's
   byte encoding and rejects trailing bytes on decode, but does not alter the
   proof relation, Fiat-Shamir transcript, FRI parameters, or public inputs.
-- The terminal production checkpoint is now 88,798 bytes, or 86.7 KiB, with 60
+- The terminal production checkpoint is now 87,021 bytes, or 85.0 KiB, with 60
   pure-query bits and exhaustive supported-NPO verification. It reached the
   ~100 KiB size target through structural proof-body changes, especially
   omitting verifier-derived witness indices from the exhaustive NPO multiproof
