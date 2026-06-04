@@ -16,7 +16,7 @@
 //! `verify_global_final_value`.
 //!
 //! Validated standalone here: native-equivalence (trace ==
-//! `nockchain_math::tip5::permute`), algebraic constraints, the
+//! `nockchain_math::tip5::permute_5round`), algebraic constraints, the
 //! LogUp **value** identity (`Σ = 0` honest / ≠0 tamper), **and the
 //! per-interaction constraint degree ≤ 2** (the feasibility fix).
 //! *Residual (C2.3, precisely scoped):* a full `p3-batch-stark`
@@ -42,7 +42,7 @@
 //! * rows `[0,256)`  = **table rows** (`KIND=0`); preprocessed
 //!   `(TIN,TOUT)=(i, LOOKUP_TABLE[i])`, main `TMULT = #queries of i`.
 //! * rows `[256,256+P)` = **permutation rows** (`KIND=1`): one full
-//!   7-round Tip5 evaluation each.
+//!   5-round Tip5 evaluation each.
 //! * rows `[256+P,H)` = inert padding (`KIND=0, TMULT=0`).
 //!
 //! Soundness: every per-byte `(b,c)` on a perm row is a LogUp query
@@ -274,8 +274,7 @@ where
         // (~24% fewer constraints) and the AIR width drops by
         // `STATE_SIZE = 16` columns per round.
         for r in 0..NUM_ROUNDS {
-            let mut a_expr: alloc::vec::Vec<AB::Expr> =
-                alloc::vec::Vec::with_capacity(STATE_SIZE);
+            let mut a_expr: alloc::vec::Vec<AB::Expr> = alloc::vec::Vec::with_capacity(STATE_SIZE);
 
             for t in 0..NS {
                 let mut recompose_b = AB::Expr::ZERO;
@@ -294,9 +293,7 @@ where
                     }
                 }
                 // canonical 8-byte decomposition of the S-box input
-                builder.assert_zero(
-                    kind.clone() * (recompose_b - var(sbox_in_col(r, t))),
-                );
+                builder.assert_zero(kind.clone() * (recompose_b - var(sbox_in_col(r, t))));
                 // A[t] = recompose_c — SUBSTITUTED INLINE (no column,
                 // no separate constraint; the recompose_c expression is
                 // reused in the MDS sum below).
@@ -361,13 +358,16 @@ mod tests {
     const FIXTURE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         // 5-round ai-pow-zk fixture (NOT the 7-round canonical Nockchain one).
-        "/../../crates/ai-pow-zk/tests/fixtures/tip5_5round_golden_kat.txt"
+        "/../../ai-pow-zk/tests/fixtures/tip5_5round_golden_kat.txt"
     );
 
     fn fixture_vectors() -> Vec<([u64; STATE_SIZE], [u64; STATE_SIZE])> {
         let text = fs::read_to_string(FIXTURE).expect("C2.0 fixture present");
         let nums = |l: &str| -> Vec<u64> {
-            l.split_whitespace().skip(1).map(|t| t.parse().unwrap()).collect()
+            l.split_whitespace()
+                .skip(1)
+                .map(|t| t.parse().unwrap())
+                .collect()
         };
         let mut out = Vec::new();
         let mut pend: Option<[u64; STATE_SIZE]> = None;
@@ -507,11 +507,14 @@ mod tests {
              ({:.1}× narrower)",
             free as f64 / lookup as f64
         );
-        assert!(lookup < free / 5, "expected ≥5× narrower, got {lookup} vs {free}");
+        assert!(
+            lookup < free / 5,
+            "expected ≥5× narrower, got {lookup} vs {free}"
+        );
     }
 
-    /// Native-equivalence: lookup-AIR trace ROUT[6] == nockchain-math
-    /// `permute`, on all 315 fixture vectors **and** 2048 random.
+    /// Native-equivalence: lookup-AIR trace final ROUT == nockchain-math
+    /// `permute_5round`, on all 315 fixture vectors **and** 2048 random.
     #[test]
     fn lookup_air_equals_native_spec() {
         let fv = fixture_vectors();
@@ -530,7 +533,10 @@ mod tests {
             let mut exp = *inp;
             permute(&mut exp);
             for lane in 0..STATE_SIZE {
-                assert_eq!(main.values[bse + C_IN + lane], Goldilocks::from_u64(inp[lane]));
+                assert_eq!(
+                    main.values[bse + C_IN + lane],
+                    Goldilocks::from_u64(inp[lane])
+                );
                 assert_eq!(
                     main.values[bse + rout_col(NUM_ROUNDS - 1, lane)],
                     Goldilocks::from_u64(exp[lane]),
@@ -588,7 +594,7 @@ mod tests {
             "tampered S-box image accepted by the lookup"
         );
 
-        // (b) tamper the permutation output ROUT[6] → constraints fail
+        // (b) tamper the permutation output final ROUT -> constraints fail
         let mut t2 = good.clone();
         t2.values[prow * w + rout_col(NUM_ROUNDS - 1, 3)] += Goldilocks::ONE;
         assert!(

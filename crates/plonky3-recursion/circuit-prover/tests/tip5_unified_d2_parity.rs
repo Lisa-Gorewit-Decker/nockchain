@@ -162,9 +162,8 @@ fn p3_tip5_d2_npo_with_recompose_ctl_at_tip5_unified() {
         log_blowup: 4,
         log_final_poly_len: 0, // test-only override; production = 2
         max_log_arity: 3,
-        // 2026-05-21 anchored-between reanchor: nq=15 matches new
-        // goldilocks_tip5_60bit() PROD (lb=4 nq=15 pow=1+1 = 62 bits
-        // Johnson, 60-bit anchored floor).
+        // Test-local parity profile. Production goldilocks_tip5_60bit()
+        // now uses lb=4 nq=10 query_pow=20 for the 60-bit floor.
         num_queries: 15,
         commit_proof_of_work_bits: 1,
         query_proof_of_work_bits: 1,

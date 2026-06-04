@@ -30,17 +30,15 @@ mod common;
 use p3_batch_stark::ProverData;
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::{
-    Tip5Config, Tip5Goldilocks, generate_recompose_trace, generate_tip5_trace,
-};
+use p3_circuit::ops::{Tip5Config, Tip5Goldilocks, generate_recompose_trace, generate_tip5_trace};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_circuit_prover::batch_stark_prover::{
     BatchStarkProver, recompose_air_builders, recompose_table_provers, tip5_air_builders,
 };
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
-    BatchStarkProof, CircuitProverData, ConstraintProfile, RecomposePreprocessor, TableProver,
-    TablePacking, Tip5Preprocessor, Tip5Prover,
+    BatchStarkProof, CircuitProverData, ConstraintProfile, RecomposePreprocessor, TablePacking,
+    TableProver, Tip5Preprocessor, Tip5Prover,
 };
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
@@ -58,8 +56,8 @@ use p3_recursion::verify_p3_uni_proof_circuit;
 use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 use p3_test_utils::goldilocks_tip5_params::{
     ChallengeMmcs as TipsChallengeMmcs, Challenger as TipsChallenger, Dft as TipsDft,
-    MyCompress as TipsCompress, MyConfig as TipsCfg, MyHash as TipsHash,
-    MyMmcs as TipsValMmcs, MyPcs as TipsPcs,
+    MyCompress as TipsCompress, MyConfig as TipsCfg, MyHash as TipsHash, MyMmcs as TipsValMmcs,
+    MyPcs as TipsPcs,
 };
 use p3_tip5_circuit_air::Tip5Perm;
 use p3_uni_stark::{StarkConfig, prove, verify};
@@ -174,8 +172,7 @@ fn build_layer0_verifier_circuit(tamper: bool) -> BuiltLayer0Circuit {
     circuit_builder.set_recompose_coeff_ctl_for_decompose_links(true);
 
     // C1: matches inner Tip5-L0 FRI (lb=4 lfp=0 cpow=1 qpow=1).
-    let fri_verifier_params =
-        FriVerifierParams::with_mmcs(4, 0, 1, 1, Tip5Config::GOLDILOCKS_W16);
+    let fri_verifier_params = FriVerifierParams::with_mmcs(4, 0, 1, 1, Tip5Config::GOLDILOCKS_W16);
 
     let verifier_inputs = StarkVerifierInputsBuilder::<
         Tip5Layer0Config,
@@ -224,15 +221,11 @@ fn build_layer0_verifier_circuit(tamper: bool) -> BuiltLayer0Circuit {
 
 #[derive(Clone, Copy, Debug)]
 enum Tip5OuterTier {
-    /// `lb=2, nq=2, pow=0+0` — fast unit-test tier (~5 bits, only
-    /// usable for shape-correctness checks; not soundness-meaningful).
-    Tiny,
     /// **LANDED production outer-cert FRI parameters** (matches
     /// `config::goldilocks_tip5_60bit()` exactly). All
     /// soundness-neutral compression levers stacked:
-    /// `lb=4, nq=15, mla=3, lfp=2, cap=3, pow=1+1, d=5` ⇒ 62 bits
-    /// unconditional Johnson (2026-05-21 anchored-between reanchor;
-    /// 60-bit maintainer-targeted floor).
+    /// `lb=4, nq=10, mla=3, lfp=2, cap=5, query_pow=20, d=2` ⇒ 60 bits
+    /// unconditional Johnson (2026-06-03 anchored-between profile).
     Production,
     /// **Measurement-only sweep point (2026-05-21):** outer cert at
     /// `lb=6, nq=10, pow=1+1` ⇒ `6·10 + 1 + 1 = 62` bits unconditional
@@ -248,8 +241,7 @@ enum Tip5OuterTier {
 impl Tip5OuterTier {
     fn name(self) -> &'static str {
         match self {
-            Self::Tiny => "Tiny(~5b)",
-            Self::Production => "Production(62b lb=4 nq=15 mla=3 lfp=2 cap=3 d=5)",
+            Self::Production => "Production(62b lb=4 nq=15 mla=3 lfp=2 cap=5 d=5)",
             Self::Lb6Nq10 => "Lb6Nq10(62b lb=6 nq=10 mla=3 lfp=2 cap=3 d=5)",
         }
     }
@@ -258,7 +250,6 @@ impl Tip5OuterTier {
     ///  commit_pow, query_pow)
     fn fri(self) -> (usize, usize, usize, usize, usize, usize) {
         match self {
-            Self::Tiny => (2, 0, 1, 2, 0, 0),
             Self::Production => (4, 2, 3, 15, 1, 1),
             Self::Lb6Nq10 => (6, 2, 3, 10, 1, 1),
         }
@@ -278,14 +269,14 @@ fn make_tip5_outer_cfg(tier: Tip5OuterTier) -> TipsCfg {
     let perm = Tip5Perm;
     let hash = TipsHash::new(perm);
     let compress = TipsCompress::new(perm);
-    // cap=3 to match the production builder
-    // `goldilocks_tip5_60bit()` at `circuit-prover/src/config.rs:294`.
+    // cap=5 to match the production builder
+    // `goldilocks_tip5_60bit()` at `circuit-prover/src/config.rs`.
     // Prior cap=0 in this test was a substrate divergence — surfaced
     // by Path B Stage B0 inventory 2026-05-20 (production L1 measured
     // 487.65 KB at cap=3, vs the prior cap=0 test measurement of
     // 512.24 KB at the same FRI). Documented in
     // `crates/ai-pow-zk/docs/2026-05-20_PATH_B_STAGE_0_COLUMN_INVENTORY.md`.
-    let val_mmcs = TipsValMmcs::new(hash, compress, 3);
+    let val_mmcs = TipsValMmcs::new(hash, compress, 5);
     let challenge_mmcs = TipsChallengeMmcs::new(val_mmcs.clone());
     let dft = TipsDft::default();
     let (lb, lfp, mla, nq, cpow, qpow) = tier.fri();
@@ -384,8 +375,7 @@ fn build_l1_tip5_throughput(
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
-    let mut prover =
-        BatchStarkProver::new(outer_config).with_table_packing(table_packing);
+    let mut prover = BatchStarkProver::new(outer_config).with_table_packing(table_packing);
     prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
     prover.register_recompose_table::<2>(true);
 
@@ -454,7 +444,11 @@ fn l2_over_tip5_l1(
     let (verifier_inputs, mmcs_op_ids) = verify_p3_batch_proof_circuit::<
         TipsCfg,
         MerkleCapTargets<L2Val, L2_DIGEST_ELEMS>,
-        InputProofTargets<L2Val, L2Challenge, RecValMmcs<L2Val, L2_DIGEST_ELEMS, L2Hash, L2Compress>>,
+        InputProofTargets<
+            L2Val,
+            L2Challenge,
+            RecValMmcs<L2Val, L2_DIGEST_ELEMS, L2Hash, L2Compress>,
+        >,
         L2InnerFri,
         LogUpGadget,
         _,
@@ -476,8 +470,7 @@ fn l2_over_tip5_l1(
     let verification_circuit = circuit_builder
         .build()
         .map_err(|e| format!("[{label}] L2 circuit build failed: {e:?}"))?;
-    let (public_inputs, private_inputs) =
-        verifier_inputs.pack_values(&pis, batch_proof, common);
+    let (public_inputs, private_inputs) = verifier_inputs.pack_values(&pis, batch_proof, common);
 
     // L2's own prove: Tip5 NPO trio (same family as L1 outer). Manual
     // wiring mirrors the L1 path; Stage 3 dispatch via
@@ -567,7 +560,7 @@ fn fri_vparams_for(tier: Tip5OuterTier) -> FriVerifierParams {
 fn stage3_tip5_l2_stack_assembles() {
     // Just construct + drop the outer config; assembling it exercises
     // every type-alias in the Tip5-throughout substrate.
-    let _l1_cfg = make_tip5_outer_cfg(Tip5OuterTier::Tiny);
+    let _l1_cfg = make_tip5_outer_cfg(Tip5OuterTier::Production);
     let _l2_cfg = make_tip5_outer_cfg(Tip5OuterTier::Production);
     // Constructing the inner NPO provers exercises Tip5Prover's
     // TableProver<TipsCfg> bound — the precise bound the Stage 3
@@ -575,8 +568,8 @@ fn stage3_tip5_l2_stack_assembles() {
     let _np = inner_tip5_npo_provers();
     // Verify the FRI params helper for both tiers without building
     // a proof.
-    let _f_tiny = fri_vparams_for(Tip5OuterTier::Tiny);
-    let _f_tierb = fri_vparams_for(Tip5OuterTier::Production);
+    let _f_l1 = fri_vparams_for(Tip5OuterTier::Production);
+    let _f_l2 = fri_vparams_for(Tip5OuterTier::Production);
 
     // Sanity: Production unconditional Johnson bits = 62 (2026-05-21
     // anchored-between reanchor, lb=4 nq=15 pow=1+1; was 82 at the
@@ -585,29 +578,27 @@ fn stage3_tip5_l2_stack_assembles() {
 }
 
 /// **STAGE 4 ACCEPT** — toy Tip5-throughout L2 over Tip5-throughout
-/// L1 at the Tiny tier (fast). Proves the full chain assembles +
-/// proves + verifies end-to-end via the Stage 3 dispatch. Use this
-/// as the fast regression on the wiring.
+/// L1 at the production tier. Proves the full chain assembles +
+/// proves + verifies end-to-end via the Stage 3 dispatch.
 #[test]
-#[ignore = "Stage 4: Tip5-throughout L2-over-L1 ACCEPT at Tiny tier (heavy, ~few min)"]
-fn stage4_tip5_l2_over_l1_tiny_accepts() {
-    let l1 = build_l1_tip5_throughput(false, Tip5OuterTier::Tiny)
-        .expect("Stage 4 Tiny: honest L1 must build+verify");
+#[ignore = "Stage 4: Tip5-throughout L2-over-L1 ACCEPT at Production tier (heavy, ~few min)"]
+fn stage4_tip5_l2_over_l1_production_accepts() {
+    let l1 = build_l1_tip5_throughput(false, Tip5OuterTier::Production)
+        .expect("Stage 4 Production: honest L1 must build+verify");
     let l1_bytes = postcard::to_allocvec(&l1).expect("serialize L1").len();
-    let inner_fri = fri_vparams_for(Tip5OuterTier::Tiny);
+    let inner_fri = fri_vparams_for(Tip5OuterTier::Production);
     let l2_bytes = l2_over_tip5_l1(
-        "Stage4-Tiny",
+        "Stage4-Production",
         &l1,
         &inner_fri,
-        &make_tip5_outer_cfg(Tip5OuterTier::Tiny),
-        make_tip5_outer_cfg(Tip5OuterTier::Tiny),
+        &make_tip5_outer_cfg(Tip5OuterTier::Production),
+        make_tip5_outer_cfg(Tip5OuterTier::Production),
     )
-    .expect("Stage 4 Tiny: honest L2 must ACCEPT");
+    .expect("Stage 4 Production: honest L2 must ACCEPT");
     eprintln!(
-        "\n[STAGE 4 — Tip5-throughout L2-over-L1 @ Tiny tier]\n  \
+        "\n[STAGE 4 — Tip5-throughout L2-over-L1 @ Production tier]\n  \
          L1 = {l1_bytes} B ({:.2} KB)  L2 = {l2_bytes} B ({:.2} KB)\n  \
-         ACCEPT ✅  (soundness ~5 bits; tier exists only for fast \
-         shape-correctness of the new Stage 3 Tip5 dispatch)\n",
+         ACCEPT ✅  (production 62-bit Johnson tier)\n",
         l1_bytes as f64 / 1024.0,
         l2_bytes as f64 / 1024.0,
     );
@@ -620,9 +611,9 @@ fn stage4_tip5_l2_over_l1_tiny_accepts() {
 /// FRI fold-chain catches it). Fail loudly if the chain accepts a
 /// tampered inner.
 #[test]
-#[ignore = "Stage 4: Tip5-throughout L2-over-L1 TAMPER-REJECT at Tiny tier (heavy, ~few min)"]
-fn stage4_tip5_l2_over_l1_tiny_tamper_rejects() {
-    let tampered_l1 = build_l1_tip5_throughput(true, Tip5OuterTier::Tiny);
+#[ignore = "Stage 4: Tip5-throughout L2-over-L1 TAMPER-REJECT at Production tier (heavy, ~few min)"]
+fn stage4_tip5_l2_over_l1_production_tamper_rejects() {
+    let tampered_l1 = build_l1_tip5_throughput(true, Tip5OuterTier::Production);
     match tampered_l1 {
         Err(e) => {
             eprintln!(
@@ -632,11 +623,11 @@ fn stage4_tip5_l2_over_l1_tiny_tamper_rejects() {
         }
         Ok(bad_l1) => {
             let r = l2_over_tip5_l1(
-                "Stage4-Tiny-tamper",
+                "Stage4-Production-tamper",
                 &bad_l1,
-                &fri_vparams_for(Tip5OuterTier::Tiny),
-                &make_tip5_outer_cfg(Tip5OuterTier::Tiny),
-                make_tip5_outer_cfg(Tip5OuterTier::Tiny),
+                &fri_vparams_for(Tip5OuterTier::Production),
+                &make_tip5_outer_cfg(Tip5OuterTier::Production),
+                make_tip5_outer_cfg(Tip5OuterTier::Production),
             );
             assert!(
                 r.is_err(),
@@ -655,15 +646,18 @@ fn stage4_tip5_l2_over_l1_tiny_tamper_rejects() {
 /// "measure L2 at the current production params"). Tip5-throughout
 /// L2 over
 /// Tip5-throughout L1, both at the LANDED production FRI params
-/// (`config::goldilocks_tip5_60bit` post-2026-05-21 anchored-between
-/// reanchor: `lb=4 nq=15 pow=1+1 d=5`, 62 bits unconditional Johnson,
-/// 60-bit maintainer-targeted floor).
+/// (`config::goldilocks_tip5_60bit` post-2026-06-03 anchored-between
+/// profile: `lb=4 nq=10 query_pow=20 d=2`, 60 bits unconditional
+/// Johnson).
 #[test]
 #[ignore = "Stage 5: Tip5-throughout L2-over-L1 at Production (VERY heavy ~many min); records L1+L2 sizes"]
 fn stage5_tip5_l2_over_l1_production_measurement() {
     let tier = Tip5OuterTier::Production;
     let sbits = tier.unconditional_bits();
-    assert!(sbits >= 60, "Production Johnson soundness {sbits} < 60 anchored floor");
+    assert!(
+        sbits >= 60,
+        "Production Johnson soundness {sbits} < 60 anchored floor"
+    );
 
     let l1 = build_l1_tip5_throughput(false, tier)
         .expect("Production L1 over real inner Tip5-L0 must ACCEPT");
@@ -683,9 +677,7 @@ fn stage5_tip5_l2_over_l1_production_measurement() {
     // catastrophic; fail loudly).
     let tampered = build_l1_tip5_throughput(true, tier);
     match tampered {
-        Err(e) => eprintln!(
-            "[STAGE 5 TAMPER] tampered inner correctly rejected at L1 build: {e}"
-        ),
+        Err(e) => eprintln!("[STAGE 5 TAMPER] tampered inner correctly rejected at L1 build: {e}"),
         Ok(bad) => {
             let r = l2_over_tip5_l1(
                 "Stage5-Prod-tamper",
@@ -742,7 +734,10 @@ fn stage5_tip5_l2_over_l1_production_measurement() {
 fn stage5_tip5_l2_over_l1_lb6_nq10_measurement() {
     let tier = Tip5OuterTier::Lb6Nq10;
     let sbits = tier.unconditional_bits();
-    assert!(sbits >= 60, "Lb6Nq10 Johnson soundness {sbits} < 60 anchored floor");
+    assert!(
+        sbits >= 60,
+        "Lb6Nq10 Johnson soundness {sbits} < 60 anchored floor"
+    );
 
     let l1 = build_l1_tip5_throughput(false, tier)
         .expect("Lb6Nq10 L1 over real inner Tip5-L0 must ACCEPT");
@@ -760,9 +755,9 @@ fn stage5_tip5_l2_over_l1_lb6_nq10_measurement() {
     // Tamper-reject at the sweep tier too.
     let tampered = build_l1_tip5_throughput(true, tier);
     match tampered {
-        Err(e) => eprintln!(
-            "[STAGE 5 Lb6Nq10 TAMPER] tampered inner correctly rejected at L1 build: {e}"
-        ),
+        Err(e) => {
+            eprintln!("[STAGE 5 Lb6Nq10 TAMPER] tampered inner correctly rejected at L1 build: {e}")
+        }
         Ok(bad) => {
             let r = l2_over_tip5_l1(
                 "Stage5-Lb6Nq10-tamper",

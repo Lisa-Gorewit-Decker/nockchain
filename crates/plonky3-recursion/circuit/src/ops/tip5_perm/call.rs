@@ -1,7 +1,7 @@
 //! User-facing call structs for adding Tip5 permutation rows (C2.3).
 //!
 //! - [`Tip5PermCall`] mirrors `Poseidon1PermCallBase` (the D=1,
-//!   non-merkle base path), specialised to the deployed Tip5 sponge
+//!   non-merkle base path), specialised to the recursive Tip5 sponge
 //!   geometry: 16 base-field input slots, 10 rate output exposure
 //!   flags. Used by the in-circuit challenger and the standalone
 //!   batch-STARK CTL gate.
@@ -20,7 +20,7 @@ use alloc::vec::Vec;
 use crate::ops::tip5_perm::config::Tip5Config;
 use crate::types::ExprId;
 
-/// User-facing arguments for adding a Tip5 perm row (one 7-round Tip5
+/// User-facing arguments for adding a Tip5 perm row (one 5-round Tip5
 /// permutation), D=1 base field. Mirrors `Poseidon1PermCallBase`.
 pub struct Tip5PermCall {
     /// Tip5 configuration for this permutation row (always D=1

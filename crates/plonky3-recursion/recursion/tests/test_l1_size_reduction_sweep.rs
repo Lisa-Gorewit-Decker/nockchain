@@ -22,9 +22,7 @@ mod common;
 use p3_batch_stark::ProverData;
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::{
-    Tip5Config, Tip5Goldilocks, generate_recompose_trace, generate_tip5_trace,
-};
+use p3_circuit::ops::{Tip5Config, Tip5Goldilocks, generate_recompose_trace, generate_tip5_trace};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_circuit_prover::batch_stark_prover::{recompose_air_builders, tip5_air_builders};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
@@ -138,8 +136,7 @@ fn build_layer0_verifier_circuit() -> BuiltLayer0Circuit {
     circuit_builder.enable_recompose::<Val>(generate_recompose_trace::<Val, Challenge>);
     circuit_builder.set_recompose_coeff_ctl_for_decompose_links(true);
 
-    let fri_verifier_params =
-        FriVerifierParams::with_mmcs(3, 0, 0, 0, Tip5Config::GOLDILOCKS_W16);
+    let fri_verifier_params = FriVerifierParams::with_mmcs(3, 0, 0, 0, Tip5Config::GOLDILOCKS_W16);
 
     let verifier_inputs = StarkVerifierInputsBuilder::<
         Tip5Layer0Config,
@@ -204,12 +201,13 @@ impl FriKnobs {
 
 mod tip5_d5 {
     //! Tip5-unified with DIGEST_ELEMS=5 (production-current).
-    use super::*;
     use p3_test_utils::goldilocks_tip5_params::{
-        Challenger as TipsChallenger, ChallengeMmcs as TipsChallengeMmcs, Dft as TipsDft,
-        MyConfig as TipsCfg, MyCompress as TipsCompress, MyHash as TipsHash,
-        MyMmcs as TipsValMmcs, MyPcs as TipsPcs,
+        ChallengeMmcs as TipsChallengeMmcs, Challenger as TipsChallenger, Dft as TipsDft,
+        MyCompress as TipsCompress, MyConfig as TipsCfg, MyHash as TipsHash, MyMmcs as TipsValMmcs,
+        MyPcs as TipsPcs,
     };
+
+    use super::*;
 
     pub fn build_l1(knobs: FriKnobs, cap_height: usize, label: &str) -> Result<usize, String> {
         let perm = Tip5Perm;
@@ -235,7 +233,11 @@ mod tip5_d5 {
 
     fn run_l1(outer_cfg: TipsCfg, label: &str) -> Result<usize, String> {
         let BuiltLayer0Circuit {
-            circuit, public_inputs, private_inputs, mmcs_op_ids, proof,
+            circuit,
+            public_inputs,
+            private_inputs,
+            mmcs_op_ids,
+            proof,
         } = build_layer0_verifier_circuit();
 
         let table_packing = TablePacking::new(1, 8);
@@ -248,9 +250,13 @@ mod tip5_d5 {
 
         let (airs_degrees, primitive_columns, non_primitive_columns) =
             get_airs_and_degrees_with_prep::<TipsCfg, Challenge, 2>(
-                &circuit, &table_packing, &npo_prep, &air_builders,
+                &circuit,
+                &table_packing,
+                &npo_prep,
+                &air_builders,
                 ConstraintProfile::Standard,
-            ).map_err(|e| format!("get_airs_and_degrees [{label}]: {e:?}"))?;
+            )
+            .map_err(|e| format!("get_airs_and_degrees [{label}]: {e:?}"))?;
         let airs_degrees_vec: Vec<_> = airs_degrees.into_iter().collect();
         let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees_vec.into_iter().unzip();
 
@@ -258,11 +264,24 @@ mod tip5_d5 {
         runner.set_public_inputs(&public_inputs).unwrap();
         runner.set_private_inputs(&private_inputs).unwrap();
         set_fri_mmcs_private_data::<
-            Val, Challenge, ChallengeMmcs, ValMmcs, Tip5Sponge, Tip5Compress, DIGEST_ELEMS,
-        >(&mut runner, &mmcs_op_ids, &proof.opening_proof, Tip5Config::GOLDILOCKS_W16)
+            Val,
+            Challenge,
+            ChallengeMmcs,
+            ValMmcs,
+            Tip5Sponge,
+            Tip5Compress,
+            DIGEST_ELEMS,
+        >(
+            &mut runner,
+            &mmcs_op_ids,
+            &proof.opening_proof,
+            Tip5Config::GOLDILOCKS_W16,
+        )
         .map_err(|e| format!("set_fri_mmcs_private_data [{label}]: {e}"))?;
 
-        let traces = runner.run().map_err(|e| format!("[{label}] runner: {e:?}"))?;
+        let traces = runner
+            .run()
+            .map_err(|e| format!("[{label}] runner: {e:?}"))?;
 
         let prover_data = ProverData::from_airs_and_degrees(&outer_cfg, &airs, &degrees);
         let circuit_prover_data =
@@ -272,9 +291,11 @@ mod tip5_d5 {
         prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
         prover.register_recompose_table::<2>(true);
 
-        let batch_proof = prover.prove_all_tables(&traces, &circuit_prover_data)
+        let batch_proof = prover
+            .prove_all_tables(&traces, &circuit_prover_data)
             .map_err(|e| format!("[{label}] prove_all_tables: {e:?}"))?;
-        prover.verify_all_tables(&batch_proof)
+        prover
+            .verify_all_tables(&batch_proof)
             .map_err(|e| format!("[{label}] verify_all_tables: {e:?}"))?;
 
         let size = postcard::to_allocvec(&batch_proof).expect("postcard").len();
@@ -284,12 +305,13 @@ mod tip5_d5 {
 
 mod tip5_d4 {
     //! Tip5-unified with DIGEST_ELEMS=4 (size-neutral with Poseidon2 baseline).
-    use super::*;
     use p3_test_utils::goldilocks_tip5_out4_params::{
-        Challenger as O4Challenger, ChallengeMmcs as O4ChallengeMmcs, Dft as O4Dft,
-        MyConfig as O4Cfg, MyCompress as O4Compress, MyHash as O4Hash,
-        MyMmcs as O4ValMmcs, MyPcs as O4Pcs,
+        ChallengeMmcs as O4ChallengeMmcs, Challenger as O4Challenger, Dft as O4Dft,
+        MyCompress as O4Compress, MyConfig as O4Cfg, MyHash as O4Hash, MyMmcs as O4ValMmcs,
+        MyPcs as O4Pcs,
     };
+
+    use super::*;
 
     pub fn build_l1(knobs: FriKnobs, cap_height: usize, label: &str) -> Result<usize, String> {
         let perm = Tip5Perm;
@@ -311,7 +333,11 @@ mod tip5_d4 {
         let outer_cfg: O4Cfg = O4Cfg::new(pcs, O4Challenger::new(perm));
 
         let BuiltLayer0Circuit {
-            circuit, public_inputs, private_inputs, mmcs_op_ids, proof,
+            circuit,
+            public_inputs,
+            private_inputs,
+            mmcs_op_ids,
+            proof,
         } = build_layer0_verifier_circuit();
 
         let table_packing = TablePacking::new(1, 8);
@@ -324,9 +350,13 @@ mod tip5_d4 {
 
         let (airs_degrees, primitive_columns, non_primitive_columns) =
             get_airs_and_degrees_with_prep::<O4Cfg, Challenge, 2>(
-                &circuit, &table_packing, &npo_prep, &air_builders,
+                &circuit,
+                &table_packing,
+                &npo_prep,
+                &air_builders,
                 ConstraintProfile::Standard,
-            ).map_err(|e| format!("get_airs_and_degrees [{label}]: {e:?}"))?;
+            )
+            .map_err(|e| format!("get_airs_and_degrees [{label}]: {e:?}"))?;
         let airs_degrees_vec: Vec<_> = airs_degrees.into_iter().collect();
         let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees_vec.into_iter().unzip();
 
@@ -334,11 +364,24 @@ mod tip5_d4 {
         runner.set_public_inputs(&public_inputs).unwrap();
         runner.set_private_inputs(&private_inputs).unwrap();
         set_fri_mmcs_private_data::<
-            Val, Challenge, ChallengeMmcs, ValMmcs, Tip5Sponge, Tip5Compress, DIGEST_ELEMS,
-        >(&mut runner, &mmcs_op_ids, &proof.opening_proof, Tip5Config::GOLDILOCKS_W16)
+            Val,
+            Challenge,
+            ChallengeMmcs,
+            ValMmcs,
+            Tip5Sponge,
+            Tip5Compress,
+            DIGEST_ELEMS,
+        >(
+            &mut runner,
+            &mmcs_op_ids,
+            &proof.opening_proof,
+            Tip5Config::GOLDILOCKS_W16,
+        )
         .map_err(|e| format!("set_fri_mmcs_private_data [{label}]: {e}"))?;
 
-        let traces = runner.run().map_err(|e| format!("[{label}] runner: {e:?}"))?;
+        let traces = runner
+            .run()
+            .map_err(|e| format!("[{label}] runner: {e:?}"))?;
 
         let prover_data = ProverData::from_airs_and_degrees(&outer_cfg, &airs, &degrees);
         let circuit_prover_data =
@@ -348,9 +391,11 @@ mod tip5_d4 {
         prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
         prover.register_recompose_table::<2>(true);
 
-        let batch_proof = prover.prove_all_tables(&traces, &circuit_prover_data)
+        let batch_proof = prover
+            .prove_all_tables(&traces, &circuit_prover_data)
             .map_err(|e| format!("[{label}] prove_all_tables: {e:?}"))?;
-        prover.verify_all_tables(&batch_proof)
+        prover
+            .verify_all_tables(&batch_proof)
             .map_err(|e| format!("[{label}] verify_all_tables: {e:?}"))?;
 
         let size = postcard::to_allocvec(&batch_proof).expect("postcard").len();
@@ -360,18 +405,30 @@ mod tip5_d4 {
 
 fn run_and_report(label: &str, knobs: FriKnobs, cap: usize, digest_4: bool) {
     let bits = knobs.unconditional_bits();
-    let label_full = format!("{label} (lb={} nq={} cp={} qp={} mla={} lfp={} cap={} d={}) [{} bits]",
-        knobs.log_blowup, knobs.num_queries, knobs.commit_pow, knobs.query_pow,
-        knobs.max_log_arity, knobs.log_final_poly_len, cap,
-        if digest_4 { 4 } else { 5 }, bits);
+    let label_full = format!(
+        "{label} (lb={} nq={} cp={} qp={} mla={} lfp={} cap={} d={}) [{} bits]",
+        knobs.log_blowup,
+        knobs.num_queries,
+        knobs.commit_pow,
+        knobs.query_pow,
+        knobs.max_log_arity,
+        knobs.log_final_poly_len,
+        cap,
+        if digest_4 { 4 } else { 5 },
+        bits
+    );
     let result = if digest_4 {
         tip5_d4::build_l1(knobs, cap, &label_full)
     } else {
         tip5_d5::build_l1(knobs, cap, &label_full)
     };
     match result {
-        Ok(size) => eprintln!("{:>50} : {:>7} bytes ({:>6.1} KB)",
-                              label_full, size, size as f64 / 1024.0),
+        Ok(size) => eprintln!(
+            "{:>50} : {:>7} bytes ({:>6.1} KB)",
+            label_full,
+            size,
+            size as f64 / 1024.0
+        ),
         Err(e) => eprintln!("{:>50} : FAILED — {e}", label_full),
     }
 }
@@ -392,8 +449,12 @@ fn l1_size_reduction_lever_sweep() {
     eprintln!("================================================================================");
 
     let baseline = FriKnobs {
-        log_blowup: 2, log_final_poly_len: 0, max_log_arity: 1,
-        num_queries: 42, commit_pow: 1, query_pow: 1,
+        log_blowup: 2,
+        log_final_poly_len: 0,
+        max_log_arity: 1,
+        num_queries: 42,
+        commit_pow: 1,
+        query_pow: 1,
     };
 
     // === BASELINE ===
@@ -409,32 +470,93 @@ fn l1_size_reduction_lever_sweep() {
     // === LEVER 2: FRI nq tighter ===
     eprintln!("");
     eprintln!("--- LEVER 2: FRI nq tighter (still ≥80 bits) ---");
-    run_and_report("nq=40 pow=0+0", FriKnobs {
-        num_queries: 40, commit_pow: 0, query_pow: 0, .. baseline }, 0, false);  // 80 bits
-    run_and_report("nq=41 pow=0+0", FriKnobs {
-        num_queries: 41, commit_pow: 0, query_pow: 0, .. baseline }, 0, false);  // 82 bits
-    run_and_report("nq=42 pow=0+0", FriKnobs {
-        num_queries: 42, commit_pow: 0, query_pow: 0, .. baseline }, 0, false);  // 84 bits
+    run_and_report(
+        "nq=40 pow=0+0",
+        FriKnobs {
+            num_queries: 40,
+            commit_pow: 0,
+            query_pow: 0,
+            ..baseline
+        },
+        0,
+        false,
+    ); // 80 bits
+    run_and_report(
+        "nq=41 pow=0+0",
+        FriKnobs {
+            num_queries: 41,
+            commit_pow: 0,
+            query_pow: 0,
+            ..baseline
+        },
+        0,
+        false,
+    ); // 82 bits
+    run_and_report(
+        "nq=42 pow=0+0",
+        FriKnobs {
+            num_queries: 42,
+            commit_pow: 0,
+            query_pow: 0,
+            ..baseline
+        },
+        0,
+        false,
+    ); // 84 bits
 
     // === LEVER 3: lb=3 (fewer queries needed) ===
     eprintln!("");
     eprintln!("--- LEVER 3: log_blowup=3 (fewer queries at same soundness) ---");
-    run_and_report("lb=3 nq=27 pow=1+1", FriKnobs {
-        log_blowup: 3, num_queries: 27, .. baseline }, 0, false);  // 83 bits
-    run_and_report("lb=3 nq=28 pow=0+0", FriKnobs {
-        log_blowup: 3, num_queries: 28, commit_pow: 0, query_pow: 0, .. baseline }, 0, false);  // 84 bits
+    run_and_report(
+        "lb=3 nq=27 pow=1+1",
+        FriKnobs {
+            log_blowup: 3,
+            num_queries: 27,
+            ..baseline
+        },
+        0,
+        false,
+    ); // 83 bits
+    run_and_report(
+        "lb=3 nq=28 pow=0+0",
+        FriKnobs {
+            log_blowup: 3,
+            num_queries: 28,
+            commit_pow: 0,
+            query_pow: 0,
+            ..baseline
+        },
+        0,
+        false,
+    ); // 84 bits
 
     // === LEVER 4: lb=4 (much fewer queries; bigger LDE) ===
     eprintln!("");
     eprintln!("--- LEVER 4: log_blowup=4 (very few queries; big LDE) ---");
-    run_and_report("lb=4 nq=20 pow=1+1", FriKnobs {
-        log_blowup: 4, num_queries: 20, .. baseline }, 0, false);  // 82 bits
+    run_and_report(
+        "lb=4 nq=20 pow=1+1",
+        FriKnobs {
+            log_blowup: 4,
+            num_queries: 20,
+            ..baseline
+        },
+        0,
+        false,
+    ); // 82 bits
 
     // === LEVER 5: high-arity FRI folding ===
     eprintln!("");
     eprintln!("--- LEVER 5: FRI high-arity folding (max_log_arity=3, lfp=2) ---");
-    run_and_report("mla=3 lfp=2", FriKnobs {
-        max_log_arity: 3, log_final_poly_len: 2, .. baseline }, 0, false);
+    run_and_report(
+        "mla=3 lfp=2",
+        FriKnobs {
+            max_log_arity: 3,
+            log_final_poly_len: 2,
+            ..baseline
+        },
+        0,
+        false,
+    );
 
     // === LEVER 6: MMCS cap height ===
     eprintln!("");
@@ -444,24 +566,61 @@ fn l1_size_reduction_lever_sweep() {
     // === COMBINED: best easy-wins together ===
     eprintln!("");
     eprintln!("--- COMBINED: digest=4 + nq=40 pow=0+0 (80-bit floor) ---");
-    run_and_report("d4+nq40+pow0", FriKnobs {
-        num_queries: 40, commit_pow: 0, query_pow: 0, .. baseline }, 0, true);
+    run_and_report(
+        "d4+nq40+pow0",
+        FriKnobs {
+            num_queries: 40,
+            commit_pow: 0,
+            query_pow: 0,
+            ..baseline
+        },
+        0,
+        true,
+    );
 
     eprintln!("");
     eprintln!("--- COMBINED: digest=4 + lb=3 nq=27 pow=1+1 (83 bits) ---");
-    run_and_report("d4+lb3+nq27", FriKnobs {
-        log_blowup: 3, num_queries: 27, .. baseline }, 0, true);
+    run_and_report(
+        "d4+lb3+nq27",
+        FriKnobs {
+            log_blowup: 3,
+            num_queries: 27,
+            ..baseline
+        },
+        0,
+        true,
+    );
 
     eprintln!("");
     eprintln!("--- COMBINED: digest=4 + mla=3 lfp=2 + cap=3 ---");
-    run_and_report("d4+mla3+cap3", FriKnobs {
-        max_log_arity: 3, log_final_poly_len: 2, .. baseline }, 3, true);
+    run_and_report(
+        "d4+mla3+cap3",
+        FriKnobs {
+            max_log_arity: 3,
+            log_final_poly_len: 2,
+            ..baseline
+        },
+        3,
+        true,
+    );
 
     eprintln!("");
-    eprintln!("--- COMBINED: digest=4 + nq=40 pow=0+0 + mla=3 lfp=2 + cap=3 (aggressive 80-bit) ---");
-    run_and_report("d4+nq40+pow0+mla3+cap3", FriKnobs {
-        num_queries: 40, commit_pow: 0, query_pow: 0,
-        max_log_arity: 3, log_final_poly_len: 2, .. baseline }, 3, true);
+    eprintln!(
+        "--- COMBINED: digest=4 + nq=40 pow=0+0 + mla=3 lfp=2 + cap=3 (aggressive 80-bit) ---"
+    );
+    run_and_report(
+        "d4+nq40+pow0+mla3+cap3",
+        FriKnobs {
+            num_queries: 40,
+            commit_pow: 0,
+            query_pow: 0,
+            max_log_arity: 3,
+            log_final_poly_len: 2,
+            ..baseline
+        },
+        3,
+        true,
+    );
 
     eprintln!("");
     eprintln!("================================================================================");

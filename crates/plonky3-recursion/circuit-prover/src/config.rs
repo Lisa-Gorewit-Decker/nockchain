@@ -217,30 +217,15 @@ pub fn goldilocks() -> GoldilocksConfig {
 /// — matching the inner ai-pow-zk STARK's choice for architectural
 /// uniformity (analogous to Pearl's BLAKE3-throughout pattern).
 ///
-/// The standard [`goldilocks`] config uses `new_benchmark_high_arity`
-/// (`log_blowup = 1`, B = 2), which is sufficient for the
-/// low-degree primitive / Poseidon tables but **cannot** prove the
-/// **degree-4** `p3_tip5_circuit_air::Tip5PermLookupAir` constraint
-/// family (the §4.6 canonical guard / x⁷ closer). This builder uses
-/// `FriParameters::new_testing` (`log_blowup = 2`) — the exact FRI
-/// tier the Tip5 AIR's own standalone validation suite
-/// (`p3-tip5-circuit-air`'s `prove_verify_all_fixture_vectors`,
-/// `make_config`) is proven sound at. Use this for any batch that
-/// registers the Tip5 NPO table.
+/// Compatibility alias for the production Tip5 outer-cert config.
+///
+/// This function used to select a tiny `FriParameters::new_testing`
+/// profile (`log_blowup = 2`, `num_queries = 2`, about five FRI bits).
+/// That path is deliberately removed: Tip5 recursive certificates now
+/// have a single maintained profile, [`goldilocks_tip5_60bit`].
 #[inline]
 pub fn goldilocks_tip5() -> GoldilocksTipsConfig {
-    let perm = Tip5Perm;
-    let hash = PaddingFreeSponge::<_, 16, 10, 5>::new(perm);
-    let compress = TruncatedPermutation::<_, COMPRESS_ARITY, 5, 16>::new(perm);
-    let val_mmcs = MerkleTreeMmcs::new(hash, compress, 3);
-    let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
-    let dft = Radix2DitParallel::default();
-    // `new_testing` ⇒ log_blowup = 2 (B = 4) — required for the
-    // validated degree-4 Tip5 lookup-AIR constraints.
-    let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
-    let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
-    let challenger = DuplexChallenger::new(perm);
-    StarkConfig::new(pcs, challenger)
+    goldilocks_tip5_60bit()
 }
 
 /// **C3 / M-S5 vertical-recursion cert** — Goldilocks outer-cert
@@ -281,10 +266,10 @@ pub fn goldilocks_tip5() -> GoldilocksTipsConfig {
 /// **Anchored-between policy (2026-05-21):** the bits target is
 /// placed in the (22, 80) interval, **proven via Theorem 1.5**
 /// at the chosen `(lb, nq)`. Targeting **60 bits Johnson** with
-/// `nq = 15` gives:
+/// `nq = 9` gives:
 ///
-///   `bits_anchored = lb·nq + commit_pow + query_pow
-///                  = 4 · 15 + 1 + 1 = 62` bits Johnson, proven.
+///   `bits_anchored = lb·nq + query_pow
+///                  = 4 · 9 + 24 = 60` bits Johnson, proven.
 ///
 /// This is 40 bits above the known-insecure floor and 20 bits
 /// below the prior conservative 80-bit ceiling — "reasonable and
@@ -297,7 +282,7 @@ pub fn goldilocks_tip5() -> GoldilocksTipsConfig {
 /// PoW forgery in this chain is **time-bounded by the 2.5-min block
 /// cadence**. An attacker must produce a forging proof within ~150
 /// seconds, otherwise a fresh honest block obsoletes the target.
-/// At 62 bits: 2^62 ops ≈ 4.6·10^18 ops in 150 s ⇒ ~3·10^16 ops/sec
+/// At 60 bits: 2^60 ops ≈ 1.2·10^18 ops in 150 s ⇒ ~8·10^15 ops/sec
 /// (~30 PetaOps) sustained throughput required. FRI verification is
 /// dominated by random Merkle-path opens (not matmul) — the workload
 /// favors CPU patterns over GPU/ASIC, putting the wall-clock budget
@@ -313,18 +298,18 @@ pub fn goldilocks_tip5() -> GoldilocksTipsConfig {
 ///
 ///  | Lever                       | Effect on L1 | Soundness effect            |
 ///  |-----------------------------|-------------:|-----------------------------|
-///  | `log_blowup: 2 → 4`         | −46%         | 16× LDE; bits = 4·nq + pow  |
-///  | `num_queries: 42 → 20 → 15` | further −25% | bits = 4·15 + 1+1 = 62 (Johnson, proven) |
-///  | `mmcs cap: 0 → 3`           | −8% (sep.)   | cuts Merkle-path depth      |
+///  | `log_blowup: 2 → 4`         | −46%         | 16× LDE; bits = 4·nq + query_pow |
+///  | `num_queries: 42 → 20 → 15 → 10 → 9` | query bytes ↓ | bits = 4·9 + 24 = 60 (Johnson, proven) |
+///  | `mmcs cap: 0 → 5`           | cuts paths   | cuts Merkle-path depth      |
 ///  | `max_log_arity: 1 → 3`      | −5% (sep.)   | none — fold-shape only      |
 ///  | `log_final_poly_len: 0 → 2` | (combined)   | none — final-poly tail only |
 ///
 /// **FRI parameters (current production):** `log_blowup = 4,
-/// num_queries = 15, max_log_arity = 3, log_final_poly_len = 2,
-/// commit_proof_of_work_bits = 1, query_proof_of_work_bits = 1,
-/// cap_height = 3, digest = 5`. Unconditional Johnson soundness
-/// = `log_blowup · num_queries + commit_pow + query_pow
-/// = 4 · 15 + 1 + 1 = 62` bits — anchored between the known
+/// num_queries = 9, max_log_arity = 3, log_final_poly_len = 2,
+/// commit_proof_of_work_bits = 1, query_proof_of_work_bits = 24,
+/// cap_height = 5, digest = 5`. Unconditional Johnson soundness
+/// = `log_blowup · num_queries + query_pow
+/// = 4 · 9 + 24 = 60` bits — anchored between the known
 /// insecure (22) and the prior conservative ceiling (80), with
 /// a 60-bit floor target.
 ///
@@ -345,32 +330,44 @@ pub fn goldilocks_tip5() -> GoldilocksTipsConfig {
 /// (the function targeted 80 bits before the 2026-05-21 anchored
 /// reanchoring). Renaming pending across call-sites; the
 /// authoritative bit count is in this doc-comment + the inline
-/// `bits = lb·nq+pow` formula.
+/// `bits = lb·nq+query_pow` formula.
+pub const GOLDILOCKS_TIP5_RECURSIVE_LOG_BLOWUP: usize = 4;
+pub const GOLDILOCKS_TIP5_RECURSIVE_LOG_FINAL_POLY_LEN: usize = 2;
+pub const GOLDILOCKS_TIP5_RECURSIVE_MAX_LOG_ARITY: usize = 3;
+pub const GOLDILOCKS_TIP5_RECURSIVE_NUM_QUERIES: usize = 9;
+pub const GOLDILOCKS_TIP5_RECURSIVE_COMMIT_POW_BITS: usize = 1;
+pub const GOLDILOCKS_TIP5_RECURSIVE_QUERY_POW_BITS: usize = 24;
+pub const GOLDILOCKS_TIP5_RECURSIVE_CAP_HEIGHT: usize = 5;
+pub const GOLDILOCKS_TIP5_RECURSIVE_JOHNSON_BITS: usize = GOLDILOCKS_TIP5_RECURSIVE_LOG_BLOWUP
+    * GOLDILOCKS_TIP5_RECURSIVE_NUM_QUERIES
+    + GOLDILOCKS_TIP5_RECURSIVE_QUERY_POW_BITS;
+
 #[inline]
 pub fn goldilocks_tip5_60bit() -> GoldilocksTipsConfig {
     let perm = Tip5Perm;
     let hash = PaddingFreeSponge::<_, 16, 10, 5>::new(perm);
     let compress = TruncatedPermutation::<_, COMPRESS_ARITY, 5, 16>::new(perm);
-    let val_mmcs = MerkleTreeMmcs::new(hash, compress, 3);
+    let val_mmcs = MerkleTreeMmcs::new(hash, compress, GOLDILOCKS_TIP5_RECURSIVE_CAP_HEIGHT);
     let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
     let dft = Radix2DitParallel::default();
     // Paper-anchored Johnson-radius soundness (IACR ePrint
     // 2025/2055 Theorem 1.5):
-    //   bits = log_blowup · num_queries + commit_pow + query_pow
-    //        = 4 · 15 + 1 + 1 = 62 bits, proven.
+    //   bits = log_blowup · num_queries + query_pow
+    //        = 4 · 9 + 24 = 60 bits, proven.
     // Anchored between the known-insecure log₂(n) ≈ 22 bits at
     // γ ≥ LDR (Thm 1.17 CYCLE-SUM) and the prior conservative
     // 80-bit ceiling at nq=20. Maintainer 2026-05-21 targeted
-    // 60-bit floor; nq=15 gives 62 with a 2-bit margin.
-    // mla=3 + lfp=2 + cap=3 are soundness-neutral compression
+    // a 60-bit floor; nq=9 with query PoW 24 lands exactly there
+    // while cutting query-sized proof material.
+    // mla=3 + lfp=2 + cap=5 are soundness-neutral compression
     // levers (fold shape / final poly / Merkle cap).
     let fri_params = FriParameters {
-        log_blowup: 4,
-        log_final_poly_len: 2,
-        max_log_arity: 3,
-        num_queries: 15,
-        commit_proof_of_work_bits: 1,
-        query_proof_of_work_bits: 1,
+        log_blowup: GOLDILOCKS_TIP5_RECURSIVE_LOG_BLOWUP,
+        log_final_poly_len: GOLDILOCKS_TIP5_RECURSIVE_LOG_FINAL_POLY_LEN,
+        max_log_arity: GOLDILOCKS_TIP5_RECURSIVE_MAX_LOG_ARITY,
+        num_queries: GOLDILOCKS_TIP5_RECURSIVE_NUM_QUERIES,
+        commit_proof_of_work_bits: GOLDILOCKS_TIP5_RECURSIVE_COMMIT_POW_BITS,
+        query_proof_of_work_bits: GOLDILOCKS_TIP5_RECURSIVE_QUERY_POW_BITS,
         mmcs: challenge_mmcs,
     };
     let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
@@ -400,7 +397,7 @@ pub type GoldilocksConfig =
     Config<Goldilocks, Poseidon2Goldilocks<8>, Poseidon2Goldilocks<8>, 8, 8, 4, 4, 4, 2>;
 
 /// **ADDITIVE (M-S5b S1.B Poseidon2-removal P1).** Tip5-unified
-/// Goldilocks STARK configuration: Tip5Perm (7-round, width 16, rate
+/// Goldilocks STARK configuration: recursive Tip5Perm (5-round, width 16, rate
 /// 10, digest 5) for both MMCS hashing and Fiat-Shamir duplexing
 /// challenger. Mirrors the inner ai-pow-zk STARK's Tip5 choice
 /// (`crates/ai-pow-zk/src/circuit.rs:186, 203`); eliminates the
@@ -415,12 +412,10 @@ pub type GoldilocksConfig =
 /// that further shrinks the quotient polynomial.
 ///
 /// **Soundness:** identical to `GoldilocksConfig` at the FRI side
-/// (same FRI params); Tip5 7-round provides ≥128 collision resistance
-/// + 4-round margin above the practically-broken 3-round per Opening
-/// the Blackbox (IACR 2024/1900). Chain MIN combined with S(−1) FRI
-/// ≥82 unconditional: ≥82 bits, unchanged from LANDED.
-pub type GoldilocksTipsConfig =
-    Config<Goldilocks, Tip5Perm, Tip5Perm, 16, 16, 10, 5, 5, 2>;
+/// (same FRI params). Recursive proving uses the paper-spec 5-round
+/// Tip5 variant only; Nockchain's canonical non-recursive hash path
+/// remains the separate 7-round `nockchain_math::tip5::permute`.
+pub type GoldilocksTipsConfig = Config<Goldilocks, Tip5Perm, Tip5Perm, 16, 16, 10, 5, 5, 2>;
 
 /// Trait bounds for STARK-compatible fields.
 pub trait StarkField: Field + PrimeCharacteristicRing + TwoAdicField + PrimeField64 {}
@@ -447,4 +442,12 @@ mod tests {
         let _c: GoldilocksTipsConfig = goldilocks_tip5_60bit();
     }
 
+    #[test]
+    fn goldilocks_tip5_recursive_profile_meets_60_bit_floor() {
+        assert_eq!(GOLDILOCKS_TIP5_RECURSIVE_LOG_BLOWUP, 4);
+        assert_eq!(GOLDILOCKS_TIP5_RECURSIVE_NUM_QUERIES, 9);
+        assert_eq!(GOLDILOCKS_TIP5_RECURSIVE_QUERY_POW_BITS, 24);
+        assert_eq!(GOLDILOCKS_TIP5_RECURSIVE_JOHNSON_BITS, 60);
+        assert!(GOLDILOCKS_TIP5_RECURSIVE_JOHNSON_BITS >= 60);
+    }
 }

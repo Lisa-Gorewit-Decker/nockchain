@@ -1,6 +1,6 @@
 [package]
 name = "p3-tip5-circuit-air"
-description = "A from-scratch AIR for the Nockchain 7-round Tip5 permutation (C2/M-S4), faithful to nockchain-math::tip5::permute and KAT-anchored to its frozen golden oracle."
+description = "A from-scratch AIR for recursive proving's 5-round Tip5 permutation, faithful to nockchain-math::tip5::permute_5round and KAT-anchored to its frozen golden oracle."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

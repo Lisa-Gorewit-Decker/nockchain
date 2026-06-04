@@ -1,7 +1,7 @@
 //! The Tip5 permutation AIR (C2.1 soundness linchpin).
 //!
 //! **One row per permutation**: every row independently encodes a full
-//! 7-round Tip5 evaluation `OUT = permute(IN)` (padding rows hold the
+//! 5-round Tip5 evaluation `OUT = permute(IN)` (padding rows hold the
 //! genuine zero-input permutation, so they too satisfy every
 //! constraint — no padding selector, no selector soundness subtlety).
 //!
@@ -19,9 +19,10 @@
 //! * **Round constants:** `+ ((RC·2^64) mod p)` constant (degree 1).
 //!
 //! Faithfulness is closed by the native≡in-circuit KAT
-//! (`tests::native_equiv_kat`): the generated trace's `(IN, ROUT[6])`
-//! equals the committed golden fixture (= `nockchain_math::tip5::
-//! permute`) bit-for-bit, the proof verifies, and any tamper is
+//! (`tests::native_equiv_kat`): the generated trace's
+//! `(IN, ROUT[NUM_ROUNDS-1])` equals the committed 5-round golden
+//! fixture (= `nockchain_math::tip5::permute_5round`) bit-for-bit, the
+//! proof verifies, and any tamper is
 //! rejected.
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
@@ -143,7 +144,7 @@ impl<AB: AirBuilder> Air<AB> for Tip5PermAir {
 
         // Tip5 paper = IACR ePrint 2023/107. One
         // round = S-box layer (§2.2) → linear MDS layer (§2.3) → round
-        // constants (§2.4), iterated NUM_ROUNDS=7 times (§2.1).
+        // constants (§2.4), iterated NUM_ROUNDS=5 times (§2.1).
         for r in 0..NUM_ROUNDS {
             // ---- §2.2 S-box layer, split-and-lookup lanes 0..NS ----
             // `S = ρ ∘ L^8 ∘ σ`: σ decomposes into 8 bytes (paper §2.2 /
@@ -186,9 +187,7 @@ impl<AB: AirBuilder> Air<AB> for Tip5PermAir {
                     //   ⇒ c = ((b+1)^3 − 1) mod 257 = LOOKUP_TABLE[b]  (C2.0)
                     let u = b_k.clone() + AB::Expr::ONE;
                     let cube = u.clone() * u.clone() * u;
-                    builder.assert_zero(
-                        cube - AB::Expr::ONE - fe(257) * q_k - c_k.clone(),
-                    );
+                    builder.assert_zero(cube - AB::Expr::ONE - fe(257) * q_k - c_k.clone());
 
                     recompose_b = recompose_b + b_k.clone() * pow8(k);
                     recompose_c = recompose_c + c_k * pow8(k);
@@ -231,7 +230,7 @@ impl<AB: AirBuilder> Air<AB> for Tip5PermAir {
             // `state ← M·sbox(state) + RC[r]`. M is the fixed circulant
             // MDS (paper §2.3); RC[r] are the per-round constants
             // (paper §2.4), embedded as `(RC·2^64) mod p` exactly as
-            // `nockchain_math::tip5::permute`'s `r_cons`.
+            // `nockchain_math::tip5::permute_5round` computes `r_cons`.
             for i in 0..STATE_SIZE {
                 let mut acc = AB::Expr::ZERO;
                 for j in 0..STATE_SIZE {
@@ -270,7 +269,7 @@ mod tests {
     const FIXTURE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         // 5-round ai-pow-zk fixture (NOT the 7-round canonical Nockchain one).
-        "/../../crates/ai-pow-zk/tests/fixtures/tip5_5round_golden_kat.txt"
+        "/../../ai-pow-zk/tests/fixtures/tip5_5round_golden_kat.txt"
     );
 
     struct Kat {
@@ -352,15 +351,19 @@ mod tests {
         for b in 0..256 {
             assert_eq!(LOOKUP_TABLE[b] as u64, k.lookup[b], "LOOKUP[{b}]");
         }
-        assert_eq!(ROUND_CONSTANTS.to_vec(), k.round_constants, "ROUND_CONSTANTS");
+        assert_eq!(
+            ROUND_CONSTANTS.to_vec(),
+            k.round_constants,
+            "ROUND_CONSTANTS"
+        );
         for (i, &rc) in ROUND_CONSTANTS.iter().enumerate() {
             assert_eq!(rc_precomp(rc), k.rc_precomp[i], "rc_precomp[{i}]");
         }
         assert_eq!(MDS_FIRST_ROW.to_vec(), k.mds_row0, "MDS first row");
     }
 
-    /// Live loop: the in-crate spec == `nockchain_math::tip5::permute`
-    /// (via the fixture `nockchain-math` pins to its live permute).
+    /// Live loop: the in-crate spec == `nockchain_math::tip5::permute_5round`
+    /// (via the fixture `nockchain-math` pins to its live 5-round permute).
     #[test]
     fn tip5_spec_matches_fixture_permute() {
         let k = parse_fixture();
@@ -373,7 +376,7 @@ mod tests {
     }
 
     /// **The C2.1 soundness linchpin**: the AIR trace is bit-for-bit
-    /// `nockchain_math::tip5::permute` at the observable boundary, the
+    /// `nockchain_math::tip5::permute_5round` at the observable boundary, the
     /// constraints are consistent with that faithful witness, and a
     /// real STARK proof verifies.
     #[test]
@@ -384,7 +387,7 @@ mod tests {
         let width = tip5_perm_air_width();
         assert_eq!(trace.width(), width);
 
-        // native ≡ in-circuit: IN cols == fixture in, ROUT[6] == fixture out
+        // native ≡ in-circuit: IN cols == fixture in, final ROUT == fixture out
         for (row, (inp, out)) in k.vectors.iter().enumerate() {
             for lane in 0..STATE_SIZE {
                 assert_eq!(
@@ -395,7 +398,7 @@ mod tests {
                 assert_eq!(
                     trace.values[row * width + rout_col(NUM_ROUNDS - 1, lane)],
                     Goldilocks::from_u64(out[lane]),
-                    "trace OUT (ROUT[6]) != native permute, row {row} lane {lane}"
+                    "trace OUT (final ROUT) != native permute, row {row} lane {lane}"
                 );
             }
         }
@@ -424,22 +427,31 @@ mod tests {
         let good = generate_trace_rows(&inputs);
         check_constraints(&air, &good, &[]);
 
-        // tamper the permutation output (ROUT[6] lane 3)
+        // tamper the permutation output (final ROUT lane 3)
         let mut t1 = generate_trace_rows(&inputs);
         let c = rout_col(NUM_ROUNDS - 1, 3);
         t1.values[c] += Goldilocks::ONE;
-        assert!(panics(|| check_constraints(&air, &t1, &[])), "tampered OUT accepted");
+        assert!(
+            panics(|| check_constraints(&air, &t1, &[])),
+            "tampered OUT accepted"
+        );
 
         // tamper an S-box output column A[r=2][j=9]
         let mut t2 = generate_trace_rows(&inputs);
         t2.values[a_col(2, 9)] += Goldilocks::ONE;
-        assert!(panics(|| check_constraints(&air, &t2, &[])), "tampered A accepted");
+        assert!(
+            panics(|| check_constraints(&air, &t2, &[])),
+            "tampered A accepted"
+        );
 
         // tamper a split-lane bit (round 0, lane 0, byte 0, bit 0)
         let mut t3 = generate_trace_rows(&inputs);
         let bit0 = STATE_SIZE; // rb(0) + 0 = first bit column
         t3.values[bit0] += Goldilocks::ONE;
-        assert!(panics(|| check_constraints(&air, &t3, &[])), "tampered bit accepted");
+        assert!(
+            panics(|| check_constraints(&air, &t3, &[])),
+            "tampered bit accepted"
+        );
         let _ = width;
     }
 
@@ -455,10 +467,8 @@ mod tests {
         let air = Tip5PermAir;
 
         // control: forcing the *canonical* bytes still verifies.
-        let canon = generate_trace_rows_with_lane0_override(
-            &inputs,
-            Some([1, 0, 0, 0, 0, 0, 0, 0]),
-        );
+        let canon =
+            generate_trace_rows_with_lane0_override(&inputs, Some([1, 0, 0, 0, 0, 0, 0, 0]));
         check_constraints(&air, &canon, &[]);
 
         // attack: 1 + p = 0xffff_ffff_0000_0002 ≡ 1 (mod p), a
@@ -476,18 +486,18 @@ mod tests {
     }
 
     /// **Exhaustive native-equivalence**: the in-circuit Tip5 AIR ≡
-    /// `nockchain_math::tip5::permute` over a large randomized input
+    /// `nockchain_math::tip5::permute_5round` over a large randomized input
     /// space, not just the frozen vectors.
     ///
     /// Equivalence chain (each leg independently tested, green):
-    /// `AIR trace ROUT[6]` == `tip5_spec::permute` (this test, N random
+    /// `AIR trace final ROUT` == `tip5_spec::permute` (this test, N random
     /// inputs + `check_constraints` on every one) — and
     /// `tip5_spec::permute` == the committed golden fixture ==
-    /// `nockchain_math::tip5::permute` (`tip5_spec_matches_fixture_
+    /// `nockchain_math::tip5::permute_5round` (`tip5_spec_matches_fixture_
     /// permute` + `embedded_constants_match_fixture` over all 315
     /// fixture vectors; `nockchain-math`'s own `c2_kat` re-verifies
-    /// that fixture against its *live* `permute`). Hence the AIR is
-    /// exhaustively validated against the nockchain-math Tip5
+    /// that fixture against its *live* `permute_5round`). Hence the AIR is
+    /// exhaustively validated against the nockchain-math 5-round Tip5
     /// implementation. Constraints follow the Tip5 paper (IACR ePrint
     /// 2023/107): §2.1 round iteration, §2.2 split-and-lookup + x^7
     /// S-boxes, §2.3 circulant MDS, §2.4 round constants, §4.6 correct
@@ -507,8 +517,9 @@ mod tests {
 
         const N: usize = 4096; // 4096 random 16-wide permutations
         let mut seed = 0xDEAD_BEEF_CAFE_F00Du64;
-        let inputs: Vec<[u64; STATE_SIZE]> =
-            (0..N).map(|_| core::array::from_fn(|_| xs(&mut seed))).collect();
+        let inputs: Vec<[u64; STATE_SIZE]> = (0..N)
+            .map(|_| core::array::from_fn(|_| xs(&mut seed)))
+            .collect();
 
         let trace = generate_trace_rows(&inputs);
         let width = tip5_perm_air_width();
@@ -521,7 +532,7 @@ mod tests {
                 assert_eq!(
                     trace.values[row * width + rout_col(NUM_ROUNDS - 1, lane)],
                     Goldilocks::from_u64(expected[lane]),
-                    "AIR != nockchain-math Tip5 at random row {row} lane {lane}"
+                    "AIR != nockchain-math 5-round Tip5 at random row {row} lane {lane}"
                 );
             }
         }

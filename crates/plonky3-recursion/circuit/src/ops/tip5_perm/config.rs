@@ -2,17 +2,14 @@
 //!
 //! Mirrors the [`Poseidon1Config`](crate::ops::Poseidon1Config)
 //! *interface* (the methods the recursion challenger / circuit
-//! lowering call) but with **Tip5-correct internals**: the deployed
-//! Nockchain Tip5 (`nockchain_math::tip5`, ai-pow-zk
-//! `crates/ai-pow-zk/src/circuit.rs`) is a **7-round, width-16**
-//! permutation with sponge **rate 10, capacity 6, digest 5** over
-//! Goldilocks — NOT a Poseidon-style `width/2` rate or single
-//! `x^sbox_degree` power map. The split-and-lookup + `x^7` round
-//! structure lives in the constraint system
-//! (`p3-tip5-circuit-air`); this is only the parameter bundle / NPO
-//! key, kept faithful to the deployed sponge geometry so the
-//! in-circuit challenger duplexing and MMCS hashing (C2.3) match the
-//! native prover's transcript bit-for-bit.
+//! lowering call) but with **recursive Tip5-correct internals**:
+//! recursive proving uses the 5-round Goldilocks Tip5 variant from
+//! `p3-tip5-circuit-air` / `nockchain_math::tip5::permute_5round`,
+//! with sponge **width 16, rate 10, capacity 6, digest 5**. This is not
+//! the canonical 7-round Nockchain hash path. The split-and-lookup +
+//! `x^7` round structure lives in the constraint system; this is only
+//! the parameter bundle / NPO key, kept faithful to the recursive
+//! prover's transcript geometry.
 
 use alloc::format;
 use alloc::sync::Arc;
@@ -27,7 +24,7 @@ use crate::types::{ExprId, WitnessId};
 
 /// Identifies the base field for a Tip5 configuration.
 ///
-/// The deployed Nockchain Tip5 is Goldilocks-only; the enum mirrors
+/// Recursive Tip5 is Goldilocks-only; the enum mirrors
 /// `Poseidon1FieldId` so a future field is a one-variant addition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum Tip5FieldId {
@@ -36,7 +33,7 @@ pub enum Tip5FieldId {
 }
 
 /// Tip5 configuration: a stable NPO key and faithful parameter source
-/// for the deployed 7-round, width-16, rate-10/capacity-6 Goldilocks
+/// for the recursive 5-round, width-16, rate-10/capacity-6 Goldilocks
 /// Tip5 sponge (`PaddingFreeSponge<Tip5Perm,16,10,5>`,
 /// `DuplexChallenger<Goldilocks,Tip5Perm,16,10>`,
 /// `TruncatedPermutation<Tip5Perm,2,5,16>`).
@@ -54,25 +51,28 @@ pub struct Tip5Config {
     capacity: usize,
     /// Digest length (squeezed elements for a hash). Always 5.
     digest: usize,
-    /// Number of Tip5 rounds. Nockchain deploys 7 (paper N=5).
+    /// Number of Tip5 rounds. Recursive proving uses paper-spec N=5.
     num_rounds: usize,
     /// Split-and-lookup S-box lanes per round (the rest use `x^7`). 4.
     num_split: usize,
 }
 
 impl Tip5Config {
-    /// The single deployed configuration: Goldilocks, width 16,
-    /// rate 10, capacity 6, digest 5, 7 rounds, 4 split lanes.
-    pub const GOLDILOCKS_W16: Self = Self {
+    /// Explicit recursive configuration: Goldilocks, width 16,
+    /// rate 10, capacity 6, digest 5, 5 rounds, 4 split lanes.
+    pub const GOLDILOCKS_W16_R5: Self = Self {
         field_id: Tip5FieldId::Goldilocks,
         d: 1,
         width: 16,
         rate: 10,
         capacity: 6,
         digest: 5,
-        num_rounds: 7,
+        num_rounds: 5,
         num_split: 4,
     };
+
+    /// Backward-compatible name for the single recursive Tip5 config.
+    pub const GOLDILOCKS_W16: Self = Self::GOLDILOCKS_W16_R5;
 
     /// Returns `true` if this configuration targets Goldilocks.
     pub const fn is_goldilocks(self) -> bool {
@@ -126,7 +126,7 @@ impl Tip5Config {
         self.digest / self.d
     }
 
-    /// Tip5 round count (7).
+    /// Tip5 round count (5 for recursive proving).
     pub const fn num_rounds(self) -> usize {
         self.num_rounds
     }
@@ -140,7 +140,7 @@ impl Tip5Config {
     pub const fn variant_name(self) -> &'static str {
         match self.field_id {
             Tip5FieldId::Goldilocks => match (self.width, self.num_rounds) {
-                (16, 7) => "goldilocks_w16_r7",
+                (16, 5) => "goldilocks_w16_r5",
                 _ => panic!("unknown Goldilocks Tip5 config"),
             },
         }
@@ -149,7 +149,7 @@ impl Tip5Config {
     /// Parse a `Tip5Config` from a variant name string.
     pub fn from_variant_name(name: &str) -> Option<Self> {
         match name {
-            "goldilocks_w16_r7" => Some(Self::GOLDILOCKS_W16),
+            "goldilocks_w16_r5" => Some(Self::GOLDILOCKS_W16),
             _ => None,
         }
     }
@@ -272,7 +272,7 @@ mod tests {
     type F = Goldilocks;
 
     #[test]
-    fn geometry_matches_deployed_tip5() {
+    fn geometry_matches_recursive_tip5() {
         let c = Tip5Config::GOLDILOCKS_W16;
         assert!(c.is_goldilocks());
         assert_eq!(c.d(), 1);
@@ -282,14 +282,14 @@ mod tests {
         assert_eq!(c.capacity_ext(), 6); // 16 − 10
         assert_eq!(c.width_ext(), 16); // rate_ext + capacity_ext
         assert_eq!(c.digest(), 5); // PaddingFreeSponge<_,16,10,5>
-        assert_eq!(c.num_rounds(), 7); // Nockchain deploys 7
+        assert_eq!(c.num_rounds(), 5); // recursive Tip5 is 5-round
         assert_eq!(c.num_split(), 4);
     }
 
     #[test]
     fn variant_name_roundtrips() {
         let c = Tip5Config::GOLDILOCKS_W16;
-        assert_eq!(c.variant_name(), "goldilocks_w16_r7");
+        assert_eq!(c.variant_name(), "goldilocks_w16_r5");
         assert_eq!(Tip5Config::from_variant_name(c.variant_name()), Some(c));
         assert_eq!(Tip5Config::from_variant_name("nope"), None);
     }

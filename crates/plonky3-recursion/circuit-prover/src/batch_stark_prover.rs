@@ -593,9 +593,7 @@ pub enum ProofMetadataError {
     BadHornerPackedSteps(usize),
 
     /// The public table cannot bind more lanes than it packs into the first row.
-    #[error(
-        "public binding lanes ({binding_lanes}) exceed public lanes ({public_lanes})"
-    )]
+    #[error("public binding lanes ({binding_lanes}) exceed public lanes ({public_lanes})")]
     PublicBindingExceedsLanes {
         binding_lanes: usize,
         public_lanes: usize,

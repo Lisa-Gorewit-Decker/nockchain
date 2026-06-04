@@ -21,9 +21,10 @@ use crate::types::{ExprId, NonPrimitiveOpId};
 /// Closed enum consumed by the in-circuit challenger AND
 /// `recursion/src/pcs/mmcs.rs` (via `.d()/.rate()/.rate_ext()/
 /// .width_ext()/.npo_type_id()`). The `Tip5` arm is the deployed
-/// ai-pow-zk Layer-0 hash (Goldilocks D=1, width 16, rate 10,
-/// capacity 6, digest 5, 7-round); its arms mirror the Poseidon1 D=1
-/// arms exactly with Tip5 numbers (rate 10, capacity 6).
+/// ai-pow-zk recursive hash (Goldilocks D=1, width 16, rate 10,
+/// capacity 6, digest 5, 5-round); its arms mirror the Poseidon1 D=1
+/// arms exactly with Tip5 numbers (rate 10, capacity 6). This is not
+/// Nockchain's canonical non-recursive 7-round hash path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PermConfig {
     Poseidon1(Poseidon1Config),

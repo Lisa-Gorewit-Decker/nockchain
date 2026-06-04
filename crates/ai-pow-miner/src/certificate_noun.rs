@@ -6372,8 +6372,8 @@ mod tests {
             &zk, 0, run.composite_trace_height, &commitments, &run.public_inputs, &certificate_node,
         );
         let jammed = cert.jam();
-        let l1_postcard_bytes = ai_pow_zk::recursion::encode_recursive_certificate(&run.l1_cert)
-            .expect("postcard L1 certificate")
+        let l1_wire_bytes = ai_pow_zk::recursion::encode_recursive_certificate(&run.l1_cert)
+            .expect("encode L1 certificate")
             .len();
 
         let mut cued: NounSlab = NounSlab::new();
@@ -6406,17 +6406,17 @@ mod tests {
             jammed.len()
         );
         assert!(
-            l1_postcard_bytes <= 160 * 1024,
-            "real recursive postcard certificate exceeded 160 KiB budget: {} bytes",
-            l1_postcard_bytes
+            l1_wire_bytes <= 160 * 1024,
+            "real recursive wire certificate exceeded 160 KiB budget: {} bytes",
+            l1_wire_bytes
         );
 
         eprintln!(
-            "real recursive certificate noun: jammed={} bytes ({:.2} KiB), postcard_l1={} bytes ({:.2} KiB), prove_ms={}, l1_build_ms={}, l1_verify_ms={}, l1_cert_ms={}",
+            "real recursive certificate noun: jammed={} bytes ({:.2} KiB), wire_l1={} bytes ({:.2} KiB), prove_ms={}, l1_build_ms={}, l1_verify_ms={}, l1_cert_ms={}",
             jammed.len(),
             jammed.len() as f64 / 1024.0,
-            l1_postcard_bytes,
-            l1_postcard_bytes as f64 / 1024.0,
+            l1_wire_bytes,
+            l1_wire_bytes as f64 / 1024.0,
             recursive_prove_ms,
             run.l1_circuit_build_ms,
             run.l1_in_circuit_verify_ms,

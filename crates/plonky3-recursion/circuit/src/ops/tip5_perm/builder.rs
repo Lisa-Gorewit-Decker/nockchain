@@ -21,7 +21,7 @@ use crate::ops::tip5_perm::call::{Tip5PermCall, Tip5PermCallMmcs};
 use crate::types::{ExprId, NonPrimitiveOpId};
 
 impl<F: Field> CircuitBuilder<F> {
-    /// Add a Tip5 perm row (one 7-round Tip5 permutation), D=1 base
+    /// Add a Tip5 perm row (one 5-round Tip5 permutation), D=1 base
     /// field. Mirrors `add_poseidon1_perm_base`.
     ///
     /// Returns `(op_id, outputs)` where `outputs` is `[Option<ExprId>;

@@ -104,6 +104,7 @@ version = "0.1.0-experimental"
 dependencies = [
  "bincode 2.0.1",
  "blake3",
+ "flate2",
  "hashbrown 0.15.5",
  "nockchain-math",
  "p3-air",
@@ -7086,6 +7087,7 @@ dependencies = [
  "p3-circuit",
  "p3-circuit-prover",
  "p3-commit",
+ "p3-dft",
  "p3-field",
  "p3-fri",
  "p3-goldilocks",

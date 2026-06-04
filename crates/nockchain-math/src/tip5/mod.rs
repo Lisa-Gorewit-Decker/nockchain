@@ -184,10 +184,11 @@ pub fn permute(sponge: &mut [u64; 16]) {
 /// continue to use [`permute`] (7 rounds).
 pub const NUM_ROUNDS_5ROUND: usize = 5;
 
-/// **5-round Tip5 variant for ai-pow-zk** — identical to [`permute`]
-/// (same MDS, same LOOKUP_TABLE, same RC schedule, same S-box) but
-/// iterates only 5 rounds using `ROUND_CONSTANTS[0..5*STATE_SIZE]`
-/// (i.e., the FIRST 80 of the 112 round constants).
+/// **5-round Tip5 variant for ai-pow-zk recursive certificate
+/// proving** — identical to [`permute`] (same MDS, same LOOKUP_TABLE,
+/// same RC schedule, same S-box) but iterates only 5 rounds using
+/// `ROUND_CONSTANTS[0..5*STATE_SIZE]` (i.e., the FIRST 80 of the 112
+/// round constants).
 ///
 /// Tip5 paper IACR ePrint 2023/107 §2.4 specifies N=5 as the
 /// secure round count; the cryptanalysis (IACR ePrint 2024/1900)
@@ -199,8 +200,9 @@ pub const NUM_ROUNDS_5ROUND: usize = 5;
 /// reduction (~−25-30% in the in-circuit Tip5 AIR width).
 ///
 /// **Do not use this for canonical Nockchain hashing.** It is
-/// specifically an ai-pow-zk-only variant; all other Nockchain
-/// crates must continue to use the 7-round [`permute`].
+/// specifically an ai-pow-zk recursive-certificate-only variant; all
+/// other Nockchain crates must continue to use the 7-round
+/// [`permute`].
 pub fn permute_5round(sponge: &mut [u64; 16]) {
     for i in 0..NUM_ROUNDS_5ROUND {
         let a = sbox_layer(array_ref![sponge, 0, STATE_SIZE]);

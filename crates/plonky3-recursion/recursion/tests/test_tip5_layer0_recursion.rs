@@ -228,11 +228,31 @@ struct SweepProfile {
 /// PROD{3,80}, LB2{2,120}, LB4{4,60}, LB5{5,48}, LB6{6,40} — every
 /// point is 120-bit provable (`num_queries · log_blowup / 2 == 120`).
 const SWEEP: [SweepProfile; 5] = [
-    SweepProfile { name: "PROD", log_blowup: 3, num_queries: 80 },
-    SweepProfile { name: "LB2", log_blowup: 2, num_queries: 120 },
-    SweepProfile { name: "LB4", log_blowup: 4, num_queries: 60 },
-    SweepProfile { name: "LB5", log_blowup: 5, num_queries: 48 },
-    SweepProfile { name: "LB6", log_blowup: 6, num_queries: 40 },
+    SweepProfile {
+        name: "PROD",
+        log_blowup: 3,
+        num_queries: 80,
+    },
+    SweepProfile {
+        name: "LB2",
+        log_blowup: 2,
+        num_queries: 120,
+    },
+    SweepProfile {
+        name: "LB4",
+        log_blowup: 4,
+        num_queries: 60,
+    },
+    SweepProfile {
+        name: "LB5",
+        log_blowup: 5,
+        num_queries: 48,
+    },
+    SweepProfile {
+        name: "LB6",
+        log_blowup: 6,
+        num_queries: 40,
+    },
 ];
 
 /// Build the exact ai-pow-zk Layer-0 `StarkConfig` for `profile`,
@@ -259,7 +279,11 @@ fn make_layer0_config(profile: SweepProfile) -> Tip5Layer0Config {
     StarkConfig::new(pcs, challenger)
 }
 
-fn fibonacci_setup() -> (p3_matrix::dense::RowMajorMatrix<Val>, Vec<Val>, FibonacciAir) {
+fn fibonacci_setup() -> (
+    p3_matrix::dense::RowMajorMatrix<Val>,
+    Vec<Val>,
+    FibonacciAir,
+) {
     let n = 1 << 3;
     let x = 21u64;
     let trace = generate_trace_rows::<Val>(0, 1, n);
@@ -541,7 +565,7 @@ use p3_circuit_prover::{
     TablePacking, Tip5Preprocessor, recompose_air_builders, tip5_air_builders,
 };
 
-/// Outer-cert STARK config: `goldilocks_tip5()` — `GoldilocksTipsConfig`
+/// Outer-cert STARK config: `goldilocks_tip5_60bit()` — `GoldilocksTipsConfig`
 /// (post-2026-05-20 P5 Poseidon2-removal flip; was `GoldilocksConfig`
 /// = Poseidon2-W8-based). Now: Tip5Perm width 16, rate 10, digest 5.
 /// Challenge field `BinomialExtensionField<Goldilocks, 2>` (the
@@ -555,10 +579,7 @@ type OuterConfig = GoldilocksTipsConfig;
 /// certificate byte length (for the M-S5 ≤65 KB assertion) on accept,
 /// or an error string describing how `verify_all_tables` rejected
 /// (used by the tamper test, which REQUIRES rejection).
-fn outer_cert_layer0(
-    profile: SweepProfile,
-    tamper: bool,
-) -> Result<usize, String> {
+fn outer_cert_layer0(profile: SweepProfile, tamper: bool) -> Result<usize, String> {
     let BuiltLayer0Circuit {
         circuit,
         public_inputs,
@@ -629,12 +650,13 @@ fn outer_cert_layer0(
         }
     };
 
-    let prover_data = ProverData::from_airs_and_degrees(&config::goldilocks_tip5(), &airs, &degrees);
+    let prover_data =
+        ProverData::from_airs_and_degrees(&config::goldilocks_tip5_60bit(), &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let mut prover =
-        BatchStarkProver::new(config::goldilocks_tip5()).with_table_packing(table_packing);
+        BatchStarkProver::new(config::goldilocks_tip5_60bit()).with_table_packing(table_packing);
     prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
     prover.register_recompose_table::<2>(true);
 

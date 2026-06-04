@@ -1,4 +1,4 @@
-> _Created **2026-05-19** · last updated **2026-05-19**._
+> _Created **2026-05-19** · last updated **2026-06-03**._
 
 # C4 / M-S6 — independent crypto audit: readiness package
 
@@ -32,10 +32,10 @@
 > Phase C row C4; `2026-05-15_ZKP_SECURITY_REPORT.md` (the
 > definitive soundness report — *this doc indexes it, does not
 > replace it*); `2026-05-15_GAP_AUDIT.md` (the gap-tracker);
-> `2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md` (the
-> deferred sibling milestone — the only soundness-relevant
-> *known* residual that touches the cert size, not the cert
-> soundness).
+> `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md` (the current
+> native terminal-compression workstream — the only soundness-
+> relevant known residual that touches the cert size, not the
+> production soundness floor).
 
 ---
 
@@ -79,8 +79,8 @@ mining the real shipped `Llama-3.1-8B-Instruct-pearl` model
 | Pearl-byte-equivalent mineable unit | `ai-pow` | the *plain* `TileState` / `keyed_hash` / `compute_tile_*` path the SNARK is *of*; byte-equiv to Pearl spec §4.1/§4.3 on type-0 INT GEMMs |
 | ai-pow-zk soundness stack | `ai-pow-zk` | the Plonky3 STARK AIR + prover/verifier bridge proving the mineable unit |
 | Recursion substrate | `crates/plonky3-recursion/` (vendored, excluded workspace) | C1: vendored Plonky3-recursion at the C1 fixed-point rev `c2c51fb` (rev-aligned to ai-pow-zk's `6de5cba`) |
-| Tip5 circuit AIR | `crates/plonky3-recursion/tip5-circuit-air/` | C2: in-circuit Tip5 permutation, KAT-anchored to `nockchain-math::tip5::permute` |
-| C3 / M-S5 outer-recursive cert | `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs` + `test_tip5_layer0_compression.rs` | The ≥120-bit vertical-recursion certificate of the inner Tip5 Layer-0 proof |
+| Tip5 circuit AIR | `crates/plonky3-recursion/tip5-circuit-air/` | C2: in-circuit recursive Tip5 permutation, KAT-anchored to `nockchain-math::tip5::permute_5round`; canonical non-recursive Nockchain Tip5 remains `permute` (7 rounds) |
+| C3 / M-S5 outer-recursive cert | `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs` + `test_tip5_layer0_compression.rs` | The production ≥60-bit Johnson recursive certificate of the inner Tip5 Layer-0 proof |
 
 ### 1.2 Out-of-scope
 
@@ -94,11 +94,12 @@ mining the real shipped `Llama-3.1-8B-Instruct-pearl` model
   extraction) and `D2 / M-C1` (consensus block-certificate
   integration) are external to ai-pow-zk and not in this audit.
 - **M-S5b terminal compression (`#131`)** is **deferred** (see
-  `2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`). When it
+  `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md`). When it
   lands, a follow-on audit round covers the substrate addition.
   M-S5b is *not* hidden incompleteness of C3 — the ≤100 KB
   target was explicitly carved out and the C3 milestone is the
-  soundness-correct ≥120-bit cert (LANDED).
+  production-sound recursive cert (LANDED at the current ≥60-bit
+  Johnson floor).
 - **G3 carry-vector segmentation.** Deferred (Pearl-faithful
   evaluation — this model is in-envelope; revive only if a
   workload exceeds `k ≤ 2¹⁶`). See
@@ -153,10 +154,10 @@ Two soundness objects, both **≥ 60 bits unconditional Johnson**:
    conjecture).
 2. **End-to-end recursion** (M-S5 cert). Every layer of the
    verifier-recursion chain is **≥ 60 bits unconditional
-   Johnson** at the 2026-05-21 anchored params (inner Tip5-L0
-   PROD `lb=4 nq=15 pow=1+1` = 62 bits; outer-cert L1/L2
-   `goldilocks_tip5_60bit` `lb=4 nq=15 pow=1+1` = 62 bits;
-   chain MIN = 62 bits).
+   Johnson** at the anchored params (inner Tip5-L0 PROD
+   `lb=4 nq=15 pow=1+1` = 62 bits; outer-cert L1
+   `goldilocks_tip5_60bit` `lb=4 nq=9 query_pow=24` = 60 bits;
+   chain MIN = 60 bits).
 
 The audit should *also* assess:
 
@@ -188,8 +189,8 @@ The audit should *also* assess:
 | **A-SWAP** | Forges by swapping A or B matrix between strips, or skipping/duplicating stripes | §4.A fold-chain + M-S1 multiset bus |
 | **A-TILE** | Wins a *cheaper* tile than attested | MED-3: verifier-derived `(tile_i, tile_j)` |
 | **A-MAT** | Forges by supplying a different committed matrix than `HASH_A`/`HASH_B` | M52 matrix binding |
-| **A-CHAIN** | Forges the recursion chain (claims a valid inner that isn't) | C2.4 in-circuit Tip5 Layer-0 verify + C3 ≥120-bit outer cert |
-| **A-SOUND** | Exploits a sub-≥80-unconditional configuration | Every FRI tier in M-S5 is ≥ 80 unconditional under the IACR ePrint 2025/2055 Theorem 1.5 Johnson-radius bound (LANDED `lb=2, nq=120` is well above 80 unconditional; §15 of C3 doc + §1.3 above) |
+| **A-CHAIN** | Forges the recursion chain (claims a valid inner that isn't) | C2.4 in-circuit Tip5 Layer-0 verify + production C3 recursive cert |
+| **A-SOUND** | Exploits a sub-60-bit production configuration | Every production FRI tier in the consensus-facing recursive path is ≥60 bits unconditional Johnson; current outer profile is `lb=4, nq=9, query_pow=24` ⇒ 60 bits (§1.3 above) |
 | **A-FRI** | Exploits a FRI commitment-scheme weakness | Standard Plonky3 FRI (audited upstream); we use established parameters; **proximity testing stays at γ < J(δ)−η** (Johnson radius, never beyond — IACR ePrint 2025/2055 §8 attacks avoided) |
 | **A-LDR** (new) | Pushes proximity testing beyond Johnson radius into the list-decoding regime where the paper's negative results + §8 attacks live | ✅ **Per-layer γ vs J(δ)−η table landed 2026-05-20** in `2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md` §4.3 — every M-S5 link (inner PROD/LB2/LB4/LB5/LB6 + L1 + L2 outer-cert) operates strictly inside Johnson with `J(δ) ≥ 0.5` and `η > 0` at every layer; paper §8 attacks structurally avoided |
 | **A-HASH** | Exploits Tip5 / BLAKE3 weakness | Tip5: KAT-anchored to spec (paper IACR ePrint 2023/107); BLAKE3: as-published |
@@ -228,6 +229,7 @@ backs it → status)`.
 | **HIGH-2.2 §4.B** | `FoldChip` + `FOLD_STATE` (Option B2 direct per-stripe; `M_next[slot] = rotl13(M_cur[slot]) ⊕ x_step`) bit-identical to `TileState::fold` | `2026-05-15_HIGH2_2_DESIGN.md` § 4.B | unit vs `TileState::fold` / `compute_tile_from_slices` | ✅ landed |
 | **HIGH-2.2 §4.D** | `JACKPOT_MSG[0..16] == FOLD_STATE` (no zero-pad stand-in) | `2026-05-15_HIGH2_2_DESIGN.md` § 4.D | E2E `high2_2_honest_real_tile_roundtrip` clears real difficulty | ✅ landed |
 | **HIGH-2.2 §4.C / A3.3** | `A/B_NOISED_UNPACK` is the noise-of-committed-plain (zero-gap on the 16∣r path; c-exact) | `2026-05-17_SEC_4C2_NOISE_BINDING_DESIGN.md` § 8 | `ai-pow-zk` `cx.0` KAT (witness-free `(chunk,block,word_off)` leaf address binds row → committed bytes ∈ `HASH_A`) | ✅ landed for production (Pearl always 16∣r); non-16∣r TEST geom = A3.2b documented strictly-stronger-than-pre-A3 |
+| **HIGH-2.2 §4.C / cx.2 full-block split-view closure** | Co-located BLAKE3 leaf rows bind all 64 `UINT8_DATA` bytes to all 64 `MAT_UNPACK` bytes via gated `i8u8`, all 64 `NOISE_UNPACK` bytes via `irange7p1`, all 64 `MAT_UNPACK` bytes via `irange8`, and all 8 `NOISED_PACKED` sub-slices via BLAKE-side self-queries / `MAT_FREQ`. This closes the external-review P0 concern that later 8-byte sub-slices could be split between BLAKE3-facing bytes and matmul-facing bytes. | Prover-side review 2026-06 P0 + `composite_layout.rs` / `composite_full_air_with_lookups.rs` | `non_first_subslice_split_view_rejected_by_i8u8_logup`; `non_first_subslice_mat_freq_drop_rejected_by_logup`; `inconsistent_i8u8_pair_rejected_by_logup` | ✅ landed |
 | **HIGH-2.2 §4.E** | Attested `(tile_i, tile_j)` bound (reconciled with MED-3) | `2026-05-15_HIGH2_2_DESIGN.md` § 4.E | `ai-pow --features zk` MED-3 + tile-index roundtrip | ✅ landed |
 | **HIGH-2.2 §6(a)** | Fold-schedule pin (verifier reconstructs the stripe schedule) | `2026-05-15_HIGH2_2_DESIGN.md` § 6 | adversarial swap/skip/duplicate stripe ⇒ reject | ✅ landed |
 | **HIGH-2.2 §6(b)-G1+G2** | Sweep-input pin (G1: store inputs bound to declared schedule; G2: store reads bound to control prep) | `2026-05-15_HIGH2_2_DESIGN.md` § 6 | adversarial G1/G2 violations ⇒ reject | ✅ landed |
@@ -258,14 +260,14 @@ backs it → status)`.
 | # | Claim | Where argued | Where tested | Status |
 |---|---|---|---|---|
 | **C1 / M-S3** | `Plonky3-recursion` vendored in-tree at C1 fixed point `c2c51fb` (rev-aligned to ai-pow-zk's `6de5cba`) | `2026-05-18_C1_RECURSION_VENDOR_DESIGN.md` | full Plonky3-recursion test suite green at the aligned rev | ✅ landed |
-| **C2.1** | 7-round Tip5 permutation AIR, KAT-anchored to `nockchain_math::tip5::permute` (soundness linchpin) | `2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` § 2/§ 3 | `tip5-circuit-air` KAT vs `permute` oracle (commit `62413ba`) | ✅ landed |
+| **C2.1** | 5-round recursive Tip5 permutation AIR, KAT-anchored to `nockchain_math::tip5::permute_5round` (recursive soundness linchpin); canonical non-recursive Nockchain Tip5 remains 7-round `permute` | `2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` § 2/§ 3 + 2026-06-03 recursive-only boundary update | `tip5-circuit-air` KAT vs `permute_5round` oracle; `recursive_tip5_adapter_does_not_replace_canonical_nockchain_tip5` | ✅ landed |
 | **C2.1 / §2b** | Lookup-free arithmetization (per-byte cube ≡ LOOKUP_TABLE) machine-proved identity per paper §4.6 canonical `<p` guard | `2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` § 2b | `c2_0_offset_fermat_cube_identity_machine_check` KAT | ✅ landed (algebraic identity), **superseded operationally by lookup-table** |
 | **C2 / lookup-table** | Lookup-table AIR (8.6× narrower; LogUp degree 2 not 226) | `2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` § 2c | `tip5-circuit-air` LogUp KAT (commits `a5e7600`, `d97bdb2`, `8233a9e`) | ✅ landed |
 | **C2 L4** | Global bus done correctly; LogUp degree 226 → 2 (machine-proven) | `2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` § 2c L4 | bus KAT (commit `8233a9e`) | ✅ landed |
 | **C2 L5** | In-circuit Tip5 challenger duplexing + MMCS path bit-for-bit vs native | `2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` § 2c L5 | bit-for-bit KAT vs native (commit `259dd6f`) | ✅ landed |
-| **C2.4** | Real Tip5 Layer-0 end-to-end recursion verify + 120-bit FRI sweep | `2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` § 2c.C2.4 | `recursion/tests/test_tip5_layer0_recursion.rs` accept + tamper-reject across the sweep (commit `fb0bd32`) | ✅ landed |
+| **C2.4** | Real 5-round Tip5 Layer-0 end-to-end recursion verify + production ≥60-bit FRI profile | `2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` § 2c.C2.4 + current `goldilocks_tip5_60bit` profile | `recursion/tests/test_tip5_layer0_recursion.rs` accept + tamper-reject across the production profile | ✅ landed |
 | **C2.4 R-a** | `WitnessChecks` CTL D=1 byte-identical re-validated; D-aware infrastructure landed | `2026-05-19_C3_OUTER_CERT_DESIGN.md` (the C2.4 R-a tail context) | D=1 byte-identical re-validation; D=5 quintic arbiter (commit `632cb8c`) | ✅ landed |
-| **C3 / M-S5 ≥120-bit cert** | Soundness-correct ≥120-bit vertical-recursion cert (every chain link ≥120 conj. bits ⇒ end-to-end `min ≥ 120` conjectured **= comfortably ≥ 80 unconditional under IACR ePrint 2025/2055 Theorem 1.5 Johnson-radius bound**, the new maintainer floor; see §1.3) | `2026-05-19_C3_OUTER_CERT_DESIGN.md` § 13.2 + § 15 | `test_tip5_layer0_compression.rs::c3_stage_a_l1_120bit_kat` + `c3_stage_b_l2_over_120bit_l1` + `c3_stage_c_sweep_120bit` (accept + 5 inner sweep profiles tamper-reject) | ✅ landed (commits `259cab2`, prior `14116b0`); independently re-validated by orchestrator |
+| **C3 / M-S5 production recursive cert** | Soundness-correct production vertical-recursion cert; every consensus-facing link is ≥60 bits unconditional Johnson, with current outer profile `lb=4, nq=9, query_pow=24` ⇒ 60 bits (§1.3) | `2026-05-19_C3_OUTER_CERT_DESIGN.md` § 13.2 + current production-profile docs | `test_tip5_layer0_compression.rs` / production recursion profile tests and `prod_recursion_measure` size/timing runs | ✅ landed; ≤100 KB terminal compression remains open |
 | **DT-4 duplex binding** | Merkle-swap slot↔idx desync fix: capture pre-swap `bus_state` for `!has_ctl_output` perms; net-0 duplex binding | `2026-05-19_C3_OUTER_CERT_DESIGN.md` § 13 | `crates/plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs` (commit `14116b0`); tamper-reject via `WitnessConflict` at `runner().run()` | ✅ landed (non-fenced executor edit; zero multiplicity changed; Merkle-root binding bit-for-bit untouched) |
 
 ### 3.6 ENV / P-A — production envelope
@@ -285,10 +287,10 @@ backs it → status)`.
 
 ```
                 ┌─────────────────────────────────────────────┐
-                │   M-S5  ≥120-bit outer-recursive STARK cert │
+                │   M-S5  ≥60-bit outer-recursive STARK cert  │
                 │   (test_tip5_layer0_compression.rs)         │
-                │   L1 ≈ 2.69 MB, L2 ≈ 1.79 MB                │
-                │   M-S5b will compress this to ≤100 KB        │
+                │   current L1 cert ≈ 200.6 KiB fixed-bincode │
+                │   M-S5b target remains ≈100 KiB             │
                 └────────────────────┬────────────────────────┘
                                      │ verifies
                                      ▼
@@ -296,7 +298,7 @@ backs it → status)`.
                 │   C2.4  in-circuit Tip5-L0 verifier         │
                 │   (test_tip5_layer0_recursion.rs;           │
                 │   verify_p3_batch_proof_circuit)            │
-                │   120-bit FRI sweep, accept+tamper-reject   │
+                │   production ≥60-bit profile, accept+tamper │
                 └────────────────────┬────────────────────────┘
                                      │ verifies
                                      ▼
@@ -313,7 +315,7 @@ backs it → status)`.
 |---|---|---|---|
 | Goldilocks field, FRI, MMCS | upstream Plonky3 | rev aligned at `c2c51fb` to ai-pow-zk's `6de5cba` | upstream audited (Plonky3 community) |
 | Recursion frontend | `crates/plonky3-recursion/` (vendored, **excluded workspace**) | C1 fixed-point `c2c51fb` | `2026-05-18_C1_RECURSION_VENDOR_DESIGN.md` |
-| Tip5 perm AIR (linchpin) | `crates/plonky3-recursion/tip5-circuit-air/` | included via C1 | C2.1 KAT vs `nockchain_math::tip5::permute` |
+| Tip5 perm AIR (linchpin) | `crates/plonky3-recursion/tip5-circuit-air/` | included via C1 | C2.1 KAT vs recursive `nockchain_math::tip5::permute_5round`; canonical `permute` remains 7-round outside recursion |
 | Tip5 lookup table | `crates/plonky3-recursion/circuit-prover/.../tip5/` (LogUp arms) | included | C2 L4 bus correctness (`8233a9e`) |
 | In-circuit Tip5 challenger duplexing | `crates/plonky3-recursion/recursion/src/challenger/circuit.rs` | included | C2 L5 (`259dd6f`) |
 | In-circuit MMCS path | `crates/plonky3-recursion/recursion/src/mmcs/circuit.rs` | included | C2 L5 |
@@ -339,15 +341,18 @@ Tip5).
 ### 5.1 What is being claimed (precise)
 
 The Tip5 permutation AIR (`crates/plonky3-recursion/tip5-circuit-air/`)
-implements a 7-round permutation **identical bit-for-bit** to
-`nockchain_math::tip5::permute` over Goldilocks⁸, instantiated
-per the Tip5 paper (ePrint IACR ePrint 2023/107) §4.3/§4.6.
+implements the recursive-proving-only 5-round Tip5 permutation
+**identical bit-for-bit** to `nockchain_math::tip5::permute_5round`
+over Goldilocks⁸, instantiated per the Tip5 paper (ePrint IACR
+ePrint 2023/107) §4.3/§4.6. The canonical non-recursive Nockchain
+hash remains `nockchain_math::tip5::permute` with 7 rounds; the
+recursive adapter must not replace it.
 
 Components:
 
 | # | Component | Where | Verified by |
 |---|---|---|---|
-| **5.A** | Tip5 round constants (7-round) | `tip5-circuit-air/src/constants.rs` | byte-for-byte vs the paper's tabulation + `nockchain_math::tip5::permute` (KAT) |
+| **5.A** | Tip5 round constants (5-round recursive prefix) | `tip5-circuit-air/src/tip5_spec.rs` | byte-for-byte vs the paper's tabulation + `nockchain_math::tip5::permute_5round` (KAT) |
 | **5.B** | Per-byte cube `<p` canonical guard | `tip5-circuit-air/src/air.rs` § cube | algebraic identity machine-checked: `(x mod p)³ mod p == cube_table[x mod p]`; lookup-table arm enforces `0 ≤ x < p` |
 | **5.C** | MDS matrix (Tip5 §4.5) | `tip5-circuit-air/src/mds.rs` | KAT vs paper + native |
 | **5.D** | Lookup-table arm (LogUp degree-2) | `tip5-circuit-air/src/lookup.rs` + `circuit-prover/.../tip5/` | C2 L4 global-bus correctness (`8233a9e`); LogUp degree machine-proven 2 (not 226) |
@@ -372,11 +377,13 @@ suffices for both.
 
 ### 5.3 Native ↔ in-circuit equivalence
 
-C2.1's KAT against `nockchain_math::tip5::permute` is the
-**oracle**. The KAT iterates a published-large set of inputs
+C2.1's KAT against `nockchain_math::tip5::permute_5round` is the
+recursive **oracle**. The KAT iterates a published-large set of inputs
 (deterministic + random) and asserts every Tip5 output column
 matches bit-for-bit against the frozen native oracle. The
-frozen oracle is the same code path consensus uses.
+frozen oracle is restricted to the recursive proving stack; the
+separate test `recursive_tip5_adapter_does_not_replace_canonical_nockchain_tip5`
+asserts the canonical 7-round Nockchain hash remains unchanged.
 
 ---
 
@@ -386,10 +393,11 @@ frozen oracle is the same code path consensus uses.
 
 | KAT | File | What it verifies |
 |---|---|---|
-| `tip5_air_kat_*` | `crates/plonky3-recursion/tip5-circuit-air/src/lib.rs` (test mod) | Tip5 7-round AIR per-row vs `nockchain_math::tip5::permute` |
+| `tip5_air_kat_*` | `crates/plonky3-recursion/tip5-circuit-air/src/lib.rs` (test mod) | Recursive Tip5 5-round AIR per-row vs `nockchain_math::tip5::permute_5round` |
 | `test_tip5_lookups` | `crates/plonky3-recursion/recursion/tests/test_tip5_lookups.rs` | LogUp bus correctness |
-| `test_tip5_layer0_recursion` | `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs` | C2.4: in-circuit Tip5-L0 verifier accept + tamper-reject; 120-bit sweep |
-| `test_tip5_layer0_compression` | `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs` | C3 / M-S5: ≥120-bit outer-recursive cert (Stage A/B/C, 5 sweep profiles, accept + tamper) |
+| `recursive_tip5_adapter_does_not_replace_canonical_nockchain_tip5` | `crates/ai-pow-zk/src/circuit.rs` | Recursive 5-round adapter is isolated from canonical 7-round Nockchain Tip5 |
+| `test_tip5_layer0_recursion` | `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs` | C2.4: in-circuit Tip5-L0 verifier accept + tamper-reject under the production ≥60-bit profile |
+| `test_tip5_layer0_compression` | `crates/plonky3-recursion/recursion/tests/test_tip5_layer0_compression.rs` | C3 / M-S5: production recursive cert accept + tamper tests |
 
 ### 6.2 ai-pow byte-equivalence KATs
 
@@ -411,15 +419,15 @@ frozen oracle is the same code path consensus uses.
 
 ### 6.4 Recursion regression slice
 
-The always-run regression slice (from this session's
+Recent focused regression slice (from this session's
 verification artifacts):
 
 | Suite | Count | Time |
 |---|---|---|
-| `p3-recursion --test fibonacci_batch_stark_prover_quintic` | 1/0/0 | 0.07 s |
-| `p3-recursion --test test_tip5_layer0_recursion` | 14/0/1 | 7.58 s |
-| `p3-tip5-circuit-air` | 14/0/0 | 3.28 s |
-| `c3_stage_a_l1_120bit_kat` + `c3_stage_b_l2_over_120bit_l1` | 2/0/0 | 96.84 s |
+| `cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml terminal --lib` | 18/0/0 | focused terminal relation tests |
+| `cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --test test_l1_outer_cert_tip5_unified terminal_compiler_covers_real_tip5_l0_verifier_circuit` | 1/0/0 | real L1 verifier-circuit coverage |
+| `cargo test -p ai-pow-zk --features recursion non_first_subslice_split_view_rejected_by_i8u8_logup` | 1/0/0 | 21.02 s |
+| `cargo test -p ai-pow-zk --features recursion non_first_subslice_mat_freq_drop_rejected_by_logup` | 1/0/0 | 4.44 s |
 
 ---
 
@@ -437,7 +445,8 @@ is `(attack class → test that already rejects it)`.
 | A-TILE (cheaper tile than attested) | opening off attested tile ⇒ reject pinned schedule | P-B.2.3 / A1 |
 | A-MAT (forged committed matrix) | tampered `HASH_A` ≠ attested ⇒ reject | M52 |
 | A-CHAIN (forge recursion) | tampered inner proof ⇒ `WitnessConflict` at `runner().run()` | C2.4 + C3 DT-4 tamper tests |
-| A-SOUND (sub-120-bit configuration) | every M-S5 tier asserts `lb·nq/2 ≥ 120` | C3 § 15 |
+| A-SOUND (sub-60-bit production configuration) | production profile asserts Johnson bits `lb·nq + query_pow ≥ 60` | `goldilocks_tip5_60bit` config test |
+| A-CONSTRAINT (64-byte split-view) | later sub-slice `MAT_UNPACK`/`UINT8_DATA` split ⇒ LogUp reject; dropped later-sub-slice `MAT_FREQ` ⇒ LogUp reject | `non_first_subslice_split_view_rejected_by_i8u8_logup`; `non_first_subslice_mat_freq_drop_rejected_by_logup` |
 | A-MAT (planted free `JACKPOT_MSG`) | `high2_*` adversarial ⇒ reject (M-S1) | HIGH-2.2 § 7 |
 | A-FRI (tampered FRI fold) | `WitnessConflict` at the in-circuit FRI fold-chain `connect` | C3 DT-4 + § 15 |
 | **A-CONSTRAINT** (per-AIR constraint-family tamper at single-cell / selector / bus / cross-AIR / property-based levels) | Every constraint family in the M-S5 chain has ≥1 tamper test exercising its rejection mechanism (M1/M2/M3/M4/M5). Per-AIR + per-bus rejection rate empirically 1.0. | CSA S0–S7 deliverables: `2026-05-20_CONSTRAINT_SOUNDNESS_ANALYSIS_DESIGN.md`, `2026-05-20_CSA_S7_AUDIT_SIGNOFF.md` § 5 (per-AIR sign-off table) |
@@ -451,7 +460,7 @@ otherwise be "surprised" by is here.
 
 | Residual | What it is | Where tracked |
 |---|---|---|
-| **M-S5b / `#131`** | ≤100 KB terminal compression of the ≥120-bit M-S5 cert (size target only; soundness unaffected — the ≥120-bit cert is LANDED) | `2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md` |
+| **M-S5b / `#131`** | ≈100 KB terminal compression of the production M-S5 cert (size target only; soundness floor remains ≥60-bit Johnson). Current fixed-bincode production recursive certificate is ≈200.6 KiB at `lb=4, nq=9, query_pow=24, cap_height=5`. | `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md` |
 | **Phase B1** | Pearl **reference vectors** from Pearl's miner (golden `(κ,s_a,s_b,E/F,one tile digest)`); today only self-consistency vs ai-pow's own plain path is tested | `2026-05-18_PHASE_B_DESIGN.md` § B1; `2026-05-13_PEARL_COMPARISON.md` |
 | **Phase B2** | Quant-extraction contract: specify how the vLLM plugin maps the model's INT7/INT8 GEMM operands to Pearl type-0 `[−64,64]` int8 `(A,B,μ)`; integration KAT against a real model fixture | `2026-05-18_PHASE_B_DESIGN.md` § B2 |
 | **Packed-MMCS `GoldilocksConfig`** | Landed config is unpacked; `verify_p3_batch_proof_circuit` requires packed; aarch64-neon `Goldilocks::Packing ≠ Goldilocks`. Verified-soundness-neutral substitute used in measurement; production L2 needs the upstream fix or a packed-MMCS sibling. | `2026-05-19_C3_OUTER_CERT_DESIGN.md` § 14 |
@@ -463,8 +472,8 @@ otherwise be "surprised" by is here.
 
 ### 8.1 Non-residuals (claims a careless audit might list — preempted here)
 
-- "C3 incomplete" — C3 is the soundness-correct ≥120-bit cert,
-  LANDED + independently re-validated. The ≤100 KB *size* target
+- "C3 incomplete" — C3 is the soundness-correct production cert,
+  LANDED + independently re-validated. The ≈100 KB *size* target
   is a **separate carved-out milestone (M-S5b)**. This is not
   hidden C3 incompleteness. See § 8 of
   `2026-05-19_C3_OUTER_CERT_DESIGN.md`.
@@ -486,7 +495,7 @@ otherwise be "surprised" by is here.
 | Pearl's vLLM plugin code | Owned by Pearl, audited separately | Pearl whitepaper §5; Pearl repo |
 | FP8 layer security | Pearl FP PoUW unshipped | wait for Pearl FP spec |
 | Phase D (consensus integration) | External wiring; not ai-pow-zk's stack | `2026-05-17_PRODUCTION_ROADMAP.md` Phase D |
-| Trusted-setup ceremony (if Path A SNARK chosen for M-S5b) | Out of this audit; that's the M-S5b follow-on audit | `2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md` § 2.A |
+| Native terminal-compression backend | Out of this audit package until it replaces the current production recursive cert; current relation compiler and binding digest are tracked separately | `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md` |
 | Nockchain consensus layer | Out of scope for this proof-system audit | Nockchain consensus docs |
 
 ---
@@ -508,11 +517,11 @@ Before the auditor begins, confirm:
 - [x] **Standing R1 discipline declared** (no rushing; staged
       validated commits; precise residuals — `~/.claude/CLAUDE.md`
       R1/R1.1).
-- [x] **Soundness bar paper-grounded** (≥80 unconditional under
-      IACR ePrint 2025/2055 Theorem 1.5 Johnson-radius bound; §1.3).
-- [x] **Per-layer `γ < J(δ)−η` table produced** (M-S5b's S(−1)
-      prerequisite — `2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`
-      §3.0.A; landed 2026-05-20 in
+- [x] **Soundness bar paper-grounded** (production ≥60-bit
+      unconditional Johnson floor under the time-bounded PoW threat
+      model; §1.3).
+- [x] **Per-layer `γ < J(δ)−η` table produced** (terminal-compression
+      prerequisite; landed 2026-05-20 in
       `2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md` §4.3, with chain
       MIN ≥ 82 unconditional under the combined
       per-query + proximity-loss accounting).
@@ -523,11 +532,10 @@ Before the auditor begins, confirm:
 - [ ] **Packed-MMCS `GoldilocksConfig` substrate decision**
       recorded (either upstream patch or sibling config, per
       § 8 above).
-- [ ] **M-S5b path decision recorded** (S3 in
-      `2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`); not a
-      blocker for the C4 audit (M-S5b lands in a follow-on
-      audit round if Path A/C is chosen; Path B alone keeps it
-      in this audit round).
+- [ ] **Native terminal-compression backend complete** (tracked in
+      `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md`); not a
+      blocker for this C4 audit package, but required before claiming
+      the ≈100 KiB certificate target.
 
 The three open items are honest residuals, not blockers. The
 audit can begin on the in-scope items as listed.
@@ -553,7 +561,7 @@ audit can begin on the in-scope items as listed.
 | C2 Tip5 circuit AIR | `2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` |
 | C2 degree/width tradeoff | `2026-05-18_C2_TIP5_AIR_DEGREE_WIDTH_TRADEOFF.md` |
 | C3 outer-cert (DT-1→DT-4 + LANDED) | `2026-05-19_C3_OUTER_CERT_DESIGN.md` |
-| M-S5b terminal compression (sibling) | `2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md` |
+| M-S5b terminal compression (sibling) | `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md` |
 | **M-S5b S(−1) paper-grounded soundness analysis (closes A-LDR / §10 γ<J(δ)−η item)** | `2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md` |
 | **Constraint Soundness Analysis (CSA) — staged design (AIR-side of ≥80 unconditional)** | `2026-05-20_CONSTRAINT_SOUNDNESS_ANALYSIS_DESIGN.md` |
 | **CSA S0 — master constraint inventory (every AIR × every constraint family × tamper-test cross-link)** | `2026-05-20_CONSTRAINT_INVENTORY.md` |

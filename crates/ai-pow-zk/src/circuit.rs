@@ -7,7 +7,7 @@
 //! |-----------------------|-----------------------------------|-----|
 //! | Trace base field      | `Goldilocks` (p3-goldilocks)      | Native 64-bit prime; matches Pearl; friendly for the 32-bit ops in `p3-blake3-air`. |
 //! | FRI challenge field   | `BinomialExtensionField<Goldilocks, 2>` | 128-bit security per challenge; standard pairing for Goldilocks STARKs. |
-//! | FRI compression hash  | Nockchain Tip5 (`nockchain_math::tip5`) | **5-round** variant (`permute_5round`); STATE_SIZE=16, RATE=10, CAPACITY=6, DIGEST_LENGTH=5. §recursion-aligned with the `Plonky3-recursion` Tip5 AIR so the composite proof's transcript is recursively verifiable. Plonky3 upstream does *not* ship a `p3-tip5` crate; the in-repo `nockchain-math::tip5` is the canonical source. |
+//! | FRI compression hash  | Recursive-certificate Tip5 adapter (`Tip5Perm`) | **5-round** variant (`nockchain_math::tip5::permute_5round`); STATE_SIZE=16, RATE=10, CAPACITY=6, DIGEST_LENGTH=5. This is selected only for the AI-PoW recursive-certificate proving stack so the composite proof's transcript is recursively verifiable. The canonical Nockchain hash remains `nockchain_math::tip5::permute` (7 rounds). Plonky3 upstream does *not* ship a `p3-tip5` crate; the in-repo `nockchain-math::tip5` is the canonical source. |
 //! | Merkle MMCS           | `MerkleTreeMmcs<Val, Tip5Perm, ...>` | Standard Plonky3 mixed-matrix commitment, wrapping the Tip5 permutation in `PaddingFreeSponge` + `TruncatedPermutation`. |
 //! | PCS                   | `TwoAdicFriPcs<…>`                | Univariate FRI; matches `p3-uni-stark`. |
 //! | Challenger            | `DuplexChallenger<Val, Tip5Perm, _, _>` | Fiat-Shamir over the same Tip5 permutation. |
@@ -298,15 +298,15 @@ pub fn build_stark_config(_params: &ZkParams, config: &CircuitConfig) -> AiPowSt
     StarkConfig::new(pcs, challenger)
 }
 
-/// Thin newtype around `nockchain_math::tip5::permute_5round` that
-/// wraps the 16-element Goldilocks state so it can plug into Plonky3's
-/// `CryptographicPermutation<[Val; 16]>` trait. The actual `permute`
-/// call writes the new state in-place via the **5-round** Tip5
-/// permutation (`§recursion`-aligned — see `Tip5Perm::NUM_ROUNDS`).
+/// Recursive-certificate newtype around
+/// `nockchain_math::tip5::permute_5round`.
 ///
-/// Adapter layer — its `Permutation`/`CryptographicPermutation` impls
-/// will land alongside `build_stark_config`'s implementation. For the
-/// scaffold this struct just locks in the state shape.
+/// This adapter wraps the 16-element Goldilocks state so it can plug
+/// into Plonky3's `CryptographicPermutation<[Val; 16]>` trait for
+/// the AI-PoW proof transcript and recursive verifier circuit. It is
+/// deliberately not the canonical Nockchain Tip5 hash; non-recursive
+/// Nockchain hashing remains `nockchain_math::tip5::permute`
+/// (7 rounds).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Tip5Perm;
 
@@ -346,8 +346,9 @@ impl Tip5Perm {
 // trait, where `T` is the state type. Our state type is
 // `[Goldilocks; 16]`. We convert `Goldilocks → u64` via
 // `PrimeField64::as_canonical_u64` and back via the `QuotientMap` impl.
-// `nockchain_math::tip5::permute` then operates on the raw u64 buffer,
-// reducing mod the Goldilocks prime per round constant.
+// The recursive-certificate `permute_5round` variant then operates on
+// the raw u64 buffer, reducing mod the Goldilocks prime per round
+// constant.
 impl Permutation<[Goldilocks; Tip5Perm::WIDTH]> for Tip5Perm {
     fn permute_mut(&self, input: &mut [Goldilocks; Tip5Perm::WIDTH]) {
         let mut raw: [u64; Tip5Perm::WIDTH] = [0u64; Tip5Perm::WIDTH];
@@ -533,6 +534,32 @@ mod tests {
     }
 
     #[test]
+    fn recursive_tip5_adapter_does_not_replace_canonical_nockchain_tip5() {
+        assert_eq!(nockchain_math::tip5::NUM_ROUNDS, 7);
+        assert_eq!(nockchain_math::tip5::NUM_ROUNDS_5ROUND, 5);
+        assert_eq!(
+            Tip5Perm::NUM_ROUNDS,
+            nockchain_math::tip5::NUM_ROUNDS_5ROUND
+        );
+
+        let initial: [u64; 16] =
+            std::array::from_fn(|i| 0xfeed_face_cafe_beefu64.wrapping_add((i as u64) * 19));
+        let mut via_recursive_adapter = initial;
+        let mut via_5round = initial;
+        let mut via_canonical_7round = initial;
+
+        Tip5Perm::permute(&mut via_recursive_adapter);
+        nockchain_math::tip5::permute_5round(&mut via_5round);
+        nockchain_math::tip5::permute(&mut via_canonical_7round);
+
+        assert_eq!(via_recursive_adapter, via_5round);
+        assert_ne!(
+            via_recursive_adapter, via_canonical_7round,
+            "recursive proving must use the 5-round adapter without changing canonical 7-round Tip5"
+        );
+    }
+
+    #[test]
     fn tip5_perm_plonky3_permute_matches_static_wrapper() {
         // The trait-method path (used by Plonky3's sponge/challenger)
         // must produce the same final state as the static wrapper
@@ -580,7 +607,7 @@ mod tests {
         let diffs = (0..16).filter(|i| out_base[*i] != out_tweaked[*i]).count();
         assert!(
             diffs >= 8,
-            "expected at least 8 lanes to differ after 7-round Tip5; got {diffs}"
+            "expected at least 8 lanes to differ after recursive 5-round Tip5; got {diffs}"
         );
     }
 

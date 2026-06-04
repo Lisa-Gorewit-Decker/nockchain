@@ -1,6 +1,6 @@
 //! `Tip5Perm` — a `p3_symmetric` permutation adapter over the
 //! in-crate, KAT-anchored, bit-for-bit twin of
-//! `nockchain_math::tip5::permute` (C2.3 / M-S4).
+//! `nockchain_math::tip5::permute_5round` (C2.3 / M-S4).
 //!
 //! This is the *single in-workspace* native-reference Tip5
 //! permutation. The recursion workspace cannot depend on `ai-pow-zk`
@@ -13,8 +13,8 @@
 //!
 //! It is a thin, faithful adapter: it canonical-`u64` round-trips the
 //! Goldilocks state through [`crate::tip5_spec::permute`] (the
-//! 7-round deployed Nockchain Tip5, frozen against the committed
-//! golden KAT), so `Tip5Perm.permute(state)` is — by construction —
+//! recursive 5-round Tip5, frozen against the committed golden KAT),
+//! so `Tip5Perm.permute(state)` is — by construction —
 //! the exact permutation the in-circuit Tip5 NPO witnesses.
 
 use p3_field::{PrimeCharacteristicRing, PrimeField64};
@@ -23,9 +23,9 @@ use p3_symmetric::{CryptographicPermutation, Permutation};
 
 use crate::tip5_spec::{STATE_SIZE, permute};
 
-/// `Permutation<[Goldilocks; 16]>` over the deployed 7-round Tip5
+/// `Permutation<[Goldilocks; 16]>` over recursive 5-round Tip5
 /// (`crate::tip5_spec::permute`, the in-crate bit-for-bit twin of
-/// `nockchain_math::tip5::permute`).
+/// `nockchain_math::tip5::permute_5round`).
 ///
 /// Public so the recursion crate's tests can build the native
 /// `DuplexChallenger` / `PaddingFreeSponge` / `TruncatedPermutation` /
@@ -87,8 +87,7 @@ mod packed_perm {
             for lane in 0..lanes {
                 let mut state = [0u64; STATE_SIZE];
                 for i in 0..STATE_SIZE {
-                    state[i] =
-                        PrimeField64::as_canonical_u64(&input[i].as_slice()[lane]);
+                    state[i] = PrimeField64::as_canonical_u64(&input[i].as_slice()[lane]);
                 }
                 permute(&mut state);
                 for i in 0..STATE_SIZE {
@@ -114,8 +113,7 @@ mod packed_perm {
             for lane in 0..lanes {
                 let mut state = [0u64; STATE_SIZE];
                 for i in 0..STATE_SIZE {
-                    state[i] =
-                        PrimeField64::as_canonical_u64(&input[i].as_slice()[lane]);
+                    state[i] = PrimeField64::as_canonical_u64(&input[i].as_slice()[lane]);
                 }
                 permute(&mut state);
                 for i in 0..STATE_SIZE {
@@ -145,8 +143,7 @@ mod packed_perm {
             for lane in 0..lanes {
                 let mut state = [0u64; STATE_SIZE];
                 for i in 0..STATE_SIZE {
-                    state[i] =
-                        PrimeField64::as_canonical_u64(&input[i].as_slice()[lane]);
+                    state[i] = PrimeField64::as_canonical_u64(&input[i].as_slice()[lane]);
                 }
                 permute(&mut state);
                 for i in 0..STATE_SIZE {

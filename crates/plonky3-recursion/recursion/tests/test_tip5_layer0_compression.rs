@@ -40,7 +40,20 @@ use p3_circuit_prover::{
     Poseidon2ProverD2, RecomposePreprocessor, TablePacking, TableProver, Tip5Preprocessor,
     Tip5Prover, recompose_air_builders, recompose_table_provers, tip5_air_builders,
 };
-
+use p3_commit::ExtensionMmcs;
+use p3_dft::Radix2DitParallel;
+use p3_field::extension::BinomialExtensionField;
+use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+use p3_fri::{FriParameters, TwoAdicFriPcs};
+use p3_goldilocks::Goldilocks;
+use p3_lookup::logup::LogUpGadget;
+use p3_merkle_tree::MerkleTreeMmcs;
+use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
+use p3_recursion::pcs::set_fri_mmcs_private_data;
+use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
+use p3_recursion::verifier::verify_p3_batch_proof_circuit;
+use p3_recursion::{VerificationError, verify_p3_uni_proof_circuit};
+use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 // ---------------------------------------------------------------------
 //  OuterCfg — the recursion-COMPATIBLE Goldilocks STARK config the L1
 //  outer cert (and L2/L3) are proven under.
@@ -63,23 +76,9 @@ use p3_circuit_prover::{
 //  hash impl, not the committed values / Merkle structure).
 // ---------------------------------------------------------------------
 use p3_test_utils::goldilocks_params::{
-    Challenger as OuterChallenger, ChallengeMmcs as OuterChallengeMmcs, Dft as OuterDft,
+    ChallengeMmcs as OuterChallengeMmcs, Challenger as OuterChallenger, Dft as OuterDft,
     MyConfig as OuterCfg, MyMmcs as OuterValMmcs, Perm as OuterPerm,
 };
-use p3_commit::ExtensionMmcs;
-use p3_dft::Radix2DitParallel;
-use p3_field::extension::BinomialExtensionField;
-use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-use p3_fri::{FriParameters, TwoAdicFriPcs};
-use p3_goldilocks::Goldilocks;
-use p3_lookup::logup::LogUpGadget;
-use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
-use p3_recursion::pcs::set_fri_mmcs_private_data;
-use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
-use p3_recursion::verifier::verify_p3_batch_proof_circuit;
-use p3_recursion::{VerificationError, verify_p3_uni_proof_circuit};
-use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 use p3_tip5_circuit_air::Tip5Perm;
 use p3_uni_stark::{StarkConfig, prove, verify};
 
@@ -142,23 +141,20 @@ struct SweepProfile {
 /// landed test. (Pre-2026-05-19 was nq=80 at 120 unique-decoding-
 /// provable bits; new bar is ≥80 unconditional Johnson-radius per
 /// IACR ePrint 2025/2055 Theorem 1.5.)
-const PROD: SweepProfile = SweepProfile { name: "PROD", log_blowup: 3, num_queries: 30 };
+const PROD: SweepProfile = SweepProfile {
+    name: "PROD",
+    log_blowup: 3,
+    num_queries: 30,
+};
 
 /// FRI tier for the recursion-compatible `OuterCfg` (the L1/L2/L3
-/// prover config). `(a)` ~5-bit == `goldilocks_tip5()`'s
-/// `new_testing` (lb=2, nq=2, pow=1,1 ⇒ 2·2+1 = 5 conjectured bits;
-/// TEST tier). `(b)` ≥80-bit unconditional ==
-/// `goldilocks_tip5_120bit()` (lb=2, nq=42, pow=1,1 ⇒ 2·42+1 = 85
-/// bits unconditional at Johnson radius — IACR ePrint 2025/2055
-/// Theorem 1.5). `(b-hi)` same soundness with high-arity folding
-/// (max_log_arity=3, log_final_poly_len=2). The tier names retain
-/// "Bit120" for cross-reference stability with the C3 LANDED commits;
-/// the new bar is ≥80 unconditional after the 2026-05-19
-/// recalibration. These mirror the `config.rs` siblings EXACTLY but
-/// over the packed (recursion-compatible) MMCS.
+/// prover config). The former five-bit test tier has been removed;
+/// these historical measurements now use only soundness-meaningful
+/// tiers. The tier names retain "Bit120" for cross-reference stability
+/// with the C3 LANDED commits; the new bar is ≥80 unconditional after
+/// the 2026-05-19 recalibration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OuterTier {
-    FiveBit,
     Bit120,
     Bit120HighArity,
 }
@@ -166,7 +162,6 @@ enum OuterTier {
 impl OuterTier {
     fn name(self) -> &'static str {
         match self {
-            OuterTier::FiveBit => "~5-bit",
             OuterTier::Bit120 => ">=120-bit",
             OuterTier::Bit120HighArity => ">=120-bit-high-arity",
         }
@@ -175,8 +170,6 @@ impl OuterTier {
     ///  commit_pow, query_pow)
     fn fri(self) -> (usize, usize, usize, usize, usize, usize) {
         match self {
-            // == config::goldilocks_tip5() = FriParameters::new_testing
-            OuterTier::FiveBit => (2, 0, 1, 2, 1, 1),
             // == config::goldilocks_tip5_120bit() — name retained for
             // cross-ref; new bar is ≥80 unconditional Johnson (2·42+1=85).
             OuterTier::Bit120 => (2, 0, 1, 42, 1, 1),
@@ -186,10 +179,9 @@ impl OuterTier {
     }
 }
 
-/// The seed-1 `Poseidon2Goldilocks<8>` perm — IDENTICAL value to the
-/// one `config::goldilocks_tip5()` builds its PCS hash from, so the
-/// numbers are comparable to the landed `goldilocks_tip5()` cert and
-/// the L2 verifier recomputes the exact MMCS.
+/// The seed-1 `Poseidon2Goldilocks<8>` perm used by this historical
+/// measurement harness. Current Tip5 production certificates use
+/// `goldilocks_tip5_60bit()`.
 fn outer_perm() -> OuterPerm {
     use rand::SeedableRng;
     let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
@@ -249,7 +241,11 @@ fn make_layer0_config(profile: SweepProfile) -> Tip5Layer0Config {
     StarkConfig::new(pcs, challenger)
 }
 
-fn fibonacci_setup() -> (p3_matrix::dense::RowMajorMatrix<Val>, Vec<Val>, FibonacciAir) {
+fn fibonacci_setup() -> (
+    p3_matrix::dense::RowMajorMatrix<Val>,
+    Vec<Val>,
+    FibonacciAir,
+) {
     let n = 1 << 3;
     let x = 21u64;
     let trace = generate_trace_rows::<Val>(0, 1, n);
@@ -293,13 +289,8 @@ fn build_layer0_verifier_circuit(
     circuit_builder.enable_recompose::<Val>(generate_recompose_trace::<Val, Challenge>);
     circuit_builder.set_recompose_coeff_ctl_for_decompose_links(true);
 
-    let fri_verifier_params = FriVerifierParams::with_mmcs(
-        profile.log_blowup,
-        0,
-        0,
-        0,
-        Tip5Config::GOLDILOCKS_W16,
-    );
+    let fri_verifier_params =
+        FriVerifierParams::with_mmcs(profile.log_blowup, 0, 0, 0, Tip5Config::GOLDILOCKS_W16);
 
     let verifier_inputs = StarkVerifierInputsBuilder::<
         Tip5Layer0Config,
@@ -405,13 +396,11 @@ fn build_l1_outer_cert(
         .run()
         .map_err(|e| format!("[{}] L1 runner().run() rejected: {e:?}", profile.name))?;
 
-    let prover_data =
-        ProverData::from_airs_and_degrees(&outer_config, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&outer_config, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
-    let mut prover =
-        BatchStarkProver::new(outer_config).with_table_packing(table_packing);
+    let mut prover = BatchStarkProver::new(outer_config).with_table_packing(table_packing);
     prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
     prover.register_recompose_table::<2>(true);
 
@@ -444,15 +433,18 @@ fn pc_len<T: serde::Serialize>(v: &T) -> usize {
 }
 
 fn pct(part: usize, total: usize) -> f64 {
-    if total == 0 { 0.0 } else { 100.0 * part as f64 / total as f64 }
+    if total == 0 {
+        0.0
+    } else {
+        100.0 * part as f64 / total as f64
+    }
 }
 
 #[test]
 #[ignore = "C3 measurement (heavy ~minutes): S0.b L1 serialized-byte component breakdown"]
 fn s0b_l1_serialized_byte_breakdown() {
-    // ~5-bit tier == config::goldilocks_tip5() FRI (the landed
-    // residual test's PROD profile); packed MMCS (recursion-compat).
-    let bp = build_l1_outer_cert(PROD, false, OuterTier::FiveBit)
+    // High-arity soundness tier; packed MMCS (recursion-compat).
+    let bp = build_l1_outer_cert(PROD, false, OuterTier::Bit120HighArity)
         .expect("L1 PROD outer cert must build+verify");
 
     let total = pc_len(&bp);
@@ -517,31 +509,96 @@ fn s0b_l1_serialized_byte_breakdown() {
     }
 
     eprintln!("\n================ S0.b — L1 PROD BatchStarkProof byte breakdown ================");
-    eprintln!("TOTAL serialized                 = {total:>9} B (100.00%)  [{:.2} KB]", total as f64 / 1024.0);
+    eprintln!(
+        "TOTAL serialized                 = {total:>9} B (100.00%)  [{:.2} KB]",
+        total as f64 / 1024.0
+    );
     eprintln!("-- BatchProof.* --------------------------------------------------------------");
-    eprintln!("  commitments                    = {commitments:>9} B ({:>6.2}%)", pct(commitments, total));
-    eprintln!("  opened_values (OOD)            = {opened_values:>9} B ({:>6.2}%)", pct(opened_values, total));
-    eprintln!("  opening_proof (FRI)            = {opening_proof:>9} B ({:>6.2}%)", pct(opening_proof, total));
-    eprintln!("  global_lookup_data             = {global_lookup:>9} B ({:>6.2}%)", pct(global_lookup, total));
-    eprintln!("  degree_bits                    = {degree_bits:>9} B ({:>6.2}%)", pct(degree_bits, total));
+    eprintln!(
+        "  commitments                    = {commitments:>9} B ({:>6.2}%)",
+        pct(commitments, total)
+    );
+    eprintln!(
+        "  opened_values (OOD)            = {opened_values:>9} B ({:>6.2}%)",
+        pct(opened_values, total)
+    );
+    eprintln!(
+        "  opening_proof (FRI)            = {opening_proof:>9} B ({:>6.2}%)",
+        pct(opening_proof, total)
+    );
+    eprintln!(
+        "  global_lookup_data             = {global_lookup:>9} B ({:>6.2}%)",
+        pct(global_lookup, total)
+    );
+    eprintln!(
+        "  degree_bits                    = {degree_bits:>9} B ({:>6.2}%)",
+        pct(degree_bits, total)
+    );
     eprintln!("-- BatchStarkProof wrapper meta ----------------------------------------------");
-    eprintln!("  table_packing                  = {table_packing:>9} B ({:>6.2}%)", pct(table_packing, total));
-    eprintln!("  rows                           = {rows:>9} B ({:>6.2}%)", pct(rows, total));
-    eprintln!("  non_primitives                 = {non_primitives:>9} B ({:>6.2}%)", pct(non_primitives, total));
-    eprintln!("  stark_common + framing (resid) = {stark_common_plus_framing:>9} B ({:>6.2}%)  [total − all measured parts]", pct(stark_common_plus_framing, total));
-    eprintln!("-- WITHIN opening_proof (FRI; num_queries = {num_queries}) -------------------------");
-    eprintln!("  commit_phase_commits           = {cp_commits:>9} B ({:>6.2}%)", pct(cp_commits, total));
-    eprintln!("  commit_pow_witnesses           = {cp_pow:>9} B ({:>6.2}%)", pct(cp_pow, total));
-    eprintln!("  query_proofs (ALL queries)     = {query_proofs:>9} B ({:>6.2}%)", pct(query_proofs, total));
-    eprintln!("  final_poly                     = {final_poly:>9} B ({:>6.2}%)", pct(final_poly, total));
-    eprintln!("  query_pow_witness              = {query_pow:>9} B ({:>6.2}%)", pct(query_pow, total));
+    eprintln!(
+        "  table_packing                  = {table_packing:>9} B ({:>6.2}%)",
+        pct(table_packing, total)
+    );
+    eprintln!(
+        "  rows                           = {rows:>9} B ({:>6.2}%)",
+        pct(rows, total)
+    );
+    eprintln!(
+        "  non_primitives                 = {non_primitives:>9} B ({:>6.2}%)",
+        pct(non_primitives, total)
+    );
+    eprintln!(
+        "  stark_common + framing (resid) = {stark_common_plus_framing:>9} B ({:>6.2}%)  [total − all measured parts]",
+        pct(stark_common_plus_framing, total)
+    );
+    eprintln!(
+        "-- WITHIN opening_proof (FRI; num_queries = {num_queries}) -------------------------"
+    );
+    eprintln!(
+        "  commit_phase_commits           = {cp_commits:>9} B ({:>6.2}%)",
+        pct(cp_commits, total)
+    );
+    eprintln!(
+        "  commit_pow_witnesses           = {cp_pow:>9} B ({:>6.2}%)",
+        pct(cp_pow, total)
+    );
+    eprintln!(
+        "  query_proofs (ALL queries)     = {query_proofs:>9} B ({:>6.2}%)",
+        pct(query_proofs, total)
+    );
+    eprintln!(
+        "  final_poly                     = {final_poly:>9} B ({:>6.2}%)",
+        pct(final_poly, total)
+    );
+    eprintln!(
+        "  query_pow_witness              = {query_pow:>9} B ({:>6.2}%)",
+        pct(query_pow, total)
+    );
     eprintln!("-- WITHIN query_proofs (summed over all {num_queries} queries) -------------------");
-    eprintln!("  input_proof (BatchOpening)     = {input_proofs_total:>9} B ({:>6.2}%)", pct(input_proofs_total, total));
-    eprintln!("    .opened_values (leaf rows)   = {input_opened_values_total:>9} B ({:>6.2}%)", pct(input_opened_values_total, total));
-    eprintln!("    .opening_proof (Merkle path) = {input_merkle_total:>9} B ({:>6.2}%)", pct(input_merkle_total, total));
-    eprintln!("  commit_phase_openings          = {cp_openings_total:>9} B ({:>6.2}%)", pct(cp_openings_total, total));
-    eprintln!("    .sibling_values              = {cp_sibling_values_total:>9} B ({:>6.2}%)", pct(cp_sibling_values_total, total));
-    eprintln!("    .opening_proof (Merkle path) = {cp_merkle_total:>9} B ({:>6.2}%)", pct(cp_merkle_total, total));
+    eprintln!(
+        "  input_proof (BatchOpening)     = {input_proofs_total:>9} B ({:>6.2}%)",
+        pct(input_proofs_total, total)
+    );
+    eprintln!(
+        "    .opened_values (leaf rows)   = {input_opened_values_total:>9} B ({:>6.2}%)",
+        pct(input_opened_values_total, total)
+    );
+    eprintln!(
+        "    .opening_proof (Merkle path) = {input_merkle_total:>9} B ({:>6.2}%)",
+        pct(input_merkle_total, total)
+    );
+    eprintln!(
+        "  commit_phase_openings          = {cp_openings_total:>9} B ({:>6.2}%)",
+        pct(cp_openings_total, total)
+    );
+    eprintln!(
+        "    .sibling_values              = {cp_sibling_values_total:>9} B ({:>6.2}%)",
+        pct(cp_sibling_values_total, total)
+    );
+    eprintln!(
+        "    .opening_proof (Merkle path) = {cp_merkle_total:>9} B ({:>6.2}%)",
+        pct(cp_merkle_total, total)
+    );
     eprintln!("==============================================================================");
     eprintln!(
         "HYPOTHESIS CHECK: opening_proof = {:.1}% of total ; within it \
@@ -668,7 +725,11 @@ fn l2_over_batch_proof(
     let (verifier_inputs, mmcs_op_ids) = verify_p3_batch_proof_circuit::<
         OuterCfg,
         MerkleCapTargets<L2Val, L2_DIGEST_ELEMS>,
-        InputProofTargets<L2Val, L2Challenge, RecValMmcs<L2Val, L2_DIGEST_ELEMS, L2Hash, L2Compress>>,
+        InputProofTargets<
+            L2Val,
+            L2Challenge,
+            RecValMmcs<L2Val, L2_DIGEST_ELEMS, L2Hash, L2Compress>,
+        >,
         L2InnerFri,
         LogUpGadget,
         _,
@@ -690,8 +751,7 @@ fn l2_over_batch_proof(
     let verification_circuit = circuit_builder
         .build()
         .map_err(|e| format!("[{label}] L2 circuit build failed: {e:?}"))?;
-    let (public_inputs, private_inputs) =
-        verifier_inputs.pack_values(&pis, batch_proof, common);
+    let (public_inputs, private_inputs) = verifier_inputs.pack_values(&pis, batch_proof, common);
 
     let verification_table_packing = TablePacking::new(1, 8);
     let npo_prep: Vec<Box<dyn NpoPreprocessor<L2Val>>> = vec![
@@ -740,7 +800,11 @@ fn l2_over_batch_proof(
     // here — that IS a valid rejection (cert cannot be produced).
     let v_traces = match runner.run() {
         Ok(t) => t,
-        Err(e) => return Err(format!("[{label}] L2 runner().run() rejected (binding): {e:?}")),
+        Err(e) => {
+            return Err(format!(
+                "[{label}] L2 runner().run() rejected (binding): {e:?}"
+            ));
+        }
     };
 
     let v_prover_data = ProverData::from_airs_and_degrees(&l2_config, &v_airs, &v_degrees);
@@ -765,7 +829,9 @@ fn l2_over_batch_proof(
             Ok(bytes.len())
         }
         Ok(Err(e)) => Err(format!("[{label}] L2 verify_all_tables REJECTED: {e:?}")),
-        Err(_) => Err(format!("[{label}] L2 verify_all_tables panicked (rejected)")),
+        Err(_) => Err(format!(
+            "[{label}] L2 verify_all_tables panicked (rejected)"
+        )),
     }
 }
 
@@ -798,7 +864,7 @@ fn build_tiny_l1(n: usize, tamper: bool) -> Result<BatchStarkProof<OuterCfg>, St
     let table_packing = TablePacking::new(2, 4);
     // ~5-bit tier (== goldilocks_tip5() FRI), packed MMCS so the L2
     // recursion verifier can consume it.
-    let cfg = make_outer_cfg(OuterTier::FiveBit);
+    let cfg = make_outer_cfg(OuterTier::Bit120HighArity);
     let circuit = builder.build().map_err(|e| format!("tiny build: {e:?}"))?;
     let (airs_degrees, prim, npo) = get_airs_and_degrees_with_prep::<OuterCfg, _, 2>(
         &circuit,
@@ -818,7 +884,13 @@ fn build_tiny_l1(n: usize, tamper: bool) -> Result<BatchStarkProof<OuterCfg>, St
         x = y;
         y = z;
     }
-    let fib = if n == 0 { L2Challenge::ZERO } else if n == 1 { L2Challenge::ONE } else { y };
+    let fib = if n == 0 {
+        L2Challenge::ZERO
+    } else if n == 1 {
+        L2Challenge::ONE
+    } else {
+        y
+    };
     let supplied = if tamper { fib + L2Challenge::ONE } else { fib };
     runner
         .set_public_inputs(&[supplied])
@@ -842,8 +914,8 @@ fn build_tiny_l1(n: usize, tamper: bool) -> Result<BatchStarkProof<OuterCfg>, St
 #[test]
 #[ignore = "C3 measurement (heavy): S1 L2-mechanism end-to-end sanity on a tiny inner circuit"]
 fn s1_l2_mechanism_sanity_tiny() {
-    let inner_fri = fri_vparams_for(OuterTier::FiveBit);
-    let l1_cfg = make_outer_cfg(OuterTier::FiveBit);
+    let inner_fri = fri_vparams_for(OuterTier::Bit120HighArity);
+    let l1_cfg = make_outer_cfg(OuterTier::Bit120HighArity);
 
     let l1 = build_tiny_l1(48, false).expect("tiny L1' must build+verify");
     let l1_bytes = postcard::to_allocvec(&l1).expect("serialize L1'").len();
@@ -852,8 +924,8 @@ fn s1_l2_mechanism_sanity_tiny() {
         "S1",
         &l1,
         &inner_fri,
-        &make_outer_cfg(OuterTier::FiveBit),
-        make_outer_cfg(OuterTier::FiveBit),
+        &make_outer_cfg(OuterTier::Bit120HighArity),
+        make_outer_cfg(OuterTier::Bit120HighArity),
     )
     .expect("S1: valid L2 over tiny L1' must accept");
 
@@ -898,7 +970,7 @@ fn s1_l2_mechanism_sanity_tiny() {
                 &bad,
                 &inner_fri,
                 &l1_cfg,
-                make_outer_cfg(OuterTier::FiveBit),
+                make_outer_cfg(OuterTier::Bit120HighArity),
             );
             assert!(
                 r.is_err(),
@@ -910,36 +982,38 @@ fn s1_l2_mechanism_sanity_tiny() {
 }
 
 // =====================================================================
-//  S2 — L2 over the REAL ~117 KB Tip5-L0 outer cert, BOTH tiers.
+//  S2 — L2 over the real Tip5-L0 outer cert, soundness tiers only.
 // =====================================================================
 
-/// (a) ~5-bit tier: L1 + L2 both at `goldilocks_tip5()`
-/// (`new_testing` ⇒ lb=2, nq=2, pow=1,1 ⇒ ~5 conjectured FRI bits).
+/// (a) High-arity soundness tier: L1 + L2 both use the maintained
+/// soundness-meaningful outer FRI profile.
 #[test]
-#[ignore = "C3 measurement (VERY heavy ~many min): S2(a) L2 over REAL Tip5-L0 cert at ~5-bit tier"]
-fn s2a_l2_real_cert_5bit_tier() {
-    let l1 = build_l1_outer_cert(PROD, false, OuterTier::FiveBit)
+#[ignore = "C3 measurement (VERY heavy ~many min): S2(a) L2 over REAL Tip5-L0 cert at high-arity soundness tier"]
+fn s2a_l2_real_cert_high_arity_tier() {
+    let l1 = build_l1_outer_cert(PROD, false, OuterTier::Bit120HighArity)
         .expect("S2(a): real L1 Tip5-L0 cert must build+verify");
     let l1_bytes = postcard::to_allocvec(&l1).expect("serialize L1").len();
-    let inner_fri = fri_vparams_for(OuterTier::FiveBit);
+    let inner_fri = fri_vparams_for(OuterTier::Bit120HighArity);
 
     let accept = l2_over_batch_proof(
         "S2a",
         &l1,
         &inner_fri,
-        &make_outer_cfg(OuterTier::FiveBit),
-        make_outer_cfg(OuterTier::FiveBit),
+        &make_outer_cfg(OuterTier::Bit120HighArity),
+        make_outer_cfg(OuterTier::Bit120HighArity),
     );
     eprintln!(
-        "\n[S2(a) ~5-bit] L1(real Tip5-L0) = {l1_bytes} B ({:.2} KB) ; L2 = {:?}\n",
+        "\n[S2(a) high-arity] L1(real Tip5-L0) = {l1_bytes} B ({:.2} KB) ; L2 = {:?}\n",
         l1_bytes as f64 / 1024.0,
-        accept.as_ref().map(|b| format!("{b} B ({:.2} KB)", *b as f64 / 1024.0))
+        accept
+            .as_ref()
+            .map(|b| format!("{b} B ({:.2} KB)", *b as f64 / 1024.0))
     );
     let l2_bytes = accept.expect("S2(a): valid L2 over real cert must ACCEPT");
 
     // Tamper-reject: a tampered L1 (corrupt opened OOD value) must
     // yield NO verifying L2.
-    let tampered = build_l1_outer_cert(PROD, true, OuterTier::FiveBit);
+    let tampered = build_l1_outer_cert(PROD, true, OuterTier::Bit120HighArity);
     match tampered {
         Err(e) => eprintln!("[S2(a)] tampered L1 rejected before cert (expected): {e}"),
         Ok(bad) => {
@@ -947,8 +1021,8 @@ fn s2a_l2_real_cert_5bit_tier() {
                 "S2a-tamper",
                 &bad,
                 &inner_fri,
-                &make_outer_cfg(OuterTier::FiveBit),
-                make_outer_cfg(OuterTier::FiveBit),
+                &make_outer_cfg(OuterTier::Bit120HighArity),
+                make_outer_cfg(OuterTier::Bit120HighArity),
             );
             assert!(
                 r.is_err(),
@@ -957,44 +1031,46 @@ fn s2a_l2_real_cert_5bit_tier() {
             eprintln!("[S2(a)] tampered L1 correctly produced NO verifying L2: {r:?}");
         }
     }
-    let (lb, lfp, mla, nq, cp, qp) = OuterTier::FiveBit.fri();
+    let (lb, lfp, mla, nq, cp, qp) = OuterTier::Bit120HighArity.fri();
     eprintln!(
         "[S2(a) RESULT] L2 serialized = {l2_bytes} B ({:.2} KB) at {} tier \
          (log_blowup={lb} num_queries={nq} pow={cp}/{qp} max_log_arity={mla} \
          log_final_poly_len={lfp})",
         l2_bytes as f64 / 1024.0,
-        OuterTier::FiveBit.name(),
+        OuterTier::Bit120HighArity.name(),
     );
 }
 
-/// (b) ≥120-bit tier: L1 stays at `goldilocks_tip5()` (the cert being
-/// recursed is fixed); L2 proven at `goldilocks_tip5_120bit()`
+/// (b) ≥120-bit tier: L1 uses the high-arity soundness tier; L2 is
+/// proven at `goldilocks_tip5_120bit()`
 /// (lb=2, nq=120 ⇒ 2·120+1 = 241 conjectured bits ≥ 120).
 #[test]
 #[ignore = "C3 measurement (VERY heavy ~many min): S2(b) L2 over REAL Tip5-L0 cert at >=120-bit tier"]
 fn s2b_l2_real_cert_120bit_tier() {
-    // L1 cert is FIXED at the ~5-bit tier (the same ~117 KB cert the
-    // landed residual measures); only the L2 prover moves to >=120-bit.
-    let l1 = build_l1_outer_cert(PROD, false, OuterTier::FiveBit)
+    // L1 cert is fixed at the high-arity soundness tier; only the L2
+    // prover moves to >=120-bit.
+    let l1 = build_l1_outer_cert(PROD, false, OuterTier::Bit120HighArity)
         .expect("S2(b): real L1 Tip5-L0 cert must build+verify");
     let l1_bytes = postcard::to_allocvec(&l1).expect("serialize L1").len();
-    let inner_fri = fri_vparams_for(OuterTier::FiveBit); // L1 fixed at 5-bit
+    let inner_fri = fri_vparams_for(OuterTier::Bit120HighArity);
 
     let accept = l2_over_batch_proof(
         "S2b",
         &l1,
         &inner_fri,
-        &make_outer_cfg(OuterTier::FiveBit),
+        &make_outer_cfg(OuterTier::Bit120HighArity),
         make_outer_cfg(OuterTier::Bit120),
     );
     eprintln!(
         "\n[S2(b) >=120-bit] L1(real Tip5-L0) = {l1_bytes} B ({:.2} KB) ; L2 = {:?}\n",
         l1_bytes as f64 / 1024.0,
-        accept.as_ref().map(|b| format!("{b} B ({:.2} KB)", *b as f64 / 1024.0))
+        accept
+            .as_ref()
+            .map(|b| format!("{b} B ({:.2} KB)", *b as f64 / 1024.0))
     );
     let l2_bytes = accept.expect("S2(b): valid L2 over real cert must ACCEPT");
 
-    let tampered = build_l1_outer_cert(PROD, true, OuterTier::FiveBit);
+    let tampered = build_l1_outer_cert(PROD, true, OuterTier::Bit120HighArity);
     match tampered {
         Err(e) => eprintln!("[S2(b)] tampered L1 rejected before cert (expected): {e}"),
         Ok(bad) => {
@@ -1002,7 +1078,7 @@ fn s2b_l2_real_cert_120bit_tier() {
                 "S2b-tamper",
                 &bad,
                 &inner_fri,
-                &make_outer_cfg(OuterTier::FiveBit),
+                &make_outer_cfg(OuterTier::Bit120HighArity),
                 make_outer_cfg(OuterTier::Bit120),
             );
             assert!(
@@ -1031,16 +1107,16 @@ fn s2b_l2_real_cert_120bit_tier() {
 #[test]
 #[ignore = "C3 measurement (VERY heavy): S3(i) L2 over REAL cert at >=120-bit HIGH-ARITY tier"]
 fn s3i_l2_real_cert_120bit_higharity() {
-    let l1 = build_l1_outer_cert(PROD, false, OuterTier::FiveBit)
+    let l1 = build_l1_outer_cert(PROD, false, OuterTier::Bit120HighArity)
         .expect("S3(i): real L1 Tip5-L0 cert must build+verify");
     let l1_bytes = postcard::to_allocvec(&l1).expect("serialize L1").len();
-    let inner_fri = fri_vparams_for(OuterTier::FiveBit);
+    let inner_fri = fri_vparams_for(OuterTier::Bit120HighArity);
 
     let accept = l2_over_batch_proof(
         "S3i",
         &l1,
         &inner_fri,
-        &make_outer_cfg(OuterTier::FiveBit),
+        &make_outer_cfg(OuterTier::Bit120HighArity),
         make_outer_cfg(OuterTier::Bit120HighArity),
     );
     let l2_bytes = accept.expect("S3(i): valid L2 (high-arity) must ACCEPT");
@@ -1057,16 +1133,16 @@ fn s3ii_l3_over_l2_120bit() {
     // L1 (real Tip5-L0) -> L2 (>=120-bit) : we must keep the L2
     // BatchStarkProof to recurse it. Re-run the L2 build returning the
     // proof (not just its size) via the lower-level path.
-    let l1 = build_l1_outer_cert(PROD, false, OuterTier::FiveBit)
+    let l1 = build_l1_outer_cert(PROD, false, OuterTier::Bit120HighArity)
         .expect("S3(ii): real L1 must build");
-    let inner_fri = fri_vparams_for(OuterTier::FiveBit);
+    let inner_fri = fri_vparams_for(OuterTier::Bit120HighArity);
 
     // L2 proven at >=120-bit; capture the proof so L3 can recurse it.
     let l2 = build_l2_proof(
         "S3ii-L2",
         &l1,
         &inner_fri,
-        &make_outer_cfg(OuterTier::FiveBit),
+        &make_outer_cfg(OuterTier::Bit120HighArity),
         make_outer_cfg(OuterTier::Bit120),
     )
     .expect("S3(ii): L2 build must succeed");
@@ -1123,7 +1199,11 @@ fn build_l2_proof(
     let (verifier_inputs, mmcs_op_ids) = verify_p3_batch_proof_circuit::<
         OuterCfg,
         MerkleCapTargets<L2Val, L2_DIGEST_ELEMS>,
-        InputProofTargets<L2Val, L2Challenge, RecValMmcs<L2Val, L2_DIGEST_ELEMS, L2Hash, L2Compress>>,
+        InputProofTargets<
+            L2Val,
+            L2Challenge,
+            RecValMmcs<L2Val, L2_DIGEST_ELEMS, L2Hash, L2Compress>,
+        >,
         L2InnerFri,
         LogUpGadget,
         _,
@@ -1144,8 +1224,7 @@ fn build_l2_proof(
     let verification_circuit = circuit_builder
         .build()
         .map_err(|e| format!("[{label}] L2 circuit build failed: {e:?}"))?;
-    let (public_inputs, private_inputs) =
-        verifier_inputs.pack_values(&pis, batch_proof, common);
+    let (public_inputs, private_inputs) = verifier_inputs.pack_values(&pis, batch_proof, common);
     let verification_table_packing = TablePacking::new(1, 8);
     let npo_prep: Vec<Box<dyn NpoPreprocessor<L2Val>>> = vec![
         Box::new(Poseidon2Preprocessor),
@@ -1214,7 +1293,7 @@ fn build_l2_proof(
 //  This is the actual C3/M-S5 deliverable (NOT a measurement): a
 //  vertical-recursion cert whose soundness is ≥120-bit at EVERY link.
 //  The §14 S2(b) de-risk measurement wrapped a ~5-bit L1
-//  (`build_l1_outer_cert(PROD, _, OuterTier::FiveBit)`) with a
+//  (`build_l1_outer_cert(PROD, _, OuterTier::Bit120HighArity)`) with a
 //  ≥120-bit L2 — and since the soundness chain is the MIN over links,
 //  that artifact is only ~5-bit-sound (NOT the soundness-correct
 //  cert). Here BOTH the L1-outer FRI tier AND the L2 wrapper are at
@@ -1261,11 +1340,31 @@ fn build_l2_proof(
 /// were `lb·nq/2 = 120` in the classical unique-decoding framing;
 /// the paper makes Johnson proven ⇒ ~halve `nq` at the same proven
 /// security.)
-const SWEEP_PROD: SweepProfile = SweepProfile { name: "PROD", log_blowup: 3, num_queries: 30 };
-const SWEEP_LB2: SweepProfile = SweepProfile { name: "LB2", log_blowup: 2, num_queries: 45 };
-const SWEEP_LB4: SweepProfile = SweepProfile { name: "LB4", log_blowup: 4, num_queries: 23 };
-const SWEEP_LB5: SweepProfile = SweepProfile { name: "LB5", log_blowup: 5, num_queries: 18 };
-const SWEEP_LB6: SweepProfile = SweepProfile { name: "LB6", log_blowup: 6, num_queries: 15 };
+const SWEEP_PROD: SweepProfile = SweepProfile {
+    name: "PROD",
+    log_blowup: 3,
+    num_queries: 30,
+};
+const SWEEP_LB2: SweepProfile = SweepProfile {
+    name: "LB2",
+    log_blowup: 2,
+    num_queries: 45,
+};
+const SWEEP_LB4: SweepProfile = SweepProfile {
+    name: "LB4",
+    log_blowup: 4,
+    num_queries: 23,
+};
+const SWEEP_LB5: SweepProfile = SweepProfile {
+    name: "LB5",
+    log_blowup: 5,
+    num_queries: 18,
+};
+const SWEEP_LB6: SweepProfile = SweepProfile {
+    name: "LB6",
+    log_blowup: 6,
+    num_queries: 15,
+};
 
 /// Unconditional FRI soundness bits of `OuterTier::Bit120` at the
 /// Johnson radius from its FRI params (`log_blowup · num_queries +
@@ -1381,7 +1480,7 @@ fn c3_stage_a_l1_120bit_kat() {
 /// `OuterTier::Bit120`; the inner-FRI verifier params are
 /// `Bit120` (so the L2 in-circuit fold-chain matches the ≥120-bit
 /// L1's FRI — the critical correctness point distinguishing this
-/// from §14 S2(b), which fed an `OuterTier::FiveBit` inner-FRI).
+/// from §14 S2(b), which fed an `OuterTier::Bit120HighArity` inner-FRI).
 fn build_120bit_l2_over_120bit_l1(
     label: &str,
     inner: SweepProfile,
@@ -1392,7 +1491,7 @@ fn build_120bit_l2_over_120bit_l1(
         .map_err(|e| format!("[{label}] serialize ≥120-bit L1: {e}"))?
         .len();
     // CRITICAL: the L1 is ≥120-bit ⇒ the L2's inner-FRI verifier
-    // params MUST be Bit120 (NOT FiveBit as §14 S2(b) used) so the
+    // params MUST be Bit120 so the
     // in-circuit FRI fold-chain reconstructs the actual ≥120-bit L1
     // commitment. A mismatched inner-FRI would mis-verify.
     let inner_fri = fri_vparams_for(OuterTier::Bit120);
@@ -1455,9 +1554,15 @@ fn assert_120bit_l2_tamper_rejects(label: &str, inner: SweepProfile) {
 #[ignore = "C3/M-S5 DELIVERABLE (VERY heavy ~many min, ≥120-bit L2 over ≥120-bit L1): Stage B — the genuinely-≥120-bit vertical-recursion cert (accept + tamper-reject + real size)"]
 fn c3_stage_b_l2_over_120bit_l1() {
     let sbits = bit120_conjectured_soundness();
-    assert!(sbits >= 80, "Stage B: Bit120 conjectured soundness {sbits} < 80");
+    assert!(
+        sbits >= 80,
+        "Stage B: Bit120 conjectured soundness {sbits} < 80"
+    );
     let inner_sbits = inner_conjectured_soundness(SWEEP_PROD);
-    assert!(inner_sbits >= 80, "Stage B: inner PROD soundness {inner_sbits} < 80");
+    assert!(
+        inner_sbits >= 80,
+        "Stage B: inner PROD soundness {inner_sbits} < 80"
+    );
 
     let (l1_bytes, l2_bytes) = build_120bit_l2_over_120bit_l1("C3-StageB-PROD", SWEEP_PROD)
         .expect("Stage B: the genuinely-≥120-bit L2 over a ≥120-bit L1 must ACCEPT");
@@ -1496,7 +1601,10 @@ fn c3_stage_b_l2_over_120bit_l1() {
 #[ignore = "C3/M-S5 DELIVERABLE (EXTREMELY heavy, 5× ≥120-bit-L2-over-≥120-bit-L1): Stage C — harden the soundness-correct ≥120-bit cert across the inner Tip5-L0 sweep (PROD+LB4 mandatory; all 5) × {accept,tamper-reject}"]
 fn c3_stage_c_sweep_120bit() {
     let sbits = bit120_conjectured_soundness();
-    assert!(sbits >= 80, "Stage C: Bit120 conjectured soundness {sbits} < 80");
+    assert!(
+        sbits >= 80,
+        "Stage C: Bit120 conjectured soundness {sbits} < 80"
+    );
 
     // PROD + LB4 mandatory; LB2/LB5/LB6 additional (all genuine
     // ≥120-bit inner points). All run genuinely; no stub.
@@ -1512,15 +1620,14 @@ fn c3_stage_c_sweep_120bit() {
         );
 
         // ACCEPT (genuine ≥120-bit L2 over genuine ≥120-bit L1).
-        let (l1_b, l2_b) =
-            build_120bit_l2_over_120bit_l1(&format!("C3-StageC-{}", p.name), p)
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Stage C [{}]: valid ≥120-bit L2 over ≥120-bit L1 was \
+        let (l1_b, l2_b) = build_120bit_l2_over_120bit_l1(&format!("C3-StageC-{}", p.name), p)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Stage C [{}]: valid ≥120-bit L2 over ≥120-bit L1 was \
                          REJECTED — soundness regression: {e}",
-                        p.name
-                    )
-                });
+                    p.name
+                )
+            });
 
         // TAMPER-REJECT.
         assert_120bit_l2_tamper_rejects(&format!("C3-StageC-{}", p.name), p);
@@ -1560,7 +1667,5 @@ fn c3_stage_c_sweep_120bit() {
          unconditional.",
         results.len()
     );
-    eprintln!(
-        "==========================================================================\n"
-    );
+    eprintln!("==========================================================================\n");
 }

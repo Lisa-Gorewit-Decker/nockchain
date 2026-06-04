@@ -27,8 +27,8 @@ use p3_circuit_prover::batch_stark_prover::{
 };
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
-    BatchStarkProof, CircuitProverData, ConstraintProfile, RecomposePreprocessor,
-    TablePacking, Tip5Preprocessor,
+    BatchStarkProof, CircuitProverData, ConstraintProfile, RecomposePreprocessor, TablePacking,
+    Tip5Preprocessor,
 };
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
@@ -44,8 +44,8 @@ use p3_recursion::verify_p3_uni_proof_circuit;
 use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 use p3_test_utils::goldilocks_tip5_params::{
     ChallengeMmcs as TipsChallengeMmcs, Challenger as TipsChallenger, Dft as TipsDft,
-    MyCompress as TipsCompress, MyConfig as TipsCfg, MyHash as TipsHash,
-    MyMmcs as TipsValMmcs, MyPcs as TipsPcs,
+    MyCompress as TipsCompress, MyConfig as TipsCfg, MyHash as TipsHash, MyMmcs as TipsValMmcs,
+    MyPcs as TipsPcs,
 };
 use p3_tip5_circuit_air::Tip5Perm;
 use p3_uni_stark::{StarkConfig, prove, verify};
@@ -101,8 +101,9 @@ fn make_layer0_config() -> Tip5Layer0Config {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let challenger = Layer0Challenger::new(perm);
-    // 2026-05-21 anchored-between reanchor: inner Tip5-L0 FRI matches
-    // outer-cert (lb=4 nq=15 pow=1+1 = 62 bits Johnson, 60-bit floor).
+    // Inner Tip5-L0 FRI matches ai-pow-zk::CircuitConfig::PROD:
+    // lb=4 nq=15 pow=1+1 = 62 bits Johnson. The production outer
+    // certificate is separately parameterized by goldilocks_tip5_60bit().
     let fri_params = FriParameters {
         log_blowup: 4,
         log_final_poly_len: 0,
@@ -156,8 +157,7 @@ fn build_layer0_verifier_circuit_with_profiling(
     circuit_builder.enable_recompose::<Val>(generate_recompose_trace::<Val, Challenge>);
     circuit_builder.set_recompose_coeff_ctl_for_decompose_links(true);
 
-    let fri_verifier_params =
-        FriVerifierParams::with_mmcs(4, 0, 1, 1, Tip5Config::GOLDILOCKS_W16);
+    let fri_verifier_params = FriVerifierParams::with_mmcs(4, 0, 1, 1, Tip5Config::GOLDILOCKS_W16);
 
     let verifier_inputs = StarkVerifierInputsBuilder::<
         Tip5Layer0Config,
@@ -202,12 +202,30 @@ fn build_layer0_verifier_circuit_with_profiling(
                 ));
                 let mut entries: Vec<_> = per_scope.iter().collect();
                 entries.sort_by(|a, b| {
-                    let a_total = a.1.adds + a.1.subs + a.1.muls + a.1.divs + a.1.horner_accs + a.1.bool_checks + a.1.mul_adds;
-                    let b_total = b.1.adds + b.1.subs + b.1.muls + b.1.divs + b.1.horner_accs + b.1.bool_checks + b.1.mul_adds;
+                    let a_total = a.1.adds
+                        + a.1.subs
+                        + a.1.muls
+                        + a.1.divs
+                        + a.1.horner_accs
+                        + a.1.bool_checks
+                        + a.1.mul_adds;
+                    let b_total = b.1.adds
+                        + b.1.subs
+                        + b.1.muls
+                        + b.1.divs
+                        + b.1.horner_accs
+                        + b.1.bool_checks
+                        + b.1.mul_adds;
                     b_total.cmp(&a_total)
                 });
                 for (scope, c) in entries {
-                    let total = c.adds + c.subs + c.muls + c.divs + c.horner_accs + c.bool_checks + c.mul_adds;
+                    let total = c.adds
+                        + c.subs
+                        + c.muls
+                        + c.divs
+                        + c.horner_accs
+                        + c.bool_checks
+                        + c.mul_adds;
                     out.push_str(&format!(
                         "  SCOPE {scope:<40}: total_alu_ops={total:>6}  adds={} subs={} muls={} divs={} horner_accs={} bool_checks={} mul_adds={} consts={} npos={:?}\n",
                         c.adds, c.subs, c.muls, c.divs, c.horner_accs, c.bool_checks, c.mul_adds, c.consts, c.non_primitives,
@@ -274,13 +292,16 @@ struct AirWidths {
 
 fn build_production_l1() -> Result<(BatchStarkProof<TipsCfg>, AirWidths, Option<String>), String> {
     let outer_config = make_production_outer_cfg();
-    let (BuiltLayer0Circuit {
-        circuit,
-        public_inputs,
-        private_inputs,
-        mmcs_op_ids,
-        proof,
-    }, scope_dump) = build_layer0_verifier_circuit_with_profiling(true);
+    let (
+        BuiltLayer0Circuit {
+            circuit,
+            public_inputs,
+            private_inputs,
+            mmcs_op_ids,
+            proof,
+        },
+        scope_dump,
+    ) = build_layer0_verifier_circuit_with_profiling(true);
 
     let table_packing = TablePacking::new(1, 8);
     let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> = vec![
@@ -307,10 +328,22 @@ fn build_production_l1() -> Result<(BatchStarkProof<TipsCfg>, AirWidths, Option<
     let widths: Vec<(usize, usize)> = airs
         .iter()
         .map(|air| match air {
-            CircuitTableAir::Const(a) => (BaseAir::<Val>::width(a), BaseAir::<Val>::preprocessed_width(a)),
-            CircuitTableAir::Public(a) => (BaseAir::<Val>::width(a), BaseAir::<Val>::preprocessed_width(a)),
-            CircuitTableAir::Alu(a) => (BaseAir::<Val>::width(a), BaseAir::<Val>::preprocessed_width(a)),
-            CircuitTableAir::Dynamic(a) => (BaseAir::<Val>::width(a), BaseAir::<Val>::preprocessed_width(a)),
+            CircuitTableAir::Const(a) => (
+                BaseAir::<Val>::width(a),
+                BaseAir::<Val>::preprocessed_width(a),
+            ),
+            CircuitTableAir::Public(a) => (
+                BaseAir::<Val>::width(a),
+                BaseAir::<Val>::preprocessed_width(a),
+            ),
+            CircuitTableAir::Alu(a) => (
+                BaseAir::<Val>::width(a),
+                BaseAir::<Val>::preprocessed_width(a),
+            ),
+            CircuitTableAir::Dynamic(a) => (
+                BaseAir::<Val>::width(a),
+                BaseAir::<Val>::preprocessed_width(a),
+            ),
         })
         .collect();
     let air_widths = AirWidths { widths };
@@ -343,8 +376,7 @@ fn build_production_l1() -> Result<(BatchStarkProof<TipsCfg>, AirWidths, Option<
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
-    let mut prover =
-        BatchStarkProver::new(outer_config).with_table_packing(table_packing);
+    let mut prover = BatchStarkProver::new(outer_config).with_table_packing(table_packing);
     prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
     prover.register_recompose_table::<2>(true);
     let l1 = prover
@@ -364,13 +396,19 @@ fn build_production_l1() -> Result<(BatchStarkProof<TipsCfg>, AirWidths, Option<
 #[ignore = "Path B Stage B0: production L1 outer-cert inventory (heavy ~few min)"]
 fn path_b_stage_0_l1_inventory() {
     eprintln!("\n=== M-S5b PATH B STAGE B0 — production L1 cert inventory ===");
-    eprintln!("Production FRI: lb=4 nq=15 mla=3 lfp=2 cap=3 d=5 (62-bit Johnson, 60-bit anchored floor; 2026-05-21)");
+    eprintln!(
+        "Production outer FRI: lb=4 nq=10 mla=3 lfp=2 cap=5 query_pow=20 d=2 \
+         (60-bit Johnson; 2026-06-03)"
+    );
     eprintln!("Substrate: 100% Tip5 (zero Poseidon2)\n");
 
     let (l1, air_widths, scope_dump) = build_production_l1().expect("L1 must build");
     let total_bytes = postcard::to_allocvec(&l1).expect("serialize L1").len();
 
-    eprintln!("L1 TOTAL serialized: {total_bytes} B ({:.2} KB)\n", total_bytes as f64 / 1024.0);
+    eprintln!(
+        "L1 TOTAL serialized: {total_bytes} B ({:.2} KB)\n",
+        total_bytes as f64 / 1024.0
+    );
 
     // ----- Per-AIR cell counts (rows × cols) -----
     // Iteration order matches the airs vector returned by
@@ -407,12 +445,18 @@ fn path_b_stage_0_l1_inventory() {
         primitive_total_rows_sum += rows;
     }
     eprintln!("  {}", "-".repeat(82));
-    eprintln!("  primitive_subtotal: rows={primitive_total_rows_sum}, cells={primitive_total_cells}\n");
+    eprintln!(
+        "  primitive_subtotal: rows={primitive_total_rows_sum}, cells={primitive_total_cells}\n"
+    );
 
     let mut npo_total_cells = 0usize;
     let mut npo_total_packed_rows = 0usize;
     for (i, entry) in l1.non_primitives.iter().enumerate() {
-        let packed_rows = if entry.lanes > 0 { entry.rows.div_ceil(entry.lanes) } else { entry.rows };
+        let packed_rows = if entry.lanes > 0 {
+            entry.rows.div_ceil(entry.lanes)
+        } else {
+            entry.rows
+        };
         let (w, pw) = air_widths.widths.get(nprim + i).copied().unwrap_or((0, 0));
         let cells = packed_rows * (w + pw);
         eprintln!(
@@ -429,7 +473,8 @@ fn path_b_stage_0_l1_inventory() {
     }
     eprintln!("  {}", "-".repeat(82));
     eprintln!("  npo_subtotal: rows={npo_total_packed_rows}, cells={npo_total_cells}\n");
-    eprintln!("  GRAND TOTAL: rows={}, cells={}\n",
+    eprintln!(
+        "  GRAND TOTAL: rows={}, cells={}\n",
         primitive_total_rows_sum + npo_total_packed_rows,
         primitive_total_cells + npo_total_cells,
     );
@@ -439,10 +484,16 @@ fn path_b_stage_0_l1_inventory() {
 
     // ----- Summary -----
     eprintln!("=== SUMMARY ===");
-    eprintln!("  total_bytes = {total_bytes} ({:.2} KB)", total_bytes as f64 / 1024.0);
+    eprintln!(
+        "  total_bytes = {total_bytes} ({:.2} KB)",
+        total_bytes as f64 / 1024.0
+    );
     eprintln!("  primitive_rows = {primitive_total_rows}");
     eprintln!("  npo_packed_rows = {npo_total_rows}");
-    eprintln!("  grand_total_rows = {}", primitive_total_rows + npo_total_rows);
+    eprintln!(
+        "  grand_total_rows = {}",
+        primitive_total_rows + npo_total_rows
+    );
     eprintln!("  ext_degree = {}", l1.ext_degree);
     eprintln!("  alu_variant = {:?}", l1.alu_variant);
     eprintln!("  table_packing = {:?}", l1.table_packing);
@@ -453,20 +504,52 @@ fn path_b_stage_0_l1_inventory() {
         eprintln!("=== PER-SCOPE OP COUNTS (profiling feature; verifier circuit construction) ===");
         eprintln!("{dump}");
     } else {
-        eprintln!("=== PER-SCOPE OP COUNTS: profiling feature NOT enabled (rebuild with `--features profiling`) ===\n");
+        eprintln!(
+            "=== PER-SCOPE OP COUNTS: profiling feature NOT enabled (rebuild with `--features profiling`) ===\n"
+        );
     }
 
     // ----- Per-section proof byte breakdown -----
     eprintln!("=== PROOF SECTION BYTES ===");
-    let commitments_bytes = postcard::to_allocvec(&l1.proof.commitments).expect("ser").len();
-    let opened_values_bytes = postcard::to_allocvec(&l1.proof.opened_values).expect("ser").len();
-    let opening_proof_bytes = postcard::to_allocvec(&l1.proof.opening_proof).expect("ser").len();
-    let global_lookup_data_bytes = postcard::to_allocvec(&l1.proof.global_lookup_data).expect("ser").len();
-    let non_primitives_bytes = postcard::to_allocvec(&l1.non_primitives).expect("ser").len();
-    eprintln!("  commitments:        {:>8} B ({:>5.1}%)", commitments_bytes, 100.0 * commitments_bytes as f64 / total_bytes as f64);
-    eprintln!("  opened_values:      {:>8} B ({:>5.1}%)", opened_values_bytes, 100.0 * opened_values_bytes as f64 / total_bytes as f64);
-    eprintln!("  opening_proof:      {:>8} B ({:>5.1}%)", opening_proof_bytes, 100.0 * opening_proof_bytes as f64 / total_bytes as f64);
-    eprintln!("  global_lookup_data: {:>8} B ({:>5.1}%)", global_lookup_data_bytes, 100.0 * global_lookup_data_bytes as f64 / total_bytes as f64);
-    eprintln!("  non_primitives:     {:>8} B ({:>5.1}%)", non_primitives_bytes, 100.0 * non_primitives_bytes as f64 / total_bytes as f64);
+    let commitments_bytes = postcard::to_allocvec(&l1.proof.commitments)
+        .expect("ser")
+        .len();
+    let opened_values_bytes = postcard::to_allocvec(&l1.proof.opened_values)
+        .expect("ser")
+        .len();
+    let opening_proof_bytes = postcard::to_allocvec(&l1.proof.opening_proof)
+        .expect("ser")
+        .len();
+    let global_lookup_data_bytes = postcard::to_allocvec(&l1.proof.global_lookup_data)
+        .expect("ser")
+        .len();
+    let non_primitives_bytes = postcard::to_allocvec(&l1.non_primitives)
+        .expect("ser")
+        .len();
+    eprintln!(
+        "  commitments:        {:>8} B ({:>5.1}%)",
+        commitments_bytes,
+        100.0 * commitments_bytes as f64 / total_bytes as f64
+    );
+    eprintln!(
+        "  opened_values:      {:>8} B ({:>5.1}%)",
+        opened_values_bytes,
+        100.0 * opened_values_bytes as f64 / total_bytes as f64
+    );
+    eprintln!(
+        "  opening_proof:      {:>8} B ({:>5.1}%)",
+        opening_proof_bytes,
+        100.0 * opening_proof_bytes as f64 / total_bytes as f64
+    );
+    eprintln!(
+        "  global_lookup_data: {:>8} B ({:>5.1}%)",
+        global_lookup_data_bytes,
+        100.0 * global_lookup_data_bytes as f64 / total_bytes as f64
+    );
+    eprintln!(
+        "  non_primitives:     {:>8} B ({:>5.1}%)",
+        non_primitives_bytes,
+        100.0 * non_primitives_bytes as f64 / total_bytes as f64
+    );
     eprintln!();
 }

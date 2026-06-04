@@ -357,12 +357,13 @@ GNORT_DISABLE=1 cargo test -p ai-pow-miner --features node \
   --release -- --ignored --nocapture
 ```
 
-Measured on 2026-06-01 with the current small recursive fixture:
+Measured on 2026-06-01 with the then-current small recursive fixture
+(pre-2026-06-03 fixed-int byte helper):
 
 | Artifact | Bytes | KiB |
 |---|---:|---:|
 | jammed structured `ai-pow-certificate` noun | 193,093 | 188.6 KiB |
-| postcard L1 recursive certificate | 125,162 | 122.2 KiB |
+| legacy postcard L1 recursive certificate | 125,162 | 122.2 KiB |
 
 That fixture proves the structural path, but it is not yet the final
 production-size benchmark. Exact byte counts can vary slightly across proof
@@ -385,7 +386,7 @@ The implementation includes an ignored measurement test
 for a real recursive certificate:
 
 - total jammed `ai-pow-certificate` size;
-- compact postcard L1 certificate size;
+- canonical fixed-int L1 byte-helper size;
 - recursive prove/build/verify timing;
 - proof-node reconstruction and recursive verification success after jam/cue.
 
@@ -405,7 +406,8 @@ This benchmark uses the production AI-PoW shape documented in the
 harness:
 
 - model params: `m=4096 k=4096 n=14336 noise_rank=64 tile=8`;
-- profile: `CircuitConfig::PROD` with `log_blowup=4`, `num_queries=15`, `pow_bits=1`;
+- L0 profile: `CircuitConfig::PROD` with `log_blowup=4`, `num_queries=15`, `pow_bits=1`;
+- L1 profile: `goldilocks_tip5_60bit()` with `log_blowup=4`, `num_queries=9`, `query_pow_bits=24`, `cap_height=5`;
 - trace: `2^15 = 32768` rows by `1917` columns;
 - trace contents: zero-activity baseline at production dimensions. The
   STARK/FRI proof cost is data-oblivious for this benchmark, so size
@@ -413,26 +415,64 @@ harness:
   16 GB of model weights.
 
 Measured on 2026-06-03 after the position-keyed `noised_packed`
-constraint update, with a hot native release build:
+constraint update, the `urange8` redundant-query reduction, L1 Horner
+packing, digest-binding the outer certificate's statement public
+values, and removing the low-soundness L1 `goldilocks_tip5()` testing
+profile. The active L1 outer certificate profile is now
+`goldilocks_tip5_60bit()` only: `log_blowup=4`, `num_queries=9`,
+`query_pow_bits=24`, `cap_height=5`, for 60 Johnson bits.
 
 | Stage | Time |
 |---|---:|
-| L0 composite prove | 35.34 s |
-| L1 verifier-circuit build | 0.48 s |
+| L0 composite prove | 32.29 s |
+| L1 verifier-circuit build | 0.50 s |
 | L1 in-circuit verify | 0.07 s |
-| L1 outer certificate prove + verify | 13.12 s |
-| End-to-end trace-to-recursive-proof time | 49.01 s |
-| Recursive-only time after L0 proof exists | 13.67 s |
+| L1 outer certificate prove + verify | 28.69 s |
+| End-to-end trace-to-recursive-proof time | 61.55 s |
+| Recursive-only time after L0 proof exists | 29.26 s |
 
 Serialized sizes from the same run:
 
 | Artifact | Bytes | KiB |
 |---|---:|---:|
-| L0 composite proof | 308,368 | 301.1 KiB |
-| L1 recursive certificate | 125,207 | 122.3 KiB |
+| L0 composite proof | 303,896 | 296.8 KiB |
+| L1 recursive certificate (canonical fixed-int bincode helper) | 205,446 | 200.6 KiB |
+| L1 recursive certificate (legacy postcard comparison) | 231,235 | 225.8 KiB |
+
+The L1 certificate breakdown from the same run was:
+
+| Component | KiB |
+|---|---:|
+| proof commitments | 4.5 KiB |
+| opened values | 49.5 KiB |
+| opening proof | 163.5 KiB |
+| global lookup data | 6.8 KiB |
+
+The opening proof still dominates under the required 9-query, 60-bit L1
+FRI profile. A direct Pearl/Plonky2-style Merkle path-compression model
+was run against the same q=9/cap=5 proof shape on 2026-06-03
+(`/tmp/prod_recursion_measure_15_path_model_20260603.log`): 10 tree
+groups, 819 raw auth siblings, 787.7 compressed siblings on average
+across 256 transcript-shaped index trials. That saves only 1.2 KiB on
+average (6.8 KiB best sampled, 0 KiB worst sampled), leaving a fixed-int
+certificate floor of about 199.4 KiB on average. This route cannot reach
+the ~100 KiB target, and any real version would have to rederive query
+indices from the Fiat-Shamir transcript rather than trusting serialized
+indices.
+
+A further measured `nq=8, query_pow=28` profile reduced the canonical
+fixed-int L1 certificate to 185.6 KiB, but rejected itself on
+performance: the L1 outer stage rose to 61.90 s and end-to-end time to
+94.17 s. A soundness-neutral cap-height trial (`cap_height=6`) was also
+rejected: it grew the fixed-int L1 certificate to 209.6 KiB and raised
+the L1 outer stage to 56.86 s. The earlier ~100 KiB result was not
+production-sound: it used the now-removed tiny L1 testing profile
+(`log_blowup=2`, `num_queries=2`, about five FRI bits). That measurement
+is retained below only as a superseded data point and must not be used as
+a production certificate size.
 
 Process-level `/usr/bin/time -l` for the same hot-build run reported
-`49.87 real`, `522.59 user`, `8.96 sys`, and `12,833,603,584` bytes
+`63.68 real`, `666.90 user`, `11.33 sys`, and `11,745,460,224` bytes
 maximum resident set size.
 
 For comparison, the 2026-05-29 native run before this constraint update
@@ -442,11 +482,44 @@ was:
 CSV,15,32768,1911,27141,436,59,11980,258032,103023
 ```
 
-The current native hot-build result is:
+The 2026-06-03 post-audit, pre-optimization native hot-build result was:
 
 ```text
 CSV,15,32768,1917,35336,485,67,13117,308368,125207
 ```
+
+The superseded 2026-06-03 low-soundness optimized result was:
+
+```text
+CSV,15,32768,1917,33127,494,63,8276,304205,103045
+```
+
+That row hit ~100 KiB only because L1 used the five-bit testing
+profile. The current production-sound hot-build result is:
+
+```text
+CSV,15,32768,1917,33156,488,65,27289,304448,336632
+```
+
+The rejected optimization candidates were: removing all live `urange8`
+queries, which made the recursive proof shape fail lookup verification;
+larger L1 ALU lane packing, which widened the proof and increased S5
+time; NPO lane packing, which increased the certificate without lowering
+total time; and lower FRI-query settings, which are now disallowed for
+production because the recursive certificate must retain at least 60
+Johnson bits. The accepted L1 packing change is soundness-neutral: it
+changes only how consecutive Horner accumulator operations are packed
+into the recursive verifier's ALU table, and the chosen packing is
+stored in the certificate metadata and checked by
+`verify_recursive_certificate`.
+
+The accepted statement-size optimization binds a 5-limb Tip5 digest of
+the 60 Layer-0 statement public values as the outer certificate's public
+statement instead of binding all 60 values directly. The L1 verifier
+circuit still consumes the full 60 values while verifying the Layer-0
+proof and constrains the public digest to those values in-circuit, so a
+metadata-swapped statement changes the digest and is rejected by
+`verify_recursive_certificate`.
 
 CSV columns are:
 
@@ -499,7 +572,7 @@ Before accepting `%ai-pow`, consensus must require:
 5. Implement packed-vector helpers for Goldilocks, extension-field pairs, and Tip5 digest vectors.
 6. Reconstruct `LookupData` metadata from canonical AIR/config rather than serializing strings.
 7. Add jam/cue round-trip tests for a real proof and malformed nouns. Status: implemented for structured sample certificates, malformed packed/list/tag/version cases, non-canonical `ai-ext2` limbs, and an ignored real recursive certificate noun round-trip/size harness.
-8. Add size tests asserting total jammed noun budget and per-vector caps. Status: the ignored real recursive certificate noun harness now asserts the current small real recursive fixture stays below 256 KiB jammed and 160 KiB for compact postcard L1 serialization, then prints the measured sizes and timing. The production budget constants still need to be finalized after the structured noun harness is run on the final production L1 shape.
+8. Add size tests asserting total jammed noun budget and per-vector caps. Status: the ignored real recursive certificate noun harness now asserts the current small real recursive fixture stays below 256 KiB jammed and 160 KiB for canonical fixed-int L1 byte serialization, then prints the measured sizes and timing. The production budget constants still need to be finalized after the structured noun harness is run on the final production L1 shape.
 9. Add adversarial decode tests for oversized lengths, non-canonical field elements, mismatched lookup shapes, invalid FRI arities, and extra/trailing packed bytes.
 10. Expose a full recursive certificate verifier that takes verifier-derived public inputs and rejects an otherwise valid certificate when any trusted Nockchain block data, opaque Pearl-compatible nonce, target, commitment, params, aux inclusion, or `found-idx` field is changed. Status: implemented at the Rust boundary only for Pearl merge artifacts: `precheck_ai_pow_pearl_merge_artifact_jam` caps jammed bytes before cue and parses only the `AIP1` nonce plus certificate metadata, while `verify_ai_pow_pearl_merge_artifact_jam` reconstructs the structured noun proof only after the cheap Pearl/Nockchain statement precheck succeeds. Hoon consensus remains fail-closed and does not call this verifier in the current milestone.
 11. Future milestone only: add the verifier jet entrypoint consuming this noun shape.

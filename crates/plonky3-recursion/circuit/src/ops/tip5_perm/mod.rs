@@ -2,11 +2,11 @@
 //!
 //! Full NPO subsystem (C2.3), the faithful mechanical mirror of
 //! `poseidon1_perm`'s D=1 path (base **and** merkle / MMCS) → the
-//! deployed Nockchain Tip5 (Goldilocks, D=1, width 16, rate 10,
-//! capacity 6, digest 5, 7-round). The permutation *constraint system*
+//! recursive Tip5 variant (Goldilocks, D=1, width 16, rate 10,
+//! capacity 6, digest 5, 5-round). The permutation *constraint system*
 //! lives in the sibling
 //! `p3-tip5-circuit-air` (`Tip5PermLookupAir`, KAT-anchored to
-//! `nockchain_math::tip5::permute`); the circuit-prover Tip5 table
+//! `nockchain_math::tip5::permute_5round`); the circuit-prover Tip5 table
 //! (`p3_circuit_prover::batch_stark_prover::tip5`) wraps it and adds
 //! the WitnessChecks CTL.
 

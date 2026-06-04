@@ -1,8 +1,8 @@
 //! Tip5 circuit-prover table (C2.3 / M-S4).
 //!
 //! Faithful mechanical mirror of `batch_stark_prover/poseidon1.rs`,
-//! reduced to the **single deployed Goldilocks D=1 width-16 rate-10
-//! 7-round Tip5** configuration and the **existing**
+//! reduced to the **single recursive Goldilocks D=1 width-16 rate-10
+//! 5-round Tip5** configuration and the **existing**
 //! [`p3_tip5_circuit_air::Tip5CircuitAir`] wrapper (which composes the
 //! degree-2-proven [`p3_tip5_circuit_air::Tip5PermLookupAir`] —
 //! `tip5_l` LogUp bus + algebraic constraints + verifier-fixed 256-row
@@ -122,24 +122,15 @@ where
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     match tip5_witness_bus_dim(circuit_extension_degree)? {
-        1 => Some(DynamicAirEntry::new(Box::new(Tip5CircuitAir::<
-            Val<SC>,
-            1,
-        >::new_with_preprocessed(
-            committed_prep, min_height
-        )))),
-        2 => Some(DynamicAirEntry::new(Box::new(Tip5CircuitAir::<
-            Val<SC>,
-            2,
-        >::new_with_preprocessed(
-            committed_prep, min_height
-        )))),
-        5 => Some(DynamicAirEntry::new(Box::new(Tip5CircuitAir::<
-            Val<SC>,
-            5,
-        >::new_with_preprocessed(
-            committed_prep, min_height
-        )))),
+        1 => Some(DynamicAirEntry::new(Box::new(
+            Tip5CircuitAir::<Val<SC>, 1>::new_with_preprocessed(committed_prep, min_height),
+        ))),
+        2 => Some(DynamicAirEntry::new(Box::new(
+            Tip5CircuitAir::<Val<SC>, 2>::new_with_preprocessed(committed_prep, min_height),
+        ))),
+        5 => Some(DynamicAirEntry::new(Box::new(
+            Tip5CircuitAir::<Val<SC>, 5>::new_with_preprocessed(committed_prep, min_height),
+        ))),
         _ => unreachable!("tip5_witness_bus_dim only returns 1, 2 or 5"),
     }
 }
@@ -383,11 +374,7 @@ where
         // `air_with_committed_preprocessed` →
         // `wrapper_from_config_with_preprocessed(committed_prep,
         // min_height, circuit_extension_degree)`.
-        tip5_air_entry_for_witness_dim::<SC>(
-            committed_prep,
-            min_height,
-            circuit_extension_degree,
-        )
+        tip5_air_entry_for_witness_dim::<SC>(committed_prep, min_height, circuit_extension_degree)
     }
 }
 
@@ -502,8 +489,7 @@ where
         // every CTL index (a no-op at D=1 — why this stayed latent —
         // but a `× D` corruption of the `WitnessChecks` bus at D≥2,
         // surfacing as the C2.4 Layer-0 `["0","0"]` net-mult mismatch).
-        let mut full =
-            build_tip5_circuit_preprocessed::<F>(&l_prep_g, &rows, height, 1);
+        let mut full = build_tip5_circuit_preprocessed::<F>(&l_prep_g, &rows, height, 1);
 
         // Overwrite the per-perm-row `out_ctl` columns with the
         // resolved signed multiplicities (the assembler wrote raw
@@ -581,10 +567,8 @@ where
         // D=1 circuit ⇒ `WITNESS_EXT_D = 1`. The pad loop runs zero
         // times ⇒ the emitted `WitnessChecks` tuples are byte-identical
         // to the pre-R-a `[idx, value]` (the HARD D=1 invariant).
-        let air = Tip5CircuitAir::<Val<SC>, 1>::new_with_preprocessed(
-            prep_base.to_vec(),
-            min_height,
-        );
+        let air =
+            Tip5CircuitAir::<Val<SC>, 1>::new_with_preprocessed(prep_base.to_vec(), min_height);
 
         let num_rows = if prep_base.is_empty() {
             0
@@ -641,10 +625,8 @@ where
         let _config = Tip5Config::from_variant_name(suffix)?;
 
         // D=2 circuit ⇒ `WITNESS_EXT_D = 2`: emit `[idx, value, ZERO]`.
-        let air = Tip5CircuitAir::<Val<SC>, 2>::new_with_preprocessed(
-            prep_base.to_vec(),
-            min_height,
-        );
+        let air =
+            Tip5CircuitAir::<Val<SC>, 2>::new_with_preprocessed(prep_base.to_vec(), min_height);
 
         let num_rows = if prep_base.is_empty() {
             0

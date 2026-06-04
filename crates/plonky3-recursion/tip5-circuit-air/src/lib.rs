@@ -1,14 +1,14 @@
 //! # `tip5-circuit-air` — C2 / M-S4
 //!
-//! A **from-scratch** AIR for the Nockchain **7-round Tip5**
-//! permutation, built per the user's decision (build from the native
-//! spec, KAT-anchored — *not* a port of any legacy AIR).
+//! A **from-scratch** AIR for recursive proving's **5-round Tip5**
+//! permutation, built from the native spec and KAT-anchored.
 //!
 //! * **Construction reference:** the authoritative Tip5 paper (IACR
 //!   ePrint 2023/107).
-//! * **Bit-for-bit soundness oracle:** `nockchain_math::tip5::permute`
-//!   (7-round), frozen into the committed golden KAT fixture
-//!   `crates/ai-pow-zk/tests/fixtures/tip5_golden_kat.txt` (C2.0).
+//! * **Bit-for-bit soundness oracle:**
+//!   `nockchain_math::tip5::permute_5round`, frozen into the committed
+//!   golden KAT fixture
+//!   `crates/ai-pow-zk/tests/fixtures/tip5_5round_golden_kat.txt`.
 //!
 //! The split-and-lookup S-box is arithmetized **algebraically and
 //! lookup-free**: per byte, `c = ((b+1)^3 − 1) mod 257`, which the C2.0

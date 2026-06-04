@@ -1,7 +1,7 @@
 //! End-to-end Tip5 NPO → circuit-prover batch-STARK gate (C2.3 / M-S4).
 //!
 //! Mirrors `test_lookups.rs::test_poseidon2_ctl_lookups` for the
-//! deployed Goldilocks D=1 width-16 rate-10 7-round Tip5: build a
+//! recursive Goldilocks D=1 width-16 rate-10 5-round Tip5: build a
 //! circuit with CTL'd Tip5 inputs/outputs, run a *real*
 //! `prove_all_tables` (which executes the `tip5_l` LogUp global
 //! reconciliation inside the wrapped, validated `Tip5PermLookupAir`
@@ -9,10 +9,8 @@
 //! `verify_all_tables`. Plus an adversarial negative test: a tampered
 //! proof field must make verification fail.
 //!
-//! Uses `config::goldilocks_tip5()` (FRI `log_blowup = 2`, tier B = 4)
-//! — the exact FRI tier the `p3-tip5-circuit-air` `Tip5PermLookupAir`
-//! is validated sound at (its degree-4 §4.6 / x⁷ constraints need
-//! B ≥ 4; the default `goldilocks()` B = 2 config cannot prove them).
+//! Uses `config::goldilocks_tip5_60bit()` so Tip5 lookup coverage
+//! exercises the same outer-cert FRI floor as production.
 
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
@@ -32,7 +30,8 @@ use p3_tip5_circuit_air::{STATE_SIZE, permute};
 type F = Goldilocks;
 
 /// `Permutation<[Goldilocks;16]>` adapter over the in-crate,
-/// KAT-anchored, bit-for-bit twin of `nockchain_math::tip5::permute`.
+/// KAT-anchored, bit-for-bit twin of
+/// `nockchain_math::tip5::permute_5round`.
 #[derive(Clone)]
 struct Tip5Perm;
 
@@ -57,10 +56,8 @@ fn build_and_prove() -> (
 ) {
     let mut builder: CircuitBuilder<F> = CircuitBuilder::new();
     let tip5_config = Tip5Config::GOLDILOCKS_W16;
-    builder.enable_tip5_perm::<Tip5Goldilocks, _>(
-        generate_tip5_trace::<F, Tip5Goldilocks>,
-        Tip5Perm,
-    );
+    builder
+        .enable_tip5_perm::<Tip5Goldilocks, _>(generate_tip5_trace::<F, Tip5Goldilocks>, Tip5Perm);
 
     // Two CTL'd public inputs into the Tip5 permutation; the rest of
     // the 16-wide state is zero (new_start sponge absorb).
@@ -90,9 +87,7 @@ fn build_and_prove() -> (
     }
 
     let circuit = builder.build().unwrap();
-    // FRI tier B=4 (log_blowup=2) — required for the validated
-    // degree-4 Tip5 lookup-AIR constraints.
-    let cfg = config::goldilocks_tip5();
+    let cfg = config::goldilocks_tip5_60bit();
 
     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![Box::new(Tip5Preprocessor)];
     let air_builders = tip5_air_builders::<GoldilocksTipsConfig, 1>();

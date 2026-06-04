@@ -1,10 +1,10 @@
-//! Circuit-prover wrapper AIR for the lookup-table 7-round Tip5
+//! Circuit-prover wrapper AIR for the lookup-table 5-round Tip5
 //! permutation (C2.3 / M-S4).
 //!
 //! This is the **faithful mechanical mirror** of the Poseidon1 D=1
-//! circuit-AIR → batch-STARK bridge, specialised to the deployed
-//! Nockchain Tip5 sponge geometry (Goldilocks, D=1, width 16, rate 10,
-//! capacity 6, digest 5, 7 rounds) and to the *existing*
+//! circuit-AIR → batch-STARK bridge, specialised to recursive Tip5
+//! sponge geometry (Goldilocks, D=1, width 16, rate 10, capacity 6,
+//! digest 5, 5 rounds) and to the *existing*
 //! [`crate::Tip5PermLookupAir`] constraint system. Nothing here alters
 //! the degree-2-proven `tip5_l` LogUp bus, the algebraic constraints,
 //! or the verifier-fixed 256-row L-table — that AIR's `eval` is reused
@@ -12,7 +12,7 @@
 //!
 //! What this module adds — and *only* this — is the cross-table
 //! `WitnessChecks` CTL layer that connects the permutation's
-//! `IN[0..16]` (consumed) and `ROUT[6][0..10]` rate outputs (produced)
+//! `IN[0..16]` (consumed) and `ROUT[NUM_ROUNDS-1][0..10]` rate outputs (produced)
 //! to the rest of the circuit's witness bus, exactly as
 //! `p3-poseidon1-circuit-air`'s `eval_interactions` does for the
 //! compact D=1 path: per-input-limb **sends** with multiplicity
@@ -42,7 +42,7 @@ use crate::air_lookup::{
 use crate::generation_lookup::generate_lookup_trace;
 use crate::tip5_spec::STATE_SIZE;
 
-/// Sponge rate (squeezed/CTL-exposed output lanes) of the deployed
+/// Sponge rate (squeezed/CTL-exposed output lanes) of recursive
 /// Tip5: `PaddingFreeSponge<_,16,10,5>` / `DuplexChallenger<_,_,16,10>`.
 pub const TIP5_RATE: usize = 10;
 /// Tip5 state width in base-field elements.

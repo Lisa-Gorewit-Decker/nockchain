@@ -563,7 +563,7 @@ pub mod goldilocks_tip5_out4_params {
 
 /// **ADDITIVE (M-S5b S1.B Poseidon2-removal P4).** Tip5-unified
 /// Goldilocks STARK parameters — parallel to [`goldilocks_params`]
-/// but with **Tip5 (7-round, width 16, rate 10, digest 5)** as the
+/// but with **recursive Tip5 (5-round, width 16, rate 10, digest 5)** as the
 /// MMCS hash + Fiat-Shamir challenger permutation, instead of
 /// Poseidon2-W8.
 ///
@@ -581,9 +581,8 @@ pub mod goldilocks_tip5_out4_params {
 /// targets.
 ///
 /// **Soundness:** unchanged from [`goldilocks_params`] at the FRI
-/// side; Tip5 7-round (128-bit collision + 4-round margin per
-/// Opening the Blackbox IACR 2024/1900) replaces Poseidon2-W8
-/// (≈128-bit collision from the wide-trail design). Chain MIN
+/// side; recursive 5-round Tip5 replaces Poseidon2-W8
+/// (approximately 128-bit collision from the wide-trail design). Chain MIN
 /// preserved at ≥82 unconditional per S(−1) + CSA.
 pub mod goldilocks_tip5_params {
     pub use p3_goldilocks::Goldilocks;

@@ -19,21 +19,18 @@ target-hit check; it is not the persisted block artifact.
 
 ### Hash functions
 
-The **only** hash function in the live SNARK proving path is:
+The recursive certificate/proving stack uses Tip5, split by role:
 
-- **Tip5** (Nockchain's 7-round variant; KAT-anchored to
-  `nockchain_math::tip5::permute`, the in-tree bit-for-bit twin
-  also exposed via `p3-tip5-circuit-air::Tip5Perm`). Used at
-  **every** layer:
-  - **Inner ai-pow-zk STARK** — `Tip5Perm` (width 16, rate 10,
-    digest 5) is the MMCS hash + Fiat-Shamir challenger
-    permutation (`crates/ai-pow-zk/src/circuit.rs:186, 203`).
-    KAT'd against the C2.1 Tip5 perm AIR (the soundness linchpin;
-    `crates/plonky3-recursion/tip5-circuit-air/src/air_lookup.rs`).
-  - **Outer-cert L1/L2 (recursion verifier circuit)** — `Tip5Perm`
-    everywhere via `config::goldilocks_tip5_60bit()` (post-2026-05-20
-    M-S5b S1.B P5 flip; was Poseidon2-Goldilocks<8>).
-    `crates/plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_60bit`.
+- **Recursive proving Tip5** — the 5-round, paper-spec variant
+  (`nockchain_math::tip5::permute_5round`, also exposed through
+  `p3-tip5-circuit-air::Tip5Perm`). This is the only Tip5 variant
+  used by ai-pow-zk's recursive certificate stack: the recursively
+  wrapped inner STARK MMCS / Fiat-Shamir path and the outer recursive
+  verifier circuit via `config::goldilocks_tip5_60bit()`.
+- **Canonical Nockchain Tip5** — the separate 7-round variant
+  (`nockchain_math::tip5::permute`). This remains Nockchain's
+  non-recursive hash path and is not selected by the recursive
+  certificate stack.
 
 - **BLAKE3** (outside the SNARK; in the ai-pow puzzle's plain
   data path). Used by `ai-pow` for the matrix commitment
@@ -50,21 +47,25 @@ The **only** hash function in the live SNARK proving path is:
 - **Spec**: Tip5 paper (Szepieniec, Lemmens, Sauer, Threadbare,
   Al Kindi, "The Tip5 Hash Function for Recursive STARKs",
   **IACR ePrint 2023/107**). The paper specifies N=5 rounds.
-- **Nockchain choice**: **N=7 rounds** — 2 rounds above the
-  paper's spec, providing additional margin against future
-  cryptanalysis. C2.1 keystone byte-identical against `259cab2`.
+- **Recursive proving choice**: **N=5 rounds** — the paper-spec
+  round count, used only for ai-pow-zk recursive certificate
+  proving.
+- **Canonical Nockchain choice**: **N=7 rounds** — 2 rounds above the
+  paper's spec for non-recursive Nockchain hashing.
 - **Third-party cryptanalysis**: "Opening the Blackbox" (Liu,
   Koschatko, Grassi, Yan, Chen, Banik, Meier, **IACR ePrint
   2024/1900**). Practical SFS collision on 3-round Tip5 at 2^41.2;
   full collision on 3-round at 2^121.1. No attack reaches 4-round
   Tip5 or above.
-- **Nockchain safety margin**: **4 rounds above broken** (7 − 3),
-  twice the Tip5 paper's post-OtB 2-round margin (5 − 3).
+- **Recursive-proving safety margin**: **2 rounds above broken**
+  (5 − 3), matching the Tip5 paper's post-OtB margin.
+- **Canonical Nockchain safety margin**: **4 rounds above broken**
+  (7 − 3).
 - **Sponge collision security**: `min(capacity/2, output)` =
   `min(6×64/2, 5×64)` = `min(192, 320)` = **192 bits**. Well
   above the ≥80-bit floor.
 
-#### What's NOT in the SNARK proving stack
+#### What's NOT in the recursive proving stack
 
 - **No Poseidon2 (any variant: W8, W16, W24, Fused).** The
   outer-cert flipped to Tip5 in P5 of M-S5b S1.B (2026-05-20)
@@ -85,7 +86,8 @@ The **only** hash function in the live SNARK proving path is:
     pending follow-on cleanup.
 - **No Rescue, Rescue-Prime, Reinforced Concrete, Anemoi,
   Griffin, Monolith, MiMC, Marvellous, Tip4, Tip4',** or other
-  arithmetization-oriented hashes. Tip5 is the sole choice.
+  arithmetization-oriented hashes. Tip5 is the sole recursive
+  proving choice.
 - **No SHA-2, SHA-3, Keccak inside the SNARK.** BLAKE3 is used
   out-of-SNARK (matrix commit + strip openings) and via the
   in-circuit `Blake3Chip` AIR (mirroring Pearl's spec).
@@ -121,25 +123,31 @@ heuristic is **not** adopted).
   Kopparty, Saraf, "On Proximity Gaps for Reed–Solomon Codes"
   (**IACR ePrint 2025/2055**, Nov 2025) Theorem 1.5 + §1.3.2).
 - **Formula**: `unconditional_bits ≈ log_blowup · num_queries +
-  commit_proof_of_work_bits + query_proof_of_work_bits`.
+  query_proof_of_work_bits` for the FRI query phase. Commit PoW is a
+  batching-challenge grind and is not counted toward this floor.
 - **Per-layer (LANDED FRI configurations, 2026-05-21
   anchored-between)**:
   - Inner Tip5-L0 PROD: `lb=4, nq=15, pow=1+1` ⇒ **62 bits**
     unconditional Johnson (`crates/ai-pow-zk/src/circuit.rs::CircuitConfig::PROD`).
-  - Outer-cert L1/L2 (`goldilocks_tip5_60bit`): **production FRI
-    parameters as of 2026-05-21 (anchored-between)** stack every
-    soundness-neutral compression lever — `lb=4, nq=15, mla=3,
-    lfp=2, cap=3, pow=1+1, d=5` ⇒ **62 bits** unconditional
+  - Outer-cert L1 (`goldilocks_tip5_60bit`): **production FRI
+    parameters as of 2026-06-03 (anchored-between)** stack every
+    soundness-neutral compression lever — `lb=4, nq=9, mla=3,
+    lfp=2, cap=5, query_pow=24, d=2` ⇒ **60 bits** unconditional
     Johnson (`crates/plonky3-recursion/circuit-prover/src/config.rs`).
     Historical context: prior `lb=4 nq=20 mla=3 lfp=2 cap=3
     pow=1+1 d=5` ⇒ **82 bits** pre-anchored-between.
     Pre-2026-05-20 baseline (`lb=2 nq=42 mla=1 lfp=0 cap=0`) was
     85 bits, ~1011 KB L1.
-    **Measured at production-faithful params (Stage 5 at the
-    2026-05-21 anchored-between params, 9.7 min):** L1 = **292.92 KB**
-    (**~−24% vs the prior nq=20 82-bit point at 402.94 KB**;
-    **~−70% vs pre-2026-05-20 baseline ~1011 KB**), L2 = **342.74 KB**
-    (**−22% vs the prior 438.79 KB**), **L2/L1 = 1.117×**.
+    **Measured at production-faithful params (2026-06-03,
+    `prod_recursion_measure 15`):** canonical fixed-int bincode L1 =
+    **200.6 KiB** in **28.69 s** for the outer certificate stage
+    (legacy postcard for the same proof was **225.8 KiB**), down from
+    **215.7 KiB** at the prior `nq=10, query_pow=20` L1 point and
+    **328.8 KiB** at the earlier `nq=15, query_pow=1` L1 point.
+    A direct Pearl/Plonky2-style Merkle path-compression model over this
+    same q=9/cap=5 proof shape saved only **1.2 KiB** on average (best
+    sampled **6.8 KiB**), leaving an estimated fixed-int floor of
+    **~199.4 KiB**; this route is not a path to the **≤100 KiB** target.
     Trade-off: `lb=4` ⇒ 16× LDE (vs pre-2026-05-20 4×) ⇒ ~4×
     prover memory; 5-round Tip5 dropped prover time ~57% (22 min
     → 9.5 min). **The ai-pow-zk-specific 5-round Tip5 (paper-spec
@@ -169,9 +177,9 @@ heuristic is **not** adopted).
   - Per-AIR Schwartz–Zippel: `(d_max+1) · n_rows / q_chal` ≥98
     unconditional bits per AIR at production parameters.
   - Per-LogUp-bus: `3 · k_b / q_chal` ≥98 bits.
-  - **Combined chain MIN** (2026-05-21 anchored-between):
-    **62 bits unconditional Johnson** (= MIN(inner 62, L1 62,
-    L2 62); FRI is the binding term; AIR + LogUp have ≥36-bit
+  - **Combined chain MIN** (2026-06-03 anchored-between):
+    **60 bits unconditional Johnson** (= MIN(inner 62, L1 60);
+    FRI is the binding term; AIR + LogUp have ≥36-bit
     margin over FRI). Historical pre-anchored-between chain
     MIN was 82 bits.
 
@@ -395,9 +403,10 @@ Plonky3 dependencies (`https://github.com/Plonky3/Plonky3`):
 - `p3-lookup` — LogUp / interaction-builder trait
 - `p3-matrix`, `p3-uni-stark` — trace + prover
 
-Tip5: not upstream. We re-use Nockchain's in-repo
-[`nockchain_math::tip5`](../nockchain-math/src/tip5/) (7-round
-parameter set) as the FRI sponge.
+Tip5: not upstream. Recursive certificate proving uses Nockchain's in-repo
+[`nockchain_math::tip5`](../nockchain-math/src/tip5/) 5-round
+`permute_5round` variant as the FRI sponge; the canonical 7-round
+`permute` remains outside this recursive certificate path.
 
 ## Licensing
 

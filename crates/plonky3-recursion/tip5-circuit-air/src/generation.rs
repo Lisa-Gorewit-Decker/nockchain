@@ -1,9 +1,9 @@
 //! Witness/trace generation for [`crate::Tip5PermAir`].
 //!
-//! Fills, per input, one row encoding the full 7-round Tip5 evaluation
+//! Fills, per input, one row encoding the full 5-round Tip5 evaluation
 //! exactly as the AIR constraints expect. Values are computed with the
 //! native-faithful [`crate::tip5_spec`] arithmetic; the resulting
-//! `(IN, ROUT[6])` is asserted bit-identical to the committed golden
+//! `(IN, ROUT[NUM_ROUNDS-1])` is asserted bit-identical to the committed golden
 //! fixture by `air::tests::native_equiv_kat`.
 
 use alloc::vec;
@@ -87,7 +87,7 @@ fn fadd(a: u64, b: u64) -> u64 {
 /// Test-support: like [`generate_trace_rows`] but row 0's round-0,
 /// lane-0 byte decomposition is forced to `override0` instead of the
 /// canonical `.to_le_bytes()`. The override is propagated *faithfully*
-/// (its L-images, recompositions, and the entire downstream 7-round
+/// (its L-images, recompositions, and the entire downstream 5-round
 /// permutation are recomputed from it) so **every** constraint stays
 /// satisfied *except* the paper §4.6 canonical guard when `override0`
 /// is a non-canonical (`≥ p`) alias — isolating exactly the forgery

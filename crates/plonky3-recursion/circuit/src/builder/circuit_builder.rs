@@ -389,8 +389,8 @@ where
     /// Enables the Tip5 permutation operation for base field
     /// challenges (D=1, width 16). Mirrors `enable_poseidon1_perm_base`.
     ///
-    /// `perm` runs the deployed 7-round Tip5 (bit-for-bit
-    /// `nockchain_math::tip5::permute`); the executor witnesses exactly
+    /// `perm` runs recursive 5-round Tip5 (bit-for-bit
+    /// `nockchain_math::tip5::permute_5round`); the executor witnesses exactly
     /// its output, so the lookup-AIR trace == the native permutation.
     pub fn enable_tip5_perm<Config, P>(&mut self, trace_generator: TraceGeneratorFn<F>, perm: P)
     where

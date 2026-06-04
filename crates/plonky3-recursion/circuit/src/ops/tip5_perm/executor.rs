@@ -17,10 +17,10 @@
 //! MMCS root is `connect`-bound to the claimed root.
 //!
 //! The permutation itself is the closure registered via
-//! `enable_tip5_perm`, which runs `nockchain_math::tip5::permute`
-//! bit-for-bit (its in-crate twin `p3_tip5_circuit_air::tip5_spec::
-//! permute`), so the witness is exactly the deployed Tip5 and the
-//! in-circuit MMCS matches native
+//! `enable_tip5_perm`, which runs recursive 5-round Tip5 bit-for-bit
+//! (`nockchain_math::tip5::permute_5round`, or its in-crate twin
+//! `p3_tip5_circuit_air::tip5_spec::permute`), so the witness is
+//! exactly the recursive proving Tip5 and the in-circuit MMCS matches native
 //! `MerkleTreeMmcs<Goldilocks, _, PaddingFreeSponge<Tip5Perm,16,10,5>,
 //! TruncatedPermutation<Tip5Perm,2,5,16>, …>` bit-for-bit.
 
@@ -418,8 +418,7 @@ impl Tip5PermExecutor {
         // Initialize from previous chain output (or zeros for
         // new_start), then overwrite with CTL-exposed witnesses.
         let chain_output = self.get_chain_output(ctx);
-        let mut resolved_inputs =
-            self.init_chain_state(chain_output.map(|v| v.as_slice()), ctx)?;
+        let mut resolved_inputs = self.init_chain_state(chain_output.map(|v| v.as_slice()), ctx)?;
         for (slot, inp) in resolved_inputs.iter_mut().zip(limbs) {
             if let [wid] = inp.as_slice() {
                 *slot = ctx.get_witness(*wid)?;
@@ -593,8 +592,7 @@ impl Tip5PermExecutor {
         // in_idx[16] — CTL'd inputs are bus readers; empty slots get 0.
         for inp in inputs.iter().take(width) {
             if inp.is_empty() {
-                preprocessed
-                    .register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
+                preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
             } else if let [_] = inp.as_slice() {
                 preprocessed.register_non_primitive_witness_reads(&self.op_type, inp)?;
             } else {
@@ -608,8 +606,7 @@ impl Tip5PermExecutor {
         // out_idx[10] — outputs are creators on the WitnessChecks bus.
         for out in outputs.iter().take(rate) {
             if out.is_empty() {
-                preprocessed
-                    .register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
+                preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
             } else if let [_] = out.as_slice() {
                 preprocessed.register_non_primitive_output_index(&self.op_type, out);
             } else {

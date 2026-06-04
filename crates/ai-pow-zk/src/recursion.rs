@@ -56,6 +56,22 @@ const RATE: usize = 10;
 fn production_l1_table_packing(public_value_count: usize) -> p3_circuit_prover::TablePacking {
     p3_circuit_prover::TablePacking::new(public_value_count.max(1), 8)
         .with_public_binding_lanes(public_value_count)
+        .with_horner_pack_k(5)
+}
+
+fn production_l1_stark_config() -> p3_circuit_prover::config::GoldilocksTipsConfig {
+    p3_circuit_prover::config::goldilocks_tip5_60bit()
+}
+
+fn statement_public_digest(public_values: &[Val]) -> Vec<Val> {
+    let mut state = [Val::ZERO; WIDTH];
+    for chunk in public_values.chunks(RATE) {
+        for i in 0..RATE {
+            state[i] = chunk.get(i).copied().unwrap_or(Val::ZERO);
+        }
+        state = RecTip5Perm.permute(state);
+    }
+    state[..DIGEST_ELEMS].to_vec()
 }
 
 fn flatten_l1_statement_public_values(public_values: &[Val]) -> Vec<Val> {
@@ -97,7 +113,7 @@ type CompositeInputProof =
 /// `DuplexChallenger<Goldilocks, Tip5Perm, 16, 10>`; the in-circuit
 /// Tip5 NPO witnesses exactly this. It uses the recursion's
 /// `p3_tip5_circuit_air::Tip5Perm`, which is KAT-anchored byte-for-byte
-/// to `nockchain_math::tip5::permute` (the permutation ai-pow-zk's
+/// to `nockchain_math::tip5::permute_5round` (the permutation ai-pow-zk's
 /// native `Tip5Perm` wraps), so the in-circuit transcript matches the
 /// native proof's transcript.
 #[derive(Clone, Copy, Debug, Default)]
@@ -195,6 +211,8 @@ pub fn build_composite_l1_verifier_circuit(
     // The composite is a single AIR instance.
     let air_public_counts = [public_values.len()];
 
+    let statement_digest_targets = cb.alloc_public_inputs(DIGEST_ELEMS, "statement digest");
+
     let verifier_inputs =
         BatchStarkVerifierInputsBuilder::<AiPowStarkConfig, CompositeComm, InnerFri>::allocate(
             &mut cb, proof, common_data, &air_public_counts,
@@ -222,13 +240,46 @@ pub fn build_composite_l1_verifier_circuit(
         Tip5Config::GOLDILOCKS_W16,
     )?;
 
+    let mut digest_state = [None; WIDTH];
+    for (block_idx, chunk) in verifier_inputs.air_public_targets[0]
+        .chunks(RATE)
+        .enumerate()
+    {
+        let mut inputs = [None; WIDTH];
+        for i in 0..RATE {
+            inputs[i] = Some(chunk.get(i).copied().unwrap_or(p3_circuit::ExprId::ZERO));
+        }
+        let outputs = cb.add_tip5_perm_for_challenger_base(
+            Tip5Config::GOLDILOCKS_W16,
+            block_idx == 0,
+            inputs,
+        )?;
+        digest_state = outputs.map(Some);
+    }
+    for (target, digest_limb) in statement_digest_targets
+        .iter()
+        .zip(digest_state.iter().take(DIGEST_ELEMS))
+    {
+        cb.connect(
+            *target,
+            digest_limb.expect("statement digest limb must exist"),
+        );
+    }
+
     let circuit = cb.build()?;
-    let (public_inputs, private_inputs) =
+    let statement_public_values = statement_public_digest(public_values);
+    let (verifier_public_inputs, private_inputs) =
         verifier_inputs.pack_values(&[public_values.to_vec()], proof, common_data);
+    let mut public_inputs = statement_public_values
+        .iter()
+        .copied()
+        .map(Challenge::from)
+        .collect::<Vec<_>>();
+    public_inputs.extend(verifier_public_inputs);
 
     Ok(BuiltCompositeL1 {
         circuit,
-        statement_public_values: public_values.to_vec(),
+        statement_public_values,
         public_inputs,
         private_inputs,
         mmcs_op_ids,
@@ -354,15 +405,12 @@ pub fn prove_composite_l1_outer_cert(
         .iter()
         .map(strip_public_binding_for_lookup_metadata)
         .collect::<Vec<_>>();
-    let prover_data = ProverData::from_airs_and_degrees(
-        &config::goldilocks_tip5(),
-        &lookup_metadata_airs,
-        &degrees,
-    );
+    let outer_config = production_l1_stark_config();
+    let prover_data =
+        ProverData::from_airs_and_degrees(&outer_config, &lookup_metadata_airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
-    let mut prover =
-        BatchStarkProver::new(config::goldilocks_tip5()).with_table_packing(table_packing);
+    let mut prover = BatchStarkProver::new(outer_config).with_table_packing(table_packing);
     prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
     prover.register_recompose_table::<2>(true);
 
@@ -440,7 +488,7 @@ fn verify_recursive_certificate_with_public_values_inner(
     public_values: &[Val],
     allow_empty_statement: bool,
 ) -> Result<(), VerificationError> {
-    use p3_circuit_prover::{config, BatchStarkProver};
+    use p3_circuit_prover::BatchStarkProver;
 
     if public_values.is_empty() && !allow_empty_statement {
         return Err(VerificationError::InvalidProofShape(
@@ -450,7 +498,8 @@ fn verify_recursive_certificate_with_public_values_inner(
         ));
     }
 
-    let expected_packing = production_l1_table_packing(public_values.len());
+    let statement_public_values = statement_public_digest(public_values);
+    let expected_packing = production_l1_table_packing(statement_public_values.len());
     if cert.ext_degree != 2 {
         return Err(VerificationError::InvalidProofShape(format!(
             "AI-PoW recursive certificate uses extension degree {}; expected 2",
@@ -464,11 +513,11 @@ fn verify_recursive_certificate_with_public_values_inner(
             cert.table_packing, expected_packing
         )));
     }
-    if cert.public_binding_lanes != public_values.len() {
+    if cert.public_binding_lanes != statement_public_values.len() {
         return Err(VerificationError::InvalidProofShape(format!(
             "AI-PoW recursive certificate binds {} statement values; expected {}",
             cert.public_binding_lanes,
-            public_values.len()
+            statement_public_values.len()
         )));
     }
     if cert.alu_quintic_trinomial {
@@ -478,10 +527,10 @@ fn verify_recursive_certificate_with_public_values_inner(
     }
 
     let mut verifier =
-        BatchStarkProver::new(config::goldilocks_tip5()).with_table_packing(expected_packing);
+        BatchStarkProver::new(production_l1_stark_config()).with_table_packing(expected_packing);
     verifier.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
     verifier.register_recompose_table::<2>(true);
-    let bound_public_values = flatten_l1_statement_public_values(public_values);
+    let bound_public_values = flatten_l1_statement_public_values(&statement_public_values);
     verifier
         .verify_all_tables_with_public_values(cert, &bound_public_values)
         .map_err(|e| {
@@ -716,8 +765,8 @@ pub fn prove_canonical_ai_pow_certificate(
 /// are not canonical block/wire certificates for Nockchain AI-PoW.
 pub fn encode_recursive_certificate(
     cert: &AiPowRecursiveCertificate,
-) -> Result<Vec<u8>, postcard::Error> {
-    postcard::to_allocvec(cert)
+) -> Result<Vec<u8>, bincode::error::EncodeError> {
+    bincode::serde::encode_to_vec(cert, bincode::config::standard().with_fixed_int_encoding())
 }
 
 /// Decode bytes previously produced by [`encode_recursive_certificate`].
@@ -726,8 +775,18 @@ pub fn encode_recursive_certificate(
 /// against chain-derived statement data once the verifier is wired.
 pub fn decode_recursive_certificate(
     bytes: &[u8],
-) -> Result<AiPowRecursiveCertificate, postcard::Error> {
-    postcard::from_bytes(bytes)
+) -> Result<AiPowRecursiveCertificate, bincode::error::DecodeError> {
+    let (cert, consumed) = bincode::serde::decode_from_slice(
+        bytes,
+        bincode::config::standard().with_fixed_int_encoding(),
+    )?;
+    if consumed != bytes.len() {
+        return Err(bincode::error::DecodeError::OtherString(format!(
+            "recursive certificate decode left {} trailing bytes",
+            bytes.len() - consumed
+        )));
+    }
+    Ok(cert)
 }
 
 /// S3a — compile-time proof that the composite AIR satisfies the
@@ -887,6 +946,39 @@ mod tests {
             .expect("recursive certificate verifier must accept honest cert");
         verify_recursive_certificate_with_public_values(&cert, &[])
             .expect_err("recursive verifier must reject empty statement public inputs");
+    }
+
+    #[test]
+    fn recursive_certificate_fixed_bincode_round_trip_verifies() {
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&test_zk_params(), &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+        let cert =
+            prove_composite_l1_outer_cert(&built, &proof).expect("honest recursive certificate");
+
+        let bytes = encode_recursive_certificate(&cert).expect("encode recursive certificate");
+        let decoded = decode_recursive_certificate(&bytes).expect("decode recursive certificate");
+        verify_recursive_certificate(&decoded, &pis)
+            .expect("decoded recursive certificate must verify");
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        decode_recursive_certificate(&trailing)
+            .expect_err("decoder must reject trailing bytes after certificate");
     }
 
     #[test]

@@ -2,9 +2,9 @@
 //!
 //! Builds the single main trace (`256` verifier-table rows ++ `P`
 //! permutation rows ++ inert padding) and the matching preprocessed
-//! L-table, witnessing the real 7-round Tip5 from
-//! [`crate::tip5_spec`]. `(IN, ROUT[6])` of every perm row equals
-//! `nockchain_math::tip5::permute` bit-for-bit (asserted by the
+//! L-table, witnessing the recursive 5-round Tip5 from
+//! [`crate::tip5_spec`]. `(IN, ROUT[NUM_ROUNDS-1])` of every perm row
+//! equals `nockchain_math::tip5::permute_5round` bit-for-bit (asserted by the
 //! `air_lookup::tests` native-equivalence gate).
 //!
 //! **Parallelism (2026-05-21).** The `P` permutation rows are
@@ -37,9 +37,7 @@ use p3_goldilocks::Goldilocks;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
 
-use crate::air_lookup::{
-    NBYTES, NS, PREP_WIDTH, TABLE_ROWS, rout_col, tip5_lookup_air_width,
-};
+use crate::air_lookup::{NBYTES, NS, PREP_WIDTH, TABLE_ROWS, rout_col, tip5_lookup_air_width};
 use crate::tip5_spec::{
     LOOKUP_TABLE, NUM_ROUNDS, P_GOLDILOCKS, ROUND_CONSTANTS, STATE_SIZE, mds_matrix, rc_precomp,
 };

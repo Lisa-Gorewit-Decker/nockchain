@@ -60,10 +60,9 @@ p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa2
 # Tip5 sponge — Plonky3 upstream does NOT ship a `p3-tip5` crate.
 # Nockchain has its own in-repo Tip5 implementation in
 # `crates/nockchain-math/src/tip5/` (16-element state, rate 10,
-# capacity 6, digest 5). The 7-round count is Nockchain's parameter
-# modification of the published Tip5 paper. We re-use it directly so
-# the FRI sponge stays consistent with Nockchain's other cryptographic
-# surfaces.
+# capacity 6, digest 5). Recursive proving uses the 5-round
+# `permute_5round` variant; Nockchain's canonical non-recursive
+# `permute` remains the separate 7-round path.
 nockchain-math = { workspace = true }
 
 # §recursion integration (2026-05-22) — opt-in wiring of the composite
@@ -130,6 +129,7 @@ required-features = ["recursion"]
 
 [dev-dependencies]
 proptest = { workspace = true }
+flate2 = { workspace = true }
 # WHIR PCS feasibility prototype (2026-05-21) — dev-only; NOT in
 # the production trust surface. Used by `tests/test_whir_prototype.rs`
 # to measure WHIR proof bytes at parameters comparable to our FRI
