@@ -11896,6 +11896,24 @@ mod tests {
             NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
         ));
 
+        let mut bad_hidden_lane = proof.clone();
+        let npo_proof = bad_hidden_lane
+            .npo_exhaustive_proof
+            .as_mut()
+            .expect("fixture must include exhaustive NPO proof");
+        npo_proof.tip5_hidden_input_nonzero_masks[0] |= 1;
+        npo_proof
+            .tip5_hidden_input_values_le
+            .insert(0, 1u64.to_le_bytes());
+        let err = compiler
+            .verify_terminal_production_goldilocks(&vk, &public_inputs, &bad_hidden_lane)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoTip5InputValueLength { .. }
+                | NativeTerminalVerifyError::Tip5InputMismatch { .. }
+        ));
+
         let mut bad_value = proof;
         let value = &mut bad_value
             .npo_exhaustive_proof
