@@ -6775,6 +6775,12 @@ impl NativeTerminalCompiler {
                 },
             );
         }
+        let commitments = proof
+            .column_evaluations
+            .iter()
+            .map(|proof| proof.column_commitment.clone())
+            .collect::<Vec<_>>();
+        Self::verify_npo_polynomial_column_prelude_commitments(prelude, &commitments)?;
         let mut evaluations = Vec::with_capacity(labels.len());
         for (expected_label, column_proof) in labels.iter().zip(&proof.column_evaluations) {
             if &column_proof.column_label != expected_label {
@@ -26649,7 +26655,7 @@ mod tests {
             .expect_err("reordered NPO column evaluation batch must reject");
         assert!(matches!(
             err,
-            NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch { .. }
+            NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch { .. }
         ));
 
         let mut missing_batch = batch_proof.clone();
@@ -26915,6 +26921,17 @@ mod tests {
                 &proof,
             )
             .expect_err("prelude with extra column roots must reject");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch { .. }
+        ));
+        let err = compiler
+            .verify_terminal_npo_polynomial_column_evaluation_batch_goldilocks::<Goldilocks>(
+                &vk,
+                &extra_prelude,
+                &batch_proof,
+            )
+            .expect_err("NPO column evaluation batch must reject extra prelude roots");
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch { .. }
