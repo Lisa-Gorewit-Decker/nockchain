@@ -8789,7 +8789,34 @@ impl NativeTerminalCompiler {
     where
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
-        self.verify_sampled_tip5_npo_row_values::<F>(
+        let evaluation = self.evaluate_exhaustive_tip5_npo_row_values::<F>(
+            npo_index,
+            row,
+            callsite,
+            tip5_hidden_input_values,
+            expected_witness_ids,
+            opened_values,
+            previous_normal_output,
+            previous_merkle_output,
+        )?;
+        Self::reject_nonzero_terminal_npo_evaluation(row, &evaluation)
+    }
+
+    fn evaluate_exhaustive_tip5_npo_row_values<F>(
+        &self,
+        npo_index: usize,
+        row: usize,
+        callsite: &NativeTerminalNpoCallsite,
+        tip5_hidden_input_values: &[TerminalTip5HiddenInputValue],
+        expected_witness_ids: &[WitnessId],
+        opened_values: &[F],
+        previous_normal_output: &mut Option<[Goldilocks; 16]>,
+        previous_merkle_output: &mut Option<[Goldilocks; 16]>,
+    ) -> Result<TerminalNpoRowEvaluation, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let mut evaluation = self.evaluate_sampled_tip5_npo_row_values::<F>(
             npo_index,
             row,
             callsite,
@@ -8797,7 +8824,6 @@ impl NativeTerminalCompiler {
             expected_witness_ids,
             opened_values,
         )?;
-
         let mode =
             callsite
                 .tip5_mode
@@ -8846,9 +8872,7 @@ impl NativeTerminalCompiler {
                 limb: 16,
                 basis: vec![value * (value - Goldilocks::ONE)],
             };
-            if !residual.is_zero() {
-                return Self::reject_nonzero_terminal_npo_residual(row, &residual);
-            }
+            Self::push_terminal_npo_residual(&mut evaluation, residual);
             value == Goldilocks::ONE
         } else {
             false
@@ -8875,9 +8899,7 @@ impl NativeTerminalCompiler {
                         bus_state[limb],
                         expected,
                     );
-                    if !residual.is_zero() {
-                        return Self::reject_nonzero_terminal_npo_residual(row, &residual);
-                    }
+                    Self::push_terminal_npo_residual(&mut evaluation, residual);
                 }
             }
             for limb in 10..16 {
@@ -8888,9 +8910,7 @@ impl NativeTerminalCompiler {
                         bus_state[limb],
                         Goldilocks::ZERO,
                     );
-                    if !residual.is_zero() {
-                        return Self::reject_nonzero_terminal_npo_residual(row, &residual);
-                    }
+                    Self::push_terminal_npo_residual(&mut evaluation, residual);
                 }
             }
 
@@ -8916,16 +8936,14 @@ impl NativeTerminalCompiler {
                         trace_state[limb],
                         expected,
                     );
-                    if !residual.is_zero() {
-                        return Self::reject_nonzero_terminal_npo_residual(row, &residual);
-                    }
+                    Self::push_terminal_npo_residual(&mut evaluation, residual);
                 }
             }
             Tip5Perm.permute_mut(&mut trace_state);
             *previous_normal_output = Some(trace_state);
         }
 
-        Ok(())
+        Ok(evaluation)
     }
 
     fn verify_sampled_tip5_npo_row_values<F>(
@@ -16322,6 +16340,25 @@ mod tests {
         chain_hidden[3].value_basis[0] ^= 1;
         let mut normal_state = Some(previous_output);
         let mut merkle_state = None;
+        let evaluation = compiler
+            .evaluate_exhaustive_tip5_npo_row_values::<Goldilocks>(
+                0,
+                1,
+                &chain_callsite,
+                &chain_hidden,
+                &[],
+                &[],
+                &mut normal_state,
+                &mut merkle_state,
+            )
+            .expect("tampered chained row must still evaluate");
+        let residual = evaluation
+            .first_nonzero()
+            .expect("tampered chained hidden lane must produce a residual");
+        assert_eq!(residual.kind, TerminalNpoResidualKind::Tip5ChainInput);
+        assert_eq!(residual.limb, 3);
+        let mut normal_state = Some(previous_output);
+        let mut merkle_state = None;
         let err = compiler
             .verify_exhaustive_tip5_npo_row_values::<Goldilocks>(
                 0,
@@ -16375,6 +16412,25 @@ mod tests {
 
         let mut bad_zero_lane = merkle_hidden.clone();
         bad_zero_lane[12].value_basis[0] = 1;
+        let mut normal_state = None;
+        let mut merkle_state = None;
+        let evaluation = compiler
+            .evaluate_exhaustive_tip5_npo_row_values::<Goldilocks>(
+                0,
+                0,
+                &merkle_callsite,
+                &merkle_hidden,
+                &[WitnessId(100)],
+                &[Goldilocks::from_u64(2)],
+                &mut normal_state,
+                &mut merkle_state,
+            )
+            .expect("nonboolean MMCS bit must still evaluate");
+        let residual = evaluation
+            .first_nonzero()
+            .expect("nonboolean MMCS bit must produce a residual");
+        assert_eq!(residual.kind, TerminalNpoResidualKind::Tip5MmcsBit);
+        assert_eq!(residual.limb, 16);
         let mut normal_state = None;
         let mut merkle_state = None;
         let err = compiler
