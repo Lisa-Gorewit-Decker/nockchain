@@ -957,6 +957,41 @@ pub struct TerminalNpoPolynomialTable<F> {
     pub residual_values: Vec<F>,
 }
 
+/// Fixed column layout for the supported-NPO polynomial witness table.
+///
+/// Counts are derived from the verifying key, not from prover-selected witness
+/// data. Value slots are paired with present bits where zero padding would
+/// otherwise be ambiguous to the backend arithmetization.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerminalNpoPolynomialColumnLayout {
+    pub rows: usize,
+    pub log_rows: usize,
+    pub column_count: usize,
+    pub metadata_columns: usize,
+    pub row_kind_selector_columns: usize,
+    pub mode_columns: usize,
+    pub input_value_columns: usize,
+    pub input_present_columns: usize,
+    pub output_value_columns: usize,
+    pub output_present_columns: usize,
+    pub hidden_tip5_value_columns: usize,
+    pub hidden_tip5_present_columns: usize,
+    pub mmcs_columns: usize,
+    pub residual_value_columns: usize,
+    pub residual_present_columns: usize,
+}
+
+/// Deterministic polynomial-column projection of [`TerminalNpoPolynomialTable`].
+///
+/// The `labels` vector is aligned with `columns`: `columns[i][row]` is the row
+/// value for `labels[i]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalNpoPolynomialColumns<F> {
+    pub layout: TerminalNpoPolynomialColumnLayout,
+    pub labels: Vec<String>,
+    pub columns: Vec<Vec<F>>,
+}
+
 /// One flattened component in the production-equivalent supported-NPO residual
 /// domain.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -4320,6 +4355,19 @@ impl NativeTerminalCompiler {
             rows,
             residual_values,
         })
+    }
+
+    pub fn terminal_npo_polynomial_columns_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+    ) -> Result<TerminalNpoPolynomialColumns<F>, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let layout = Self::terminal_npo_polynomial_column_layout::<F>(verifying_key);
+        let table = self.terminal_npo_polynomial_table_goldilocks(verifying_key, witness)?;
+        Self::terminal_npo_polynomial_columns_from_table(&layout, &table)
     }
 
     pub fn commit_terminal_combined_validity_goldilocks<F>(
@@ -8728,6 +8776,286 @@ impl NativeTerminalCompiler {
         profile
     }
 
+    fn terminal_npo_polynomial_column_layout<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+    ) -> TerminalNpoPolynomialColumnLayout
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let relation = verifying_key.npo_relation();
+        let mut layout = TerminalNpoPolynomialColumnLayout {
+            rows: relation.rows.len(),
+            log_rows: Self::terminal_mle_log_size(relation.rows.len()),
+            metadata_columns: 3,
+            row_kind_selector_columns: 3,
+            mode_columns: 2,
+            mmcs_columns: 2,
+            ..TerminalNpoPolynomialColumnLayout::default()
+        };
+        for row in &relation.rows {
+            layout.input_value_columns = layout.input_value_columns.max(row.callsite.inputs.len());
+            layout.output_value_columns =
+                layout.output_value_columns.max(row.callsite.outputs.len());
+            if row.kind == TerminalNpoRowKind::Tip5Goldilocks {
+                layout.hidden_tip5_value_columns = layout
+                    .hidden_tip5_value_columns
+                    .max(row.callsite.inputs.len());
+            }
+        }
+        layout.input_present_columns = layout.input_value_columns;
+        layout.output_present_columns = layout.output_value_columns;
+        layout.hidden_tip5_present_columns = layout.hidden_tip5_value_columns;
+        layout.residual_value_columns = (0..Self::terminal_npo_domain_len(verifying_key))
+            .filter_map(|npo_index| Self::terminal_npo_row(verifying_key, npo_index))
+            .map(|row| {
+                Self::terminal_npo_exhaustive_residual_component_count_for_basis_dimension(
+                    &row,
+                    <F as BasedVectorSpace<Goldilocks>>::DIMENSION,
+                )
+            })
+            .max()
+            .unwrap_or(0);
+        layout.residual_present_columns = layout.residual_value_columns;
+        layout.column_count = layout.metadata_columns
+            + layout.row_kind_selector_columns
+            + layout.mode_columns
+            + layout.input_value_columns
+            + layout.input_present_columns
+            + layout.output_value_columns
+            + layout.output_present_columns
+            + layout.hidden_tip5_value_columns
+            + layout.hidden_tip5_present_columns
+            + layout.mmcs_columns
+            + layout.residual_value_columns
+            + layout.residual_present_columns;
+        layout
+    }
+
+    fn terminal_npo_polynomial_columns_from_table<F>(
+        layout: &TerminalNpoPolynomialColumnLayout,
+        table: &TerminalNpoPolynomialTable<F>,
+    ) -> Result<TerminalNpoPolynomialColumns<F>, NativeTerminalVerifyError>
+    where
+        F: Field + From<Goldilocks>,
+    {
+        let mut labels = Vec::with_capacity(layout.column_count);
+        let mut columns = Vec::with_capacity(layout.column_count);
+        let mut push_column = |label: String, values: Vec<F>| {
+            labels.push(label);
+            columns.push(values);
+        };
+        let bool_value = |value: bool| if value { F::ONE } else { F::ZERO };
+        let usize_value = |value: usize| Self::embed_goldilocks(Goldilocks::from_u64(value as u64));
+        let hidden_value = |npo_index: usize,
+                            hidden: &TerminalTip5HiddenInputValue|
+         -> Result<F, NativeTerminalVerifyError> {
+            if hidden.value_basis.len() != 1 {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoTip5InputValueDimensionMismatch {
+                        npo_index,
+                        limb: hidden.limb,
+                        expected: 1,
+                        got: hidden.value_basis.len(),
+                    },
+                );
+            }
+            let value = hidden.value_basis[0];
+            if value >= Goldilocks::ORDER_U64 {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical {
+                        limb: hidden.limb,
+                        value,
+                    },
+                );
+            }
+            Ok(Self::embed_goldilocks(Goldilocks::from_u64(value)))
+        };
+
+        push_column(
+            "npo_index".into(),
+            table
+                .rows
+                .iter()
+                .map(|row| usize_value(row.npo_index))
+                .collect(),
+        );
+        push_column(
+            "local_row".into(),
+            table
+                .rows
+                .iter()
+                .map(|row| usize_value(row.local_row))
+                .collect(),
+        );
+        push_column(
+            "residual_offset".into(),
+            table
+                .rows
+                .iter()
+                .map(|row| usize_value(row.residual_offset))
+                .collect(),
+        );
+        for (label, kind) in [
+            ("is_tip5", TerminalNpoRowKind::Tip5Goldilocks),
+            ("is_recompose", TerminalNpoRowKind::Recompose),
+            (
+                "is_recompose_coeff",
+                TerminalNpoRowKind::RecomposeWithCoeffLookups,
+            ),
+        ] {
+            push_column(
+                label.into(),
+                table
+                    .rows
+                    .iter()
+                    .map(|row| bool_value(row.row_kind == kind))
+                    .collect(),
+            );
+        }
+        push_column(
+            "mode_new_start".into(),
+            table
+                .rows
+                .iter()
+                .map(|row| bool_value(row.mode_new_start))
+                .collect(),
+        );
+        push_column(
+            "mode_merkle_path".into(),
+            table
+                .rows
+                .iter()
+                .map(|row| bool_value(row.mode_merkle_path))
+                .collect(),
+        );
+
+        for slot in 0..layout.input_value_columns {
+            push_column(
+                format!("input_value_{slot}"),
+                table
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        row.inputs
+                            .get(slot)
+                            .and_then(|value| *value)
+                            .unwrap_or(F::ZERO)
+                    })
+                    .collect(),
+            );
+        }
+        for slot in 0..layout.input_present_columns {
+            push_column(
+                format!("input_present_{slot}"),
+                table
+                    .rows
+                    .iter()
+                    .map(|row| bool_value(row.inputs.get(slot).and_then(|value| *value).is_some()))
+                    .collect(),
+            );
+        }
+        for slot in 0..layout.output_value_columns {
+            push_column(
+                format!("output_value_{slot}"),
+                table
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        row.outputs
+                            .get(slot)
+                            .and_then(|value| *value)
+                            .unwrap_or(F::ZERO)
+                    })
+                    .collect(),
+            );
+        }
+        for slot in 0..layout.output_present_columns {
+            push_column(
+                format!("output_present_{slot}"),
+                table
+                    .rows
+                    .iter()
+                    .map(|row| bool_value(row.outputs.get(slot).and_then(|value| *value).is_some()))
+                    .collect(),
+            );
+        }
+
+        for slot in 0..layout.hidden_tip5_value_columns {
+            let mut values = Vec::with_capacity(table.rows.len());
+            for row in &table.rows {
+                let hidden = row
+                    .hidden_tip5_inputs
+                    .iter()
+                    .find(|hidden| hidden.limb == slot);
+                values.push(match hidden {
+                    Some(hidden) => hidden_value(row.npo_index, hidden)?,
+                    None => F::ZERO,
+                });
+            }
+            push_column(format!("hidden_tip5_value_{slot}"), values);
+        }
+        for slot in 0..layout.hidden_tip5_present_columns {
+            push_column(
+                format!("hidden_tip5_present_{slot}"),
+                table
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        bool_value(
+                            row.hidden_tip5_inputs
+                                .iter()
+                                .any(|hidden| hidden.limb == slot),
+                        )
+                    })
+                    .collect(),
+            );
+        }
+
+        push_column(
+            "mmcs_bit".into(),
+            table
+                .rows
+                .iter()
+                .map(|row| row.mmcs_bit.unwrap_or(F::ZERO))
+                .collect(),
+        );
+        push_column(
+            "mmcs_bit_present".into(),
+            table
+                .rows
+                .iter()
+                .map(|row| bool_value(row.mmcs_bit.is_some()))
+                .collect(),
+        );
+
+        for slot in 0..layout.residual_value_columns {
+            push_column(
+                format!("residual_value_{slot}"),
+                table
+                    .rows
+                    .iter()
+                    .map(|row| row.residual_values.get(slot).copied().unwrap_or(F::ZERO))
+                    .collect(),
+            );
+        }
+        for slot in 0..layout.residual_present_columns {
+            push_column(
+                format!("residual_present_{slot}"),
+                table
+                    .rows
+                    .iter()
+                    .map(|row| bool_value(row.residual_values.get(slot).is_some()))
+                    .collect(),
+            );
+        }
+
+        Ok(TerminalNpoPolynomialColumns {
+            layout: layout.clone(),
+            labels,
+            columns,
+        })
+    }
+
     fn max_serialized_tip5_hidden_input_slots(
         callsite: &NativeTerminalNpoCallsite,
         mode: Tip5TerminalMode,
@@ -12058,6 +12386,10 @@ impl NativeTerminalCompiler {
             }
         }
         Self::absorb_npo_relation(sponge, &verifying_key.npo_relation());
+        Self::absorb_npo_polynomial_column_layout(
+            sponge,
+            &Self::terminal_npo_polynomial_column_layout::<F>(verifying_key),
+        );
         Self::absorb_npo_polynomial_profile(
             sponge,
             &Self::terminal_npo_polynomial_profile::<F>(verifying_key),
@@ -12185,6 +12517,28 @@ impl NativeTerminalCompiler {
         sponge.absorb_u64(profile.recompose_coeff_rows as u64);
         sponge.absorb_u64(profile.max_constraint_degree as u64);
         sponge.absorb_u64(profile.tip5_rounds as u64);
+    }
+
+    fn absorb_npo_polynomial_column_layout(
+        sponge: &mut TerminalDigestSponge,
+        layout: &TerminalNpoPolynomialColumnLayout,
+    ) {
+        sponge.absorb_str("nock-terminal-npo-polynomial-column-layout-v1");
+        sponge.absorb_u64(layout.rows as u64);
+        sponge.absorb_u64(layout.log_rows as u64);
+        sponge.absorb_u64(layout.column_count as u64);
+        sponge.absorb_u64(layout.metadata_columns as u64);
+        sponge.absorb_u64(layout.row_kind_selector_columns as u64);
+        sponge.absorb_u64(layout.mode_columns as u64);
+        sponge.absorb_u64(layout.input_value_columns as u64);
+        sponge.absorb_u64(layout.input_present_columns as u64);
+        sponge.absorb_u64(layout.output_value_columns as u64);
+        sponge.absorb_u64(layout.output_present_columns as u64);
+        sponge.absorb_u64(layout.hidden_tip5_value_columns as u64);
+        sponge.absorb_u64(layout.hidden_tip5_present_columns as u64);
+        sponge.absorb_u64(layout.mmcs_columns as u64);
+        sponge.absorb_u64(layout.residual_value_columns as u64);
+        sponge.absorb_u64(layout.residual_present_columns as u64);
     }
 
     fn public_values_digest_goldilocks<F>(public_inputs: &[F]) -> TerminalPublicValuesDigest
@@ -14032,6 +14386,97 @@ mod tests {
     }
 
     #[test]
+    fn goldilocks_npo_polynomial_columns_match_table_and_residual_oracle() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(2);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness =
+            execute_tip5_terminal_witness_with_private_data(&circuit, public_inputs, private_data);
+        let table = compiler
+            .terminal_npo_polynomial_table_goldilocks(&vk, &witness)
+            .expect("NPO polynomial table must build");
+        let columns = compiler
+            .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
+            .expect("NPO polynomial columns must build");
+
+        assert_eq!(columns.layout.rows, table.rows.len());
+        assert_eq!(columns.layout.log_rows, 1);
+        assert_eq!(columns.layout.metadata_columns, 3);
+        assert_eq!(columns.layout.row_kind_selector_columns, 3);
+        assert_eq!(columns.layout.mode_columns, 2);
+        assert_eq!(columns.layout.input_value_columns, 16);
+        assert_eq!(columns.layout.input_present_columns, 16);
+        assert_eq!(columns.layout.output_value_columns, 10);
+        assert_eq!(columns.layout.output_present_columns, 10);
+        assert_eq!(columns.layout.hidden_tip5_value_columns, 16);
+        assert_eq!(columns.layout.hidden_tip5_present_columns, 16);
+        assert_eq!(columns.layout.mmcs_columns, 2);
+        assert_eq!(columns.layout.residual_value_columns, 17);
+        assert_eq!(columns.layout.residual_present_columns, 17);
+        assert_eq!(columns.labels.len(), columns.layout.column_count);
+        assert_eq!(columns.columns.len(), columns.layout.column_count);
+        for column in &columns.columns {
+            assert_eq!(column.len(), columns.layout.rows);
+        }
+
+        assert_eq!(
+            npo_polynomial_column(&columns, "npo_index"),
+            &[Goldilocks::ZERO, Goldilocks::ONE]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "is_tip5"),
+            &[Goldilocks::ONE, Goldilocks::ONE]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "mode_new_start"),
+            &[Goldilocks::ONE, Goldilocks::ONE]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "mode_merkle_path"),
+            &[Goldilocks::ONE, Goldilocks::ONE]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "input_present_0"),
+            &[Goldilocks::ONE, Goldilocks::ONE]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "input_present_5"),
+            &[Goldilocks::ZERO, Goldilocks::ZERO]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "hidden_tip5_present_5"),
+            &[Goldilocks::ONE, Goldilocks::ONE]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "hidden_tip5_present_0"),
+            &[Goldilocks::ZERO, Goldilocks::ZERO]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "mmcs_bit_present"),
+            &[Goldilocks::ONE, Goldilocks::ONE]
+        );
+
+        let mut reconstructed_residuals = Vec::new();
+        for row in 0..columns.layout.rows {
+            for slot in 0..columns.layout.residual_value_columns {
+                if npo_polynomial_column(&columns, &format!("residual_present_{slot}"))[row]
+                    == Goldilocks::ONE
+                {
+                    reconstructed_residuals.push(
+                        npo_polynomial_column(&columns, &format!("residual_value_{slot}"))[row],
+                    );
+                }
+            }
+        }
+        assert_eq!(reconstructed_residuals, table.residual_values);
+        assert!(
+            reconstructed_residuals
+                .iter()
+                .all(|value| *value == Goldilocks::ZERO)
+        );
+    }
+
+    #[test]
     fn goldilocks_npo_polynomial_table_surfaces_mmcs_booleanity_residual() {
         let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(1);
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
@@ -14061,6 +14506,26 @@ mod tests {
         assert_eq!(table.rows[0].mmcs_bit, Some(Goldilocks::from_u64(2)));
         assert_eq!(table.rows[0].residual_values[10], Goldilocks::from_u64(2));
         assert_eq!(table.residual_values[10], Goldilocks::from_u64(2));
+
+        let columns = compiler
+            .terminal_npo_polynomial_columns_goldilocks(&vk, &bad_witness)
+            .expect("bad NPO polynomial columns must still build");
+        assert_eq!(
+            npo_polynomial_column(&columns, "mmcs_bit"),
+            &[Goldilocks::from_u64(2)]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "mmcs_bit_present"),
+            &[Goldilocks::ONE]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "residual_value_10"),
+            &[Goldilocks::from_u64(2)]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "residual_present_10"),
+            &[Goldilocks::ONE]
+        );
     }
 
     #[test]
@@ -17971,6 +18436,77 @@ mod tests {
     }
 
     #[test]
+    fn goldilocks_d2_npo_polynomial_columns_cover_recompose_rows() {
+        let (circuit, public_inputs) = build_recompose_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_recompose_terminal_witness(&circuit, public_inputs);
+        let table = compiler
+            .terminal_npo_polynomial_table_goldilocks(&vk, &witness)
+            .expect("D2 recompose NPO polynomial table must build");
+        let columns = compiler
+            .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
+            .expect("D2 recompose NPO polynomial columns must build");
+
+        assert_eq!(columns.layout.rows, 2);
+        assert_eq!(columns.layout.input_value_columns, 2);
+        assert_eq!(columns.layout.input_present_columns, 2);
+        assert_eq!(columns.layout.output_value_columns, 1);
+        assert_eq!(columns.layout.output_present_columns, 1);
+        assert_eq!(columns.layout.hidden_tip5_value_columns, 0);
+        assert_eq!(columns.layout.hidden_tip5_present_columns, 0);
+        assert_eq!(columns.layout.residual_value_columns, 6);
+        assert_eq!(columns.layout.residual_present_columns, 6);
+        assert_eq!(
+            npo_polynomial_column(&columns, "is_tip5"),
+            &[GoldilocksD2::ZERO, GoldilocksD2::ZERO]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "is_recompose"),
+            &[GoldilocksD2::ONE, GoldilocksD2::ZERO]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "is_recompose_coeff"),
+            &[GoldilocksD2::ZERO, GoldilocksD2::ONE]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "input_present_0"),
+            &[GoldilocksD2::ONE, GoldilocksD2::ONE]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "input_present_1"),
+            &[GoldilocksD2::ONE, GoldilocksD2::ONE]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "output_present_0"),
+            &[GoldilocksD2::ONE, GoldilocksD2::ONE]
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "mmcs_bit_present"),
+            &[GoldilocksD2::ZERO, GoldilocksD2::ZERO]
+        );
+
+        let mut reconstructed_residuals = Vec::new();
+        for row in 0..columns.layout.rows {
+            for slot in 0..columns.layout.residual_value_columns {
+                if npo_polynomial_column(&columns, &format!("residual_present_{slot}"))[row]
+                    == GoldilocksD2::ONE
+                {
+                    reconstructed_residuals.push(
+                        npo_polynomial_column(&columns, &format!("residual_value_{slot}"))[row],
+                    );
+                }
+            }
+        }
+        assert_eq!(reconstructed_residuals, table.residual_values);
+        assert!(
+            reconstructed_residuals
+                .iter()
+                .all(|value| *value == GoldilocksD2::ZERO)
+        );
+    }
+
+    #[test]
     fn goldilocks_terminal_npo_row_evaluations_report_tip5_residuals() {
         let (circuit, public_inputs) = build_tip5_test_circuit();
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
@@ -19632,6 +20168,18 @@ mod tests {
                     .expect("witness value must exist")
             })
             .collect()
+    }
+
+    fn npo_polynomial_column<'a, F>(
+        columns: &'a TerminalNpoPolynomialColumns<F>,
+        label: &str,
+    ) -> &'a [F] {
+        let index = columns
+            .labels
+            .iter()
+            .position(|candidate| candidate == label)
+            .expect("NPO polynomial column label must exist");
+        &columns.columns[index]
     }
 
     fn one_value_traces(value: Goldilocks) -> Traces<Goldilocks> {
