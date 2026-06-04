@@ -185,7 +185,9 @@ for this route.
   verifier, not just the older sampled input/output validity oracle. It includes
   Tip5 input/output residuals, chained hidden-lane residuals, Merkle
   capacity-zero residuals, MMCS direction-bit booleanity, and recompose
-  input/output residuals.
+  input/output residuals. `TerminalNpoResidualComponentRef` maps every flattened
+  component index back to its NPO row, row-local component offset, residual
+  kind, limb, and basis component.
 - `TerminalNpoExhaustiveResidualFoldProof`: a Merkle-backed folded zero check
   for the production-equivalent supported-NPO residual oracle, with transcript
   domains distinct from both primitive residual folding and legacy sampled NPO
@@ -343,7 +345,9 @@ NPO proximity layer can be wired against production-equivalent residual values
 rather than the narrower sampled-validity checkpoint. It also folds that oracle
 with dedicated `nock-terminal-npo-exhaustive-residual-fold-*` transcript domains
 and rejects nonzero folded finals; this is a backend zero-check component, not
-the final Reed-Solomon proximity proof.
+the final Reed-Solomon proximity proof. The residual component mapper gives the
+next consistency proof a stable way to recompute sampled folded components from
+the committed witness and the relevant Tip5/recompose row semantics.
 
 `TerminalBackendRelationDigest` is the explicit commitment to those backend
 projections. It has its own domain and absorbs `TerminalQuadraticRelation`,

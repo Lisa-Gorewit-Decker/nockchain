@@ -905,6 +905,17 @@ pub struct TerminalNpoPolynomialProfile {
     pub tip5_rounds: usize,
 }
 
+/// One flattened component in the production-equivalent supported-NPO residual
+/// domain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalNpoResidualComponentRef {
+    pub npo_index: usize,
+    pub component_offset: usize,
+    pub kind: TerminalNpoResidualKind,
+    pub limb: usize,
+    pub basis_component: usize,
+}
+
 impl<F: Field> TerminalLinearExpression<F> {
     pub fn zero() -> Self {
         Self { terms: Vec::new() }
@@ -8280,6 +8291,151 @@ impl NativeTerminalCompiler {
             .sum()
     }
 
+    fn terminal_npo_exhaustive_residual_component_row<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        residual_index: usize,
+    ) -> Option<TerminalNpoResidualComponentRef>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        Self::terminal_npo_exhaustive_residual_component_row_for_basis_dimension(
+            verifying_key,
+            residual_index,
+            <F as BasedVectorSpace<Goldilocks>>::DIMENSION,
+        )
+    }
+
+    fn terminal_npo_exhaustive_residual_component_row_for_basis_dimension<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        residual_index: usize,
+        basis_dimension: usize,
+    ) -> Option<TerminalNpoResidualComponentRef> {
+        let mut base = 0usize;
+        for npo_index in 0..Self::terminal_npo_domain_len(verifying_key) {
+            let row = Self::terminal_npo_row(verifying_key, npo_index)?;
+            let count = Self::terminal_npo_exhaustive_residual_component_count_for_basis_dimension(
+                &row,
+                basis_dimension,
+            );
+            if residual_index < base + count {
+                let mut component =
+                    Self::terminal_npo_exhaustive_row_component_for_basis_dimension(
+                        &row,
+                        residual_index - base,
+                        basis_dimension,
+                    )?;
+                component.npo_index = npo_index;
+                return Some(component);
+            }
+            base += count;
+        }
+        None
+    }
+
+    fn terminal_npo_exhaustive_row_component_for_basis_dimension(
+        row: &NativeTerminalNpoRowRef<'_>,
+        component_offset: usize,
+        basis_dimension: usize,
+    ) -> Option<TerminalNpoResidualComponentRef> {
+        let mut base = 0usize;
+        let mut component = |kind: TerminalNpoResidualKind,
+                             limb: usize,
+                             width: usize|
+         -> Option<TerminalNpoResidualComponentRef> {
+            if component_offset < base + width {
+                Some(TerminalNpoResidualComponentRef {
+                    npo_index: 0,
+                    component_offset,
+                    kind,
+                    limb,
+                    basis_component: component_offset - base,
+                })
+            } else {
+                base += width;
+                None
+            }
+        };
+
+        match row {
+            NativeTerminalNpoRowRef::Tip5 { callsite, .. } => {
+                for (limb, witness_id) in callsite.inputs.iter().enumerate() {
+                    if witness_id.is_some() {
+                        if let Some(component) =
+                            component(TerminalNpoResidualKind::Tip5Input, limb, basis_dimension)
+                        {
+                            return Some(component);
+                        }
+                    }
+                }
+                for (limb, witness_id) in callsite.outputs.iter().enumerate() {
+                    if witness_id.is_some() {
+                        if let Some(component) =
+                            component(TerminalNpoResidualKind::Tip5Output, limb, basis_dimension)
+                        {
+                            return Some(component);
+                        }
+                    }
+                }
+                let Some(mode) = callsite.tip5_mode else {
+                    return None;
+                };
+                if mode.merkle_path
+                    && callsite.tip5_mmcs_bit.is_some()
+                    && let Some(component) = component(TerminalNpoResidualKind::Tip5MmcsBit, 16, 1)
+                {
+                    return Some(component);
+                }
+                if mode.merkle_path {
+                    for limb in 0..5 {
+                        if callsite.inputs[limb].is_none()
+                            && let Some(component) =
+                                component(TerminalNpoResidualKind::Tip5ChainInput, limb, 1)
+                        {
+                            return Some(component);
+                        }
+                    }
+                    for limb in 10..16 {
+                        if callsite.inputs[limb].is_none()
+                            && let Some(component) =
+                                component(TerminalNpoResidualKind::Tip5ChainInput, limb, 1)
+                        {
+                            return Some(component);
+                        }
+                    }
+                } else {
+                    for limb in 0..16 {
+                        if callsite.inputs[limb].is_none()
+                            && let Some(component) =
+                                component(TerminalNpoResidualKind::Tip5ChainInput, limb, 1)
+                        {
+                            return Some(component);
+                        }
+                    }
+                }
+                None
+            }
+            NativeTerminalNpoRowRef::Recompose { callsite, .. } => {
+                for limb in 0..callsite.inputs.len() {
+                    if let Some(component) = component(
+                        TerminalNpoResidualKind::RecomposeInput,
+                        limb,
+                        basis_dimension,
+                    ) {
+                        return Some(component);
+                    }
+                }
+                if callsite.outputs.first().copied().flatten().is_some() {
+                    if let Some(component) =
+                        component(TerminalNpoResidualKind::RecomposeOutput, 0, basis_dimension)
+                    {
+                        return Some(component);
+                    }
+                }
+                None
+            }
+        }
+    }
+
     fn terminal_npo_exhaustive_residual_component_count_for_basis_dimension(
         row: &NativeTerminalNpoRowRef<'_>,
         basis_dimension: usize,
@@ -13128,6 +13284,64 @@ mod tests {
     }
 
     #[test]
+    fn goldilocks_npo_exhaustive_residual_component_mapping_tracks_layout() {
+        let (circuit, _public_inputs, _private_data) = build_many_merkle_tip5_test_circuit(1);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let profile = NativeTerminalCompiler::terminal_npo_polynomial_profile::<Goldilocks>(&vk);
+        assert_eq!(profile.sampled_residual_components, 10);
+        assert_eq!(profile.residual_components, 17);
+
+        for residual_index in 0..profile.residual_components {
+            let component =
+                NativeTerminalCompiler::terminal_npo_exhaustive_residual_component_row::<
+                    Goldilocks,
+                >(&vk, residual_index)
+                .expect("residual component must map to an NPO row");
+            assert_eq!(component.npo_index, 0);
+            assert_eq!(component.component_offset, residual_index);
+            assert_eq!(component.basis_component, 0);
+        }
+        assert!(
+            NativeTerminalCompiler::terminal_npo_exhaustive_residual_component_row::<Goldilocks>(
+                &vk,
+                profile.residual_components,
+            )
+            .is_none()
+        );
+
+        let mmcs_component =
+            NativeTerminalCompiler::terminal_npo_exhaustive_residual_component_row::<Goldilocks>(
+                &vk, 10,
+            )
+            .expect("MMCS-bit residual component must exist");
+        assert_eq!(mmcs_component.kind, TerminalNpoResidualKind::Tip5MmcsBit);
+        assert_eq!(mmcs_component.limb, 16);
+
+        let first_capacity_zero_component =
+            NativeTerminalCompiler::terminal_npo_exhaustive_residual_component_row::<Goldilocks>(
+                &vk, 11,
+            )
+            .expect("first capacity-zero residual component must exist");
+        assert_eq!(
+            first_capacity_zero_component.kind,
+            TerminalNpoResidualKind::Tip5ChainInput
+        );
+        assert_eq!(first_capacity_zero_component.limb, 10);
+
+        let last_capacity_zero_component =
+            NativeTerminalCompiler::terminal_npo_exhaustive_residual_component_row::<Goldilocks>(
+                &vk, 16,
+            )
+            .expect("last capacity-zero residual component must exist");
+        assert_eq!(
+            last_capacity_zero_component.kind,
+            TerminalNpoResidualKind::Tip5ChainInput
+        );
+        assert_eq!(last_capacity_zero_component.limb, 15);
+    }
+
+    #[test]
     fn goldilocks_npo_exhaustive_residual_values_include_mmcs_booleanity() {
         let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(1);
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
@@ -13164,6 +13378,13 @@ mod tests {
         let exhaustive_values = compiler
             .terminal_npo_exhaustive_residual_values_goldilocks(&vk, &bad_witness)
             .expect("exhaustive NPO residual values must compute");
+        let mmcs_component =
+            NativeTerminalCompiler::terminal_npo_exhaustive_residual_component_row::<Goldilocks>(
+                &vk, 10,
+            )
+            .expect("MMCS-bit residual component must exist");
+        assert_eq!(mmcs_component.kind, TerminalNpoResidualKind::Tip5MmcsBit);
+        assert_eq!(exhaustive_values[10], Goldilocks::from_u64(2));
         let nonzero_values = exhaustive_values
             .iter()
             .filter(|value| **value != Goldilocks::ZERO)
