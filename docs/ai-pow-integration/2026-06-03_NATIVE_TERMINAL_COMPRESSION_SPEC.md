@@ -147,10 +147,11 @@ for this route.
 - `TerminalSparseR1csSumcheckProof`: a batched matrix-vector sumcheck component
   for the sparse terminal R1CS matrices. It proves claimed `A`, `B`, and `C`
   matrix-vector evaluations against the committed assignment vector and consumes
-  `TerminalAssignmentEvaluationProof` at the final sumcheck point. It
-  deliberately does not check `A(r) * B(r) = C(r)`, because that is not a sound
-  multilinear R1CS shortcut; the row-product relation still needs its own
-  sumcheck.
+  `TerminalAssignmentEvaluationProof` at the final sumcheck point. It can use
+  either its own transcript-derived row point or an externally supplied row
+  point from a future row-product sumcheck. It deliberately does not check
+  `A(r) * B(r) = C(r)`, because that is not a sound multilinear R1CS shortcut;
+  the row-product relation still needs its own sumcheck.
 - `TerminalNpoValidityFoldProof`: a Merkle-backed folded validity-oracle proof
   for supported NPO rows. This remains as a standalone helper/test component;
   the aggregate `TerminalLocalProof` now uses `combined_validity` instead.
@@ -267,7 +268,9 @@ partial sums of the product of the matrix MLE and assignment MLE and was stopped
 after exceeding two minutes on the real Tip5 Layer-0 verifier. That path has
 been replaced by a folded-vector evaluator: the prover builds the batched sparse
 matrix coefficient vector once, pads the assignment vector once, then folds both
-vectors in lockstep through the sumcheck rounds.
+vectors in lockstep through the sumcheck rounds. The component now also verifies
+at an externally supplied row point, which is the hook the row-product sumcheck
+needs for its final `x*` claims.
 
 Those supported NPO rows now also project into `TerminalNpoRelation`: a stable
 global row domain over `tip5_perm/goldilocks_w16_r5`, `recompose`, and

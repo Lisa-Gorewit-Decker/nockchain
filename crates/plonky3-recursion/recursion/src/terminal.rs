@@ -5245,14 +5245,46 @@ impl NativeTerminalCompiler {
         Self::verify_prelude_binds_commitment(prelude, &assignment_commitment)?;
 
         let sparse_relation = verifying_key.primitive_sparse_r1cs_relation()?;
-        let witness_values = Self::terminal_witness_values(witness)?;
-        let assignment_values =
-            Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)?;
         let row_point = Self::derive_terminal_r1cs_row_point::<F>(
             prelude,
             &assignment_commitment,
             sparse_relation.log_rows,
         )?;
+        self.prove_terminal_sparse_r1cs_sumcheck_at_row_point_goldilocks(
+            verifying_key,
+            public_inputs,
+            prelude,
+            assignment_oracle,
+            witness,
+            &row_point,
+        )
+    }
+
+    pub fn prove_terminal_sparse_r1cs_sumcheck_at_row_point_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        assignment_oracle: &TerminalOracleMerkleTree,
+        witness: &TerminalWitness<F>,
+        row_point: &[F],
+    ) -> Result<TerminalSparseR1csSumcheckProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let assignment_commitment = assignment_oracle.commitment();
+        Self::verify_terminal_assignment_commitment_identity(
+            verifying_key,
+            &assignment_commitment,
+        )?;
+        Self::verify_prelude_binds_commitment(prelude, &assignment_commitment)?;
+
+        let sparse_relation = verifying_key.primitive_sparse_r1cs_relation()?;
+        Self::validate_terminal_r1cs_row_point(&sparse_relation, row_point)?;
+        let witness_values = Self::terminal_witness_values(witness)?;
+        let assignment_values =
+            Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)?;
         let (claimed_a, claimed_b, claimed_c) = Self::sparse_r1cs_matrix_evaluations_at_row(
             &sparse_relation,
             &row_point,
@@ -5363,6 +5395,38 @@ impl NativeTerminalCompiler {
         Self::verify_terminal_assignment_commitment_identity(verifying_key, assignment_commitment)?;
         Self::verify_prelude_binds_commitment(prelude, assignment_commitment)?;
         let sparse_relation = verifying_key.primitive_sparse_r1cs_relation()?;
+        let row_point = Self::derive_terminal_r1cs_row_point::<F>(
+            prelude,
+            assignment_commitment,
+            sparse_relation.log_rows,
+        )?;
+        self.verify_terminal_sparse_r1cs_sumcheck_at_row_point_goldilocks(
+            verifying_key,
+            public_inputs,
+            prelude,
+            assignment_commitment,
+            proof,
+            &row_point,
+        )
+    }
+
+    pub fn verify_terminal_sparse_r1cs_sumcheck_at_row_point_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        assignment_commitment: &TerminalOracleCommitment,
+        proof: &TerminalSparseR1csSumcheckProof,
+        row_point: &[F],
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        Self::verify_terminal_assignment_commitment_identity(verifying_key, assignment_commitment)?;
+        Self::verify_prelude_binds_commitment(prelude, assignment_commitment)?;
+        let sparse_relation = verifying_key.primitive_sparse_r1cs_relation()?;
+        Self::validate_terminal_r1cs_row_point(&sparse_relation, row_point)?;
         if proof.rounds.len() != sparse_relation.log_variables {
             return Err(
                 NativeTerminalVerifyError::TerminalResidualFoldRoundCountMismatch {
@@ -5376,11 +5440,6 @@ impl NativeTerminalCompiler {
         let claimed_a = Self::field_from_goldilocks_basis_u64::<F>(&proof.claimed_a_basis)?;
         let claimed_b = Self::field_from_goldilocks_basis_u64::<F>(&proof.claimed_b_basis)?;
         let claimed_c = Self::field_from_goldilocks_basis_u64::<F>(&proof.claimed_c_basis)?;
-        let row_point = Self::derive_terminal_r1cs_row_point::<F>(
-            prelude,
-            assignment_commitment,
-            sparse_relation.log_rows,
-        )?;
         let alpha = Self::derive_terminal_r1cs_batch_challenge::<F>(
             prelude,
             assignment_commitment,
@@ -7710,6 +7769,22 @@ impl NativeTerminalCompiler {
                 NativeTerminalVerifyError::TerminalResidualFoldCommitmentLengthMismatch {
                     round: expected,
                     expected,
+                    got: point.len(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_terminal_r1cs_row_point<F>(
+        relation: &TerminalSparseR1csRelation<F>,
+        point: &[F],
+    ) -> Result<(), NativeTerminalVerifyError> {
+        if point.len() != relation.log_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalResidualFoldCommitmentLengthMismatch {
+                    round: relation.log_rows,
+                    expected: relation.log_rows,
                     got: point.len(),
                 },
             );
@@ -10521,6 +10596,48 @@ mod tests {
                 )
                 .is_err(),
             "sumcheck must bind claimed matrix-vector evaluations"
+        );
+
+        let sparse_relation = vk
+            .primitive_sparse_r1cs_relation()
+            .expect("sparse relation must lower");
+        let explicit_row_point: Vec<_> = (0..sparse_relation.log_rows)
+            .map(|i| Goldilocks::from_u64(23 + i as u64))
+            .collect();
+        let explicit_proof = compiler
+            .prove_terminal_sparse_r1cs_sumcheck_at_row_point_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &assignment_oracle,
+                &witness,
+                &explicit_row_point,
+            )
+            .expect("sparse R1CS matrix sumcheck proof at explicit row point must build");
+        compiler
+            .verify_terminal_sparse_r1cs_sumcheck_at_row_point_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &assignment_commitment,
+                &explicit_proof,
+                &explicit_row_point,
+            )
+            .expect("sparse R1CS matrix sumcheck at explicit row point must verify");
+        let mut wrong_row_point = explicit_row_point;
+        wrong_row_point[0] += Goldilocks::ONE;
+        assert!(
+            compiler
+                .verify_terminal_sparse_r1cs_sumcheck_at_row_point_goldilocks(
+                    &vk,
+                    &public_inputs,
+                    &prelude,
+                    &assignment_commitment,
+                    &explicit_proof,
+                    &wrong_row_point,
+                )
+                .is_err(),
+            "sumcheck must bind the externally supplied row point"
         );
     }
 
