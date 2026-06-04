@@ -139,6 +139,16 @@ selected+lookup commitment:
 - repeat performance measurement after any major constraint or
   parameter change.
 
+2026-06-04 follow-up: the merged residual-zero+recompose+value-bridge
+verifier test now directly covers the selected+lookup commitment and merged
+opening-shape items above. It mutates the combined selected+lookup
+commitment and expects prelude commitment rejection; mutates lookup and
+value-bridge quotient profiles and expects verifier recomputation rejection;
+and truncates/malforms lookup IO and value-bridge quotient openings and
+expects dimension-check rejection. The focused test and full
+`p3-recursion` crate suite passed before commit
+`32c6c2ba Harden terminal value bridge verifier tests`.
+
 ## Commands Run For This Checkpoint
 
 ```text
