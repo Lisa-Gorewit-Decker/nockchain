@@ -99,6 +99,8 @@ for this route.
   any backend challenge is sampled. The active native-terminal checkpoint
   profile is `security_bits=60, log_blowup=4, num_queries=15,
   query_pow_bits=0`, whose pure-query Johnson accounting is exactly 60 bits.
+  Public production verification rejects other parameter tuples, even if their
+  `log_blowup * num_queries` product also reaches 60 bits.
 - `TerminalProofPrelude`: the first proof-body transcript object. It binds the
   terminal proof parameters, compiled relation profile, full public-values
   digest, backend commitment digests, canonical zero terminal query-PoW nonce,
@@ -399,7 +401,8 @@ explicit trailing-byte rejection, and reruns the compact production
 verifier. Malformed production bodies are rejected before relation checks, and
 `LocalCheckpoint` certificates still fail by proof-kind mismatch.
 
-Goldilocks terminal proof prelude assembly now rejects:
+Goldilocks terminal proof prelude assembly and public production verification
+now reject:
 
 - empty backend commitment lists;
 - parameters below 60 bits;
@@ -407,6 +410,8 @@ Goldilocks terminal proof prelude assembly now rejects:
 - terminal parameter labels that exceed their own Johnson accounting;
 - nonzero terminal `query_pow_bits`;
 - noncanonical nonzero terminal query-PoW nonces;
+- production proofs whose prelude parameters are not exactly
+  `TerminalProofParameters::production_60bit()`;
 - production terminal query domains with fewer rows than `num_queries`;
 - production/local-checkpoint proof-kind confusion at local-certificate
   verification;
@@ -731,7 +736,7 @@ Completion audit against the active terminal-compression requirements:
 
 | requirement | current evidence | status |
 |---|---|---|
-| Production profile gets at least 60 bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests. | satisfied for the current terminal profile |
+| Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
 | Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `98,814` bytes / `96.5 KiB`, debug-profile `prove=4.904s`, `verify=3.109s`. | satisfied on the measured production fixture |
 | No confusing low-soundness testing production path | Production certificate verifier accepts only `TerminalProofKind::Production`; `LocalCheckpoint` is rejected by kind mismatch and query domains must support all 15 production queries. | satisfied for public production verifier dispatch |
@@ -925,7 +930,7 @@ The compact backend must be native over the current field/circuit stack:
 - avoid producing another multi-table batch-STARK as the terminal artifact;
 - support the non-primitive operations used by the recursive verifier
   circuit, especially Tip5/challenger and MMCS verification paths;
-- use a production profile with at least 60 soundness bits;
+- use the canonical production profile with 60 pure-query soundness bits;
 - serialize into a Nockchain-owned proof body, not a generic opaque external
   proof blob.
 - prove the 1,884-constraint / 668-NPO-row terminal relation above without
@@ -944,14 +949,16 @@ The compact backend must be native over the current field/circuit stack:
    polynomialized Tip5/recompose argument that preserves exact call-site
    binding and relation-digest binding.
 3. Add the final proximity/PCS backend for the primitive and NPO relations
-   under an explicit >=60-bit soundness calculation.
+   under an explicit 60-bit-or-higher soundness calculation while preserving the
+   canonical production parameter tuple unless a new production profile is
+   explicitly specified and measured.
 4. Measure proof bytes, prove time, verify time, and soundness bits after every
    major relation/proof-shape change.
 5. Run the production AI-PoW `prod_recursion_measure` workload with the compact
    terminal path.
 6. Promote only after the compact terminal meets:
    - final recursive certificate near 100 KiB;
-   - at least 60 bits from queries, without query PoW;
+   - the canonical 60-bit profile from queries, without query PoW;
    - recursive proving near 30 s;
    - rejection tests for public-input, parameter, circuit-fingerprint, relation
      digest, and NPO-row/call-site swaps.

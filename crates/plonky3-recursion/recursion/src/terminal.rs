@@ -1079,6 +1079,10 @@ pub enum NativeTerminalVerifyError {
         expected: u16,
         got: u16,
     },
+    TerminalProofProductionParametersMismatch {
+        expected: TerminalProofParameters,
+        got: TerminalProofParameters,
+    },
     TerminalProofQueryPowUnsupported {
         bits: u16,
     },
@@ -6257,6 +6261,7 @@ impl NativeTerminalCompiler {
     where
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
+        Self::validate_terminal_production_parameters(proof.prelude.parameters)?;
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, &proof.prelude)?;
         self.validate_goldilocks_production_query_domains(verifying_key, proof.prelude.parameters)?;
         Self::verify_terminal_witness_commitment_identity(
@@ -9188,6 +9193,21 @@ impl NativeTerminalCompiler {
         Ok(())
     }
 
+    fn validate_terminal_production_parameters(
+        parameters: TerminalProofParameters,
+    ) -> Result<(), NativeTerminalVerifyError> {
+        let expected = TerminalProofParameters::production_60bit();
+        if parameters != expected {
+            return Err(
+                NativeTerminalVerifyError::TerminalProofProductionParametersMismatch {
+                    expected,
+                    got: parameters,
+                },
+            );
+        }
+        Ok(())
+    }
+
     pub fn validate_goldilocks_production_query_domains<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -11304,6 +11324,61 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn goldilocks_terminal_production_certificate_requires_canonical_parameters() {
+        let mut circuit = Circuit::<Goldilocks>::new(15, HashMap::new());
+        for index in 0..15 {
+            circuit.ops.push(Op::Const {
+                out: WitnessId(index),
+                val: Goldilocks::from_u64(20 + index as u64),
+            });
+        }
+        let public_inputs = Vec::<Goldilocks>::new();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+
+        let mut proof = compiler
+            .prove_terminal_production_goldilocks(&vk, &public_inputs, &witness)
+            .expect("production compact relation proof must build");
+        let noncanonical_sixty_bits = TerminalProofParameters {
+            security_bits: 60,
+            log_blowup: 5,
+            num_queries: 12,
+            query_pow_bits: 0,
+        };
+        proof.prelude.parameters = noncanonical_sixty_bits;
+        proof.prelude.challenge_digest = NativeTerminalCompiler::transcript_challenge_digest(
+            &vk.header,
+            proof.prelude.parameters,
+            &proof.prelude.relation_profile,
+            proof.prelude.public_values_digest,
+            &proof.prelude.commitments,
+            proof.prelude.query_pow_nonce,
+        );
+        let proof_body =
+            postcard::to_allocvec(&proof).expect("tampered production proof must serialize");
+        let certificate = compiler
+            .assemble_goldilocks_certificate(
+                &vk,
+                TerminalProofKind::Production,
+                &public_inputs,
+                proof_body,
+            )
+            .expect("production envelope must bind tampered body");
+
+        let err = compiler
+            .verify_goldilocks_production_certificate(&vk, &certificate, &public_inputs)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            NativeTerminalVerifyError::TerminalProofProductionParametersMismatch {
+                expected: TerminalProofParameters::production_60bit(),
+                got: noncanonical_sixty_bits,
+            }
+        );
     }
 
     #[test]
