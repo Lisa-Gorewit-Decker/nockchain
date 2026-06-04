@@ -24581,13 +24581,81 @@ mod tests {
                 vec![(&floor_data, vec![vec![floor_zeta]])],
                 &mut floor_challenger,
             );
+        let floor_opened_at_zeta = floor_opened_values[0][0][0].clone();
+        let mut floor_query_challenger = TerminalFriChallenger::new(Tip5Perm);
+        NativeTerminalCompiler::observe_terminal_fri_str(
+            &mut floor_query_challenger,
+            "nock-terminal-tip5-air-composition-floor-v1",
+        );
+        for limb in prelude.challenge_digest.0 {
+            floor_query_challenger.observe(Goldilocks::from_u64(limb));
+        }
+        for limb in prelude.public_values_digest.0 {
+            floor_query_challenger.observe(Goldilocks::from_u64(limb));
+        }
+        floor_query_challenger.observe(floor_commitment.clone());
+        let _: TerminalFriChallenge = floor_query_challenger.sample_algebra_element();
+        floor_query_challenger.observe_algebra_slice(&floor_opened_at_zeta);
+        let floor_query_indices =
+            NativeTerminalCompiler::derive_terminal_fri_query_indices_from_challenger(
+                &mut floor_query_challenger,
+                &floor_fri_proof,
+                proof.trace_profile.proximity,
+            )
+            .expect("terminal composition floor FRI query indices must derive");
+        let floor_compressed_fri =
+            NativeTerminalCompiler::compress_terminal_fri_proof(
+                &floor_fri_proof,
+                &floor_query_indices,
+            )
+            .expect("terminal composition floor FRI proof must compress");
+        let floor_compressed_serialized =
+            postcard::to_allocvec(&(
+                &floor_commitment,
+                &floor_opened_values,
+                &floor_compressed_fri,
+            ))
+            .expect("terminal composition floor compressed proof must serialize");
+        let floor_restored_fri =
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&floor_compressed_fri)
+                .expect("terminal composition floor FRI proof must decompress");
+        let mut floor_verify_challenger = TerminalFriChallenger::new(Tip5Perm);
+        NativeTerminalCompiler::observe_terminal_fri_str(
+            &mut floor_verify_challenger,
+            "nock-terminal-tip5-air-composition-floor-v1",
+        );
+        for limb in prelude.challenge_digest.0 {
+            floor_verify_challenger.observe(Goldilocks::from_u64(limb));
+        }
+        for limb in prelude.public_values_digest.0 {
+            floor_verify_challenger.observe(Goldilocks::from_u64(limb));
+        }
+        floor_verify_challenger.observe(floor_commitment.clone());
+        let floor_verify_zeta: TerminalFriChallenge =
+            floor_verify_challenger.sample_algebra_element();
+        assert_eq!(floor_zeta, floor_verify_zeta);
+        <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
+            &floor_pcs,
+            vec![(
+                floor_commitment.clone(),
+                vec![(
+                    floor_domain,
+                    vec![(floor_zeta, floor_opened_at_zeta.clone())],
+                )],
+            )],
+            &floor_restored_fri,
+            &mut floor_verify_challenger,
+        )
+        .expect("compressed-restored terminal composition floor proof must verify");
         let floor_serialized =
             postcard::to_allocvec(&(floor_commitment, floor_opened_values, floor_fri_proof))
                 .expect("terminal composition floor proof must serialize");
         println!(
-            "terminal Tip5 lookup AIR composition-FRI floor: {} bytes ({:.1} KiB), rows={}, base_columns={}",
+            "terminal Tip5 lookup AIR composition-FRI floor: plain={} bytes ({:.1} KiB) compressed={} bytes ({:.1} KiB), rows={}, base_columns={}",
             floor_serialized.len(),
             floor_serialized.len() as f64 / 1024.0,
+            floor_compressed_serialized.len(),
+            floor_compressed_serialized.len() as f64 / 1024.0,
             proof.quotient_profile.padded_rows,
             floor_width,
         );
