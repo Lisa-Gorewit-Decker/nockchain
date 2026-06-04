@@ -14660,6 +14660,25 @@ impl NativeTerminalCompiler {
     pub fn decompress_terminal_fri_proof(
         compressed: &TerminalCompressedFriProof,
     ) -> Result<TerminalFriProof, NativeTerminalVerifyError> {
+        let commit_round_count = compressed.commit_rounds.len();
+        if compressed.commit_phase_commits.len() != commit_round_count {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compressed_fri_commit_phase_commits".into(),
+                    expected: commit_round_count,
+                    got: compressed.commit_phase_commits.len(),
+                },
+            );
+        }
+        if compressed.commit_pow_witnesses.len() != commit_round_count {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compressed_fri_commit_pow_witnesses".into(),
+                    expected: commit_round_count,
+                    got: compressed.commit_pow_witnesses.len(),
+                },
+            );
+        }
         let query_count = compressed
             .input_batches
             .first()
@@ -25951,6 +25970,42 @@ mod tests {
             compressed_fri_bytes.len() < plain_fri_bytes.len(),
             "terminal compressed FRI should reduce path material"
         );
+
+        let mut shortened_commit_phase_commits = proof.proof.clone();
+        assert!(
+            shortened_commit_phase_commits
+                .commit_phase_commits
+                .pop()
+                .is_some(),
+            "compressed FRI proof must carry commit-phase commitments"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&shortened_commit_phase_commits),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. })
+        ));
+
+        let mut shortened_commit_pow_witnesses = proof.proof.clone();
+        assert!(
+            shortened_commit_pow_witnesses
+                .commit_pow_witnesses
+                .pop()
+                .is_some(),
+            "compressed FRI proof must carry commit PoW witnesses"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&shortened_commit_pow_witnesses),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. })
+        ));
+
+        let mut shortened_commit_rounds = proof.proof.clone();
+        assert!(
+            shortened_commit_rounds.commit_rounds.pop().is_some(),
+            "compressed FRI proof must carry commit rounds"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&shortened_commit_rounds),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. })
+        ));
 
         let mut malformed_order = proof.proof.clone();
         let mut order_tampered = false;
