@@ -253,7 +253,7 @@ fn terminal_compiler_covers_real_tip5_l0_verifier_circuit() {
     );
     let profile = vk.relation_profile();
     eprintln!(
-        "terminal relation profile: witnesses={} public={} private={} ops={} primitive_constraints={} terminal_constraints={} hints={} non_primitive_ops={} tip5_rows={} recompose_rows={} recompose_coeff_rows={} npo_input_slots={} npo_output_slots={}",
+        "terminal relation profile: witnesses={} public={} private={} ops={} primitive_constraints={} terminal_constraints={} hints={} non_primitive_ops={} tip5_rows={} recompose_rows={} recompose_coeff_rows={} npo_validity_components={} npo_input_slots={} npo_output_slots={}",
         profile.fingerprint.witness_count,
         profile.fingerprint.public_flat_len,
         profile.fingerprint.private_flat_len,
@@ -265,6 +265,7 @@ fn terminal_compiler_covers_real_tip5_l0_verifier_circuit() {
         profile.tip5_rows,
         profile.recompose_rows,
         profile.recompose_coeff_rows,
+        profile.external_npo_validity_components,
         profile.npo_callsite_input_slots,
         profile.npo_callsite_output_slots,
     );
@@ -289,6 +290,7 @@ fn terminal_compiler_covers_real_tip5_l0_verifier_circuit() {
     assert_eq!(profile.tip5_rows, 520);
     assert_eq!(profile.recompose_rows, 51);
     assert_eq!(profile.recompose_coeff_rows, 97);
+    assert_eq!(profile.external_npo_validity_components, 63665);
     assert_eq!(profile.npo_callsite_input_slots, 8616);
     assert_eq!(profile.npo_callsite_output_slots, 5348);
 

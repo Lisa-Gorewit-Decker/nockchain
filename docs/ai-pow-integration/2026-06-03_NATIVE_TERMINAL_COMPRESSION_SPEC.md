@@ -103,9 +103,10 @@ for this route.
   Public production verification rejects other parameter tuples, even if their
   `log_blowup * num_queries` product also reaches 60 bits.
 - `TerminalProofPrelude`: the first proof-body transcript object. It binds the
-  terminal proof parameters, compiled relation profile, full public-values
-  digest, backend commitment digests, canonical zero terminal query-PoW nonce,
-  and a domain-separated Tip5 challenge digest.
+  terminal proof parameters, compiled relation profile including the
+  component-expanded supported-NPO validity domain, full public-values digest,
+  backend commitment digests, canonical zero terminal query-PoW nonce, and a
+  domain-separated Tip5 challenge digest.
 - `TerminalOracleMerkleTree` / `TerminalOracleCommitment` /
   `TerminalOracleOpening`: the first backend oracle commitment layer. It commits
   to terminal field-value vectors with 5-round Tip5 Merkle roots and verifies
@@ -365,6 +366,7 @@ real L1 verifier circuit:
 | Tip5 rows | 520 |
 | `recompose` rows | 51 |
 | `recompose/coeff` rows | 97 |
+| NPO validity residual components | 63,665 |
 | NPO input callsite slots | 8,616 |
 | NPO output callsite slots | 5,348 |
 
@@ -426,6 +428,9 @@ finalizing. This closes the first Fiat-Shamir/grinding boundary for the future
 compact backend: no query/challenge material may be sampled before these values
 are fixed. The prelude is still not a proof; it is the mandatory transcript
 prefix that the remaining polynomial/sumcheck/commitment proof must extend.
+The relation profile includes both the flattened supported-NPO row count and
+the expanded NPO validity residual-component count, so a proof body cannot bind
+one NPO oracle shape while deriving challenges over another.
 
 Every oracle-backed local verifier now also checks that the passed commitment
 root is one of the roots absorbed into that prelude. This applies to the generic
@@ -439,12 +444,12 @@ already-known sampled rows.
 The same verifier entrypoints also reject base-oracle identity drift. The
 witness oracle must use label `witness` and length equal to the compiled witness
 count; the primitive residual helper oracle must use label `quadratic_residual`;
-the supported-NPO helper oracle must use label `npo_validity`; and the aggregate
-local proof's combined oracle must use label `combined_validity` with length
-equal to lowered quadratic rows plus flattened supported-NPO rows. These checks
-happen before query derivation and opening verification, so a proof body cannot
-keep a prelude-bound root while presenting alternate oracle metadata to a later
-transcript step.
+the supported-NPO helper oracle must use label `npo_validity`; and the
+aggregate local proof's combined oracle must use label `combined_validity` with
+length equal to lowered quadratic rows plus supported-NPO validity residual
+components. These checks happen before query derivation and opening
+verification, so a proof body cannot keep a prelude-bound root while presenting
+alternate oracle metadata to a later transcript step.
 
 The first backend oracle commitment layer now uses domain-separated 5-round
 Tip5 Merkle commitments:
@@ -596,15 +601,15 @@ Tip5-L0 verifier circuit:
 
 | component | bytes |
 |---|---:|
-| primitive R1CS row-product proof | 22,792 |
-| exhaustive NPO proof | 63,665 |
+| primitive R1CS row-product proof | 24,521 |
+| exhaustive NPO proof | 63,673 |
 | exhaustive NPO hidden Tip5 input bytes | 17,402 |
-| exhaustive NPO known-index witness multiproof | 46,263 |
+| exhaustive NPO known-index witness multiproof | 46,271 |
 | exhaustive NPO full-width witness openings | 1,377 |
-| compact production proof body | 86,799 |
-| compact production certificate | 87,021 |
+| compact production proof body | 88,536 |
+| compact production certificate | 88,757 |
 
-The debug-profile measurement is `prove=4.835 s, verify=3.100 s` for the
+The debug-profile measurement is `prove=4.849 s, verify=3.150 s` for the
 production proof body and certificate, with terminal parameters
 `security_bits=60, log_blowup=4, num_queries=15, query_pow_bits=0`. This removes
 the sampled production NPO validity layer and verifies all 668 supported
@@ -629,18 +634,18 @@ component includes that matrix-vector subproof:
 
 | component | bytes |
 |---|---:|
-| sparse R1CS matrix sumcheck proof | 22,681 |
-| R1CS row-product sumcheck proof | 23,763 |
-| row-product rounds | 850 |
-| matrix-sumcheck rounds | 718 |
-| assignment evaluation proof | 22,135 |
+| sparse R1CS matrix sumcheck proof | 23,924 |
+| R1CS row-product sumcheck proof | 23,296 |
+| row-product rounds | 842 |
+| matrix-sumcheck rounds | 720 |
+| assignment evaluation proof | 21,674 |
 | assignment public-prefix proof | 477 |
-| assignment fold commitments | 802 |
+| assignment fold commitments | 807 |
 | assignment fold query indices | 46 |
-| assignment fold round multiproofs | 20,791 |
+| assignment fold round multiproofs | 20,323 |
 
-The latest debug-profile measurements are `prove=2.111 s, verify=1.349 s` for
-the matrix-vector component and `prove=2.136 s, verify=1.350 s` for the
+The latest debug-profile measurements are `prove=2.090 s, verify=1.368 s` for
+the matrix-vector component and `prove=2.118 s, verify=1.341 s` for the
 row-product component. This now proves the primitive sparse-R1CS row relation
 against the assignment commitment with compact public-prefix authentication, but
 NPO/table global arguments and the final polynomial proximity backend remain
@@ -706,7 +711,7 @@ Completion audit against the active terminal-compression requirements:
 |---|---|---|
 | Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
-| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `87,021` bytes / `85.0 KiB`, debug-profile `prove=4.835s`, `verify=3.100s`. | satisfied on the measured production fixture |
+| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `88,757` bytes / `86.7 KiB`, debug-profile `prove=4.849s`, `verify=3.150s`. | satisfied on the measured production fixture |
 | No confusing low-soundness testing production path | Production builds expose only `TerminalProofKind::Production`; local checkpoint proof-kind helpers are `cfg(test)`, and public production verification requires all 15 production queries. | satisfied for public production verifier dispatch |
 | Public values, parameters, relation, and commitments are bound before challenges | Header, public-values digest, backend relation digest, prelude parameters, relation profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
@@ -860,7 +865,7 @@ Security-audit conclusions for the current implementation checkpoint:
 - Fixed-int bincode serialization is size-only: it changes the Rust helper's
   byte encoding and rejects trailing bytes on decode, but does not alter the
   proof relation, Fiat-Shamir transcript, FRI parameters, or public inputs.
-- The terminal production checkpoint is now 87,021 bytes, or 85.0 KiB, with 60
+- The terminal production checkpoint is now 88,757 bytes, or 86.7 KiB, with 60
   pure-query bits and exhaustive supported-NPO verification. It reached the
   ~100 KiB size target through structural proof-body changes, especially
   omitting verifier-derived witness indices from the exhaustive NPO multiproof

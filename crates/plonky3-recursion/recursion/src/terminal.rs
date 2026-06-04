@@ -616,6 +616,7 @@ pub struct TerminalRelationProfile {
     pub tip5_rows: usize,
     pub recompose_rows: usize,
     pub recompose_coeff_rows: usize,
+    pub external_npo_validity_components: usize,
     pub npo_callsite_input_slots: usize,
     pub npo_callsite_output_slots: usize,
 }
@@ -1527,12 +1528,24 @@ pub struct NativeTerminalVerifyingKey<F> {
 
 impl<F> NativeTerminalVerifyingKey<F> {
     pub fn relation_profile(&self) -> TerminalRelationProfile {
+        self.relation_profile_for_goldilocks_basis_dimension(1)
+    }
+
+    fn relation_profile_for_goldilocks_basis_dimension(
+        &self,
+        basis_dimension: usize,
+    ) -> TerminalRelationProfile {
         let mut profile = TerminalRelationProfile {
             fingerprint: self.header.fingerprint,
             primitive_constraints: self.inventory.total_primitive_ops(),
             terminal_constraints: self.constraints.len(),
             hint_ops: self.inventory.hint_ops,
             non_primitive_ops: self.inventory.non_primitive_ops,
+            external_npo_validity_components:
+                NativeTerminalCompiler::terminal_npo_validity_domain_len_for_basis_dimension(
+                    self,
+                    basis_dimension,
+                ),
             ..TerminalRelationProfile::default()
         };
 
@@ -2506,7 +2519,9 @@ impl NativeTerminalCompiler {
             });
         }
 
-        let relation_profile = verifying_key.relation_profile();
+        let relation_profile = verifying_key.relation_profile_for_goldilocks_basis_dimension(
+            <F as BasedVectorSpace<Goldilocks>>::DIMENSION,
+        );
         let public_values_digest = Self::public_values_digest_goldilocks(public_inputs);
         let query_pow_nonce = 0;
         let challenge_digest = Self::transcript_challenge_digest(
@@ -2549,7 +2564,9 @@ impl NativeTerminalCompiler {
             });
         }
 
-        let expected_profile = verifying_key.relation_profile();
+        let expected_profile = verifying_key.relation_profile_for_goldilocks_basis_dimension(
+            <F as BasedVectorSpace<Goldilocks>>::DIMENSION,
+        );
         if prelude.relation_profile != expected_profile {
             return Err(NativeTerminalVerifyError::TerminalPreludeProfileMismatch {
                 expected: expected_profile,
@@ -7843,10 +7860,25 @@ impl NativeTerminalCompiler {
     where
         F: BasedVectorSpace<Goldilocks>,
     {
+        Self::terminal_npo_validity_domain_len_for_basis_dimension(
+            verifying_key,
+            <F as BasedVectorSpace<Goldilocks>>::DIMENSION,
+        )
+    }
+
+    fn terminal_npo_validity_domain_len_for_basis_dimension<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        basis_dimension: usize,
+    ) -> usize {
         (0..Self::terminal_npo_domain_len(verifying_key))
             .map(|npo_index| {
                 Self::terminal_npo_row(verifying_key, npo_index)
-                    .map(|row| Self::terminal_npo_validity_component_count::<F>(&row))
+                    .map(|row| {
+                        Self::terminal_npo_validity_component_count_for_basis_dimension(
+                            &row,
+                            basis_dimension,
+                        )
+                    })
                     .unwrap_or(0)
             })
             .sum()
@@ -7856,7 +7888,16 @@ impl NativeTerminalCompiler {
     where
         F: BasedVectorSpace<Goldilocks>,
     {
-        let dimension = <F as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        Self::terminal_npo_validity_component_count_for_basis_dimension(
+            row,
+            <F as BasedVectorSpace<Goldilocks>>::DIMENSION,
+        )
+    }
+
+    fn terminal_npo_validity_component_count_for_basis_dimension(
+        row: &NativeTerminalNpoRowRef<'_>,
+        basis_dimension: usize,
+    ) -> usize {
         match row {
             NativeTerminalNpoRowRef::Tip5 { callsite, .. } => {
                 let input_components = callsite
@@ -7869,12 +7910,12 @@ impl NativeTerminalCompiler {
                     .iter()
                     .filter(|output| output.is_some())
                     .count();
-                (input_components + output_components) * dimension
+                (input_components + output_components) * basis_dimension
             }
             NativeTerminalNpoRowRef::Recompose { callsite, .. } => {
-                let input_components = callsite.inputs.len() * dimension;
+                let input_components = callsite.inputs.len() * basis_dimension;
                 let output_components = if callsite.outputs.first().copied().flatten().is_some() {
-                    dimension
+                    basis_dimension
                 } else {
                     0
                 };
@@ -10356,7 +10397,7 @@ impl NativeTerminalCompiler {
         parameters: TerminalProofParameters,
     ) -> Result<(), NativeTerminalVerifyError>
     where
-        F: Field,
+        F: Field + BasedVectorSpace<Goldilocks>,
     {
         self.validate_terminal_proof_parameters(verifying_key, parameters)?;
         let num_queries = parameters.num_queries as usize;
@@ -10376,13 +10417,17 @@ impl NativeTerminalCompiler {
             quadratic_relation.constraints.len(),
             num_queries,
         )?;
-        let npo_domain_len = Self::terminal_npo_domain_len(verifying_key);
-        if npo_domain_len > 0 {
-            Self::validate_terminal_query_domain_len("npo_rows", npo_domain_len, num_queries)?;
+        let npo_validity_domain_len = Self::terminal_npo_validity_domain_len::<F>(verifying_key);
+        if npo_validity_domain_len > 0 {
+            Self::validate_terminal_query_domain_len(
+                "npo_validity_components",
+                npo_validity_domain_len,
+                num_queries,
+            )?;
         }
         Self::validate_terminal_query_domain_len(
             "combined_validity",
-            quadratic_relation.constraints.len() + npo_domain_len,
+            quadratic_relation.constraints.len() + npo_validity_domain_len,
             num_queries,
         )?;
         Ok(())
@@ -11264,6 +11309,7 @@ impl NativeTerminalCompiler {
         sponge.absorb_u64(profile.tip5_rows as u64);
         sponge.absorb_u64(profile.recompose_rows as u64);
         sponge.absorb_u64(profile.recompose_coeff_rows as u64);
+        sponge.absorb_u64(profile.external_npo_validity_components as u64);
         sponge.absorb_u64(profile.npo_callsite_input_slots as u64);
         sponge.absorb_u64(profile.npo_callsite_output_slots as u64);
     }
@@ -13283,6 +13329,10 @@ mod tests {
         assert_eq!(prelude.parameters.query_pow_bits, 0);
         assert_eq!(prelude.query_pow_nonce, 0);
         assert_eq!(prelude.relation_profile.tip5_rows, 1);
+        assert_eq!(
+            prelude.relation_profile.external_npo_validity_components,
+            NativeTerminalCompiler::terminal_npo_validity_domain_len::<Goldilocks>(&vk)
+        );
         assert_eq!(prelude.commitments.len(), 1);
 
         let mut tampered_commitment = prelude.clone();
@@ -13299,6 +13349,18 @@ mod tests {
         tampered_profile.relation_profile.tip5_rows += 1;
         let err = compiler
             .verify_proof_prelude_goldilocks(&vk, &public_inputs, &tampered_profile)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeProfileMismatch { .. }
+        ));
+
+        let mut tampered_npo_components = prelude.clone();
+        tampered_npo_components
+            .relation_profile
+            .external_npo_validity_components += 1;
+        let err = compiler
+            .verify_proof_prelude_goldilocks(&vk, &public_inputs, &tampered_npo_components)
             .unwrap_err();
         assert!(matches!(
             err,
