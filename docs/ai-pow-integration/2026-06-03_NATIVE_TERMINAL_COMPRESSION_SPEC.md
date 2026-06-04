@@ -460,9 +460,10 @@ for this route.
   terminal IO columns on the supported-NPO row domain alongside the committed
   NPO witness-value columns. A single quotient proves that each lookup IO lane
   equals the verifier-derived selector-weighted value-column expression on
-  Tip5 rows and is zero off those rows. The focused regression test measures
-  `16,535` bytes / `16.1 KiB` for this binding component, rejects stale
-  committed value columns, rejects stale lookup IO, and round-trips the proof.
+  Tip5 rows and is zero off those rows. The focused regression test now stores
+  the compressed terminal FRI payload directly and measures `10,823` bytes /
+  `10.6 KiB` for this binding component, rejects stale committed value columns,
+  rejects stale lookup IO, and round-trips the proof.
   This closes the specific "NPO projection not tied to value columns" checkpoint
   in isolation, but production still needs the internal Tip5 lookup/AIR
   relation and a shared final proximity backend before replacing exhaustive NPO
@@ -1143,9 +1144,10 @@ residual-column openings, but it is still a component proof; appending it next
 to the value bridge and Tip5 AIR components is not the final 100 KiB route. The
 LogUp/global-bus byte lookup relation remains a separate soundness obligation.
 The NPO-row value-bridge quotient closes the projection-to-value-column binding
-checkpoint in isolation at 16.1 KiB, while the terminal compact-FRI wrapper
-reduces that component's FRI payload from 15.6 KiB to 10.0 KiB by pruning shared
-binary Merkle authentication paths across the 15 transcript-derived queries.
+checkpoint in isolation at 10.6 KiB after storing the compressed terminal FRI
+payload directly; the FRI payload itself shrinks from 15.6 KiB to 10.0 KiB by
+pruning shared binary Merkle authentication paths across the 15
+transcript-derived queries.
 Shared commitment binding across these components, LogUp byte-table soundness,
 prior-output chain transitions, and residual-zero constraints over those
 openings are still pending.
