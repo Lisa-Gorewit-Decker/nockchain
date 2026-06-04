@@ -396,12 +396,14 @@ for this route.
   commits the full lookup main trace, samples one folding challenge, commits an
   extension-valued quotient on a degree-4 disjoint domain, and verifies the
   folded kind-booleanity, split-byte recomposition, Goldilocks canonical guard,
-  x2/x3 auxiliary, and MDS/round-constant output identities at one extension
-  point. The focused regression test measures `170,786` bytes / `166.8 KiB`,
-  debug-profile `prove=14.883s`, `verify=72.7ms`, and rejects tampered S-box
-  image bytes and tampered x2 auxiliaries. This closes a real internal-AIR
-  algebra checkpoint, but it is too large to combine naively with the current
-  terminal backend and still excludes the global LogUp byte-table argument.
+  x2/x3 auxiliary, and MDS/round-constant output identities, batched with
+  `V_perm_window * terminal_io` so table/padding rows cannot hide terminal IO
+  values in the full trace. The focused regression test measures `171,066`
+  bytes / `167.1 KiB`, debug-profile `prove=15.061s`, `verify=73.3ms`, and
+  rejects nonzero table-row terminal IO, tampered S-box image bytes, and
+  tampered x2 auxiliaries. This closes a real internal-AIR algebra/support
+  checkpoint, but it is too large to combine naively with the current terminal
+  backend and still excludes the global LogUp byte-table argument.
 - `TerminalNpoTip5LookupNpoRowsValueBridgeQuotientProof`: an NPO-row-domain
   value-binding checkpoint for the optimized lookup terminal IO. Instead of
   trusting a prover-supplied lookup-domain NPO projection, it commits the 26
@@ -1049,14 +1051,15 @@ off-window table-row IO and stale permutation-row IO while staying under the
 component target, so it supersedes carrying the separate zero-support and bridge
 proofs. It still depends on the same unresolved NPO-derived projection binding
 and internal Tip5 lookup/AIR relation work.
-The full-trace Tip5 lookup AIR algebra quotient now enforces the local
-permutation algebra and rejects stale internal trace columns, but at 166.8 KiB
-for the component by itself it is a measurement-driven rejection for naive
-composition. The next production route must either share the trace opening with
-the boundary/value bridge, commit only a relation-specific projection, or fold
-the lookup AIR algebra into a larger batched proximity proof; simply appending
-this proof would overshoot the 100 KiB certificate target. The LogUp/global-bus
-byte lookup relation remains a separate soundness obligation.
+The full-trace Tip5 lookup AIR algebra/support quotient now enforces the local
+permutation algebra and rejects stale internal trace columns plus off-window
+terminal IO, but at 167.1 KiB for the component by itself it is a
+measurement-driven rejection for naive composition. The next production route
+must either share the trace opening with the boundary/value bridge, commit only
+a relation-specific projection, or fold the lookup AIR algebra into a larger
+batched proximity proof; simply appending this proof would overshoot the 100 KiB
+certificate target. The LogUp/global-bus byte lookup relation remains a
+separate soundness obligation.
 The NPO-row value-bridge quotient closes the projection-to-value-column binding
 checkpoint in isolation at 16.1 KiB, while the terminal compact-FRI wrapper
 reduces that component's FRI payload from 15.6 KiB to 10.0 KiB by pruning shared

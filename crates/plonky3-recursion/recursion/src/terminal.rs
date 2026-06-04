@@ -5658,9 +5658,10 @@ impl NativeTerminalCompiler {
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
                 &pcs,
                 [(trace_domain, trace_matrix.clone())],
-            );
+        );
         challenger.observe(trace_commitment.clone());
         let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
+        let beta: TerminalFriChallenge = challenger.sample_algebra_element();
 
         let quotient_domain = trace_domain.create_disjoint_domain(quotient_profile.padded_rows);
         let quotient_matrix =
@@ -5670,6 +5671,7 @@ impl NativeTerminalCompiler {
                 &trace_fri_profile,
                 &trace_matrix,
                 alpha,
+                beta,
             )?;
         let (quotient_commitment, quotient_data) =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
@@ -12607,6 +12609,7 @@ impl NativeTerminalCompiler {
         trace_profile: &TerminalNpoTip5LookupFriProfile,
         trace_matrix: &RowMajorMatrix<Goldilocks>,
         alpha: TerminalFriChallenge,
+        beta: TerminalFriChallenge,
     ) -> Result<RowMajorMatrix<Goldilocks>, NativeTerminalVerifyError> {
         if trace_profile.column_set != TerminalNpoTip5LookupFriColumnSet::FullMain {
             return Err(
@@ -12645,6 +12648,19 @@ impl NativeTerminalCompiler {
                 &opened_trace,
                 alpha,
             )?;
+            let terminal_io =
+                Self::terminal_npo_tip5_lookup_air_terminal_io_folded_relation(
+                    &opened_trace,
+                    trace_profile,
+                    alpha,
+                )?;
+            let window_vanishing =
+                Self::terminal_npo_tip5_lookup_permutation_window_vanishing_at_point(
+                    trace_domain,
+                    trace_profile,
+                    point,
+                )?;
+            let relation = relation + beta * window_vanishing * terminal_io;
             let quotient = relation / trace_domain.vanishing_poly_at_point(point);
             quotient_values.push(quotient);
             point = quotient_domain.next_point(point).ok_or_else(|| {
@@ -12792,6 +12808,31 @@ impl NativeTerminalCompiler {
             }
         }
 
+        Ok(folded)
+    }
+
+    fn terminal_npo_tip5_lookup_air_terminal_io_folded_relation(
+        trace: &[TerminalFriChallenge],
+        profile: &TerminalNpoTip5LookupFriProfile,
+        alpha: TerminalFriChallenge,
+    ) -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
+        let terminal_io_indices = Self::terminal_npo_tip5_lookup_fri_column_indices(
+            profile.trace.main_width,
+            TerminalNpoTip5LookupFriColumnSet::TerminalIo,
+        )?;
+        let mut folded = TerminalFriChallenge::ZERO;
+        let mut coeff = TerminalFriChallenge::ONE;
+        for index in terminal_io_indices {
+            let value = trace.get(index).copied().ok_or(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_air_terminal_io_opened_trace_width".into(),
+                    expected: profile.trace.main_width,
+                    got: trace.len(),
+                },
+            )?;
+            folded += coeff * value;
+            coeff *= alpha;
+        }
         Ok(folded)
     }
 
@@ -15436,6 +15477,7 @@ impl NativeTerminalCompiler {
             trace_domain.create_disjoint_domain(proof.quotient_profile.padded_rows);
         challenger.observe(proof.trace_commitment.clone());
         let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
+        let beta: TerminalFriChallenge = challenger.sample_algebra_element();
         challenger.observe(proof.quotient_commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
         <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
@@ -15473,8 +15515,19 @@ impl NativeTerminalCompiler {
             )?;
         let folded =
             Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(&opened_trace, alpha)?;
+        let terminal_io = Self::terminal_npo_tip5_lookup_air_terminal_io_folded_relation(
+            &opened_trace,
+            &proof.trace_profile,
+            alpha,
+        )?;
+        let window_vanishing =
+            Self::terminal_npo_tip5_lookup_permutation_window_vanishing_at_point(
+                trace_domain,
+                &proof.trace_profile,
+                zeta,
+            )?;
         let expected = quotient * trace_domain.vanishing_poly_at_point(zeta);
-        if folded != expected {
+        if folded + beta * window_vanishing * terminal_io != expected {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
                     label: "tip5_lookup_air_algebra_quotient".into(),
@@ -24354,6 +24407,31 @@ mod tests {
             .expect("round-tripped terminal Tip5 lookup AIR algebra proof must verify");
 
         let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
+        let (_, mut bad_table_trace, _) = compiler
+            .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
+            .expect("terminal Tip5 lookup trace must rebuild");
+        bad_table_trace.values[2] = Goldilocks::ONE;
+        let bad_table_proof =
+            NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_air_algebra_quotient_from_trace_goldilocks(
+                &prelude,
+                &trace_profile,
+                &bad_table_trace,
+            )
+            .expect("FRI-valid but support-invalid AIR algebra proof must build");
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_table_proof,
+            )
+            .expect_err("nonzero terminal IO table-row value must fail AIR algebra quotient");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
+                if label == "tip5_lookup_air_algebra_quotient"
+        ));
+
         let (_, mut bad_c_trace, _) = compiler
             .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
             .expect("terminal Tip5 lookup trace must rebuild");
