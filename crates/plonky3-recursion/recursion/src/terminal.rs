@@ -4937,6 +4937,116 @@ impl NativeTerminalCompiler {
         })
     }
 
+    pub fn prove_terminal_assignment_evaluation_at_point_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        assignment_oracle: &TerminalOracleMerkleTree,
+        witness: &TerminalWitness<F>,
+        point: &[F],
+    ) -> Result<TerminalAssignmentEvaluationProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let assignment_commitment = assignment_oracle.commitment();
+        Self::verify_terminal_assignment_commitment_identity(
+            verifying_key,
+            &assignment_commitment,
+        )?;
+        Self::verify_prelude_binds_commitment(prelude, &assignment_commitment)?;
+        Self::validate_terminal_assignment_point(verifying_key, point)?;
+
+        let witness_values = Self::terminal_witness_values(witness)?;
+        let assignment_values =
+            Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)?;
+        let public_prefix_len = 1 + verifying_key.header.fingerprint.public_flat_len;
+        let mut public_prefix_openings = Vec::with_capacity(public_prefix_len);
+        for (index, value) in assignment_values.iter().take(public_prefix_len).enumerate() {
+            public_prefix_openings.push(assignment_oracle.open_goldilocks_value(index, value)?);
+        }
+
+        let mut layers = vec![assignment_values];
+        let mut trees = Vec::new();
+        let mut fold_commitments = Vec::new();
+        for (round, challenge) in point.iter().copied().enumerate() {
+            let current = layers.last().expect("current assignment layer exists");
+            let mut next = Vec::with_capacity(current.len().div_ceil(2));
+            for pair in current.chunks(2) {
+                let left = pair[0];
+                let right = pair.get(1).copied().unwrap_or(F::ZERO);
+                next.push(left * (F::ONE - challenge) + right * challenge);
+            }
+            let label = Self::assignment_fold_oracle_label(round);
+            let tree = TerminalOracleMerkleTree::commit_goldilocks_values(label, &next)?;
+            fold_commitments.push(tree.commitment());
+            trees.push(tree);
+            layers.push(next);
+        }
+
+        let final_value = layers
+            .last()
+            .and_then(|layer| layer.first())
+            .copied()
+            .ok_or(NativeTerminalVerifyError::TerminalQuadraticResidualQueryDomainEmpty)?;
+        let final_value_basis = Self::goldilocks_basis_u64(&final_value);
+        let query_plan = self.derive_terminal_assignment_fold_query_plan(
+            prelude,
+            &assignment_commitment,
+            &fold_commitments,
+        )?;
+
+        let mut openings = Vec::with_capacity(query_plan.indices.len());
+        for initial_index in &query_plan.indices {
+            let mut index = *initial_index;
+            let mut rounds = Vec::with_capacity(fold_commitments.len());
+            for round in 0..fold_commitments.len() {
+                let pair_index = (index / 2) * 2;
+                let current_tree = if round == 0 {
+                    assignment_oracle
+                } else {
+                    &trees[round - 1]
+                };
+                let current_values = &layers[round];
+                let next_values = &layers[round + 1];
+                let next_index = index / 2;
+                let left =
+                    current_tree.open_goldilocks_value(pair_index, &current_values[pair_index])?;
+                let right = if pair_index + 1 < current_values.len() {
+                    let mut opening = current_tree
+                        .open_goldilocks_value(pair_index + 1, &current_values[pair_index + 1])?;
+                    opening.path.clear();
+                    Some(opening)
+                } else {
+                    None
+                };
+                let mut next =
+                    trees[round].open_goldilocks_value(next_index, &next_values[next_index])?;
+                next.path.clear();
+                rounds.push(TerminalResidualFoldRoundOpening {
+                    round,
+                    pair_index,
+                    left,
+                    right,
+                    next,
+                });
+                index = next_index;
+            }
+            openings.push(TerminalResidualFoldQueryOpening {
+                initial_index: *initial_index,
+                rounds,
+            });
+        }
+
+        Ok(TerminalAssignmentEvaluationProof {
+            public_prefix_openings,
+            fold_commitments,
+            final_value_basis,
+            openings,
+        })
+    }
+
     pub fn verify_terminal_assignment_evaluation_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -5011,6 +5121,80 @@ impl NativeTerminalCompiler {
                     round,
                 )
             },
+        )?;
+
+        Self::field_from_goldilocks_basis_u64::<F>(&proof.final_value_basis)
+    }
+
+    pub fn verify_terminal_assignment_evaluation_at_point_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        assignment_commitment: &TerminalOracleCommitment,
+        proof: &TerminalAssignmentEvaluationProof,
+        point: &[F],
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        Self::verify_terminal_assignment_commitment_identity(verifying_key, assignment_commitment)?;
+        Self::verify_prelude_binds_commitment(prelude, assignment_commitment)?;
+        Self::validate_terminal_assignment_point(verifying_key, point)?;
+        self.validate_terminal_assignment_fold_commitments::<F>(
+            verifying_key,
+            assignment_commitment,
+            &proof.fold_commitments,
+        )?;
+
+        let public_prefix_len = 1 + verifying_key.header.fingerprint.public_flat_len;
+        if proof.public_prefix_openings.len() != public_prefix_len {
+            return Err(
+                NativeTerminalVerifyError::TerminalConstraintOpeningCountMismatch {
+                    constraint_index: 0,
+                    expected: public_prefix_len,
+                    got: proof.public_prefix_openings.len(),
+                },
+            );
+        }
+        for (index, opening) in proof.public_prefix_openings.iter().enumerate() {
+            if opening.index != index {
+                return Err(
+                    NativeTerminalVerifyError::TerminalConstraintOpeningWitnessMismatch {
+                        constraint_index: 0,
+                        opening: index,
+                        expected: index as u32,
+                        got: opening.index,
+                    },
+                );
+            }
+            self.verify_terminal_oracle_opening(assignment_commitment, opening)?;
+            let opened = Self::field_from_goldilocks_basis_u64::<F>(&opening.value_basis)?;
+            let expected = if index == 0 {
+                F::ONE
+            } else {
+                public_inputs[index - 1]
+            };
+            if opened != expected {
+                return Err(NativeTerminalVerifyError::PublicInputMismatch {
+                    public_pos: index.saturating_sub(1),
+                });
+            }
+        }
+
+        let query_plan = self.derive_terminal_assignment_fold_query_plan(
+            prelude,
+            assignment_commitment,
+            &proof.fold_commitments,
+        )?;
+        self.verify_terminal_fold_openings_goldilocks::<F, _>(
+            assignment_commitment,
+            &proof.fold_commitments,
+            &proof.final_value_basis,
+            &proof.openings,
+            &query_plan,
+            |round, _prior| Ok(point[round]),
         )?;
 
         Self::field_from_goldilocks_basis_u64::<F>(&proof.final_value_basis)
@@ -7105,6 +7289,26 @@ impl NativeTerminalCompiler {
                 );
             }
             current_len = expected_len;
+        }
+        Ok(())
+    }
+
+    fn validate_terminal_assignment_point<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        point: &[F],
+    ) -> Result<(), NativeTerminalVerifyError> {
+        let variables = 1
+            + verifying_key.header.fingerprint.public_flat_len
+            + verifying_key.header.fingerprint.witness_count as usize;
+        let expected = Self::terminal_mle_log_size(variables);
+        if point.len() != expected {
+            return Err(
+                NativeTerminalVerifyError::TerminalResidualFoldCommitmentLengthMismatch {
+                    round: expected,
+                    expected,
+                    got: point.len(),
+                },
+            );
         }
         Ok(())
     }
@@ -9628,6 +9832,48 @@ mod tests {
                 )
                 .is_err(),
             "assignment proof must bind final folded evaluation"
+        );
+
+        let variables = 1
+            + vk.header.fingerprint.public_flat_len
+            + vk.header.fingerprint.witness_count as usize;
+        let explicit_point: Vec<_> = (0..NativeTerminalCompiler::terminal_mle_log_size(variables))
+            .map(|i| Goldilocks::from_u64(17 + i as u64))
+            .collect();
+        let explicit_proof = compiler
+            .prove_terminal_assignment_evaluation_at_point_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &assignment_oracle,
+                &witness,
+                &explicit_point,
+            )
+            .expect("assignment evaluation proof at explicit point must build");
+        let _explicit_final = compiler
+            .verify_terminal_assignment_evaluation_at_point_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &assignment_commitment,
+                &explicit_proof,
+                &explicit_point,
+            )
+            .expect("assignment evaluation proof at explicit point must verify");
+        let mut wrong_point = explicit_point;
+        wrong_point[0] += Goldilocks::ONE;
+        assert!(
+            compiler
+                .verify_terminal_assignment_evaluation_at_point_goldilocks(
+                    &vk,
+                    &public_inputs,
+                    &prelude,
+                    &assignment_commitment,
+                    &explicit_proof,
+                    &wrong_point,
+                )
+                .is_err(),
+            "assignment proof must bind the externally supplied evaluation point"
         );
     }
 

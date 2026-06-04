@@ -140,9 +140,10 @@ for this route.
 - `TerminalAssignmentEvaluationProof`: a Merkle-backed multilinear evaluation
   proof for the assignment vector `[1 || public || witness]`. It explicitly
   opens the public prefix against the assignment commitment and folds the whole
-  assignment vector to one transcript-derived value. This is the native PCS
-  primitive the sparse-R1CS sumcheck needs for its final `z(y*)` check; it is
-  not accepted as a standalone production proof.
+  assignment vector to one value. It supports both its standalone
+  transcript-derived point and an externally supplied point from a sparse-R1CS
+  sumcheck. This is the native PCS primitive the sumcheck needs for its final
+  `z(y*)` check; it is not accepted as a standalone production proof.
 - `TerminalNpoValidityFoldProof`: a Merkle-backed folded validity-oracle proof
   for supported NPO rows. This remains as a standalone helper/test component;
   the aggregate `TerminalLocalProof` now uses `combined_validity` instead.
@@ -238,9 +239,12 @@ The prover commits to `[1 || public || witness]`, opens the `1 || public`
 prefix explicitly, then folds the full assignment vector with transcript-derived
 challenges to produce a committed multilinear evaluation. This closes the
 obvious public-prefix substitution bug for a future assignment PCS: the
-assignment commitment cannot silently use different public values. The component
-still needs to be connected to the sparse-R1CS matrix-vector sumcheck before it
-can replace the direct witness-serializing production checker.
+assignment commitment cannot silently use different public values. The same
+component can now verify at an externally supplied point, so the sparse-R1CS
+sumcheck can bind its final random `y*` to the assignment commitment instead of
+proving an unrelated assignment evaluation. The component still needs to be
+connected to the sparse-R1CS matrix-vector sumcheck before it can replace the
+direct witness-serializing production checker.
 
 Those supported NPO rows now also project into `TerminalNpoRelation`: a stable
 global row domain over `tip5_perm/goldilocks_w16_r5`, `recompose`, and
@@ -664,7 +668,8 @@ Security-audit conclusions for the current implementation checkpoint:
   globally.
 - The assignment-evaluation component binds the public prefix of
   `[1 || public || witness]` before folding the committed assignment vector.
-  This is necessary for a future multilinear PCS opening, but it is only an
+  It also supports verification at an externally supplied point, which is
+  necessary for a future multilinear PCS opening inside sumcheck. It is only an
   evaluation proof; it must be consumed by the sparse-R1CS sumcheck before it
   gives a terminal relation proof.
 - The terminal oracle Merkle layer is binding to opened values under the
