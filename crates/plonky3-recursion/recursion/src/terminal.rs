@@ -1159,8 +1159,8 @@ pub struct TerminalNpoPolynomialFriOpenedColumns {
 ///
 /// This is the first quotient-backed NPO row-polynomial checkpoint. It proves
 /// the witness-value columns are low degree, proves a low-degree quotient for
-/// the batched `(1 - present) * value` padding constraints, and opens both at
-/// one transcript-derived point with one terminal FRI proof.
+/// the batched value-column constraints, and opens both at one
+/// transcript-derived point with one terminal FRI proof.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TerminalNpoPolynomialPaddingQuotientProof {
     pub value_profile: TerminalNpoPolynomialFriProfile,
@@ -11669,6 +11669,12 @@ impl NativeTerminalCompiler {
                 }
             }
         }
+        Self::append_terminal_npo_tip5_capacity_zero_quotient_constraints(
+            columns,
+            verifier_columns,
+            profile,
+            &mut constraints,
+        )?;
         Self::append_terminal_npo_recompose_value_quotient_constraints(
             columns,
             verifier_columns,
@@ -11676,6 +11682,50 @@ impl NativeTerminalCompiler {
             &mut constraints,
         )?;
         Ok(constraints)
+    }
+
+    fn append_terminal_npo_tip5_capacity_zero_quotient_constraints<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        verifier_columns: &TerminalNpoPolynomialColumns<F>,
+        profile: &TerminalNpoPolynomialFriProfile,
+        constraints: &mut Vec<TerminalNpoValueQuotientConstraint>,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        for limb in 10..16 {
+            let hidden_label = format!("hidden_tip5_value_{limb}");
+            let present_label = format!("hidden_tip5_present_{limb}");
+            if !columns.labels.iter().any(|label| label == &hidden_label) {
+                continue;
+            }
+            let selector_evals = Self::terminal_npo_polynomial_product_selector_evals(
+                verifier_columns,
+                profile,
+                &["is_tip5", "mode_merkle_path", &present_label],
+            )?;
+            if selector_evals
+                .iter()
+                .all(|value| *value == Goldilocks::ZERO)
+            {
+                continue;
+            }
+            let hidden_column = Self::terminal_npo_polynomial_column_index(columns, &hidden_label)?;
+            for basis_index in 0..profile.field_basis_dimension {
+                constraints.push(TerminalNpoValueQuotientConstraint {
+                    selector_evals: selector_evals.clone(),
+                    value_evals: Self::terminal_npo_polynomial_column_basis_evals(
+                        columns,
+                        profile,
+                        hidden_column,
+                        basis_index,
+                    ),
+                    rhs_evals: None,
+                    kind: TerminalNpoValueQuotientConstraintKind::SelectorTimesValue,
+                });
+            }
+        }
+        Ok(())
     }
 
     fn append_terminal_npo_recompose_value_quotient_constraints<F>(
@@ -11790,6 +11840,26 @@ impl NativeTerminalCompiler {
                 Self::terminal_npo_polynomial_column_basis_evals(columns, profile, index, 0);
             for (acc, value) in combined.iter_mut().zip(evals) {
                 *acc += value;
+            }
+        }
+        Ok(combined)
+    }
+
+    fn terminal_npo_polynomial_product_selector_evals<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        profile: &TerminalNpoPolynomialFriProfile,
+        labels: &[&str],
+    ) -> Result<Vec<Goldilocks>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let mut combined = vec![Goldilocks::ONE; profile.padded_rows];
+        for label in labels {
+            let index = Self::terminal_npo_polynomial_column_index(columns, label)?;
+            let evals =
+                Self::terminal_npo_polynomial_column_basis_evals(columns, profile, index, 0);
+            for (acc, value) in combined.iter_mut().zip(evals) {
+                *acc *= value;
             }
         }
         Ok(combined)
@@ -12202,6 +12272,14 @@ impl NativeTerminalCompiler {
                 }
             }
         }
+        self.fold_terminal_npo_tip5_capacity_zero_quotient_identity_goldilocks(
+            verifier_columns,
+            value_domain,
+            alpha,
+            opened,
+            &mut folded,
+            &mut coeff,
+        )?;
         self.fold_terminal_npo_recompose_value_quotient_identity_goldilocks(
             verifier_columns,
             value_domain,
@@ -12217,6 +12295,51 @@ impl NativeTerminalCompiler {
                     label: "npo_value_relation_quotient".into(),
                 },
             );
+        }
+        Ok(())
+    }
+
+    fn fold_terminal_npo_tip5_capacity_zero_quotient_identity_goldilocks<F>(
+        &self,
+        verifier_columns: &TerminalNpoPolynomialColumns<F>,
+        value_domain: <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::Domain,
+        alpha: TerminalFriChallenge,
+        opened: &TerminalNpoPolynomialFriOpenedColumns,
+        folded: &mut TerminalFriChallenge,
+        coeff: &mut TerminalFriChallenge,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        for limb in 10..16 {
+            let hidden_label = format!("hidden_tip5_value_{limb}");
+            if !opened.labels.iter().any(|label| label == &hidden_label) {
+                continue;
+            }
+            let present_label = format!("hidden_tip5_present_{limb}");
+            let selector_evals = Self::terminal_npo_polynomial_product_selector_evals(
+                verifier_columns,
+                &opened.profile,
+                &["is_tip5", "mode_merkle_path", &present_label],
+            )?;
+            if selector_evals
+                .iter()
+                .all(|value| *value == Goldilocks::ZERO)
+            {
+                continue;
+            }
+            let selector = value_domain.evaluate_polynomial_at(&selector_evals, opened.zeta);
+            let hidden_basis = Self::terminal_npo_opened_value_basis(opened, &hidden_label)?;
+            for value in hidden_basis {
+                *folded += *coeff
+                    * Self::terminal_npo_value_quotient_constraint_value(
+                        TerminalNpoValueQuotientConstraintKind::SelectorTimesValue,
+                        selector,
+                        *value,
+                        None,
+                    );
+                *coeff *= alpha;
+            }
         }
         Ok(())
     }
@@ -19636,6 +19759,34 @@ mod tests {
                 &bad_proof,
             )
             .expect_err("nonboolean MMCS bit must fail the value quotient identity");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
+                if label == "npo_value_relation_quotient"
+        ));
+
+        let mut bad_columns = columns.clone();
+        let capacity_column = bad_columns
+            .labels
+            .iter()
+            .position(|label| label == "hidden_tip5_value_12")
+            .expect("Merkle capacity lane column must exist");
+        bad_columns.columns[capacity_column][0] = Goldilocks::ONE;
+        let bad_proof =
+            NativeTerminalCompiler::prove_terminal_npo_polynomial_padding_quotient_from_columns_goldilocks(
+                &prelude,
+                &bad_columns,
+                &verifier_columns,
+            )
+            .expect("FRI-valid but capacity-zero-invalid value quotient proof must build");
+        let err = compiler
+            .verify_terminal_npo_polynomial_padding_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_proof,
+            )
+            .expect_err("nonzero Merkle capacity lane must fail the value quotient identity");
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
