@@ -543,6 +543,15 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
                 .len()
         })
         .unwrap_or(0);
+    let production_npo_fold_round_openings_size = production_proof
+        .npo_validity_fold_proof
+        .as_ref()
+        .map(|proof| {
+            postcard::to_allocvec(&proof.round_openings)
+                .expect("terminal production NPO validity fold round openings must serialize")
+                .len()
+        })
+        .unwrap_or(0);
     let production_verify_start = std::time::Instant::now();
     compiler
         .verify_goldilocks_production_certificate(
@@ -714,13 +723,14 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
         production_r1cs_size, production_npo_consistency_size, production_npo_fold_size,
     );
     eprintln!(
-        "terminal production NPO breakdown: consistency_openings={} witness_multiproof={} witness_multi_opening_count={} hidden_inputs={} fold_commitments={} fold_openings={}",
+        "terminal production NPO breakdown: consistency_openings={} witness_multiproof={} witness_multi_opening_count={} hidden_inputs={} fold_commitments={} fold_query_indices={} fold_round_multiproofs={}",
         production_npo_consistency_openings_size,
         production_npo_witness_multi_opening_size,
         production_npo_witness_multi_opening_count,
         production_npo_hidden_inputs_size,
         production_npo_fold_commitments_size,
         production_npo_fold_openings_size,
+        production_npo_fold_round_openings_size,
     );
     eprintln!(
         "terminal sparse R1CS matrix sumcheck component: proof={} bytes ({:.1} KiB) prove={:.3}s verify={:.3}s",

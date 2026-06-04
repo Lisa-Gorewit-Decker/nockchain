@@ -503,6 +503,7 @@ pub struct TerminalR1csRowProductSumcheckProof {
 pub struct TerminalNpoValidityFoldProof {
     pub fold_commitments: Vec<TerminalOracleCommitment>,
     pub final_value_basis: Vec<u64>,
+    pub round_openings: Vec<TerminalOracleMultiProof>,
     pub openings: Vec<TerminalResidualFoldQueryOpening>,
 }
 
@@ -4239,51 +4240,49 @@ impl NativeTerminalCompiler {
             &fold_commitments,
         )?;
 
-        let mut openings = Vec::with_capacity(query_plan.indices.len());
+        let mut expected_round_indices = vec![Vec::new(); fold_commitments.len()];
         for initial_index in &query_plan.indices {
             let mut index = *initial_index;
-            let mut rounds = Vec::with_capacity(fold_commitments.len());
+            let mut current_len = validity_commitment.values_len;
             for round in 0..fold_commitments.len() {
                 let pair_index = (index / 2) * 2;
-                let current_tree = if round == 0 {
-                    validity_oracle
-                } else {
-                    &trees[round - 1]
-                };
-                let current_values = &layers[round];
-                let next_values = &layers[round + 1];
                 let next_index = index / 2;
-                let left =
-                    current_tree.open_goldilocks_value(pair_index, &current_values[pair_index])?;
-                let right = if pair_index + 1 < current_values.len() {
-                    let mut opening = current_tree
-                        .open_goldilocks_value(pair_index + 1, &current_values[pair_index + 1])?;
-                    opening.path.clear();
-                    Some(opening)
-                } else {
-                    None
-                };
-                let mut next =
-                    trees[round].open_goldilocks_value(next_index, &next_values[next_index])?;
-                next.path.clear();
-                rounds.push(TerminalResidualFoldRoundOpening {
-                    round,
-                    pair_index,
-                    left,
-                    right,
-                    next,
-                });
+                Self::push_unique_usize(&mut expected_round_indices[round], pair_index);
+                if pair_index + 1 < current_len {
+                    Self::push_unique_usize(&mut expected_round_indices[round], pair_index + 1);
+                }
                 index = next_index;
+                current_len = current_len.div_ceil(2);
             }
+        }
+        let mut round_openings = Vec::with_capacity(fold_commitments.len());
+        for (round, round_indices) in expected_round_indices.iter_mut().enumerate() {
+            round_indices.sort_unstable();
+            let current_tree = if round == 0 {
+                validity_oracle
+            } else {
+                &trees[round - 1]
+            };
+            let current_values = &layers[round];
+            let mut opening_values = Vec::with_capacity(round_indices.len());
+            for index in round_indices {
+                opening_values.push((*index, &current_values[*index]));
+            }
+            round_openings.push(current_tree.open_goldilocks_multi_values(&opening_values)?);
+        }
+
+        let mut openings = Vec::with_capacity(query_plan.indices.len());
+        for initial_index in &query_plan.indices {
             openings.push(TerminalResidualFoldQueryOpening {
                 initial_index: *initial_index,
-                rounds,
+                rounds: Vec::new(),
             });
         }
 
         Ok(TerminalNpoValidityFoldProof {
             fold_commitments,
             final_value_basis,
+            round_openings,
             openings,
         })
     }
@@ -4331,6 +4330,35 @@ impl NativeTerminalCompiler {
             )?);
         }
 
+        if proof.round_openings.len() != proof.fold_commitments.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoValidityFoldCommitmentLengthMismatch {
+                    round: proof.fold_commitments.len(),
+                    expected: proof.fold_commitments.len(),
+                    got: proof.round_openings.len(),
+                },
+            );
+        }
+        let expected_round_indices = Self::terminal_fold_round_indices(
+            &query_plan.indices,
+            validity_commitment.values_len,
+            proof.fold_commitments.len(),
+        );
+        let mut round_values = Vec::with_capacity(proof.round_openings.len());
+        for (round, proof_opening) in proof.round_openings.iter().enumerate() {
+            let current_commitment = if round == 0 {
+                validity_commitment
+            } else {
+                &proof.fold_commitments[round - 1]
+            };
+            let values = self.verify_terminal_oracle_multi_proof_goldilocks::<F>(
+                current_commitment,
+                proof_opening,
+            )?;
+            Self::verify_terminal_oracle_value_indices(&expected_round_indices[round], &values)?;
+            round_values.push(values);
+        }
+
         for (query, (opening, expected_index)) in
             proof.openings.iter().zip(&query_plan.indices).enumerate()
         {
@@ -4343,11 +4371,11 @@ impl NativeTerminalCompiler {
                     },
                 );
             }
-            if opening.rounds.len() != proof.fold_commitments.len() {
+            if !opening.rounds.is_empty() {
                 return Err(
                     NativeTerminalVerifyError::TerminalNpoValidityFoldRoundCountMismatch {
                         query,
-                        expected: proof.fold_commitments.len(),
+                        expected: 0,
                         got: opening.rounds.len(),
                     },
                 );
@@ -4355,160 +4383,46 @@ impl NativeTerminalCompiler {
 
             let mut index = opening.initial_index;
             let mut current_len = validity_commitment.values_len;
-            for (round, round_opening) in opening.rounds.iter().enumerate() {
+            for (round, challenge) in challenges.iter().copied().enumerate() {
                 let expected_pair = (index / 2) * 2;
                 let next_index = index / 2;
-                if round_opening.round != round {
-                    return Err(
-                        NativeTerminalVerifyError::TerminalNpoValidityFoldRoundIndexMismatch {
-                            query,
-                            round,
-                            expected: round,
-                            got: round_opening.round,
-                        },
-                    );
-                }
-                if round_opening.pair_index != expected_pair {
-                    return Err(
-                        NativeTerminalVerifyError::TerminalNpoValidityFoldOpeningIndexMismatch {
-                            query,
-                            round,
-                            field: "pair",
-                            expected: expected_pair,
-                            got: round_opening.pair_index,
-                        },
-                    );
-                }
-
-                let current_commitment = if round == 0 {
-                    validity_commitment
-                } else {
-                    &proof.fold_commitments[round - 1]
-                };
-                self.verify_terminal_oracle_opening(current_commitment, &round_opening.left)?;
-                if round_opening.left.index != expected_pair {
-                    return Err(
+                let left = Self::terminal_opened_value(&round_values[round], expected_pair)
+                    .map_err(|_| {
                         NativeTerminalVerifyError::TerminalNpoValidityFoldOpeningIndexMismatch {
                             query,
                             round,
                             field: "left",
                             expected: expected_pair,
-                            got: round_opening.left.index,
-                        },
-                    );
-                }
-                let left =
-                    Self::field_from_goldilocks_basis_u64::<F>(&round_opening.left.value_basis)?;
+                            got: expected_pair,
+                        }
+                    })?;
                 let right = if expected_pair + 1 < current_len {
-                    let Some(right_opening) = &round_opening.right else {
-                        return Err(
-                            NativeTerminalVerifyError::TerminalNpoValidityFoldRightOpeningMissing {
-                                query,
-                                round,
-                                index: expected_pair + 1,
-                            },
-                        );
-                    };
-                    if right_opening.index != expected_pair + 1 {
-                        return Err(
-                            NativeTerminalVerifyError::TerminalNpoValidityFoldOpeningIndexMismatch {
-                                query,
-                                round,
-                                field: "right",
-                                expected: expected_pair + 1,
-                                got: right_opening.index,
-                            },
-                        );
-                    }
-                    if !right_opening.path.is_empty() {
-                        return Err(
-                            NativeTerminalVerifyError::TerminalNpoValidityFoldRightOpeningPathUnexpected {
-                                query,
-                                round,
-                            },
-                        );
-                    }
-                    let right_digest = Self::terminal_oracle_leaf_digest_from_basis(
-                        &current_commitment.label,
-                        current_commitment.values_len,
-                        right_opening.index,
-                        &right_opening.value_basis,
-                    );
-                    let Some(first_sibling) = round_opening.left.path.first() else {
-                        return Err(
-                            NativeTerminalVerifyError::TerminalNpoValidityFoldConsistencyMismatch {
-                                query,
-                                round,
-                            },
-                        );
-                    };
-                    if first_sibling.sibling_is_left || first_sibling.digest != right_digest {
-                        return Err(
-                            NativeTerminalVerifyError::TerminalNpoValidityFoldConsistencyMismatch {
-                                query,
-                                round,
-                            },
-                        );
-                    }
-                    Self::field_from_goldilocks_basis_u64::<F>(&right_opening.value_basis)?
+                    Self::terminal_opened_value(&round_values[round], expected_pair + 1).map_err(
+                        |_| NativeTerminalVerifyError::TerminalNpoValidityFoldRightOpeningMissing {
+                            query,
+                            round,
+                            index: expected_pair + 1,
+                        },
+                    )?
                 } else {
-                    if round_opening.right.is_some() {
-                        return Err(
-                            NativeTerminalVerifyError::TerminalNpoValidityFoldRightOpeningUnexpected {
-                                query,
-                                round,
-                                index: expected_pair + 1,
-                            },
-                        );
-                    }
                     F::ZERO
                 };
 
-                if round_opening.next.index != next_index {
-                    return Err(
+                let expected_next = left * (F::ONE - challenge) + right * challenge;
+                let opened_next = if let Some(next_round_values) = round_values.get(round + 1) {
+                    Self::terminal_opened_value(next_round_values, next_index).map_err(|_| {
                         NativeTerminalVerifyError::TerminalNpoValidityFoldOpeningIndexMismatch {
                             query,
                             round,
                             field: "next",
                             expected: next_index,
-                            got: round_opening.next.index,
-                        },
-                    );
-                }
-                if !round_opening.next.path.is_empty() {
-                    return Err(
-                        NativeTerminalVerifyError::TerminalNpoValidityFoldNextOpeningPathUnexpected {
-                            query,
-                            round,
-                        },
-                    );
-                }
-                let opened_next =
-                    Self::field_from_goldilocks_basis_u64::<F>(&round_opening.next.value_basis)?;
-                let challenge = challenges[round];
-                let expected_next = left * (F::ONE - challenge) + right * challenge;
-                if opened_next != expected_next {
-                    return Err(
-                        NativeTerminalVerifyError::TerminalNpoValidityFoldConsistencyMismatch {
-                            query,
-                            round,
-                        },
-                    );
-                }
-                let linked_next_basis = if let Some(next_round) = opening.rounds.get(round + 1) {
-                    if next_round.left.index == next_index {
-                        Some(&next_round.left.value_basis)
-                    } else {
-                        next_round
-                            .right
-                            .as_ref()
-                            .filter(|right| right.index == next_index)
-                            .map(|right| &right.value_basis)
-                    }
+                            got: next_index,
+                        }
+                    })?
                 } else {
-                    Some(&proof.final_value_basis)
+                    Self::field_from_goldilocks_basis_u64::<F>(&proof.final_value_basis)?
                 };
-                if linked_next_basis != Some(&round_opening.next.value_basis) {
+                if opened_next != expected_next {
                     return Err(
                         NativeTerminalVerifyError::TerminalNpoValidityFoldConsistencyMismatch {
                             query,
@@ -4695,9 +4609,9 @@ impl NativeTerminalCompiler {
                     },
                 );
             }
-            let validity_basis = Self::terminal_fold_base_value_basis(
-                &validity_fold_proof.openings[query],
-                &validity_fold_proof.final_value_basis,
+            let validity_basis = Self::terminal_npo_validity_fold_base_value_basis(
+                validity_fold_proof,
+                *expected_index,
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalNpoValidityFoldConsistencyMismatch {
@@ -7227,6 +7141,12 @@ impl NativeTerminalCompiler {
         }
     }
 
+    fn push_unique_usize(out: &mut Vec<usize>, value: usize) {
+        if !out.iter().any(|existing| *existing == value) {
+            out.push(value);
+        }
+    }
+
     fn verify_sampled_primitive_constraint<F: Field>(
         constraint_index: usize,
         constraint: &NativeTerminalConstraint<F>,
@@ -7479,6 +7399,77 @@ impl NativeTerminalCompiler {
             values.push(opened_witness_values[position].1);
         }
         Ok(values)
+    }
+
+    fn terminal_fold_round_indices(
+        initial_indices: &[usize],
+        base_len: usize,
+        rounds: usize,
+    ) -> Vec<Vec<usize>> {
+        let mut expected_round_indices = vec![Vec::new(); rounds];
+        for initial_index in initial_indices {
+            let mut index = *initial_index;
+            let mut current_len = base_len;
+            for round_indices in &mut expected_round_indices {
+                let pair_index = (index / 2) * 2;
+                Self::push_unique_usize(round_indices, pair_index);
+                if pair_index + 1 < current_len {
+                    Self::push_unique_usize(round_indices, pair_index + 1);
+                }
+                index /= 2;
+                current_len = current_len.div_ceil(2);
+            }
+        }
+        for round_indices in &mut expected_round_indices {
+            round_indices.sort_unstable();
+        }
+        expected_round_indices
+    }
+
+    fn verify_terminal_oracle_value_indices<F>(
+        expected_indices: &[usize],
+        opened_values: &[(usize, F)],
+    ) -> Result<(), NativeTerminalVerifyError> {
+        if opened_values.len() != expected_indices.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleQueryLengthMismatch {
+                    expected: expected_indices.len(),
+                    got: opened_values.len(),
+                },
+            );
+        }
+        for (query, (expected, (got, _))) in expected_indices.iter().zip(opened_values).enumerate()
+        {
+            if got != expected {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleQueryIndexMismatch {
+                        query,
+                        expected: *expected,
+                        got: *got,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn terminal_opened_value<F>(
+        opened_values: &[(usize, F)],
+        index: usize,
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: Copy,
+    {
+        let position = opened_values
+            .binary_search_by_key(&index, |(opened_index, _)| *opened_index)
+            .map_err(
+                |_| NativeTerminalVerifyError::TerminalOracleQueryIndexMismatch {
+                    query: 0,
+                    expected: index,
+                    got: index,
+                },
+            )?;
+        Ok(opened_values[position].1)
     }
 
     fn verify_prelude_binds_commitment(
@@ -8189,6 +8180,21 @@ impl NativeTerminalCompiler {
             }
         } else {
             Some(final_value_basis)
+        }
+    }
+
+    fn terminal_npo_validity_fold_base_value_basis(
+        proof: &TerminalNpoValidityFoldProof,
+        initial_index: usize,
+    ) -> Option<&[u64]> {
+        if let Some(round_opening) = proof.round_openings.first() {
+            round_opening
+                .openings
+                .iter()
+                .find(|opening| opening.index == initial_index)
+                .map(|opening| opening.value_basis.as_slice())
+        } else {
+            Some(&proof.final_value_basis)
         }
     }
 
@@ -13348,6 +13354,16 @@ mod tests {
                 .values_len,
             1
         );
+        assert_eq!(
+            fold_proof.round_openings.len(),
+            fold_proof.fold_commitments.len()
+        );
+        assert!(
+            fold_proof
+                .openings
+                .iter()
+                .all(|opening| opening.rounds.is_empty())
+        );
         let fold_plan = compiler
             .verify_terminal_npo_validity_fold_goldilocks::<Goldilocks>(
                 &vk,
@@ -13455,12 +13471,7 @@ mod tests {
         let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
         let (prelude, _, validity_commitment, mut fold_proof, _) =
             standalone_npo_validity_components(&compiler, &vk, &public_inputs, &witness);
-        let round = fold_proof.openings[0]
-            .rounds
-            .iter_mut()
-            .find(|round| round.right.is_some())
-            .expect("at least one sampled fold round should have a right opening");
-        round.right.as_mut().expect("right opening").path = round.left.path.clone();
+        fold_proof.round_openings[0].openings.pop();
 
         let err = compiler
             .verify_terminal_npo_validity_fold_goldilocks::<Goldilocks>(
@@ -13473,7 +13484,9 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            NativeTerminalVerifyError::TerminalNpoValidityFoldRightOpeningPathUnexpected { .. }
+            NativeTerminalVerifyError::TerminalOracleOpeningPathLengthMismatch { .. }
+                | NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
+                | NativeTerminalVerifyError::TerminalOracleQueryLengthMismatch { .. }
         ));
     }
 
@@ -13485,11 +13498,11 @@ mod tests {
         let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
         let (prelude, _, validity_commitment, mut fold_proof, _) =
             standalone_npo_validity_components(&compiler, &vk, &public_inputs, &witness);
-        let right = fold_proof.openings[0]
-            .rounds
+        let right = fold_proof.round_openings[0]
+            .openings
             .iter_mut()
-            .find_map(|round| round.right.as_mut())
-            .expect("at least one sampled fold round should have a right opening");
+            .find(|opening| opening.index == 1)
+            .expect("two-row validity fold must open the right leaf");
         right.value_basis[0] = right.value_basis[0].wrapping_add(1);
 
         let err = compiler
@@ -13503,7 +13516,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            NativeTerminalVerifyError::TerminalNpoValidityFoldConsistencyMismatch { .. }
+            NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
         ));
     }
 
@@ -13515,8 +13528,20 @@ mod tests {
         let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
         let (prelude, _, validity_commitment, mut fold_proof, _) =
             standalone_npo_validity_components(&compiler, &vk, &public_inputs, &witness);
-        fold_proof.openings[0].rounds[0].next.path =
-            fold_proof.openings[0].rounds[0].left.path.clone();
+        let stale_opening = TerminalOracleOpening {
+            index: fold_proof.round_openings[0].openings[0].index,
+            value_basis: fold_proof.round_openings[0].openings[0].value_basis.clone(),
+            path: Vec::new(),
+        };
+        fold_proof.openings[0]
+            .rounds
+            .push(TerminalResidualFoldRoundOpening {
+                round: 0,
+                pair_index: 0,
+                left: stale_opening.clone(),
+                right: None,
+                next: stale_opening,
+            });
 
         let err = compiler
             .verify_terminal_npo_validity_fold_goldilocks::<Goldilocks>(
@@ -13529,7 +13554,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            NativeTerminalVerifyError::TerminalNpoValidityFoldNextOpeningPathUnexpected { .. }
+            NativeTerminalVerifyError::TerminalNpoValidityFoldRoundCountMismatch { .. }
         ));
     }
 
@@ -13541,8 +13566,7 @@ mod tests {
         let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
         let (prelude, _, validity_commitment, mut fold_proof, _) =
             standalone_npo_validity_components(&compiler, &vk, &public_inputs, &witness);
-        fold_proof.openings[0].rounds[0].next.value_basis[0] =
-            fold_proof.openings[0].rounds[0].next.value_basis[0].wrapping_add(1);
+        fold_proof.final_value_basis[0] = fold_proof.final_value_basis[0].wrapping_add(1);
 
         let err = compiler
             .verify_terminal_npo_validity_fold_goldilocks::<Goldilocks>(
@@ -13556,6 +13580,7 @@ mod tests {
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalNpoValidityFoldConsistencyMismatch { .. }
+                | NativeTerminalVerifyError::TerminalNpoValidityFoldFinalRootMismatch { .. }
         ));
     }
 
@@ -13619,6 +13644,7 @@ mod tests {
         let fold_proof = TerminalNpoValidityFoldProof {
             fold_commitments: Vec::new(),
             final_value_basis: vec![1],
+            round_openings: Vec::new(),
             openings: compiler
                 .derive_terminal_npo_validity_fold_query_plan(
                     &prelude,
@@ -13697,6 +13723,7 @@ mod tests {
         let proof = TerminalNpoValidityFoldProof {
             fold_commitments: Vec::new(),
             final_value_basis: vec![1],
+            round_openings: Vec::new(),
             openings: plan
                 .indices
                 .iter()

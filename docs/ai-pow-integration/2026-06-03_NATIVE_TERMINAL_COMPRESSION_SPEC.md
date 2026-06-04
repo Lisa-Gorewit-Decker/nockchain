@@ -164,8 +164,10 @@ for this route.
   the row product against matrix-vector claims that are themselves tied to the
   assignment commitment.
 - `TerminalNpoValidityFoldProof`: a Merkle-backed folded validity-oracle proof
-  for supported NPO rows. This remains as a standalone helper/test component;
-  the aggregate `TerminalLocalProof` now uses `combined_validity` instead.
+  for supported NPO rows. Production NPO folding now authenticates each fold
+  layer with one sparse terminal-oracle multiproof over the transcript-derived
+  left/right leaves, rather than serializing an independent Merkle path per
+  sampled query and round.
 - `TerminalLocalProof`: the implemented local-proof envelope. It carries the
   prelude, witness commitment, combined-validity commitment, mixed consistency
   proof, and combined-validity fold proof as one serializable object. It is an
@@ -297,11 +299,12 @@ Tip5/recompose row validates. The root is prelude-bound whenever the terminal
 relation has supported NPO rows. `TerminalNpoValidityFoldProof` then folds this
 oracle with NPO-specific domains
 `nock-terminal-npo-validity-fold-challenge-v1` and
-`nock-terminal-npo-validity-fold-query-v1`; sampled fold-query rows are linked
-back to the witness oracle by `TerminalNpoValidityConsistencyProof`. This
-prevents the local-proof envelope from claiming an uncommitted or unqueried NPO
-validity vector, but it still does not replace the need for a full algebraic
-Tip5/recompose arithmetization and proximity/sumcheck proof.
+`nock-terminal-npo-validity-fold-query-v1`; each fold layer is authenticated by
+a shared sparse multiproof, and sampled fold-query rows are linked back to the
+witness oracle by `TerminalNpoValidityConsistencyProof`. This prevents the
+production proof from claiming an uncommitted or unqueried NPO validity vector,
+but it still does not replace the need for a full algebraic Tip5/recompose
+arithmetization and proximity/sumcheck proof.
 
 `TerminalBackendRelationDigest` is the explicit commitment to those backend
 projections. It has its own domain and absorbs both `TerminalQuadraticRelation`
@@ -617,24 +620,29 @@ Tip5-L0 verifier circuit:
 |---|---:|
 | primitive R1CS row-product proof | 71,958 |
 | NPO validity consistency proof | 5,863 |
-| NPO validity fold proof | 43,392 |
-| compact production proof body | 121,667 |
-| compact production certificate | 121,887 |
+| NPO validity fold proof | 8,793 |
+| compact production proof body | 87,068 |
+| compact production certificate | 87,291 |
 
-The debug-profile measurement is `prove=6.289 s, verify=3.343 s`. This removes
+The debug-profile measurement is `prove=6.314 s, verify=3.208 s`. This removes
 the witness-basis serialization from the production proof body, replaces the
-assignment public-prefix openings with a compact prefix frontier, and replaces
-the repeated NPO-consistency witness Merkle paths with one shared sparse
-multiproof. The row-product component fell from about 89.6 KiB to about
-70.3 KiB in the standalone measurement; the public-prefix authentication inside
-it fell from 20,131 bytes to 477 bytes. The NPO consistency component fell from
-32,480 bytes to 5,863 bytes; the 52 sampled witness values now serialize as one
-4,573-byte multiproof instead of 31,190 bytes of independent paths. The total
-production certificate is still above the ~100 KiB target because the NPO
-validity fold serialized 42,706 bytes of fold openings and the primitive
-assignment evaluation still serializes 69,190 bytes of assignment-fold openings.
-The remaining production-backend task is to replace or aggregate those fold
-opening layers without dropping below the 60-bit pure-query requirement.
+assignment public-prefix openings with a compact prefix frontier, replaces the
+repeated NPO-consistency witness Merkle paths with one shared sparse multiproof,
+and represents each NPO-validity fold layer as one shared multiproof over the
+transcript-derived left/right leaves. The row-product component fell from about
+89.6 KiB to about 70.3 KiB in the standalone measurement; the public-prefix
+authentication inside it fell from 20,131 bytes to 477 bytes. The NPO
+consistency component fell from 32,480 bytes to 5,863 bytes; the 52 sampled
+witness values now serialize as one 4,573-byte multiproof instead of
+31,190 bytes of independent paths. The NPO validity fold component fell from
+43,392 bytes to 8,793 bytes; its fold-query index list is 40 bytes, fold
+commitments are 683 bytes, and fold round multiproofs are 8,067 bytes. This
+puts the current compact production certificate below the ~100 KiB target while
+retaining the 60-bit pure-query profile (`log_blowup=4`, `num_queries=15`,
+`query_pow_bits=0`). The remaining production-backend task is still to replace
+sampled NPO validity checks with a polynomialized Tip5/recompose relation and
+the final terminal proximity backend; that is a soundness/completeness task, no
+longer a size blocker for the measured profile.
 
 The optimized sparse-R1CS matrix-vector sumcheck component measures separately
 on the same real Tip5-L0 verifier circuit. The completed primitive row-product
