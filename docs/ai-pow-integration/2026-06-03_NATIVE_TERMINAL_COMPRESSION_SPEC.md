@@ -226,6 +226,12 @@ for this route.
   verifier-known same-mode chain segment from the last `new_start`; recompose
   rows expand to themselves. Serialized NPO-column query indices remain
   forbidden.
+- `TerminalNpoPolynomialColumnOpeningProof`: sparse Merkle openings for the
+  query plan's expanded row set across every fixed NPO column. Verification
+  re-derives the query plan from the prelude-bound ordered column commitments,
+  rejects missing column openings, and checks every column multiproof opens
+  exactly the verifier-derived row set. This is still a Merkle-backed opening
+  checkpoint, not the final low-degree PCS/proximity proof.
 - `TerminalNpoExhaustiveResidualFoldProof`: a Merkle-backed folded zero check
   for the production-equivalent supported-NPO residual oracle, with transcript
   domains distinct from both primitive residual folding and legacy sampled NPO

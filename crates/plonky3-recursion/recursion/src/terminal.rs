@@ -1021,6 +1021,13 @@ impl TerminalNpoPolynomialColumnOracleSet {
     }
 }
 
+/// Sparse openings for verifier-derived rows across every fixed NPO column.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalNpoPolynomialColumnOpeningProof {
+    pub commitments: Vec<TerminalOracleCommitment>,
+    pub column_openings: Vec<TerminalOracleMultiProof>,
+}
+
 /// One flattened component in the production-equivalent supported-NPO residual
 /// domain.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -4567,6 +4574,107 @@ impl NativeTerminalCompiler {
             sampled_indices,
             opened_indices,
         })
+    }
+
+    pub fn prove_terminal_npo_polynomial_column_openings_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+        prelude: &TerminalProofPrelude,
+    ) -> Result<TerminalNpoPolynomialColumnOpeningProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let columns = self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
+        let oracle_set = Self::commit_terminal_npo_polynomial_column_values_goldilocks(&columns)?;
+        let commitments = oracle_set.commitments();
+        let plan = self.derive_terminal_npo_polynomial_column_query_plan::<F>(
+            verifying_key,
+            prelude,
+            &commitments,
+        )?;
+        let mut column_openings = Vec::with_capacity(columns.columns.len());
+        for (tree, column) in oracle_set.trees.iter().zip(&columns.columns) {
+            let opening_values = plan
+                .opened_indices
+                .iter()
+                .map(|index| (*index, &column[*index]))
+                .collect::<Vec<_>>();
+            column_openings.push(tree.open_goldilocks_multi_values(&opening_values)?);
+        }
+        Ok(TerminalNpoPolynomialColumnOpeningProof {
+            commitments,
+            column_openings,
+        })
+    }
+
+    pub fn verify_terminal_npo_polynomial_column_openings_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoPolynomialColumnOpeningProof,
+    ) -> Result<TerminalNpoPolynomialColumnQueryPlan, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let plan = self.derive_terminal_npo_polynomial_column_query_plan::<F>(
+            verifying_key,
+            prelude,
+            &proof.commitments,
+        )?;
+        if proof.column_openings.len() != proof.commitments.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "npo_polynomial_column_openings".into(),
+                    expected: proof.commitments.len(),
+                    got: proof.column_openings.len(),
+                },
+            );
+        }
+        for (column, (commitment, opening)) in proof
+            .commitments
+            .iter()
+            .zip(&proof.column_openings)
+            .enumerate()
+        {
+            let values =
+                self.verify_terminal_oracle_multi_proof_goldilocks::<F>(commitment, opening)?;
+            if values.len() != plan.opened_indices.len() {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleQueryLengthMismatch {
+                        expected: plan.opened_indices.len(),
+                        got: values.len(),
+                    },
+                );
+            }
+            for (query, ((index, _), expected)) in
+                values.iter().zip(&plan.opened_indices).enumerate()
+            {
+                if *index != *expected {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalOracleQueryIndexMismatch {
+                            query,
+                            expected: *expected,
+                            got: *index,
+                        },
+                    );
+                }
+            }
+            let expected_label = Self::terminal_npo_polynomial_column_oracle_label(
+                &Self::terminal_npo_polynomial_column_labels(
+                    &Self::terminal_npo_polynomial_column_layout::<F>(verifying_key),
+                )[column],
+            );
+            if commitment.label != expected_label {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleCommitmentLabelMismatch {
+                        expected: expected_label,
+                        got: commitment.label.clone(),
+                    },
+                );
+            }
+        }
+        Ok(plan)
     }
 
     pub fn commit_terminal_combined_validity_goldilocks<F>(
@@ -15411,6 +15519,50 @@ mod tests {
                 &tampered_commitments,
             )
             .expect_err("tampered column root must not be accepted by the bound prelude");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentNotBound { .. }
+        ));
+
+        let proof = compiler
+            .prove_terminal_npo_polynomial_column_openings_goldilocks(&vk, &witness, &prelude)
+            .expect("NPO polynomial column opening proof must build");
+        let verified_plan = compiler
+            .verify_terminal_npo_polynomial_column_openings_goldilocks::<Goldilocks>(
+                &vk, &prelude, &proof,
+            )
+            .expect("NPO polynomial column opening proof must verify");
+        assert_eq!(verified_plan, plan);
+
+        let mut missing_column = proof.clone();
+        missing_column.column_openings.pop();
+        let err = compiler
+            .verify_terminal_npo_polynomial_column_openings_goldilocks::<Goldilocks>(
+                &vk,
+                &prelude,
+                &missing_column,
+            )
+            .expect_err("missing NPO polynomial column opening must reject");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. }
+        ));
+
+        let partial_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![commitments[0].root],
+            )
+            .expect("partial prelude must build for rejection test");
+        let err = compiler
+            .verify_terminal_npo_polynomial_column_openings_goldilocks::<Goldilocks>(
+                &vk,
+                &partial_prelude,
+                &proof,
+            )
+            .expect_err("prelude missing column roots must reject");
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalPreludeCommitmentNotBound { .. }
