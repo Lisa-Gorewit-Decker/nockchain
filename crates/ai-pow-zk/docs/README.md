@@ -17,6 +17,7 @@ recent commit that touched it).
 | [`2026-05-14_ENGINEERING_REPORT.md`](2026-05-14_ENGINEERING_REPORT.md) | 2026-05-14 | 2026-05-14 | Engineering rationale / the "why". |
 | [`2026-05-15_ZKP_SECURITY_REPORT.md`](2026-05-15_ZKP_SECURITY_REPORT.md) | 2026-05-15 | 2026-05-19 | Soundness/security report (CRIT/HIGH findings + closure). |
 | [`2026-05-15_GAP_AUDIT.md`](2026-05-15_GAP_AUDIT.md) | 2026-05-15 | 2026-05-19 | Gap inventory + closure tracking. |
+| [`2026-06-04_PROVER_SIDE_SECURITY_AUDIT.md`](2026-06-04_PROVER_SIDE_SECURITY_AUDIT.md) | 2026-06-04 | 2026-06-04 | Prover-side follow-up audit for the 64-byte co-location split-view finding, recursive certificate boundary, PI shape, and remaining terminal-backend review work. |
 | [`2026-05-13_DESIGN.md`](2026-05-13_DESIGN.md) | 2026-05-13 | 2026-05-13 | Base AIR / per-slot design. |
 | [`2026-05-15_PROFILING.md`](2026-05-15_PROFILING.md) | 2026-05-15 | 2026-05-15 | Profiling (samply / peak-RSS) methodology. |
 

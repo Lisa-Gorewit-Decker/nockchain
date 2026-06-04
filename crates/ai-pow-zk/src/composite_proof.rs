@@ -628,16 +628,29 @@ mod tests {
             trace.place_useful_work_chain(sweep_start, &a_prime, &b_prime, t, r, num_stripes);
         assert_eq!(rows_used, (t / 2) * (t / 2) * num_stripes); // 16·16 = 256
 
-        // M-S1 (§4.C.11) — place the `noised_packed` producer store
-        // so the now-chunked whole-micro-tile A/B matmul query
-        // (`bus_emit::noised_packed`, `A_NOISED_LEN/2` + `B_…/2`
-        // sub-queries per matmul-active row) is a multiset of a
-        // declared canonical store. Without it the bus is
-        // unbalanced and Route-A rejects (this is the binding).
-        let store_chunks =
-            CompositeTrace::enumerate_noised_chunks(&a_prime, &b_prime, t, r, num_stripes);
+        // M-S1 (§4.C.11) — place the positioned `noised_packed`
+        // producer store so the now-chunked whole-micro-tile A/B
+        // matmul query (`bus_emit::noised_packed`, `A_NOISED_LEN/2`
+        // + `B_.../2` sub-queries per matmul-active row) is a
+        // multiset of a declared canonical store. The sweep uses
+        // exact per-sub-slice A_ID/B_ID values, so the positive
+        // fixture must publish producer rows under the same
+        // position-derived MAT_ID keys; a single shared MAT_ID=0
+        // would correctly leave the bus unbalanced.
+        let store_chunks = CompositeTrace::enumerate_noised_chunks_positioned(
+            &a_prime, &b_prime, t, r, num_stripes,
+        );
         let store_start = sweep_start + rows_used;
-        let n_store = trace.place_noised_store(store_start, &store_chunks, 0);
+        let a_id_base = crate::composite_trace::NOISED_CHUNK_ID_BASE;
+        let b_id_base = a_id_base + ((t * k).div_ceil(8)) as u64;
+        for (i, chunk) in store_chunks.iter().enumerate() {
+            let id_base = if chunk.side_a { a_id_base } else { b_id_base };
+            let mat_id = crate::composite_trace::noised_chunk_id(id_base, k, &chunk.src)
+                .try_into()
+                .expect("positioned noised chunk id must fit in MAT_ID");
+            trace.place_noised_store_row(store_start + i, &chunk.bytes, mat_id);
+        }
+        let n_store = store_chunks.len();
 
         let xs: Vec<i32> = x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
         let fold_start = store_start + n_store + 4;

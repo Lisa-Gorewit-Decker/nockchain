@@ -974,6 +974,38 @@ mod tests {
         }
     }
 
+    /// Cheap full-position coverage for the frequency side of the
+    /// cx.2 split-view fix. A single matrix-message row must populate
+    /// one I8U8 multiplicity for each of its 64 paired
+    /// MAT_UNPACK/UINT8_DATA cells.
+    #[test]
+    fn full_msg_mat_row_populates_i8u8_freq_for_all_64_bytes() {
+        use p3_field::PrimeField64;
+
+        let mut trace = CompositeTrace::baseline_min();
+        let plain = core::array::from_fn(|i| i as i8 - 32);
+        place_full_msg_mat_row(&mut trace, 0, &plain);
+        trace.populate_lookup_freq();
+
+        let freq_sum: u64 = (-32i64..32)
+            .map(|signed| {
+                let row = (signed + 128) as usize;
+                trace.matrix.values[row * TOTAL_TRACE_WIDTH + crate::composite_layout::I8U8_FREQ]
+                    .as_canonical_u64()
+            })
+            .sum();
+        assert_eq!(freq_sum, 64, "one IS_MSG_MAT row must emit 64 I8U8 pairs");
+        for signed in -32i64..32 {
+            let row = (signed + 128) as usize;
+            assert_eq!(
+                trace.matrix.values[row * TOTAL_TRACE_WIDTH + crate::composite_layout::I8U8_FREQ]
+                    .as_canonical_u64(),
+                1,
+                "signed byte {signed} should have exactly one I8U8 query"
+            );
+        }
+    }
+
     /// Each BLAKE3 matrix-message row self-queries all eight
     /// `noised_packed` sub-slices. If one later MAT_FREQ slot is
     /// dropped after frequency population, the table side no longer
@@ -995,6 +1027,28 @@ mod tests {
             "dropping a later noised_packed self-query MAT_FREQ must reject; got {:?}",
             res
         );
+    }
+
+    /// Cheap full-sub-slice coverage for the producer side of the
+    /// cx.2 `noised_packed` fix. A co-located BLAKE3 matrix-message
+    /// row must publish and self-query all eight sub-slices, not only
+    /// the legacy first one.
+    #[test]
+    fn full_msg_mat_row_populates_mat_freq_for_all_8_subslices() {
+        use p3_field::PrimeField64;
+
+        let mut trace = CompositeTrace::baseline_min();
+        let plain = core::array::from_fn(|i| i as i8 + 1);
+        place_full_msg_mat_row(&mut trace, 0, &plain);
+        trace.populate_lookup_freq();
+
+        for s in 0..crate::composite_layout::MAT_FREQ_LEN {
+            assert_eq!(
+                trace.matrix.values[MAT_FREQ + s].as_canonical_u64(),
+                1,
+                "IS_MSG_MAT row must self-query noised_packed sub-slice {s}"
+            );
+        }
     }
 
     /// Tamper I8U8_FREQ AFTER populate → reject.

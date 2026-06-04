@@ -649,8 +649,8 @@ mod tests {
             + MAT_ID_LIMBS_LEN
             + 1 // AB_ID_PREP
             + AB_ID_LIMBS_LEN
-            + 1 // A_ID
-            + 1 // B_ID
+            + A_ID_LEN
+            + B_ID_LEN
             + 1; // STARK_ROW_IDX
         let matmul_tile = A_NOISED_LEN + A_NOISED_UNPACK_LEN + B_NOISED_LEN + B_NOISED_UNPACK_LEN; // 80
         let matmul_accum = CUMSUM_TILE_LEN + CUMSUM_BUFFER_LEN; // 8
@@ -722,7 +722,7 @@ mod tests {
         assert_eq!(range_tables, 11);
         assert_eq!(control, 22);
         assert_eq!(input_unpacking, 200);
-        assert_eq!(noised_packed_indexing, 35);
+        assert_eq!(noised_packed_indexing, 41);
         assert_eq!(matmul_tile, 80);
         assert_eq!(matmul_accum, 8);
         assert_eq!(jackpot_state, 56);
@@ -875,8 +875,8 @@ mod tests {
                 A_ID,
                 "AB_ID_LIMBS → A_ID",
             ),
-            (A_ID + 1, B_ID, "A_ID → B_ID"),
-            (B_ID + 1, STARK_ROW_IDX, "B_ID → STARK_ROW_IDX"),
+            (A_ID + A_ID_LEN, B_ID, "A_ID → B_ID"),
+            (B_ID + B_ID_LEN, STARK_ROW_IDX, "B_ID → STARK_ROW_IDX"),
             (
                 STARK_ROW_IDX + 1,
                 A_NOISED_START,
