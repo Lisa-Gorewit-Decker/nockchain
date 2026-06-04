@@ -14690,6 +14690,27 @@ impl NativeTerminalCompiler {
                     .map(|round| round.sibling_values.len())
             })
             .unwrap_or(0);
+        let production_profile = TerminalProximityProfile::production_60bit();
+        let expected_query_count = production_profile.num_queries as usize;
+        if query_count != expected_query_count {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compressed_fri_query_count".into(),
+                    expected: expected_query_count,
+                    got: query_count,
+                },
+            );
+        }
+        let expected_final_poly_len = 1usize << production_profile.log_final_poly_len;
+        if compressed.final_poly.len() != expected_final_poly_len {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compressed_fri_final_poly".into(),
+                    expected: expected_final_poly_len,
+                    got: compressed.final_poly.len(),
+                },
+            );
+        }
         let restored_input_paths = compressed
             .input_batches
             .iter()
@@ -14974,6 +14995,25 @@ impl NativeTerminalCompiler {
                 );
             }
             sorted_full.push(restored);
+        }
+        let mut referenced = vec![false; sorted_full.len()];
+        for &slot in &pruned.original_order {
+            let slot = slot as usize;
+            if slot >= referenced.len() {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                        reason: "terminal compressed FRI original-order slot out of range".into(),
+                    },
+                );
+            }
+            referenced[slot] = true;
+        }
+        if referenced.iter().any(|seen| !*seen) {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                    reason: "terminal compressed FRI has unreferenced path entries".into(),
+                },
+            );
         }
         pruned
             .original_order
@@ -25994,6 +26034,40 @@ mod tests {
             "terminal compressed FRI should reduce path material"
         );
 
+        let mut shortened_query_count = proof.proof.clone();
+        let mut shortened_query_count_tampered = false;
+        for batch in &mut shortened_query_count.input_batches {
+            if batch.opened_values.pop().is_some() {
+                shortened_query_count_tampered = true;
+                break;
+            }
+        }
+        assert!(
+            shortened_query_count_tampered,
+            "compressed FRI proof must carry query openings"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&shortened_query_count),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. })
+        ));
+
+        let mut shortened_final_poly = proof.proof.clone();
+        assert!(
+            shortened_final_poly.final_poly.pop().is_some(),
+            "compressed FRI proof must carry final polynomial"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&shortened_final_poly),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. })
+        ));
+
+        let mut overlong_final_poly = proof.proof.clone();
+        overlong_final_poly.final_poly.push(TerminalFriChallenge::ZERO);
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&overlong_final_poly),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. })
+        ));
+
         let mut shortened_commit_phase_commits = proof.proof.clone();
         assert!(
             shortened_commit_phase_commits
@@ -26130,6 +26204,29 @@ mod tests {
             Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
         ));
 
+        let mut unreferenced_input_path = proof.proof.clone();
+        let mut unreferenced_input_path_tampered = false;
+        for batch in &mut unreferenced_input_path.input_batches {
+            if let Some(path) = batch.pruned_opening_proof.paths.last().cloned() {
+                let mut extra_path = path;
+                extra_path.leaf_index = extra_path
+                    .leaf_index
+                    .checked_add(1)
+                    .expect("terminal FRI test leaf index must not overflow");
+                batch.pruned_opening_proof.paths.push(extra_path);
+                unreferenced_input_path_tampered = true;
+                break;
+            }
+        }
+        assert!(
+            unreferenced_input_path_tampered,
+            "compressed FRI input proof must carry Merkle paths"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&unreferenced_input_path),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+        ));
+
         let mut malformed_commit_order = proof.proof.clone();
         let mut commit_order_tampered = false;
         for round in &mut malformed_commit_order.commit_rounds {
@@ -26180,6 +26277,29 @@ mod tests {
         );
         assert!(matches!(
             NativeTerminalCompiler::decompress_terminal_fri_proof(&overlong_commit_order),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+        ));
+
+        let mut unreferenced_commit_path = proof.proof.clone();
+        let mut unreferenced_commit_path_tampered = false;
+        for round in &mut unreferenced_commit_path.commit_rounds {
+            if let Some(path) = round.pruned_opening_proof.paths.last().cloned() {
+                let mut extra_path = path;
+                extra_path.leaf_index = extra_path
+                    .leaf_index
+                    .checked_add(1)
+                    .expect("terminal FRI test leaf index must not overflow");
+                round.pruned_opening_proof.paths.push(extra_path);
+                unreferenced_commit_path_tampered = true;
+                break;
+            }
+        }
+        assert!(
+            unreferenced_commit_path_tampered,
+            "compressed FRI commit proof must carry Merkle paths"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&unreferenced_commit_path),
             Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
         ));
 
