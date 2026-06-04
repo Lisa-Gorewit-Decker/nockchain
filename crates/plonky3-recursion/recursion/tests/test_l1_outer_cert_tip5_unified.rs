@@ -727,6 +727,15 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
 
     assert!(certificate_size > body_size);
     assert!(production_certificate_size > production_body_size);
+    assert_eq!(parameters.security_bits, 60);
+    assert_eq!(parameters.num_queries, 15);
+    assert_eq!(parameters.query_pow_bits, 0);
+    assert!(
+        production_certificate_size <= 100 * 1024,
+        "production terminal certificate must remain at or below 100 KiB; got {} bytes ({:.1} KiB)",
+        production_certificate_size,
+        production_certificate_size as f64 / 1024.0,
+    );
 }
 
 // ---------------------------------------------------------------------
