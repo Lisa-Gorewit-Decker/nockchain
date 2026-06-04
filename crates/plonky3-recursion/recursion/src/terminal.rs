@@ -402,6 +402,21 @@ pub struct TerminalResidualFoldProof {
     pub openings: Vec<TerminalResidualFoldQueryOpening>,
 }
 
+/// Merkle-backed multilinear evaluation proof for the terminal assignment
+/// vector `[1 || public || witness]`.
+///
+/// The proof opens the public prefix against the assignment commitment, then
+/// folds the whole assignment vector to one transcript-derived evaluation. This
+/// is the PCS primitive the terminal R1CS sumcheck needs for its final
+/// `z(y*)` check; it is not accepted as a standalone production proof.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalAssignmentEvaluationProof {
+    pub public_prefix_openings: Vec<TerminalOracleOpening>,
+    pub fold_commitments: Vec<TerminalOracleCommitment>,
+    pub final_value_basis: Vec<u64>,
+    pub openings: Vec<TerminalResidualFoldQueryOpening>,
+}
+
 /// Merkle-backed multilinear folding proof for supported NPO validity rows.
 ///
 /// The base oracle is a row-validity residual vector over supported NPO
@@ -3409,6 +3424,58 @@ impl NativeTerminalCompiler {
         })
     }
 
+    pub fn derive_terminal_assignment_fold_query_plan(
+        &self,
+        prelude: &TerminalProofPrelude,
+        assignment_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+    ) -> Result<TerminalQueryPlan, NativeTerminalVerifyError> {
+        if assignment_commitment.values_len == 0 {
+            return Err(NativeTerminalVerifyError::TerminalQuadraticResidualQueryDomainEmpty);
+        }
+
+        let num_queries = prelude.parameters.num_queries as usize;
+        let mut indices = Vec::with_capacity(num_queries);
+        let mut counter = 0u64;
+        while indices.len() < num_queries {
+            if counter
+                > (num_queries as u64)
+                    .saturating_mul(4096)
+                    .saturating_add(4096)
+            {
+                return Err(NativeTerminalVerifyError::TerminalQueryDerivationLimitExceeded);
+            }
+            let block = Self::terminal_assignment_fold_query_block(
+                prelude,
+                assignment_commitment,
+                fold_commitments,
+                counter,
+            );
+            for limb in block {
+                if indices.len() == num_queries {
+                    break;
+                }
+                let bound = assignment_commitment.values_len as u64;
+                let zone = u64::MAX - (u64::MAX % bound);
+                if limb < zone {
+                    Self::accept_terminal_query_index(
+                        &mut indices,
+                        (limb % bound) as usize,
+                        assignment_commitment.values_len,
+                        num_queries,
+                    );
+                }
+            }
+            counter += 1;
+        }
+
+        Ok(TerminalQueryPlan {
+            oracle_label: assignment_commitment.label.clone(),
+            oracle_len: assignment_commitment.values_len,
+            indices,
+        })
+    }
+
     pub fn prove_terminal_combined_validity_fold_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -4736,6 +4803,219 @@ impl NativeTerminalCompiler {
         })
     }
 
+    pub fn commit_terminal_assignment_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        witness: &TerminalWitness<F>,
+    ) -> Result<TerminalOracleMerkleTree, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        let witness_values = Self::terminal_witness_values(witness)?;
+        let assignment_values =
+            Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)?;
+        TerminalOracleMerkleTree::commit_goldilocks_values(
+            Self::assignment_oracle_label(),
+            &assignment_values,
+        )
+    }
+
+    pub fn prove_terminal_assignment_evaluation_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        assignment_oracle: &TerminalOracleMerkleTree,
+        witness: &TerminalWitness<F>,
+    ) -> Result<TerminalAssignmentEvaluationProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let assignment_commitment = assignment_oracle.commitment();
+        Self::verify_terminal_assignment_commitment_identity(
+            verifying_key,
+            &assignment_commitment,
+        )?;
+        Self::verify_prelude_binds_commitment(prelude, &assignment_commitment)?;
+
+        let witness_values = Self::terminal_witness_values(witness)?;
+        let assignment_values =
+            Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)?;
+        let public_prefix_len = 1 + verifying_key.header.fingerprint.public_flat_len;
+        let mut public_prefix_openings = Vec::with_capacity(public_prefix_len);
+        for (index, value) in assignment_values.iter().take(public_prefix_len).enumerate() {
+            public_prefix_openings.push(assignment_oracle.open_goldilocks_value(index, value)?);
+        }
+
+        let mut layers = vec![assignment_values];
+        let mut trees = Vec::new();
+        let mut fold_commitments = Vec::new();
+        let mut round = 0usize;
+        while layers.last().expect("base assignment layer exists").len() > 1 {
+            let challenge = Self::derive_terminal_assignment_fold_challenge::<F>(
+                prelude,
+                &assignment_commitment,
+                &fold_commitments,
+                round,
+            )?;
+            let current = layers.last().expect("current assignment layer exists");
+            let mut next = Vec::with_capacity(current.len().div_ceil(2));
+            for pair in current.chunks(2) {
+                let left = pair[0];
+                let right = pair.get(1).copied().unwrap_or(F::ZERO);
+                next.push(left * (F::ONE - challenge) + right * challenge);
+            }
+            let label = Self::assignment_fold_oracle_label(round);
+            let tree = TerminalOracleMerkleTree::commit_goldilocks_values(label, &next)?;
+            fold_commitments.push(tree.commitment());
+            trees.push(tree);
+            layers.push(next);
+            round += 1;
+        }
+
+        let final_value = layers
+            .last()
+            .and_then(|layer| layer.first())
+            .copied()
+            .ok_or(NativeTerminalVerifyError::TerminalQuadraticResidualQueryDomainEmpty)?;
+        let final_value_basis = Self::goldilocks_basis_u64(&final_value);
+        let query_plan = self.derive_terminal_assignment_fold_query_plan(
+            prelude,
+            &assignment_commitment,
+            &fold_commitments,
+        )?;
+
+        let mut openings = Vec::with_capacity(query_plan.indices.len());
+        for initial_index in &query_plan.indices {
+            let mut index = *initial_index;
+            let mut rounds = Vec::with_capacity(fold_commitments.len());
+            for round in 0..fold_commitments.len() {
+                let pair_index = (index / 2) * 2;
+                let current_tree = if round == 0 {
+                    assignment_oracle
+                } else {
+                    &trees[round - 1]
+                };
+                let current_values = &layers[round];
+                let next_values = &layers[round + 1];
+                let next_index = index / 2;
+                let left =
+                    current_tree.open_goldilocks_value(pair_index, &current_values[pair_index])?;
+                let right = if pair_index + 1 < current_values.len() {
+                    let mut opening = current_tree
+                        .open_goldilocks_value(pair_index + 1, &current_values[pair_index + 1])?;
+                    opening.path.clear();
+                    Some(opening)
+                } else {
+                    None
+                };
+                let mut next =
+                    trees[round].open_goldilocks_value(next_index, &next_values[next_index])?;
+                next.path.clear();
+                rounds.push(TerminalResidualFoldRoundOpening {
+                    round,
+                    pair_index,
+                    left,
+                    right,
+                    next,
+                });
+                index = next_index;
+            }
+            openings.push(TerminalResidualFoldQueryOpening {
+                initial_index: *initial_index,
+                rounds,
+            });
+        }
+
+        Ok(TerminalAssignmentEvaluationProof {
+            public_prefix_openings,
+            fold_commitments,
+            final_value_basis,
+            openings,
+        })
+    }
+
+    pub fn verify_terminal_assignment_evaluation_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        assignment_commitment: &TerminalOracleCommitment,
+        proof: &TerminalAssignmentEvaluationProof,
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        Self::verify_terminal_assignment_commitment_identity(verifying_key, assignment_commitment)?;
+        Self::verify_prelude_binds_commitment(prelude, assignment_commitment)?;
+        self.validate_terminal_assignment_fold_commitments::<F>(
+            verifying_key,
+            assignment_commitment,
+            &proof.fold_commitments,
+        )?;
+
+        let public_prefix_len = 1 + verifying_key.header.fingerprint.public_flat_len;
+        if proof.public_prefix_openings.len() != public_prefix_len {
+            return Err(
+                NativeTerminalVerifyError::TerminalConstraintOpeningCountMismatch {
+                    constraint_index: 0,
+                    expected: public_prefix_len,
+                    got: proof.public_prefix_openings.len(),
+                },
+            );
+        }
+        for (index, opening) in proof.public_prefix_openings.iter().enumerate() {
+            if opening.index != index {
+                return Err(
+                    NativeTerminalVerifyError::TerminalConstraintOpeningWitnessMismatch {
+                        constraint_index: 0,
+                        opening: index,
+                        expected: index as u32,
+                        got: opening.index,
+                    },
+                );
+            }
+            self.verify_terminal_oracle_opening(assignment_commitment, opening)?;
+            let opened = Self::field_from_goldilocks_basis_u64::<F>(&opening.value_basis)?;
+            let expected = if index == 0 {
+                F::ONE
+            } else {
+                public_inputs[index - 1]
+            };
+            if opened != expected {
+                return Err(NativeTerminalVerifyError::PublicInputMismatch {
+                    public_pos: index.saturating_sub(1),
+                });
+            }
+        }
+
+        let query_plan = self.derive_terminal_assignment_fold_query_plan(
+            prelude,
+            assignment_commitment,
+            &proof.fold_commitments,
+        )?;
+        self.verify_terminal_fold_openings_goldilocks::<F, _>(
+            assignment_commitment,
+            &proof.fold_commitments,
+            &proof.final_value_basis,
+            &proof.openings,
+            &query_plan,
+            |round, prior| {
+                Self::derive_terminal_assignment_fold_challenge::<F>(
+                    prelude,
+                    assignment_commitment,
+                    prior,
+                    round,
+                )
+            },
+        )?;
+
+        Self::field_from_goldilocks_basis_u64::<F>(&proof.final_value_basis)
+    }
+
     pub fn verify_terminal_production_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -5394,6 +5674,38 @@ impl NativeTerminalCompiler {
                     })?,
             );
         }
+        Ok(values)
+    }
+
+    fn terminal_assignment_values<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        witness_values: &[F],
+    ) -> Result<Vec<F>, NativeTerminalVerifyError>
+    where
+        F: Field + Copy,
+    {
+        let public_count = verifying_key.header.fingerprint.public_flat_len;
+        let witness_count = verifying_key.header.fingerprint.witness_count as usize;
+        if public_inputs.len() != public_count {
+            return Err(NativeTerminalVerifyError::PublicInputLengthMismatch {
+                expected: public_count,
+                got: public_inputs.len(),
+            });
+        }
+        if witness_values.len() != witness_count {
+            return Err(
+                NativeTerminalVerifyError::TerminalProductionWitnessBasisLengthMismatch {
+                    expected: witness_count,
+                    got: witness_values.len(),
+                },
+            );
+        }
+
+        let mut values = Vec::with_capacity(1 + public_count + witness_count);
+        values.push(F::ONE);
+        values.extend_from_slice(public_inputs);
+        values.extend_from_slice(witness_values);
         Ok(values)
     }
 
@@ -6284,6 +6596,20 @@ impl NativeTerminalCompiler {
         )
     }
 
+    fn verify_terminal_assignment_commitment_identity<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        commitment: &TerminalOracleCommitment,
+    ) -> Result<(), NativeTerminalVerifyError> {
+        let variables = 1
+            + verifying_key.header.fingerprint.public_flat_len
+            + verifying_key.header.fingerprint.witness_count as usize;
+        Self::verify_terminal_oracle_commitment_identity(
+            commitment,
+            Self::assignment_oracle_label(),
+            variables,
+        )
+    }
+
     fn verify_terminal_residual_commitment_identity<F>(
         verifying_key: &NativeTerminalVerifyingKey<F>,
         commitment: &TerminalOracleCommitment,
@@ -6729,6 +7055,60 @@ impl NativeTerminalCompiler {
         Ok(())
     }
 
+    fn validate_terminal_assignment_fold_commitments<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        assignment_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+    ) -> Result<(), NativeTerminalVerifyError> {
+        Self::verify_terminal_assignment_commitment_identity::<F>(
+            verifying_key,
+            assignment_commitment,
+        )?;
+
+        let mut len = assignment_commitment.values_len;
+        let mut expected_rounds = 0usize;
+        while len > 1 {
+            len = len.div_ceil(2);
+            expected_rounds += 1;
+        }
+        if fold_commitments.len() != expected_rounds {
+            return Err(
+                NativeTerminalVerifyError::TerminalResidualFoldCommitmentLengthMismatch {
+                    round: expected_rounds,
+                    expected: expected_rounds,
+                    got: fold_commitments.len(),
+                },
+            );
+        }
+
+        let mut current_len = assignment_commitment.values_len;
+        for (round, commitment) in fold_commitments.iter().enumerate() {
+            let expected_len = current_len.div_ceil(2);
+            if commitment.values_len != expected_len {
+                return Err(
+                    NativeTerminalVerifyError::TerminalResidualFoldCommitmentLengthMismatch {
+                        round,
+                        expected: expected_len,
+                        got: commitment.values_len,
+                    },
+                );
+            }
+            let expected_label = Self::assignment_fold_oracle_label(round);
+            if commitment.label != expected_label {
+                return Err(
+                    NativeTerminalVerifyError::TerminalResidualFoldCommitmentLabelMismatch {
+                        round,
+                        expected: expected_label,
+                        got: commitment.label.clone(),
+                    },
+                );
+            }
+            current_len = expected_len;
+        }
+        Ok(())
+    }
+
     fn accept_terminal_query_index(
         indices: &mut Vec<usize>,
         candidate: usize,
@@ -6758,6 +7138,242 @@ impl NativeTerminalCompiler {
         } else {
             Some(final_value_basis)
         }
+    }
+
+    fn verify_terminal_fold_openings_goldilocks<F, D>(
+        &self,
+        base_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+        final_value_basis: &[u64],
+        openings: &[TerminalResidualFoldQueryOpening],
+        query_plan: &TerminalQueryPlan,
+        derive_challenge: D,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+        D: Fn(usize, &[TerminalOracleCommitment]) -> Result<F, NativeTerminalVerifyError>,
+    {
+        if openings.len() != query_plan.indices.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalResidualFoldQueryLengthMismatch {
+                    expected: query_plan.indices.len(),
+                    got: openings.len(),
+                },
+            );
+        }
+
+        let mut challenges = Vec::with_capacity(fold_commitments.len());
+        for round in 0..fold_commitments.len() {
+            challenges.push(derive_challenge(round, &fold_commitments[..round])?);
+        }
+
+        for (query, (opening, expected_index)) in
+            openings.iter().zip(&query_plan.indices).enumerate()
+        {
+            if opening.initial_index != *expected_index {
+                return Err(
+                    NativeTerminalVerifyError::TerminalResidualFoldQueryIndexMismatch {
+                        query,
+                        expected: *expected_index,
+                        got: opening.initial_index,
+                    },
+                );
+            }
+            if opening.rounds.len() != fold_commitments.len() {
+                return Err(
+                    NativeTerminalVerifyError::TerminalResidualFoldRoundCountMismatch {
+                        query,
+                        expected: fold_commitments.len(),
+                        got: opening.rounds.len(),
+                    },
+                );
+            }
+
+            let mut index = opening.initial_index;
+            let mut current_len = base_commitment.values_len;
+            for (round, round_opening) in opening.rounds.iter().enumerate() {
+                let expected_pair = (index / 2) * 2;
+                let next_index = index / 2;
+                if round_opening.round != round {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalResidualFoldRoundIndexMismatch {
+                            query,
+                            round,
+                            expected: round,
+                            got: round_opening.round,
+                        },
+                    );
+                }
+                if round_opening.pair_index != expected_pair {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalResidualFoldOpeningIndexMismatch {
+                            query,
+                            round,
+                            field: "pair",
+                            expected: expected_pair,
+                            got: round_opening.pair_index,
+                        },
+                    );
+                }
+
+                let current_commitment = if round == 0 {
+                    base_commitment
+                } else {
+                    &fold_commitments[round - 1]
+                };
+                self.verify_terminal_oracle_opening(current_commitment, &round_opening.left)?;
+                if round_opening.left.index != expected_pair {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalResidualFoldOpeningIndexMismatch {
+                            query,
+                            round,
+                            field: "left",
+                            expected: expected_pair,
+                            got: round_opening.left.index,
+                        },
+                    );
+                }
+                let left =
+                    Self::field_from_goldilocks_basis_u64::<F>(&round_opening.left.value_basis)?;
+                let right = if expected_pair + 1 < current_len {
+                    let Some(right_opening) = &round_opening.right else {
+                        return Err(
+                            NativeTerminalVerifyError::TerminalResidualFoldRightOpeningMissing {
+                                query,
+                                round,
+                                index: expected_pair + 1,
+                            },
+                        );
+                    };
+                    if right_opening.index != expected_pair + 1 {
+                        return Err(
+                            NativeTerminalVerifyError::TerminalResidualFoldOpeningIndexMismatch {
+                                query,
+                                round,
+                                field: "right",
+                                expected: expected_pair + 1,
+                                got: right_opening.index,
+                            },
+                        );
+                    }
+                    if !right_opening.path.is_empty() {
+                        return Err(
+                            NativeTerminalVerifyError::TerminalResidualFoldRightOpeningPathUnexpected {
+                                query,
+                                round,
+                            },
+                        );
+                    }
+                    let right_digest = Self::terminal_oracle_leaf_digest_from_basis(
+                        &current_commitment.label,
+                        current_commitment.values_len,
+                        right_opening.index,
+                        &right_opening.value_basis,
+                    );
+                    let Some(first_sibling) = round_opening.left.path.first() else {
+                        return Err(
+                            NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
+                                query,
+                                round,
+                            },
+                        );
+                    };
+                    if first_sibling.sibling_is_left || first_sibling.digest != right_digest {
+                        return Err(
+                            NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
+                                query,
+                                round,
+                            },
+                        );
+                    }
+                    Self::field_from_goldilocks_basis_u64::<F>(&right_opening.value_basis)?
+                } else {
+                    if round_opening.right.is_some() {
+                        return Err(
+                            NativeTerminalVerifyError::TerminalResidualFoldRightOpeningUnexpected {
+                                query,
+                                round,
+                                index: expected_pair + 1,
+                            },
+                        );
+                    }
+                    F::ZERO
+                };
+
+                if round_opening.next.index != next_index {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalResidualFoldOpeningIndexMismatch {
+                            query,
+                            round,
+                            field: "next",
+                            expected: next_index,
+                            got: round_opening.next.index,
+                        },
+                    );
+                }
+                if !round_opening.next.path.is_empty() {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalResidualFoldNextOpeningPathUnexpected {
+                            query,
+                            round,
+                        },
+                    );
+                }
+                let opened_next =
+                    Self::field_from_goldilocks_basis_u64::<F>(&round_opening.next.value_basis)?;
+                let challenge = challenges[round];
+                let expected_next = left * (F::ONE - challenge) + right * challenge;
+                if opened_next != expected_next {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
+                            query,
+                            round,
+                        },
+                    );
+                }
+                let linked_next_basis = if let Some(next_round) = opening.rounds.get(round + 1) {
+                    if next_round.left.index == next_index {
+                        Some(next_round.left.value_basis.as_slice())
+                    } else {
+                        next_round
+                            .right
+                            .as_ref()
+                            .filter(|right| right.index == next_index)
+                            .map(|right| right.value_basis.as_slice())
+                    }
+                } else {
+                    Some(final_value_basis)
+                };
+                if linked_next_basis != Some(round_opening.next.value_basis.as_slice()) {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
+                            query,
+                            round,
+                        },
+                    );
+                }
+                index = next_index;
+                current_len = current_len.div_ceil(2);
+            }
+        }
+
+        let final_commitment = fold_commitments.last().unwrap_or(base_commitment);
+        let final_root = Self::terminal_oracle_leaf_digest_from_basis(
+            &final_commitment.label,
+            final_commitment.values_len,
+            0,
+            final_value_basis,
+        );
+        if final_root != final_commitment.root {
+            return Err(
+                NativeTerminalVerifyError::TerminalResidualFoldFinalRootMismatch {
+                    expected: final_commitment.root,
+                    got: final_root,
+                },
+            );
+        }
+
+        Ok(())
     }
 
     fn derive_terminal_residual_fold_challenge<F>(
@@ -6868,8 +7484,52 @@ impl NativeTerminalCompiler {
         Self::field_from_goldilocks_basis_u64(&basis)
     }
 
+    fn derive_terminal_assignment_fold_challenge<F>(
+        prelude: &TerminalProofPrelude,
+        assignment_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+        round: usize,
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let expected = <F as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let mut basis = Vec::with_capacity(expected);
+        let mut counter = 0u64;
+        while basis.len() < expected {
+            if counter > 4096 {
+                return Err(NativeTerminalVerifyError::TerminalQueryDerivationLimitExceeded);
+            }
+            let block = Self::terminal_assignment_fold_challenge_block(
+                prelude,
+                assignment_commitment,
+                fold_commitments,
+                round,
+                counter,
+            );
+            for limb in block {
+                if basis.len() == expected {
+                    break;
+                }
+                if limb < Goldilocks::ORDER_U64 {
+                    basis.push(limb);
+                }
+            }
+            counter += 1;
+        }
+        Self::field_from_goldilocks_basis_u64(&basis)
+    }
+
     fn residual_fold_oracle_label(round: usize) -> String {
         format!("quadratic_residual_fold_{round}")
+    }
+
+    fn assignment_oracle_label() -> &'static str {
+        "assignment"
+    }
+
+    fn assignment_fold_oracle_label(round: usize) -> String {
+        format!("assignment_fold_{round}")
     }
 
     fn npo_validity_oracle_label() -> &'static str {
@@ -7520,6 +8180,50 @@ impl NativeTerminalCompiler {
         Self::absorb_relation_profile(&mut sponge, &prelude.relation_profile);
         sponge.absorb_digest(&prelude.public_values_digest.0);
         Self::absorb_terminal_oracle_commitment(&mut sponge, combined_commitment);
+        sponge.absorb_u64(fold_commitments.len() as u64);
+        for commitment in fold_commitments {
+            Self::absorb_terminal_oracle_commitment(&mut sponge, commitment);
+        }
+        sponge.absorb_u64(counter);
+        sponge.finalize()
+    }
+
+    fn terminal_assignment_fold_challenge_block(
+        prelude: &TerminalProofPrelude,
+        assignment_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+        round: usize,
+        counter: u64,
+    ) -> [u64; 5] {
+        let mut sponge = TerminalDigestSponge::new();
+        sponge.absorb_str("nock-terminal-assignment-fold-challenge-v1");
+        sponge.absorb_digest(&prelude.challenge_digest.0);
+        Self::absorb_terminal_parameters(&mut sponge, prelude.parameters);
+        Self::absorb_relation_profile(&mut sponge, &prelude.relation_profile);
+        sponge.absorb_digest(&prelude.public_values_digest.0);
+        Self::absorb_terminal_oracle_commitment(&mut sponge, assignment_commitment);
+        sponge.absorb_u64(fold_commitments.len() as u64);
+        for commitment in fold_commitments {
+            Self::absorb_terminal_oracle_commitment(&mut sponge, commitment);
+        }
+        sponge.absorb_u64(round as u64);
+        sponge.absorb_u64(counter);
+        sponge.finalize()
+    }
+
+    fn terminal_assignment_fold_query_block(
+        prelude: &TerminalProofPrelude,
+        assignment_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+        counter: u64,
+    ) -> [u64; 5] {
+        let mut sponge = TerminalDigestSponge::new();
+        sponge.absorb_str("nock-terminal-assignment-fold-query-v1");
+        sponge.absorb_digest(&prelude.challenge_digest.0);
+        Self::absorb_terminal_parameters(&mut sponge, prelude.parameters);
+        Self::absorb_relation_profile(&mut sponge, &prelude.relation_profile);
+        sponge.absorb_digest(&prelude.public_values_digest.0);
+        Self::absorb_terminal_oracle_commitment(&mut sponge, assignment_commitment);
         sponge.absorb_u64(fold_commitments.len() as u64);
         for commitment in fold_commitments {
             Self::absorb_terminal_oracle_commitment(&mut sponge, commitment);
@@ -8849,6 +9553,82 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalProductionWitnessCommitmentMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn goldilocks_terminal_assignment_evaluation_proof_round_trips_and_binds_public_prefix() {
+        let circuit = build_goldilocks_const_circuit(5);
+        let public_inputs = vec![Goldilocks::from_u64(5)];
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+        let assignment_oracle = compiler
+            .commit_terminal_assignment_goldilocks(&vk, &public_inputs, &witness)
+            .expect("assignment oracle must commit");
+        let assignment_commitment = assignment_oracle.commitment();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![assignment_commitment.root],
+            )
+            .expect("assignment prelude must build");
+        let proof = compiler
+            .prove_terminal_assignment_evaluation_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &assignment_oracle,
+                &witness,
+            )
+            .expect("assignment evaluation proof must build");
+        let final_value = compiler
+            .verify_terminal_assignment_evaluation_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &assignment_commitment,
+                &proof,
+            )
+            .expect("honest assignment evaluation proof must verify");
+        assert_eq!(
+            final_value,
+            NativeTerminalCompiler::field_from_goldilocks_basis_u64::<Goldilocks>(
+                &proof.final_value_basis
+            )
+            .unwrap()
+        );
+
+        let mut bad_public_prefix = proof.clone();
+        bad_public_prefix.public_prefix_openings[1].value_basis[0] += 1;
+        assert!(
+            compiler
+                .verify_terminal_assignment_evaluation_goldilocks(
+                    &vk,
+                    &public_inputs,
+                    &prelude,
+                    &assignment_commitment,
+                    &bad_public_prefix,
+                )
+                .is_err(),
+            "assignment proof must bind public prefix openings"
+        );
+
+        let mut bad_final = proof;
+        bad_final.final_value_basis[0] += 1;
+        assert!(
+            compiler
+                .verify_terminal_assignment_evaluation_goldilocks(
+                    &vk,
+                    &public_inputs,
+                    &prelude,
+                    &assignment_commitment,
+                    &bad_final,
+                )
+                .is_err(),
+            "assignment proof must bind final folded evaluation"
+        );
     }
 
     #[test]

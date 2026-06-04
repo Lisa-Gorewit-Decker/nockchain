@@ -40,15 +40,16 @@ pub use recursion::{
     prove_aggregation_layer, prove_next_layer,
 };
 pub use terminal::{
-    TerminalBindingDigest, TerminalCertificate, TerminalCertificateHeader,
-    TerminalCircuitFingerprint, TerminalCommitmentDigest, TerminalCompressor,
-    TerminalConstraintQueryPlan, TerminalMerkleSibling, TerminalOracleCommitment,
-    TerminalOracleMerkleTree, TerminalOracleOpening, TerminalPrimitiveConstraintOpening,
-    TerminalPrimitiveConstraintProof, TerminalProductionProof, TerminalProductionTip5HiddenInputs,
-    TerminalProofBodyDigest, TerminalProofKind, TerminalProofParameters, TerminalProofPrelude,
-    TerminalPublicValuesDigest, TerminalQueryPlan, TerminalRelationDigest, TerminalRelationProfile,
-    TerminalSparseR1csEntry, TerminalSparseR1csMatrix, TerminalSparseR1csRelation,
-    TerminalSparseR1csVariable, TerminalTranscriptChallengeDigest, TerminalWitness,
+    TerminalAssignmentEvaluationProof, TerminalBindingDigest, TerminalCertificate,
+    TerminalCertificateHeader, TerminalCircuitFingerprint, TerminalCommitmentDigest,
+    TerminalCompressor, TerminalConstraintQueryPlan, TerminalMerkleSibling,
+    TerminalOracleCommitment, TerminalOracleMerkleTree, TerminalOracleOpening,
+    TerminalPrimitiveConstraintOpening, TerminalPrimitiveConstraintProof, TerminalProductionProof,
+    TerminalProductionTip5HiddenInputs, TerminalProofBodyDigest, TerminalProofKind,
+    TerminalProofParameters, TerminalProofPrelude, TerminalPublicValuesDigest, TerminalQueryPlan,
+    TerminalRelationDigest, TerminalRelationProfile, TerminalSparseR1csEntry,
+    TerminalSparseR1csMatrix, TerminalSparseR1csRelation, TerminalSparseR1csVariable,
+    TerminalTranscriptChallengeDigest, TerminalWitness,
 };
 pub use traits::{
     Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,

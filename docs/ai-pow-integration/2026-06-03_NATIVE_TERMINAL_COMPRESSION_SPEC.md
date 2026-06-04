@@ -137,6 +137,12 @@ for this route.
   folds. It commits each transcript-challenge fold layer, samples fold paths
   only after all fold roots are fixed, checks sampled pair-fold consistency, and
   requires the final one-value fold to be zero.
+- `TerminalAssignmentEvaluationProof`: a Merkle-backed multilinear evaluation
+  proof for the assignment vector `[1 || public || witness]`. It explicitly
+  opens the public prefix against the assignment commitment and folds the whole
+  assignment vector to one transcript-derived value. This is the native PCS
+  primitive the sparse-R1CS sumcheck needs for its final `z(y*)` check; it is
+  not accepted as a standalone production proof.
 - `TerminalNpoValidityFoldProof`: a Merkle-backed folded validity-oracle proof
   for supported NPO rows. This remains as a standalone helper/test component;
   the aggregate `TerminalLocalProof` now uses `combined_validity` instead.
@@ -226,6 +232,15 @@ circuit this table has the same row count as the primitive quadratic relation
 and variables `1 + 33 + 3043`; its padded multilinear dimensions are tested in
 the integration profile. This is the concrete table a Spartan/Aurora-style
 global sumcheck backend must bind. It is not accepted as a proof by itself.
+
+The terminal checkpoint also now has a native assignment-evaluation component.
+The prover commits to `[1 || public || witness]`, opens the `1 || public`
+prefix explicitly, then folds the full assignment vector with transcript-derived
+challenges to produce a committed multilinear evaluation. This closes the
+obvious public-prefix substitution bug for a future assignment PCS: the
+assignment commitment cannot silently use different public values. The component
+still needs to be connected to the sparse-R1CS matrix-vector sumcheck before it
+can replace the direct witness-serializing production checker.
 
 Those supported NPO rows now also project into `TerminalNpoRelation`: a stable
 global row domain over `tip5_perm/goldilocks_w16_r5`, `recompose`, and
@@ -539,11 +554,11 @@ The current real-circuit terminal-local size profile after fold compaction is:
 
 | component | bytes |
 |---|---:|
-| prelude | 222 |
-| combined validity consistency openings | 23,478 |
-| combined validity fold | 61,009 |
-| typed local proof body | 84,836 |
-| typed local certificate | 85,057 |
+| prelude | 219 |
+| combined validity consistency openings | 21,781 |
+| combined validity fold | 61,069 |
+| typed local proof body | 83,193 |
+| typed local certificate | 83,414 |
 
 This profile says the remaining size problem is not generic serialization
 overhead. The large items are still Merkle-authenticated local openings and the
@@ -558,10 +573,10 @@ Tip5-L0 verifier circuit:
 
 | component | bytes |
 |---|---:|
-| direct production proof body | 92,781 |
-| direct production certificate | 93,005 |
+| direct production proof body | 92,708 |
+| direct production certificate | 92,932 |
 
-The debug-profile measurement is `prove=1.492 s, verify=1.682 s`. This meets
+The debug-profile measurement is `prove=1.486 s, verify=1.683 s`. This meets
 the ~100 KiB certificate target and is exact-sound for the compiled terminal
 relation because the verifier recomputes every primitive and supported NPO row
 from committed witness values. It is not the final target backend because it
@@ -647,6 +662,11 @@ Security-audit conclusions for the current implementation checkpoint:
   or NPO layout than the one implied by the compiled verifier circuit. It is
   still only a commitment; the proof system must enforce the committed relation
   globally.
+- The assignment-evaluation component binds the public prefix of
+  `[1 || public || witness]` before folding the committed assignment vector.
+  This is necessary for a future multilinear PCS opening, but it is only an
+  evaluation proof; it must be consumed by the sparse-R1CS sumcheck before it
+  gives a terminal relation proof.
 - The terminal oracle Merkle layer is binding to opened values under the
   recursive 5-round Tip5 assumption, but it is not itself a polynomial
   commitment. The direct production proof recomputes the relation from the full
