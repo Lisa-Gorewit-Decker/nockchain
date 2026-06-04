@@ -1109,6 +1109,18 @@ Literature checkpoint as of 2026-06-04:
   proximity layer must therefore state exactly which code, rate, query count,
   and Fiat-Shamir transcript it is instantiating; a Merkle opening protocol over
   arbitrary witness values is not a FRI proximity proof by itself.
+- Logarithmic-derivative lookup arguments translate table membership into
+  rational-function identities whose poles carry multiplicity, avoiding the
+  need to sort or explicitly permute the witness/table union
+  (Haboeck, "Multivariate lookups based on logarithmic derivatives",
+  IACR ePrint 2022/1530, https://eprint.iacr.org/2022/1530). That is the right
+  abstraction for the optimized Tip5 byte table, but the terminal proof cannot
+  claim lookup soundness from local byte-recomposition/MDS constraints alone:
+  it must additionally prove the global query multiset equals the fixed
+  `(byte, LOOKUP_TABLE[byte])` table with the committed table multiplicities.
+  A future LogUp/GKR variant, such as the GKR improvement line
+  (IACR ePrint 2023/1284, https://eprint.iacr.org/2023/1284), must still bind
+  its challenges to the same terminal prelude and 5-round Tip5 transcript.
 - Fiat-Shamir security for FRI and batched FRI is treated in Block, Garreta,
   Katz, Thaler, Tiwari, Zajac (IACR ePrint 2023/1071,
   https://eprint.iacr.org/2023/1071). The terminal certificate therefore has to
