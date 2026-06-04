@@ -18194,6 +18194,7 @@ impl NativeTerminalCompiler {
                 },
             );
         }
+        Self::verify_npo_polynomial_column_prelude_commitments(prelude, commitments)?;
         for (label, commitment) in labels.iter().zip(commitments) {
             let expected_label = Self::terminal_npo_polynomial_column_oracle_label(label);
             if commitment.label != expected_label {
@@ -18216,6 +18217,32 @@ impl NativeTerminalCompiler {
             Self::verify_prelude_binds_commitment(prelude, commitment)?;
         }
         Ok(layout)
+    }
+
+    fn verify_npo_polynomial_column_prelude_commitments(
+        prelude: &TerminalProofPrelude,
+        commitments: &[TerminalOracleCommitment],
+    ) -> Result<(), NativeTerminalVerifyError> {
+        if prelude.commitments.len() != commitments.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
+                    expected: commitments.len(),
+                    got: prelude.commitments.len(),
+                },
+            );
+        }
+        for (index, (got, commitment)) in prelude.commitments.iter().zip(commitments).enumerate() {
+            if *got != commitment.root {
+                return Err(
+                    NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch {
+                        index,
+                        expected: commitment.root,
+                        got: *got,
+                    },
+                );
+            }
+        }
+        Ok(())
     }
 
     fn evaluate_terminal_npo_polynomial_column_row_goldilocks<F>(
@@ -26532,7 +26559,7 @@ mod tests {
             .expect_err("tampered column root must not be accepted by the bound prelude");
         assert!(matches!(
             err,
-            NativeTerminalVerifyError::TerminalPreludeCommitmentNotBound { .. }
+            NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch { .. }
         ));
 
         let proof = compiler
@@ -26865,7 +26892,32 @@ mod tests {
             .expect_err("prelude missing column roots must reject");
         assert!(matches!(
             err,
-            NativeTerminalVerifyError::TerminalPreludeCommitmentNotBound { .. }
+            NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch { .. }
+        ));
+
+        let mut extra_roots = commitments
+            .iter()
+            .map(|commitment| commitment.root)
+            .collect::<Vec<_>>();
+        extra_roots.push(TerminalCommitmentDigest([9, 8, 7, 6, 5]));
+        let extra_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                extra_roots,
+            )
+            .expect("extra-root prelude must build for rejection test");
+        let err = compiler
+            .verify_terminal_npo_polynomial_column_openings_goldilocks::<Goldilocks>(
+                &vk,
+                &extra_prelude,
+                &proof,
+            )
+            .expect_err("prelude with extra column roots must reject");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch { .. }
         ));
 
         let (single_circuit, single_public_inputs, single_private_data) =
