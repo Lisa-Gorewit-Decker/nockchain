@@ -656,6 +656,14 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
     )
     .expect("terminal assignment fold openings must serialize")
     .len();
+    let r1cs_assignment_fold_round_openings_size = postcard::to_allocvec(
+        &r1cs_row_product_proof
+            .matrix_sumcheck
+            .assignment_evaluation
+            .round_openings,
+    )
+    .expect("terminal assignment fold round openings must serialize")
+    .len();
     let r1cs_row_product_verify_start = std::time::Instant::now();
     compiler
         .verify_terminal_r1cs_row_product_sumcheck_goldilocks(
@@ -747,7 +755,7 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
         r1cs_row_product_verify_elapsed.as_secs_f64(),
     );
     eprintln!(
-        "terminal R1CS row-product breakdown: row_rounds={} matrix_sumcheck={} matrix_rounds={} assignment_eval={} assignment_public_prefix={} assignment_fold_commitments={} assignment_fold_openings={}",
+        "terminal R1CS row-product breakdown: row_rounds={} matrix_sumcheck={} matrix_rounds={} assignment_eval={} assignment_public_prefix={} assignment_fold_commitments={} assignment_fold_query_indices={} assignment_fold_round_multiproofs={}",
         r1cs_row_product_rounds_size,
         r1cs_row_product_matrix_size,
         r1cs_matrix_rounds_size,
@@ -755,6 +763,7 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
         r1cs_assignment_public_prefix_size,
         r1cs_assignment_fold_commitments_size,
         r1cs_assignment_fold_openings_size,
+        r1cs_assignment_fold_round_openings_size,
     );
 
     assert!(certificate_size > body_size);

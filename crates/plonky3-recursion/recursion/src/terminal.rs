@@ -444,6 +444,7 @@ pub struct TerminalAssignmentEvaluationProof {
     pub public_prefix_proof: TerminalOraclePrefixProof,
     pub fold_commitments: Vec<TerminalOracleCommitment>,
     pub final_value_basis: Vec<u64>,
+    pub round_openings: Vec<TerminalOracleMultiProof>,
     pub openings: Vec<TerminalResidualFoldQueryOpening>,
 }
 
@@ -5206,45 +5207,32 @@ impl NativeTerminalCompiler {
             &fold_commitments,
         )?;
 
+        let mut expected_round_indices = Self::terminal_fold_round_indices(
+            &query_plan.indices,
+            assignment_commitment.values_len,
+            fold_commitments.len(),
+        );
+        let mut round_openings = Vec::with_capacity(fold_commitments.len());
+        for (round, round_indices) in expected_round_indices.iter_mut().enumerate() {
+            round_indices.sort_unstable();
+            let current_tree = if round == 0 {
+                assignment_oracle
+            } else {
+                &trees[round - 1]
+            };
+            let current_values = &layers[round];
+            let mut opening_values = Vec::with_capacity(round_indices.len());
+            for index in round_indices {
+                opening_values.push((*index, &current_values[*index]));
+            }
+            round_openings.push(current_tree.open_goldilocks_multi_values(&opening_values)?);
+        }
+
         let mut openings = Vec::with_capacity(query_plan.indices.len());
         for initial_index in &query_plan.indices {
-            let mut index = *initial_index;
-            let mut rounds = Vec::with_capacity(fold_commitments.len());
-            for round in 0..fold_commitments.len() {
-                let pair_index = (index / 2) * 2;
-                let current_tree = if round == 0 {
-                    assignment_oracle
-                } else {
-                    &trees[round - 1]
-                };
-                let current_values = &layers[round];
-                let next_values = &layers[round + 1];
-                let next_index = index / 2;
-                let left =
-                    current_tree.open_goldilocks_value(pair_index, &current_values[pair_index])?;
-                let right = if pair_index + 1 < current_values.len() {
-                    let mut opening = current_tree
-                        .open_goldilocks_value(pair_index + 1, &current_values[pair_index + 1])?;
-                    opening.path.clear();
-                    Some(opening)
-                } else {
-                    None
-                };
-                let mut next =
-                    trees[round].open_goldilocks_value(next_index, &next_values[next_index])?;
-                next.path.clear();
-                rounds.push(TerminalResidualFoldRoundOpening {
-                    round,
-                    pair_index,
-                    left,
-                    right,
-                    next,
-                });
-                index = next_index;
-            }
             openings.push(TerminalResidualFoldQueryOpening {
                 initial_index: *initial_index,
-                rounds,
+                rounds: Vec::new(),
             });
         }
 
@@ -5252,6 +5240,7 @@ impl NativeTerminalCompiler {
             public_prefix_proof,
             fold_commitments,
             final_value_basis,
+            round_openings,
             openings,
         })
     }
@@ -5314,45 +5303,32 @@ impl NativeTerminalCompiler {
             &fold_commitments,
         )?;
 
+        let mut expected_round_indices = Self::terminal_fold_round_indices(
+            &query_plan.indices,
+            assignment_commitment.values_len,
+            fold_commitments.len(),
+        );
+        let mut round_openings = Vec::with_capacity(fold_commitments.len());
+        for (round, round_indices) in expected_round_indices.iter_mut().enumerate() {
+            round_indices.sort_unstable();
+            let current_tree = if round == 0 {
+                assignment_oracle
+            } else {
+                &trees[round - 1]
+            };
+            let current_values = &layers[round];
+            let mut opening_values = Vec::with_capacity(round_indices.len());
+            for index in round_indices {
+                opening_values.push((*index, &current_values[*index]));
+            }
+            round_openings.push(current_tree.open_goldilocks_multi_values(&opening_values)?);
+        }
+
         let mut openings = Vec::with_capacity(query_plan.indices.len());
         for initial_index in &query_plan.indices {
-            let mut index = *initial_index;
-            let mut rounds = Vec::with_capacity(fold_commitments.len());
-            for round in 0..fold_commitments.len() {
-                let pair_index = (index / 2) * 2;
-                let current_tree = if round == 0 {
-                    assignment_oracle
-                } else {
-                    &trees[round - 1]
-                };
-                let current_values = &layers[round];
-                let next_values = &layers[round + 1];
-                let next_index = index / 2;
-                let left =
-                    current_tree.open_goldilocks_value(pair_index, &current_values[pair_index])?;
-                let right = if pair_index + 1 < current_values.len() {
-                    let mut opening = current_tree
-                        .open_goldilocks_value(pair_index + 1, &current_values[pair_index + 1])?;
-                    opening.path.clear();
-                    Some(opening)
-                } else {
-                    None
-                };
-                let mut next =
-                    trees[round].open_goldilocks_value(next_index, &next_values[next_index])?;
-                next.path.clear();
-                rounds.push(TerminalResidualFoldRoundOpening {
-                    round,
-                    pair_index,
-                    left,
-                    right,
-                    next,
-                });
-                index = next_index;
-            }
             openings.push(TerminalResidualFoldQueryOpening {
                 initial_index: *initial_index,
-                rounds,
+                rounds: Vec::new(),
             });
         }
 
@@ -5360,6 +5336,7 @@ impl NativeTerminalCompiler {
             public_prefix_proof,
             fold_commitments,
             final_value_basis,
+            round_openings,
             openings,
         })
     }
@@ -5399,10 +5376,11 @@ impl NativeTerminalCompiler {
             assignment_commitment,
             &proof.fold_commitments,
         )?;
-        self.verify_terminal_fold_openings_goldilocks::<F, _>(
+        self.verify_terminal_compact_fold_openings_goldilocks::<F, _>(
             assignment_commitment,
             &proof.fold_commitments,
             &proof.final_value_basis,
+            &proof.round_openings,
             &proof.openings,
             &query_plan,
             |round, prior| {
@@ -5455,10 +5433,11 @@ impl NativeTerminalCompiler {
             assignment_commitment,
             &proof.fold_commitments,
         )?;
-        self.verify_terminal_fold_openings_goldilocks::<F, _>(
+        self.verify_terminal_compact_fold_openings_goldilocks::<F, _>(
             assignment_commitment,
             &proof.fold_commitments,
             &proof.final_value_basis,
+            &proof.round_openings,
             &proof.openings,
             &query_plan,
             |round, _prior| Ok(point[round]),
@@ -8198,11 +8177,12 @@ impl NativeTerminalCompiler {
         }
     }
 
-    fn verify_terminal_fold_openings_goldilocks<F, D>(
+    fn verify_terminal_compact_fold_openings_goldilocks<F, D>(
         &self,
         base_commitment: &TerminalOracleCommitment,
         fold_commitments: &[TerminalOracleCommitment],
         final_value_basis: &[u64],
+        round_openings: &[TerminalOracleMultiProof],
         openings: &[TerminalResidualFoldQueryOpening],
         query_plan: &TerminalQueryPlan,
         derive_challenge: D,
@@ -8218,6 +8198,35 @@ impl NativeTerminalCompiler {
                     got: openings.len(),
                 },
             );
+        }
+        if round_openings.len() != fold_commitments.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalResidualFoldCommitmentLengthMismatch {
+                    round: fold_commitments.len(),
+                    expected: fold_commitments.len(),
+                    got: round_openings.len(),
+                },
+            );
+        }
+
+        let expected_round_indices = Self::terminal_fold_round_indices(
+            &query_plan.indices,
+            base_commitment.values_len,
+            fold_commitments.len(),
+        );
+        let mut round_values = Vec::with_capacity(round_openings.len());
+        for (round, proof_opening) in round_openings.iter().enumerate() {
+            let current_commitment = if round == 0 {
+                base_commitment
+            } else {
+                &fold_commitments[round - 1]
+            };
+            let values = self.verify_terminal_oracle_multi_proof_goldilocks::<F>(
+                current_commitment,
+                proof_opening,
+            )?;
+            Self::verify_terminal_oracle_value_indices(&expected_round_indices[round], &values)?;
+            round_values.push(values);
         }
 
         let mut challenges = Vec::with_capacity(fold_commitments.len());
@@ -8237,11 +8246,11 @@ impl NativeTerminalCompiler {
                     },
                 );
             }
-            if opening.rounds.len() != fold_commitments.len() {
+            if !opening.rounds.is_empty() {
                 return Err(
                     NativeTerminalVerifyError::TerminalResidualFoldRoundCountMismatch {
                         query,
-                        expected: fold_commitments.len(),
+                        expected: 0,
                         got: opening.rounds.len(),
                     },
                 );
@@ -8249,160 +8258,45 @@ impl NativeTerminalCompiler {
 
             let mut index = opening.initial_index;
             let mut current_len = base_commitment.values_len;
-            for (round, round_opening) in opening.rounds.iter().enumerate() {
+            for (round, challenge) in challenges.iter().copied().enumerate() {
                 let expected_pair = (index / 2) * 2;
                 let next_index = index / 2;
-                if round_opening.round != round {
-                    return Err(
-                        NativeTerminalVerifyError::TerminalResidualFoldRoundIndexMismatch {
-                            query,
-                            round,
-                            expected: round,
-                            got: round_opening.round,
-                        },
-                    );
-                }
-                if round_opening.pair_index != expected_pair {
-                    return Err(
-                        NativeTerminalVerifyError::TerminalResidualFoldOpeningIndexMismatch {
-                            query,
-                            round,
-                            field: "pair",
-                            expected: expected_pair,
-                            got: round_opening.pair_index,
-                        },
-                    );
-                }
-
-                let current_commitment = if round == 0 {
-                    base_commitment
-                } else {
-                    &fold_commitments[round - 1]
-                };
-                self.verify_terminal_oracle_opening(current_commitment, &round_opening.left)?;
-                if round_opening.left.index != expected_pair {
-                    return Err(
+                let left = Self::terminal_opened_value(&round_values[round], expected_pair)
+                    .map_err(|_| {
                         NativeTerminalVerifyError::TerminalResidualFoldOpeningIndexMismatch {
                             query,
                             round,
                             field: "left",
                             expected: expected_pair,
-                            got: round_opening.left.index,
-                        },
-                    );
-                }
-                let left =
-                    Self::field_from_goldilocks_basis_u64::<F>(&round_opening.left.value_basis)?;
+                            got: expected_pair,
+                        }
+                    })?;
                 let right = if expected_pair + 1 < current_len {
-                    let Some(right_opening) = &round_opening.right else {
-                        return Err(
-                            NativeTerminalVerifyError::TerminalResidualFoldRightOpeningMissing {
-                                query,
-                                round,
-                                index: expected_pair + 1,
-                            },
-                        );
-                    };
-                    if right_opening.index != expected_pair + 1 {
-                        return Err(
-                            NativeTerminalVerifyError::TerminalResidualFoldOpeningIndexMismatch {
-                                query,
-                                round,
-                                field: "right",
-                                expected: expected_pair + 1,
-                                got: right_opening.index,
-                            },
-                        );
-                    }
-                    if !right_opening.path.is_empty() {
-                        return Err(
-                            NativeTerminalVerifyError::TerminalResidualFoldRightOpeningPathUnexpected {
-                                query,
-                                round,
-                            },
-                        );
-                    }
-                    let right_digest = Self::terminal_oracle_leaf_digest_from_basis(
-                        &current_commitment.label,
-                        current_commitment.values_len,
-                        right_opening.index,
-                        &right_opening.value_basis,
-                    );
-                    let Some(first_sibling) = round_opening.left.path.first() else {
-                        return Err(
-                            NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
-                                query,
-                                round,
-                            },
-                        );
-                    };
-                    if first_sibling.sibling_is_left || first_sibling.digest != right_digest {
-                        return Err(
-                            NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
-                                query,
-                                round,
-                            },
-                        );
-                    }
-                    Self::field_from_goldilocks_basis_u64::<F>(&right_opening.value_basis)?
+                    Self::terminal_opened_value(&round_values[round], expected_pair + 1).map_err(
+                        |_| NativeTerminalVerifyError::TerminalResidualFoldRightOpeningMissing {
+                            query,
+                            round,
+                            index: expected_pair + 1,
+                        },
+                    )?
                 } else {
-                    if round_opening.right.is_some() {
-                        return Err(
-                            NativeTerminalVerifyError::TerminalResidualFoldRightOpeningUnexpected {
-                                query,
-                                round,
-                                index: expected_pair + 1,
-                            },
-                        );
-                    }
                     F::ZERO
                 };
-
-                if round_opening.next.index != next_index {
-                    return Err(
+                let expected_next = left * (F::ONE - challenge) + right * challenge;
+                let opened_next = if let Some(next_round_values) = round_values.get(round + 1) {
+                    Self::terminal_opened_value(next_round_values, next_index).map_err(|_| {
                         NativeTerminalVerifyError::TerminalResidualFoldOpeningIndexMismatch {
                             query,
                             round,
                             field: "next",
                             expected: next_index,
-                            got: round_opening.next.index,
-                        },
-                    );
-                }
-                if !round_opening.next.path.is_empty() {
-                    return Err(
-                        NativeTerminalVerifyError::TerminalResidualFoldNextOpeningPathUnexpected {
-                            query,
-                            round,
-                        },
-                    );
-                }
-                let opened_next =
-                    Self::field_from_goldilocks_basis_u64::<F>(&round_opening.next.value_basis)?;
-                let challenge = challenges[round];
-                let expected_next = left * (F::ONE - challenge) + right * challenge;
-                if opened_next != expected_next {
-                    return Err(
-                        NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
-                            query,
-                            round,
-                        },
-                    );
-                }
-                let linked_next_basis = if let Some(next_round) = opening.rounds.get(round + 1) {
-                    if next_round.left.index == next_index {
-                        Some(next_round.left.value_basis.as_slice())
-                    } else {
-                        next_round
-                            .right
-                            .as_ref()
-                            .filter(|right| right.index == next_index)
-                            .map(|right| right.value_basis.as_slice())
-                    }
+                            got: next_index,
+                        }
+                    })?
                 } else {
-                    Some(final_value_basis)
+                    Self::field_from_goldilocks_basis_u64::<F>(final_value_basis)?
                 };
-                if linked_next_basis != Some(round_opening.next.value_basis.as_slice()) {
+                if opened_next != expected_next {
                     return Err(
                         NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
                             query,
@@ -11059,6 +10953,13 @@ mod tests {
             )
             .unwrap()
         );
+        assert_eq!(proof.round_openings.len(), proof.fold_commitments.len());
+        assert!(
+            proof
+                .openings
+                .iter()
+                .all(|opening| opening.rounds.is_empty())
+        );
 
         let mut bad_public_prefix = proof.clone();
         bad_public_prefix.public_prefix_proof.frontier[0].0[0] ^= 1;
@@ -11075,7 +10976,68 @@ mod tests {
             "assignment proof must bind public prefix openings"
         );
 
-        let mut bad_final = proof;
+        let mut missing_round_leaf = proof.clone();
+        missing_round_leaf.round_openings[0].openings.pop();
+        assert!(
+            compiler
+                .verify_terminal_assignment_evaluation_goldilocks(
+                    &vk,
+                    &public_inputs,
+                    &prelude,
+                    &assignment_commitment,
+                    &missing_round_leaf,
+                )
+                .is_err(),
+            "assignment proof must include every transcript-derived fold leaf"
+        );
+
+        let mut bad_round_value = proof.clone();
+        bad_round_value.round_openings[0].openings[0].value_basis[0] =
+            bad_round_value.round_openings[0].openings[0].value_basis[0].wrapping_add(1);
+        assert!(
+            compiler
+                .verify_terminal_assignment_evaluation_goldilocks(
+                    &vk,
+                    &public_inputs,
+                    &prelude,
+                    &assignment_commitment,
+                    &bad_round_value,
+                )
+                .is_err(),
+            "assignment proof must bind compact fold multiproof values"
+        );
+
+        let mut stale_round_payload = proof.clone();
+        let stale_opening = TerminalOracleOpening {
+            index: stale_round_payload.round_openings[0].openings[0].index,
+            value_basis: stale_round_payload.round_openings[0].openings[0]
+                .value_basis
+                .clone(),
+            path: Vec::new(),
+        };
+        stale_round_payload.openings[0]
+            .rounds
+            .push(TerminalResidualFoldRoundOpening {
+                round: 0,
+                pair_index: 0,
+                left: stale_opening.clone(),
+                right: None,
+                next: stale_opening,
+            });
+        assert!(
+            compiler
+                .verify_terminal_assignment_evaluation_goldilocks(
+                    &vk,
+                    &public_inputs,
+                    &prelude,
+                    &assignment_commitment,
+                    &stale_round_payload,
+                )
+                .is_err(),
+            "assignment proof must reject stale per-query fold payloads"
+        );
+
+        let mut bad_final = proof.clone();
         bad_final.final_value_basis[0] += 1;
         assert!(
             compiler
