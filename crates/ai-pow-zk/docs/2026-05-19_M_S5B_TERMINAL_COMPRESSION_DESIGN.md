@@ -46,12 +46,12 @@
 > test_l1_outer_cert_tip5_unified
 > terminal_production_certificate_measures_real_tip5_l0_verifier_circuit
 > -- --nocapture`) reports the production compact recursive certificate
-> at **86,446 bytes (84.4 KiB)** with prove **4.627 s** / verify
-> **3.587 s**. The FRI-native NPO
+> at **82,888 bytes (80.9 KiB)** with prove **4.700 s** / verify
+> **3.609 s**. The FRI-native NPO
 > residual-zero+recompose+value-bridge candidate, at the same pure
-> 60-bit profile, reports **111,943 bytes (109.3 KiB)** with prove
-> **8.641 s** / verify **0.670 s**. This checkpoint is near the
-> ≤100 KiB bar but does **not** claim a production-profile ≤100 KiB hit.
+> 60-bit profile, reports **99,647 bytes (97.3 KiB)** with prove
+> **9.216 s** / verify **0.677 s**. This checkpoint clears the
+> ≤100 KiB bar for the terminal-backend candidate.
 
 ---
 

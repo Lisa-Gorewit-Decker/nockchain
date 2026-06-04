@@ -151,13 +151,13 @@ heuristic is **not** adopted).
     **2026-06-04 terminal backend checkpoint:** the production terminal
     FRI profile is pure-query 60-bit (`log_blowup=4`, `num_queries=15`,
     `query_pow_bits=0`; no PoW bits counted toward soundness). The
-    current production compact recursive certificate measures **86,446
-    bytes (84.4 KiB)** with prove **4.627 s** and verify **3.587 s** in
+    current production compact recursive certificate measures **82,888
+    bytes (80.9 KiB)** with prove **4.700 s** and verify **3.609 s** in
     `terminal_production_certificate_measures_real_tip5_l0_verifier_circuit`.
     The FRI-native NPO residual-zero+recompose+value-bridge candidate
-    verifies at the same pure 60-bit profile and measures **111,943 bytes
-    (109.3 KiB)**, prove **8.641 s**, verify **0.670 s**. This is close
-    to, but has **not** hit, the ≤100 KiB production target.
+    verifies at the same pure 60-bit profile and measures **99,647 bytes
+    (97.3 KiB)**, prove **9.216 s**, verify **0.677 s**. This clears
+    the ≤100 KiB production target for this terminal-backend candidate.
     Trade-off: `lb=4` ⇒ 16× LDE (vs pre-2026-05-20 4×) ⇒ ~4×
     prover memory; 5-round Tip5 dropped prover time ~57% (22 min
     → 9.5 min). **The ai-pow-zk-specific 5-round Tip5 (paper-spec
