@@ -24465,6 +24465,84 @@ mod tests {
             compressed_fri_bytes.len(),
             compressed_fri_bytes.len() as f64 / 1024.0,
         );
+        let zeta_openings_bytes = postcard::to_allocvec(&(
+            &proof.opened_trace_basis,
+            &proof.opened_quotient_basis,
+        ))
+        .expect("terminal AIR algebra zeta openings must serialize");
+        let input_query_values = proof
+            .proof
+            .query_proofs
+            .iter()
+            .map(|query| {
+                query
+                    .input_proof
+                    .iter()
+                    .map(|batch| batch.opened_values.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let input_query_values_bytes = postcard::to_allocvec(&input_query_values)
+            .expect("terminal AIR algebra input query values must serialize");
+        let input_query_paths = proof
+            .proof
+            .query_proofs
+            .iter()
+            .map(|query| {
+                query
+                    .input_proof
+                    .iter()
+                    .map(|batch| batch.opening_proof.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let input_query_paths_bytes = postcard::to_allocvec(&input_query_paths)
+            .expect("terminal AIR algebra input query paths must serialize");
+        let commit_phase_values = proof
+            .proof
+            .query_proofs
+            .iter()
+            .map(|query| {
+                query
+                    .commit_phase_openings
+                    .iter()
+                    .map(|round| (round.log_arity, round.sibling_values.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let commit_phase_values_bytes = postcard::to_allocvec(&commit_phase_values)
+            .expect("terminal AIR algebra commit-phase values must serialize");
+        let commit_phase_paths = proof
+            .proof
+            .query_proofs
+            .iter()
+            .map(|query| {
+                query
+                    .commit_phase_openings
+                    .iter()
+                    .map(|round| round.opening_proof.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let commit_phase_paths_bytes = postcard::to_allocvec(&commit_phase_paths)
+            .expect("terminal AIR algebra commit-phase paths must serialize");
+        println!(
+            "terminal Tip5 lookup AIR algebra size breakdown: zeta_openings={} input_query_values={} input_paths={} commit_phase_values={} commit_phase_paths={} commits_final={}",
+            zeta_openings_bytes.len(),
+            input_query_values_bytes.len(),
+            input_query_paths_bytes.len(),
+            commit_phase_values_bytes.len(),
+            commit_phase_paths_bytes.len(),
+            serialized
+                .len()
+                .saturating_sub(
+                    zeta_openings_bytes.len()
+                        + input_query_values_bytes.len()
+                        + input_query_paths_bytes.len()
+                        + commit_phase_values_bytes.len()
+                        + commit_phase_paths_bytes.len()
+                ),
+        );
         assert!(
             compressed_fri_bytes.len() < plain_fri_bytes.len(),
             "terminal compressed FRI should reduce AIR algebra path material"

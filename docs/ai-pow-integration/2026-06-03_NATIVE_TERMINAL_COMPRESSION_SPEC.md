@@ -406,7 +406,11 @@ for this route.
   `135,641` bytes / `132.5 KiB`, and the restored proof verifies. This closes
   a real internal-AIR algebra/support checkpoint, but it is too large to combine
   naively with the current terminal backend and still excludes the global LogUp
-  byte-table argument.
+  byte-table argument. Component accounting shows why: zeta openings are
+  `9,449` bytes, transcript-query input row values are `66,694` bytes, input
+  Merkle paths are `19,944` bytes, commit-phase sibling values are `3,476`
+  bytes, commit-phase Merkle paths are `70,802` bytes, and the remaining
+  commitments/final data are `701` bytes.
 - `TerminalNpoTip5LookupNpoRowsValueBridgeQuotientProof`: an NPO-row-domain
   value-binding checkpoint for the optimized lookup terminal IO. Instead of
   trusting a prover-supplied lookup-domain NPO projection, it commits the 26
@@ -1063,7 +1067,10 @@ the primitive and NPO value-binding components are included. The next production
 route must either share the trace opening with the boundary/value bridge, commit
 only a relation-specific projection, or fold the lookup AIR algebra into a
 larger batched proximity proof; simply appending this proof would overshoot the
-100 KiB certificate target. The LogUp/global-bus byte lookup relation remains a
+100 KiB certificate target. The measured row-value cost (`66.7 KiB`) and
+commit-phase path cost (`70.8 KiB`) show that Merkle path compression alone is
+not enough; the production design must avoid opening all 558 trace columns at
+every terminal FRI query. The LogUp/global-bus byte lookup relation remains a
 separate soundness obligation.
 The NPO-row value-bridge quotient closes the projection-to-value-column binding
 checkpoint in isolation at 16.1 KiB, while the terminal compact-FRI wrapper
