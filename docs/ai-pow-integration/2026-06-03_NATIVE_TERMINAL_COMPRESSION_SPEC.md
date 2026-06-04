@@ -137,7 +137,12 @@ for this route.
   root; they are not accepted from serialized proof-body data. When the queried
   domain can provide at least `num_queries` rows, query derivation samples
   without replacement so the 15-query production profile yields 15 effective
-  row checks instead of a smaller duplicate-collapsed set.
+  row checks instead of a smaller duplicate-collapsed set. The public
+  standalone query-opening verifier treats its prelude commitment vector as the
+  exact one-root shape `[oracle_root]`, rejecting both stale roots and extra
+  unused roots that could otherwise steer sampled rows. Internal aggregate
+  components still use multi-root preludes only at verifier entrypoints that
+  check their own exact commitment shape.
 - `TerminalPrimitiveConstraintProof`: sampled local proof for primitive terminal
   constraints. It opens committed witness-oracle values for transcript-derived
   primitive constraint indices and checks constants, public bindings, and ALU
@@ -911,13 +916,15 @@ the expanded NPO validity residual-component count, so a proof body cannot bind
 one NPO oracle shape while deriving challenges over another.
 
 Every oracle-backed local verifier now also checks that the passed commitment
-root is one of the roots absorbed into that prelude. This applies to the generic
-terminal query-opening helper, primitive witness openings, supported-NPO witness
-openings, quadratic residual openings, and NPO validity openings. Passing an
-unbound witness, residual, NPO validity, or other terminal oracle root is
-rejected before query plans are derived. Without this check, a prover could
-choose an oracle after the prelude challenge boundary and grind against
-already-known sampled rows.
+root is absorbed into that prelude, and standalone oracle openings require the
+exact one-root prelude shape `[oracle_root]`. Primitive witness openings,
+supported-NPO witness openings, quadratic residual openings, and NPO validity
+openings bind their roots through the aggregate component prelude shape.
+Passing an unbound witness, residual, NPO validity, or other terminal oracle
+root is rejected before query plans are derived. Without this check, a prover
+could choose an oracle after the prelude challenge boundary and grind against
+already-known sampled rows; without exact standalone shapes, a prover could
+also add unused roots as a challenge-steering knob.
 
 The same verifier entrypoints also reject base-oracle identity drift. The
 witness oracle must use label `witness` and length equal to the compiled witness
@@ -1352,12 +1359,14 @@ Security-audit conclusions for the current implementation checkpoint:
   production proof it binds the assignment commitment before any verifier
   challenges are sampled. That assignment oracle is the single source for both
   primitive R1CS and exhaustive NPO row checks.
-- Oracle roots passed to local proof verifiers must now be prelude-bound. This
-  includes the generic terminal query-opening verifier and closes the immediate
-  post-challenge oracle-substitution bug for witness, residual, NPO validity,
-  and other terminal oracle commitments. The production proof's exhaustive NPO
-  verifier binds its assignment-witness multiproof to the same prelude-bound
-  assignment root as primitive R1CS.
+- Oracle roots passed to local proof verifiers must now be prelude-bound, and
+  the public standalone terminal query-opening verifier requires the exact
+  one-root prelude shape. This closes the immediate post-challenge
+  oracle-substitution bug for witness, residual, NPO validity, and other
+  terminal oracle commitments, and prevents unused standalone roots from
+  steering sampled rows. The production proof's exhaustive NPO verifier binds
+  its assignment-witness multiproof to the same prelude-bound assignment root
+  as primitive R1CS.
 - Local proof verifiers now also enforce canonical base-oracle labels and
   lengths for witness, primitive residual, and supported-NPO validity
   commitments. This closes the softer commitment-identity drift class where a

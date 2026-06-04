@@ -3954,7 +3954,7 @@ impl NativeTerminalCompiler {
         commitment: &TerminalOracleCommitment,
         openings: &[TerminalOracleOpening],
     ) -> Result<TerminalQueryPlan, NativeTerminalVerifyError> {
-        Self::verify_prelude_binds_commitment(prelude, commitment)?;
+        Self::verify_standalone_oracle_prelude_commitment(prelude, commitment)?;
         let plan = self.derive_terminal_query_plan(prelude, commitment)?;
         if openings.len() != plan.indices.len() {
             return Err(
@@ -20030,6 +20030,31 @@ impl NativeTerminalCompiler {
         Ok(())
     }
 
+    fn verify_standalone_oracle_prelude_commitment(
+        prelude: &TerminalProofPrelude,
+        commitment: &TerminalOracleCommitment,
+    ) -> Result<(), NativeTerminalVerifyError> {
+        let expected = [commitment.root];
+        if prelude.commitments.len() != expected.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
+                    expected: expected.len(),
+                    got: prelude.commitments.len(),
+                },
+            );
+        }
+        if prelude.commitments[0] != expected[0] {
+            return Err(
+                NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch {
+                    index: 0,
+                    expected: expected[0],
+                    got: prelude.commitments[0],
+                },
+            );
+        }
+        Ok(())
+    }
+
     pub fn terminal_fri_commitment_digest(
         commitment: &TerminalFriCommitment,
     ) -> Result<TerminalCommitmentDigest, NativeTerminalVerifyError> {
@@ -29887,8 +29912,29 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             err,
-            NativeTerminalVerifyError::TerminalPreludeCommitmentNotBound {
-                root: commitment.root,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch {
+                index: 0,
+                expected: commitment.root,
+                got: TerminalCommitmentDigest([7, 7, 7, 7, 7]),
+            }
+        );
+
+        let extra_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![commitment.root, TerminalCommitmentDigest([8, 8, 8, 8, 8])],
+            )
+            .expect("syntactically valid prelude with extra commitment");
+        let err = compiler
+            .verify_terminal_query_openings(&extra_prelude, &commitment, &openings)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
+                expected: 1,
+                got: 2,
             }
         );
 
