@@ -26,7 +26,7 @@ use p3_goldilocks::Goldilocks;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
-use p3_tip5_circuit_air::{NUM_ROUNDS as TIP5_PERM_ROUNDS, Tip5Perm};
+use p3_tip5_circuit_air::{NUM_ROUNDS as TIP5_PERM_ROUNDS, Tip5Perm, generate_trace_rows};
 use serde::{Deserialize, Serialize};
 
 /// Minimum production soundness accepted for native terminal certificates.
@@ -4781,6 +4781,93 @@ impl NativeTerminalCompiler {
         let layout = Self::terminal_npo_polynomial_column_layout::<F>(verifying_key);
         let table = self.terminal_npo_polynomial_table_goldilocks(verifying_key, witness)?;
         Self::terminal_npo_polynomial_columns_from_table(&layout, &table)
+    }
+
+    pub fn terminal_npo_tip5_air_trace_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+    ) -> Result<(Vec<[Goldilocks; 16]>, RowMajorMatrix<Goldilocks>), NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let table = self.terminal_npo_polynomial_table_goldilocks(verifying_key, witness)?;
+        let inputs = Self::terminal_npo_tip5_air_inputs_from_table(&table)?;
+        let raw_inputs = inputs
+            .iter()
+            .map(|state| core::array::from_fn(|i| PrimeField64::as_canonical_u64(&state[i])))
+            .collect::<Vec<[u64; 16]>>();
+        let trace = generate_trace_rows(&raw_inputs);
+        Ok((inputs, trace))
+    }
+
+    fn terminal_npo_tip5_air_inputs_from_table<F>(
+        table: &TerminalNpoPolynomialTable<F>,
+    ) -> Result<Vec<[Goldilocks; 16]>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let mut inputs = Vec::new();
+        for row in &table.rows {
+            if row.row_kind != TerminalNpoRowKind::Tip5Goldilocks {
+                continue;
+            }
+            let mut state = [Goldilocks::ZERO; 16];
+            for (limb, value) in row.inputs.iter().enumerate().take(16) {
+                if let Some(value) = value {
+                    state[limb] = Self::terminal_npo_table_base_goldilocks(
+                        row.npo_index,
+                        &format!("input_value_{limb}"),
+                        value,
+                    )?;
+                }
+            }
+            for hidden in &row.hidden_tip5_inputs {
+                if hidden.limb >= 16 || hidden.value_basis.len() != 1 {
+                    return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
+                        npo_index: row.npo_index,
+                        expected: 16,
+                        got: hidden.limb + 1,
+                    });
+                }
+                if hidden.value_basis[0] >= Goldilocks::ORDER_U64 {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical {
+                            limb: hidden.limb,
+                            value: hidden.value_basis[0],
+                        },
+                    );
+                }
+                state[hidden.limb] = Goldilocks::from_u64(hidden.value_basis[0]);
+            }
+            inputs.push(state);
+        }
+        Ok(inputs)
+    }
+
+    fn terminal_npo_table_base_goldilocks<F>(
+        npo_index: usize,
+        label: &str,
+        value: &F,
+    ) -> Result<Goldilocks, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let basis = value.as_basis_coefficients_slice();
+        if basis
+            .iter()
+            .copied()
+            .skip(1)
+            .any(|coeff| coeff != Goldilocks::ZERO)
+        {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                    label: label.into(),
+                    row: npo_index,
+                },
+            );
+        }
+        Ok(basis.first().copied().unwrap_or(Goldilocks::ZERO))
     }
 
     pub fn terminal_npo_polynomial_verifier_derived_columns_goldilocks<F>(
@@ -18565,7 +18652,7 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
     use p3_matrix::Matrix;
-    use p3_tip5_circuit_air::NUM_ROUNDS;
+    use p3_tip5_circuit_air::{NUM_ROUNDS, tip5_perm_air_width};
 
     use super::*;
 
@@ -19341,6 +19428,55 @@ mod tests {
             commitments[mmcs_index].root,
             tampered_set.commitments()[mmcs_index].root
         );
+    }
+
+    #[test]
+    fn goldilocks_npo_tip5_air_trace_matches_terminal_rows() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(2);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness =
+            execute_tip5_terminal_witness_with_private_data(&circuit, public_inputs, private_data);
+        let table = compiler
+            .terminal_npo_polynomial_table_goldilocks(&vk, &witness)
+            .expect("terminal NPO table must build");
+        let (air_inputs, air_trace) = compiler
+            .terminal_npo_tip5_air_trace_goldilocks(&vk, &witness)
+            .expect("terminal Tip5 AIR trace must build");
+
+        assert_eq!(air_inputs.len(), 2);
+        assert_eq!(air_trace.width(), tip5_perm_air_width());
+        assert_eq!(air_trace.height(), 2);
+        for (row_index, input) in air_inputs.iter().enumerate() {
+            for (limb, value) in input.iter().enumerate() {
+                assert_eq!(
+                    air_trace.values[row_index * air_trace.width() + limb],
+                    *value
+                );
+            }
+        }
+
+        let tip5_rows = table
+            .rows
+            .iter()
+            .filter(|row| row.row_kind == TerminalNpoRowKind::Tip5Goldilocks)
+            .collect::<Vec<_>>();
+        assert_eq!(tip5_rows.len(), air_inputs.len());
+        for (input, row) in air_inputs.iter().zip(tip5_rows) {
+            let mut expected_output = *input;
+            Tip5Perm.permute_mut(&mut expected_output);
+            for (limb, output) in row.outputs.iter().enumerate() {
+                if let Some(output) = output {
+                    let output = NativeTerminalCompiler::terminal_npo_table_base_goldilocks(
+                        row.npo_index,
+                        &format!("output_value_{limb}"),
+                        output,
+                    )
+                    .expect("terminal output must be base Goldilocks");
+                    assert_eq!(output, expected_output[limb]);
+                }
+            }
+        }
     }
 
     #[test]

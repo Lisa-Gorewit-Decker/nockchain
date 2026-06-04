@@ -300,6 +300,13 @@ for this route.
   recompose coefficient reconstruction, then requires the derived residual
   vector to match the committed residual columns. Tests tamper Tip5 output
   columns, MMCS-bit columns, and D2 recompose input columns.
+- `TerminalNpoTip5AirTrace` bridge: a deterministic table source for the
+  full 5-round Tip5 permutation relation. It derives one Tip5 AIR input row
+  from each terminal Tip5 NPO row, then generates the lookup-free
+  `Tip5PermAir` trace using the existing KAT-anchored generator. Tests bind
+  the generated AIR trace back to the terminal table inputs and terminal
+  exposed outputs. This is not yet a production proof component; it is the
+  table source for the pending Tip5 permutation quotient/FRI backend.
 - `TerminalNpoPolynomialColumnQueryPlan`: the verifier-derived row schedule for
   future NPO-column openings. It validates that every fixed column commitment
   has the verifier-derived label, shared row count, and a root already bound in
