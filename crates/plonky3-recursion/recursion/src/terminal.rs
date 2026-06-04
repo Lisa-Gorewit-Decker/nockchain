@@ -29569,6 +29569,113 @@ mod tests {
                 | NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch { .. }
         ));
 
+        let mut bad_merged_commitment = merged_proof.clone();
+        let mut roots = bad_merged_commitment
+            .selected_lookup_commitment
+            .roots()
+            .to_vec();
+        roots[0][0] += Goldilocks::ONE;
+        bad_merged_commitment.selected_lookup_commitment = TerminalFriCommitment::new(roots);
+        let err = compiler
+            .verify_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks::<
+                Goldilocks,
+            >(&vk, &public_inputs, &merged_prelude, &bad_merged_commitment)
+            .expect_err("merged proof must bind selected+lookup commitment to prelude");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch { .. }
+        ));
+
+        let mut bad_merged_lookup_profile = merged_proof.clone();
+        bad_merged_lookup_profile.lookup_io_profile.padded_rows += 1;
+        let err = compiler
+            .verify_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks::<
+                Goldilocks,
+            >(&vk, &public_inputs, &merged_prelude, &bad_merged_lookup_profile)
+            .expect_err("merged proof must recompute and bind lookup IO profile");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { label, .. }
+                if label == "npo_fri_residual_zero_recompose_value_bridge_lookup_profile"
+        ));
+
+        let mut bad_merged_value_bridge_profile = merged_proof.clone();
+        bad_merged_value_bridge_profile
+            .value_bridge_quotient_profile
+            .padded_rows += 1;
+        let err = compiler
+            .verify_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks::<
+                Goldilocks,
+            >(
+                &vk,
+                &public_inputs,
+                &merged_prelude,
+                &bad_merged_value_bridge_profile,
+            )
+            .expect_err("merged proof must recompute and bind value-bridge quotient profile");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { label, .. }
+                if label == "npo_fri_residual_zero_recompose_value_bridge_quotient_profile"
+        ));
+
+        let mut shortened_merged_lookup_opening = merged_proof.clone();
+        shortened_merged_lookup_opening
+            .opened_lookup_io_basis
+            .pop()
+            .expect("merged proof must carry lookup IO opening limbs");
+        let err = compiler
+            .verify_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks::<
+                Goldilocks,
+            >(
+                &vk,
+                &public_inputs,
+                &merged_prelude,
+                &shortened_merged_lookup_opening,
+            )
+            .expect_err("merged proof must dimension-check lookup IO openings");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
+
+        let mut malformed_merged_lookup_opening = merged_proof.clone();
+        malformed_merged_lookup_opening.opened_lookup_io_basis[0].push(0);
+        let err = compiler
+            .verify_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks::<
+                Goldilocks,
+            >(
+                &vk,
+                &public_inputs,
+                &merged_prelude,
+                &malformed_merged_lookup_opening,
+            )
+            .expect_err("merged proof must dimension-check lookup IO basis limbs");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
+
+        let mut shortened_merged_value_bridge_opening = merged_proof.clone();
+        shortened_merged_value_bridge_opening
+            .opened_value_bridge_quotient_basis
+            .pop()
+            .expect("merged proof must carry value-bridge quotient opening limbs");
+        let err = compiler
+            .verify_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks::<
+                Goldilocks,
+            >(
+                &vk,
+                &public_inputs,
+                &merged_prelude,
+                &shortened_merged_value_bridge_opening,
+            )
+            .expect_err("merged proof must dimension-check value-bridge quotient openings");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
+
         let restored_fri = NativeTerminalCompiler::decompress_terminal_fri_proof(&proof.proof)
             .expect("compressed terminal FRI proof must decompress");
         let compressed_fri_bytes = postcard::to_allocvec(&proof.proof)
