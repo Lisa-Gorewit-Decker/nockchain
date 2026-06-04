@@ -7096,6 +7096,7 @@ dependencies = [
  "p3-poseidon2-air",
  "p3-poseidon2-circuit-air",
  "p3-symmetric",
+ "p3-tip5-circuit-air",
  "p3-uni-stark",
  "p3-util",
  "postcard",

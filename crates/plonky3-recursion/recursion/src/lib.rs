@@ -12,6 +12,7 @@ pub mod pcs;
 pub mod prelude;
 pub mod public_inputs;
 pub mod recursion;
+pub mod terminal;
 pub mod traits;
 pub mod types;
 pub mod verifier;
@@ -35,7 +36,18 @@ pub use recursion::{
     AggregationCircuitFingerprint, AggregationPrepCache, BatchOnly, NextLayerPrepCache,
     PcsRecursionBackend, ProveNextLayerParams, RecursionInput, RecursionOutput,
     VerifierCircuitResult, build_and_prove_aggregation_layer, build_and_prove_next_layer,
-    build_next_layer_circuit, build_next_layer_prep, prove_aggregation_layer, prove_next_layer,
+    build_next_layer_circuit, build_next_layer_prep, build_terminal_witness,
+    prove_aggregation_layer, prove_next_layer,
+};
+pub use terminal::{
+    TerminalBindingDigest, TerminalCertificate, TerminalCertificateHeader,
+    TerminalCircuitFingerprint, TerminalCommitmentDigest, TerminalCompressor,
+    TerminalConstraintQueryPlan, TerminalMerkleSibling, TerminalOracleCommitment,
+    TerminalOracleMerkleTree, TerminalOracleOpening, TerminalPrimitiveConstraintOpening,
+    TerminalPrimitiveConstraintProof, TerminalProofBodyDigest, TerminalProofKind,
+    TerminalProofParameters, TerminalProofPrelude, TerminalPublicValuesDigest, TerminalQueryPlan,
+    TerminalRelationDigest, TerminalRelationProfile, TerminalTranscriptChallengeDigest,
+    TerminalWitness,
 };
 pub use traits::{
     Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,

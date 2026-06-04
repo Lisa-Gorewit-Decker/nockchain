@@ -26,6 +26,7 @@ use p3_lookup::{Lookup, LookupData, LookupProtocol};
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 use tracing::instrument;
 
+use crate::terminal::{TerminalCircuitFingerprint, TerminalWitness};
 use crate::traits::{LookupMetadata, RecursiveAir};
 use crate::types::RecursiveLagrangeSelectors;
 use crate::verifier::VerificationError;
@@ -258,6 +259,47 @@ pub struct NextLayerPrepCache<SC: StarkGenericConfig + 'static> {
     pub prover: BatchStarkProver<SC>,
 }
 
+/// Execute a verifier circuit and package the assignment for terminal proving.
+///
+/// The current production path feeds `witness.traces` into [`BatchStarkProver`].
+/// A native compact terminal compressor should consume this same bundle without
+/// inheriting the batch-STARK proof format.
+pub fn build_terminal_witness<SC, A, B, const D: usize>(
+    prev: &RecursionInput<'_, SC, A>,
+    verification_circuit: &Circuit<SC::Challenge>,
+    verifier_result: &B::VerifierResult,
+    config: &SC,
+    backend: &B,
+) -> Result<TerminalWitness<SC::Challenge>, VerificationError>
+where
+    SC: StarkGenericConfig + Send + Sync + Clone + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    B: PcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64,
+    SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
+{
+    let public_inputs = verifier_result.pack_public_inputs(prev)?;
+    let private_inputs = verifier_result.pack_private_inputs(prev)?;
+    let mut runner = verification_circuit.runner();
+    runner
+        .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner
+        .set_private_inputs(&private_inputs)
+        .map_err(VerificationError::Circuit)?;
+    backend
+        .set_private_data(config, &mut runner, verifier_result.op_ids(), prev)
+        .map_err(|e| proof_shape_err(&e))?;
+    let traces = runner.run().map_err(VerificationError::Circuit)?;
+
+    Ok(TerminalWitness {
+        fingerprint: TerminalCircuitFingerprint::from_circuit(verification_circuit),
+        public_inputs,
+        private_inputs,
+        traces,
+    })
+}
+
 /// Build a verifier circuit for a recursion layer.
 #[instrument(skip_all)]
 pub fn build_next_layer_circuit<SC, A, B, const D: usize>(
@@ -384,24 +426,16 @@ where
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     if let Some(cached) = prep {
-        let traces = {
-            let public_inputs = verifier_result.pack_public_inputs(prev)?;
-            let private_inputs = verifier_result.pack_private_inputs(prev)?;
-            let mut runner = verification_circuit.runner();
-            runner
-                .set_public_inputs(&public_inputs)
-                .map_err(VerificationError::Circuit)?;
-            runner
-                .set_private_inputs(&private_inputs)
-                .map_err(VerificationError::Circuit)?;
-            backend
-                .set_private_data(config, &mut runner, verifier_result.op_ids(), prev)
-                .map_err(|e| proof_shape_err(&e))?;
-            runner.run().map_err(VerificationError::Circuit)?
-        };
+        let terminal_witness = build_terminal_witness::<SC, A, B, D>(
+            prev,
+            verification_circuit,
+            verifier_result,
+            config,
+            backend,
+        )?;
         let proof = cached
             .prover
-            .prove_all_tables(&traces, &cached.circuit_prover_data)
+            .prove_all_tables(&terminal_witness.traces, &cached.circuit_prover_data)
             .map_err(|e| proof_shape_err(&e.to_string()))?;
         return Ok(RecursionOutput(
             proof,
@@ -425,23 +459,13 @@ where
     let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
     let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
 
-    let traces = {
-        let public_inputs = verifier_result.pack_public_inputs(prev)?;
-        let private_inputs = verifier_result.pack_private_inputs(prev)?;
-        let mut runner = verification_circuit.runner();
-        runner
-            .set_public_inputs(&public_inputs)
-            .map_err(VerificationError::Circuit)?;
-        runner
-            .set_private_inputs(&private_inputs)
-            .map_err(VerificationError::Circuit)?;
-
-        backend
-            .set_private_data(config, &mut runner, verifier_result.op_ids(), prev)
-            .map_err(|e| proof_shape_err(&e))?;
-
-        runner.run().map_err(VerificationError::Circuit)?
-    };
+    let terminal_witness = build_terminal_witness::<SC, A, B, D>(
+        prev,
+        verification_circuit,
+        verifier_result,
+        config,
+        backend,
+    )?;
 
     let circuit_prover_data = {
         let prover_data = ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
@@ -458,7 +482,7 @@ where
         prover.register_table_prover(p);
     }
     let proof = prover
-        .prove_all_tables(&traces, &circuit_prover_data)
+        .prove_all_tables(&terminal_witness.traces, &circuit_prover_data)
         .map_err(|e| proof_shape_err(&e.to_string()))?;
 
     Ok(RecursionOutput(proof, Rc::new(circuit_prover_data)))
