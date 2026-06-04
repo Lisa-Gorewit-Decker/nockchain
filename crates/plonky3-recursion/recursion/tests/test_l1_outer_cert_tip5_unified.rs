@@ -466,6 +466,27 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
     let production_certificate_size = postcard::to_allocvec(&production_certificate)
         .expect("terminal production certificate must serialize")
         .len();
+    let production_r1cs_size = postcard::to_allocvec(&production_proof.primitive_r1cs_proof)
+        .expect("terminal production R1CS proof must serialize")
+        .len();
+    let production_npo_fold_size = production_proof
+        .npo_validity_fold_proof
+        .as_ref()
+        .map(|proof| {
+            postcard::to_allocvec(proof)
+                .expect("terminal production NPO validity fold proof must serialize")
+                .len()
+        })
+        .unwrap_or(0);
+    let production_npo_consistency_size = production_proof
+        .npo_validity_consistency_proof
+        .as_ref()
+        .map(|proof| {
+            postcard::to_allocvec(proof)
+                .expect("terminal production NPO validity consistency proof must serialize")
+                .len()
+        })
+        .unwrap_or(0);
     let production_verify_start = std::time::Instant::now();
     compiler
         .verify_goldilocks_production_certificate(
@@ -543,44 +564,26 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
         .expect("terminal R1CS row-product sumcheck must verify");
     let r1cs_row_product_verify_elapsed = r1cs_row_product_verify_start.elapsed();
 
-    if let Some((hidden_row, hidden_value)) = production_proof
-        .tip5_hidden_inputs
-        .iter()
-        .enumerate()
-        .find_map(|(row, hidden)| (!hidden.values.is_empty()).then_some((row, hidden)))
-    {
-        let mut tampered_hidden = production_proof.clone();
-        tampered_hidden.tip5_hidden_inputs[hidden_row].values[0].value_basis[0] ^= 1;
+    if production_proof.npo_validity_consistency_proof.is_some() {
+        let mut missing_npo_opening = production_proof.clone();
+        missing_npo_opening
+            .npo_validity_consistency_proof
+            .as_mut()
+            .expect("real production proof must carry NPO consistency")
+            .openings[0]
+            .npo_opening
+            .witness_openings
+            .pop();
         let err = compiler
             .verify_terminal_production_goldilocks(
                 &vk,
                 &terminal_witness.public_inputs,
-                &tampered_hidden,
-            )
-            .unwrap_err();
-        assert!(
-            matches!(
-                err,
-                p3_recursion::terminal::NativeTerminalVerifyError::Tip5OutputMismatch { .. }
-                    | p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical { .. }
-            ),
-            "tampered hidden Tip5 input at NPO row {} must be rejected, got {err:?}",
-            hidden_value.npo_index,
-        );
-    }
-    if production_proof.tip5_hidden_inputs.len() > 1 {
-        let mut reordered_hidden = production_proof.clone();
-        reordered_hidden.tip5_hidden_inputs.swap(0, 1);
-        let err = compiler
-            .verify_terminal_production_goldilocks(
-                &vk,
-                &terminal_witness.public_inputs,
-                &reordered_hidden,
+                &missing_npo_opening,
             )
             .unwrap_err();
         assert!(matches!(
             err,
-            p3_recursion::terminal::NativeTerminalVerifyError::TerminalProductionTip5HiddenInputOrder { .. }
+            p3_recursion::terminal::NativeTerminalVerifyError::TerminalNpoOpeningCountMismatch { .. }
         ));
     }
 
@@ -602,13 +605,17 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
         prelude_size, combined_validity_consistency_size, combined_validity_fold_size,
     );
     eprintln!(
-        "terminal production direct certificate: body={} bytes ({:.1} KiB) certificate={} bytes ({:.1} KiB) prove={:.3}s verify={:.3}s",
+        "terminal production compact certificate: body={} bytes ({:.1} KiB) certificate={} bytes ({:.1} KiB) prove={:.3}s verify={:.3}s",
         production_body_size,
         production_body_size as f64 / 1024.0,
         production_certificate_size,
         production_certificate_size as f64 / 1024.0,
         production_prove_elapsed.as_secs_f64(),
         production_verify_elapsed.as_secs_f64(),
+    );
+    eprintln!(
+        "terminal production compact components: r1cs_row_product={} npo_validity_consistency={} npo_validity_fold={}",
+        production_r1cs_size, production_npo_consistency_size, production_npo_fold_size,
     );
     eprintln!(
         "terminal sparse R1CS matrix sumcheck component: proof={} bytes ({:.1} KiB) prove={:.3}s verify={:.3}s",

@@ -494,25 +494,21 @@ pub struct TerminalLocalProof {
 
 /// Production proof-body checkpoint for the terminal relation.
 ///
-/// This proof binds a full witness oracle and verifies every primitive and
-/// supported NPO row against it. It is production-sound as a direct relation
-/// checker, but it is not the final non-witness-exposing polynomial backend.
-/// The polynomial/sumcheck backend should keep this proof's transcript and
-/// row-check semantics while replacing `witness_values_basis` with a compact
-/// commitment opening argument.
+/// This proof binds a witness oracle for sampled supported-NPO row openings,
+/// an assignment oracle for primitive sparse-R1CS sumcheck, and an optional NPO
+/// validity oracle for keys with supported NPO rows. It no longer serializes
+/// the full witness. The remaining backend gap is polynomializing the supported
+/// Tip5/recompose NPO validity relation rather than checking sampled rows
+/// directly.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalProductionProof {
     pub prelude: TerminalProofPrelude,
     pub witness_commitment: TerminalOracleCommitment,
-    pub witness_values_basis: Vec<u64>,
-    pub tip5_hidden_inputs: Vec<TerminalProductionTip5HiddenInputs>,
-}
-
-/// Hidden Tip5 input limbs for one supported Tip5 NPO row.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TerminalProductionTip5HiddenInputs {
-    pub npo_index: usize,
-    pub values: Vec<TerminalTip5HiddenInputValue>,
+    pub assignment_commitment: TerminalOracleCommitment,
+    pub primitive_r1cs_proof: TerminalR1csRowProductSumcheckProof,
+    pub npo_validity_commitment: Option<TerminalOracleCommitment>,
+    pub npo_validity_fold_proof: Option<TerminalNpoValidityFoldProof>,
+    pub npo_validity_consistency_proof: Option<TerminalNpoValidityConsistencyProof>,
 }
 
 /// Operation inventory for a terminal verifier circuit.
@@ -1063,22 +1059,6 @@ pub enum NativeTerminalVerifyError {
     TerminalProductionWitnessBasisLengthMismatch {
         expected: usize,
         got: usize,
-    },
-    TerminalProductionWitnessCommitmentMismatch {
-        expected: TerminalCommitmentDigest,
-        got: TerminalCommitmentDigest,
-    },
-    TerminalProductionTip5HiddenInputMismatch {
-        npo_index: usize,
-        expected: usize,
-        got: usize,
-    },
-    TerminalProductionTip5HiddenInputOrder {
-        expected: usize,
-        got: usize,
-    },
-    TerminalProductionNonBaseGoldilocksValue {
-        witness_id: u32,
     },
     TerminalProductionProofUnsupported,
     MissingTerminalCommitment,
@@ -4831,21 +4811,65 @@ impl NativeTerminalCompiler {
             &witness_values,
         )?;
         let witness_commitment = witness_oracle.commitment();
+        let assignment_oracle =
+            self.commit_terminal_assignment_goldilocks(verifying_key, public_inputs, witness)?;
+        let assignment_commitment = assignment_oracle.commitment();
+        let npo_domain_len = Self::terminal_npo_domain_len(verifying_key);
+        let npo_validity_oracle = if npo_domain_len > 0 {
+            Some(self.commit_terminal_npo_validity_goldilocks(verifying_key, witness)?)
+        } else {
+            None
+        };
+
+        let mut prelude_commitments = vec![witness_commitment.root, assignment_commitment.root];
+        if let Some(oracle) = &npo_validity_oracle {
+            prelude_commitments.push(oracle.commitment().root);
+        }
         let prelude = self.build_proof_prelude_goldilocks(
             verifying_key,
             public_inputs,
             TerminalProofParameters::production_60bit(),
-            vec![witness_commitment.root],
+            prelude_commitments,
         )?;
-        let witness_values_basis = Self::flatten_goldilocks_basis_values::<F>(&witness_values);
-        let tip5_hidden_inputs =
-            self.collect_terminal_production_tip5_hidden_inputs(verifying_key, witness)?;
+        let primitive_r1cs_proof = self.prove_terminal_r1cs_row_product_sumcheck_goldilocks(
+            verifying_key,
+            public_inputs,
+            &prelude,
+            &assignment_oracle,
+            witness,
+        )?;
+        let (npo_validity_commitment, npo_validity_fold_proof, npo_validity_consistency_proof) =
+            if let Some(oracle) = &npo_validity_oracle {
+                let commitment = oracle.commitment();
+                let fold_proof = self.prove_terminal_npo_validity_fold_goldilocks(
+                    verifying_key,
+                    public_inputs,
+                    &prelude,
+                    oracle,
+                    witness,
+                )?;
+                let consistency_proof = self.prove_terminal_npo_validity_consistency_goldilocks(
+                    verifying_key,
+                    public_inputs,
+                    &prelude,
+                    &witness_oracle,
+                    oracle,
+                    &fold_proof,
+                    witness,
+                )?;
+                (Some(commitment), Some(fold_proof), Some(consistency_proof))
+            } else {
+                (None, None, None)
+            };
 
         Ok(TerminalProductionProof {
             prelude,
             witness_commitment,
-            witness_values_basis,
-            tip5_hidden_inputs,
+            assignment_commitment,
+            primitive_r1cs_proof,
+            npo_validity_commitment,
+            npo_validity_fold_proof,
+            npo_validity_consistency_proof,
         })
     }
 
@@ -5739,35 +5763,63 @@ impl NativeTerminalCompiler {
             &proof.witness_commitment,
         )?;
         Self::verify_prelude_binds_commitment(&proof.prelude, &proof.witness_commitment)?;
-
-        let witness_values = Self::terminal_witness_values_from_basis::<F>(
-            &proof.witness_values_basis,
-            verifying_key.header.fingerprint.witness_count as usize,
+        Self::verify_terminal_assignment_commitment_identity(
+            verifying_key,
+            &proof.assignment_commitment,
         )?;
-        let witness_oracle = TerminalOracleMerkleTree::commit_goldilocks_values(
-            Self::witness_oracle_label(),
-            &witness_values,
-        )?;
-        let got_commitment = witness_oracle.commitment();
-        if got_commitment.root != proof.witness_commitment.root {
-            return Err(
-                NativeTerminalVerifyError::TerminalProductionWitnessCommitmentMismatch {
-                    expected: proof.witness_commitment.root,
-                    got: got_commitment.root,
-                },
-            );
-        }
+        Self::verify_prelude_binds_commitment(&proof.prelude, &proof.assignment_commitment)?;
 
-        self.verify_terminal_production_quadratic_relation(
+        self.verify_terminal_r1cs_row_product_sumcheck_goldilocks(
             verifying_key,
             public_inputs,
-            &witness_values,
+            &proof.prelude,
+            &proof.assignment_commitment,
+            &proof.primitive_r1cs_proof,
         )?;
-        self.verify_terminal_production_npo_rows(
-            verifying_key,
-            &witness_values,
-            &proof.tip5_hidden_inputs,
-        )
+
+        let npo_domain_len = Self::terminal_npo_domain_len(verifying_key);
+        match (
+            npo_domain_len,
+            &proof.npo_validity_commitment,
+            &proof.npo_validity_fold_proof,
+            &proof.npo_validity_consistency_proof,
+        ) {
+            (0, None, None, None) => {}
+            (0, Some(_), _, _) => {
+                return Err(
+                    NativeTerminalVerifyError::TerminalLocalNpoValidityCommitmentUnexpected,
+                );
+            }
+            (0, None, Some(_), _) | (0, None, _, Some(_)) => {
+                return Err(NativeTerminalVerifyError::TerminalLocalNpoValidityProofUnexpected);
+            }
+            (_, Some(commitment), Some(fold_proof), Some(consistency_proof)) => {
+                self.verify_terminal_npo_validity_consistency_goldilocks(
+                    verifying_key,
+                    public_inputs,
+                    &proof.prelude,
+                    &proof.witness_commitment,
+                    commitment,
+                    fold_proof,
+                    consistency_proof,
+                )?;
+            }
+            (expected_rows, None, _, _) => {
+                return Err(
+                    NativeTerminalVerifyError::TerminalLocalNpoValidityCommitmentMissing {
+                        expected_rows,
+                    },
+                );
+            }
+            (expected_rows, Some(_), None, _) | (expected_rows, Some(_), _, None) => {
+                return Err(
+                    NativeTerminalVerifyError::TerminalLocalNpoValidityProofMissing {
+                        expected_rows,
+                    },
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn verify_terminal_local_queries_goldilocks<F>(
@@ -6715,133 +6767,6 @@ impl NativeTerminalCompiler {
         out
     }
 
-    fn terminal_witness_values_from_basis<F>(
-        basis: &[u64],
-        witness_count: usize,
-    ) -> Result<Vec<F>, NativeTerminalVerifyError>
-    where
-        F: BasedVectorSpace<Goldilocks>,
-    {
-        let dimension = <F as BasedVectorSpace<Goldilocks>>::DIMENSION;
-        let expected = witness_count * dimension;
-        if basis.len() != expected {
-            return Err(
-                NativeTerminalVerifyError::TerminalProductionWitnessBasisLengthMismatch {
-                    expected,
-                    got: basis.len(),
-                },
-            );
-        }
-
-        let mut values = Vec::with_capacity(witness_count);
-        for chunk in basis.chunks_exact(dimension) {
-            values.push(Self::field_from_goldilocks_basis_u64::<F>(chunk)?);
-        }
-        Ok(values)
-    }
-
-    fn production_witness_value<F: Copy>(
-        witness_values: &[F],
-        witness_id: WitnessId,
-    ) -> Result<F, NativeTerminalVerifyError> {
-        witness_values.get(witness_id.0 as usize).copied().ok_or(
-            NativeTerminalVerifyError::MissingWitness {
-                witness_id: witness_id.0,
-            },
-        )
-    }
-
-    fn production_embedded_goldilocks_value<F>(
-        witness_values: &[F],
-        witness_id: WitnessId,
-    ) -> Result<Goldilocks, NativeTerminalVerifyError>
-    where
-        F: Copy + BasedVectorSpace<Goldilocks>,
-    {
-        let value = Self::production_witness_value(witness_values, witness_id)?;
-        let basis = value.as_basis_coefficients_slice();
-        if basis
-            .iter()
-            .copied()
-            .skip(1)
-            .any(|coeff| coeff != Goldilocks::ZERO)
-        {
-            return Err(
-                NativeTerminalVerifyError::TerminalProductionNonBaseGoldilocksValue {
-                    witness_id: witness_id.0,
-                },
-            );
-        }
-        Ok(basis[0])
-    }
-
-    fn evaluate_linear_expression_from_witness_values<F>(
-        expression: &TerminalLinearExpression<F>,
-        public_inputs: &[F],
-        witness_values: &[F],
-    ) -> Result<F, NativeTerminalVerifyError>
-    where
-        F: Field + Copy,
-    {
-        let mut acc = F::ZERO;
-        for term in &expression.terms {
-            let value = match term.variable {
-                TerminalLinearVariable::One => F::ONE,
-                TerminalLinearVariable::Public(public_pos) => public_inputs
-                    .get(public_pos)
-                    .copied()
-                    .ok_or(NativeTerminalVerifyError::PublicInputLengthMismatch {
-                        expected: public_pos + 1,
-                        got: public_inputs.len(),
-                    })?,
-                TerminalLinearVariable::Witness(witness_id) => {
-                    Self::production_witness_value(witness_values, witness_id)?
-                }
-            };
-            acc += term.coeff * value;
-        }
-        Ok(acc)
-    }
-
-    fn verify_terminal_production_quadratic_relation<F>(
-        &self,
-        verifying_key: &NativeTerminalVerifyingKey<F>,
-        public_inputs: &[F],
-        witness_values: &[F],
-    ) -> Result<(), NativeTerminalVerifyError>
-    where
-        F: Field + Copy,
-    {
-        let relation = verifying_key.primitive_quadratic_relation()?;
-        for (quadratic_index, constraint) in relation.constraints.iter().enumerate() {
-            let a = Self::evaluate_linear_expression_from_witness_values(
-                &constraint.a,
-                public_inputs,
-                witness_values,
-            )?;
-            let b = Self::evaluate_linear_expression_from_witness_values(
-                &constraint.b,
-                public_inputs,
-                witness_values,
-            )?;
-            let c = Self::evaluate_linear_expression_from_witness_values(
-                &constraint.c,
-                public_inputs,
-                witness_values,
-            )?;
-            if a * b != c {
-                return Err(
-                    NativeTerminalVerifyError::TerminalQuadraticConstraintViolation {
-                        quadratic_index,
-                        source_constraint_index: constraint.source_constraint_index,
-                        kind: constraint.kind,
-                    },
-                );
-            }
-        }
-        Ok(())
-    }
-
     fn verify_no_unexpected_nonprimitive_traces<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -7011,306 +6936,6 @@ impl NativeTerminalCompiler {
             Self::push_unique_witness(&mut out, *witness_id);
         }
         out
-    }
-
-    fn collect_terminal_production_tip5_hidden_inputs<F>(
-        &self,
-        verifying_key: &NativeTerminalVerifyingKey<F>,
-        witness: &TerminalWitness<F>,
-    ) -> Result<Vec<TerminalProductionTip5HiddenInputs>, NativeTerminalVerifyError>
-    where
-        F: Field + BasedVectorSpace<Goldilocks>,
-    {
-        let mut out = Vec::new();
-        let mut npo_index = 0usize;
-        for constraint in &verifying_key.constraints {
-            match constraint {
-                NativeTerminalConstraint::Tip5Goldilocks {
-                    op_type,
-                    expected_rows,
-                    callsites,
-                } => {
-                    let trace = witness
-                        .traces
-                        .non_primitive_traces
-                        .get(&NpoTypeId::new(op_type))
-                        .and_then(|trace| trace.as_any().downcast_ref::<Tip5Trace<Goldilocks>>())
-                        .ok_or_else(|| NativeTerminalVerifyError::MissingNonPrimitiveTrace {
-                            op_type: op_type.into(),
-                        })?;
-                    for row in 0..*expected_rows {
-                        let operation = trace.operations.get(row).ok_or_else(|| {
-                            NativeTerminalVerifyError::NonPrimitiveTraceRowCount {
-                                op_type: op_type.into(),
-                                expected: row + 1,
-                                got: trace.operations.len(),
-                            }
-                        })?;
-                        Self::verify_tip5_callsite(op_type, row, &callsites[row], operation)?;
-                        let mut values = Vec::new();
-                        for (limb, input_value) in operation.input_values.iter().enumerate() {
-                            if callsites[row]
-                                .inputs
-                                .get(limb)
-                                .and_then(|input| *input)
-                                .is_none()
-                            {
-                                values.push(TerminalTip5HiddenInputValue {
-                                    limb,
-                                    value_basis: Self::goldilocks_basis_u64(input_value),
-                                });
-                            }
-                        }
-                        out.push(TerminalProductionTip5HiddenInputs { npo_index, values });
-                        npo_index += 1;
-                    }
-                }
-                NativeTerminalConstraint::RecomposeGoldilocks { expected_rows, .. } => {
-                    npo_index += *expected_rows;
-                }
-                _ => {}
-            }
-        }
-        Ok(out)
-    }
-
-    fn verify_terminal_production_npo_rows<F>(
-        &self,
-        verifying_key: &NativeTerminalVerifyingKey<F>,
-        witness_values: &[F],
-        tip5_hidden_inputs: &[TerminalProductionTip5HiddenInputs],
-    ) -> Result<(), NativeTerminalVerifyError>
-    where
-        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
-    {
-        let mut hidden_pos = 0usize;
-        let mut npo_index = 0usize;
-        for constraint in &verifying_key.constraints {
-            match constraint {
-                NativeTerminalConstraint::Tip5Goldilocks {
-                    expected_rows,
-                    callsites,
-                    ..
-                } => {
-                    for row in 0..*expected_rows {
-                        let hidden = tip5_hidden_inputs.get(hidden_pos).ok_or(
-                            NativeTerminalVerifyError::TerminalProductionTip5HiddenInputMismatch {
-                                npo_index,
-                                expected: callsites[row]
-                                    .inputs
-                                    .iter()
-                                    .filter(|input| input.is_none())
-                                    .count(),
-                                got: 0,
-                            },
-                        )?;
-                        if hidden.npo_index != npo_index {
-                            return Err(
-                                NativeTerminalVerifyError::TerminalProductionTip5HiddenInputOrder {
-                                    expected: npo_index,
-                                    got: hidden.npo_index,
-                                },
-                            );
-                        }
-                        Self::verify_terminal_production_tip5_row(
-                            npo_index,
-                            row,
-                            &callsites[row],
-                            witness_values,
-                            &hidden.values,
-                        )?;
-                        hidden_pos += 1;
-                        npo_index += 1;
-                    }
-                }
-                NativeTerminalConstraint::RecomposeGoldilocks {
-                    op_type,
-                    expected_rows,
-                    callsites,
-                } => {
-                    for row in 0..*expected_rows {
-                        Self::verify_terminal_production_recompose_row(
-                            npo_index,
-                            op_type,
-                            row,
-                            &callsites[row],
-                            witness_values,
-                        )?;
-                        npo_index += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-        if hidden_pos != tip5_hidden_inputs.len() {
-            return Err(
-                NativeTerminalVerifyError::TerminalProductionTip5HiddenInputMismatch {
-                    npo_index,
-                    expected: hidden_pos,
-                    got: tip5_hidden_inputs.len(),
-                },
-            );
-        }
-        Ok(())
-    }
-
-    fn verify_terminal_production_tip5_row<F>(
-        npo_index: usize,
-        row: usize,
-        callsite: &NativeTerminalNpoCallsite,
-        witness_values: &[F],
-        hidden_values: &[TerminalTip5HiddenInputValue],
-    ) -> Result<(), NativeTerminalVerifyError>
-    where
-        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
-    {
-        let hidden_input_count = callsite
-            .inputs
-            .iter()
-            .filter(|input| input.is_none())
-            .count();
-        if hidden_values.len() != hidden_input_count {
-            return Err(
-                NativeTerminalVerifyError::TerminalProductionTip5HiddenInputMismatch {
-                    npo_index,
-                    expected: hidden_input_count,
-                    got: hidden_values.len(),
-                },
-            );
-        }
-
-        let mut state = [Goldilocks::ZERO; 16];
-        for (limb, witness_id) in callsite.inputs.iter().copied().enumerate() {
-            if let Some(witness_id) = witness_id {
-                state[limb] =
-                    Self::production_embedded_goldilocks_value(witness_values, witness_id)?;
-            }
-        }
-
-        let mut seen_hidden = [false; 16];
-        for hidden in hidden_values {
-            if hidden.limb >= 16 {
-                return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
-                    npo_index,
-                    expected: 16,
-                    got: hidden.limb + 1,
-                });
-            }
-            if seen_hidden[hidden.limb] {
-                return Err(
-                    NativeTerminalVerifyError::TerminalNpoTip5HiddenInputDuplicate {
-                        npo_index,
-                        limb: hidden.limb,
-                    },
-                );
-            }
-            seen_hidden[hidden.limb] = true;
-            if callsite.inputs[hidden.limb].is_some() {
-                return Err(
-                    NativeTerminalVerifyError::TerminalNpoTip5HiddenInputUnexpected {
-                        npo_index,
-                        limb: hidden.limb,
-                    },
-                );
-            }
-            if hidden.value_basis.len() != 1 {
-                return Err(
-                    NativeTerminalVerifyError::TerminalNpoTip5InputValueDimensionMismatch {
-                        npo_index,
-                        limb: hidden.limb,
-                        expected: 1,
-                        got: hidden.value_basis.len(),
-                    },
-                );
-            }
-            if hidden.value_basis[0] >= Goldilocks::ORDER_U64 {
-                return Err(
-                    NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical {
-                        limb: hidden.limb,
-                        value: hidden.value_basis[0],
-                    },
-                );
-            }
-            state[hidden.limb] = Goldilocks::from_u64(hidden.value_basis[0]);
-        }
-
-        Tip5Perm.permute_mut(&mut state);
-        for (limb, witness_id) in callsite.outputs.iter().copied().enumerate() {
-            if let Some(witness_id) = witness_id {
-                let got = Self::production_witness_value(witness_values, witness_id)?;
-                if got != Self::embed_goldilocks(state[limb]) {
-                    return Err(NativeTerminalVerifyError::Tip5OutputMismatch { row, limb });
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn verify_terminal_production_recompose_row<F>(
-        npo_index: usize,
-        op_type: &str,
-        row: usize,
-        callsite: &NativeTerminalNpoCallsite,
-        witness_values: &[F],
-    ) -> Result<(), NativeTerminalVerifyError>
-    where
-        F: Field + BasedVectorSpace<Goldilocks>,
-    {
-        if op_type != NpoTypeId::recompose().as_str()
-            && op_type != NpoTypeId::recompose_with_coeff_lookups().as_str()
-        {
-            return Err(NativeTerminalVerifyError::MissingNonPrimitiveTrace {
-                op_type: op_type.into(),
-            });
-        }
-        let expected_d = <F as BasedVectorSpace<Goldilocks>>::DIMENSION;
-        if callsite.inputs.len() != expected_d {
-            return Err(NativeTerminalVerifyError::RecomposeTraceInputLength {
-                row,
-                expected: expected_d,
-                got: callsite.inputs.len(),
-            });
-        }
-        let mut coeffs = Vec::with_capacity(expected_d);
-        for (limb, witness_id) in callsite.inputs.iter().copied().enumerate() {
-            let Some(witness_id) = witness_id else {
-                return Err(
-                    NativeTerminalVerifyError::TerminalNpoOpeningWitnessMismatch {
-                        npo_index,
-                        opening: limb,
-                        expected: limb as u32,
-                        got: usize::MAX,
-                    },
-                );
-            };
-            coeffs.push(Self::production_embedded_goldilocks_value(
-                witness_values,
-                witness_id,
-            )?);
-        }
-        let expected_output = <F as BasedVectorSpace<Goldilocks>>::from_basis_coefficients_slice(
-            &coeffs,
-        )
-        .ok_or(NativeTerminalVerifyError::RecomposeTraceValueLength {
-            row,
-            expected: expected_d,
-            got: coeffs.len(),
-        })?;
-        let Some(output_witness) = callsite.outputs.first().copied().flatten() else {
-            return Err(
-                NativeTerminalVerifyError::TerminalNpoOpeningWitnessMismatch {
-                    npo_index,
-                    opening: expected_d,
-                    expected: expected_d as u32,
-                    got: usize::MAX,
-                },
-            );
-        };
-        let got_output = Self::production_witness_value(witness_values, output_witness)?;
-        if got_output != expected_output {
-            return Err(NativeTerminalVerifyError::RecomposeOutputMismatch { row });
-        }
-        Ok(())
     }
 
     fn push_unique_witness(out: &mut Vec<WitnessId>, witness_id: WitnessId) {
@@ -10828,7 +10453,7 @@ mod tests {
     }
 
     #[test]
-    fn goldilocks_terminal_production_certificate_round_trips_direct_relation_proof() {
+    fn goldilocks_terminal_production_certificate_round_trips_compact_relation_proof() {
         let mut circuit = Circuit::<Goldilocks>::new(15, HashMap::new());
         for index in 0..15 {
             circuit.ops.push(Op::Const {
@@ -10843,10 +10468,10 @@ mod tests {
 
         let proof = compiler
             .prove_terminal_production_goldilocks(&vk, &public_inputs, &witness)
-            .expect("production direct relation proof must build");
+            .expect("production compact relation proof must build");
         compiler
             .verify_terminal_production_goldilocks(&vk, &public_inputs, &proof)
-            .expect("production direct relation proof must verify");
+            .expect("production compact relation proof must verify");
         let certificate = compiler
             .assemble_goldilocks_production_certificate(&vk, &public_inputs, &proof)
             .expect("production certificate must assemble");
@@ -10855,13 +10480,13 @@ mod tests {
             .expect("production certificate must verify typed body");
 
         let mut tampered = proof.clone();
-        tampered.witness_values_basis[0] ^= 1;
+        tampered.primitive_r1cs_proof.rounds[0].eval_0_basis[0] ^= 1;
         let err = compiler
             .verify_terminal_production_goldilocks(&vk, &public_inputs, &tampered)
             .unwrap_err();
         assert!(matches!(
             err,
-            NativeTerminalVerifyError::TerminalProductionWitnessCommitmentMismatch { .. }
+            NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch { .. }
         ));
     }
 

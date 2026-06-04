@@ -165,12 +165,12 @@ for this route.
   proof, and combined-validity fold proof as one serializable object. It is an
   integration checkpoint, not the final global terminal proof.
 - `TerminalProductionProof`: the typed production proof body for the current
-  direct-relation backend. It binds a full witness oracle, serializes witness
-  basis limbs and hidden Tip5 input limbs, recomputes every primitive
-  quadratic row and every supported Tip5/recompose row, and verifies the
-  witness commitment before accepting a `Production` certificate. This is a
-  production-sound direct checker, but not the final non-witness-exposing
-  polynomial/sumcheck backend.
+  compact backend checkpoint. It binds a witness oracle for sampled NPO row
+  openings, an assignment oracle for primitive sparse-R1CS, the primitive
+  row-product sumcheck, and optional NPO-validity fold/consistency proofs for
+  keys with supported NPO rows. It no longer serializes the full witness. The
+  remaining production-backend gap is polynomializing the Tip5/recompose NPO
+  validity relation instead of checking sampled NPO rows directly.
 - `TerminalQuadraticRelation`: backend-ready R1CS-style primitive relation.
   Primitive terminal gates lower to equations `A * B = C` over linear
   combinations of `{1, public input, witness}`. `BoolCheck` lowers to two
@@ -375,7 +375,7 @@ no longer treats typed local proof material as an opaque blob once the local
 verifier is selected. The raw binding checker is not a public production
 verifier; `verify_goldilocks_production_certificate` checks for a
 `Production`-kind envelope, decodes a typed `TerminalProductionProof` with
-explicit trailing-byte rejection, and reruns the production direct-relation
+explicit trailing-byte rejection, and reruns the compact production
 verifier. Malformed production bodies are rejected before relation checks, and
 `LocalCheckpoint` certificates still fail by proof-kind mismatch.
 
@@ -604,22 +604,25 @@ multi-opening commitment layer; the current local-checkpoint measurement is
 already below 100 KiB and beats the current 200.6 KiB production recursive
 certificate size, but it is not yet production terminal soundness.
 
-The typed direct production checker measures as follows on the same real
+The typed compact production checker now measures as follows on the same real
 Tip5-L0 verifier circuit:
 
 | component | bytes |
 |---|---:|
-| direct production proof body | 92,708 |
-| direct production certificate | 92,932 |
+| primitive R1CS row-product proof | 91,612 |
+| NPO validity consistency proof | 32,480 |
+| NPO validity fold proof | 43,392 |
+| compact production proof body | 167,938 |
+| compact production certificate | 168,162 |
 
-The debug-profile measurement is `prove=1.521 s, verify=1.720 s`. This meets
-the ~100 KiB certificate target and is exact-sound for the compiled terminal
-relation because the verifier recomputes every primitive and supported NPO row
-from committed witness values. It is not the final target backend because it
-serializes the 3,043-value witness basis and hidden Tip5 inputs. The remaining
-production-backend task is to replace that exposed witness material with a
-non-witness polynomial/sumcheck/FRI commitment argument while preserving the
-same relation checks and transcript bindings.
+The debug-profile measurement is `prove=6.373 s, verify=3.601 s`. This removes
+the witness-basis serialization from the production proof body, but it is still
+above the ~100 KiB target. The immediate size targets are the row-product proof
+encoding (about 89.5 KiB alone) and the NPO validity fold/consistency material
+(about 74.7 KiB together). The remaining production-backend task is to replace
+the sampled NPO validity layer with a polynomialized Tip5/recompose relation
+and to compress or aggregate the primitive row-product opening material without
+dropping below the 60-bit pure-query requirement.
 
 The optimized sparse-R1CS matrix-vector sumcheck component measures separately
 on the same real Tip5-L0 verifier circuit. The completed primitive row-product
