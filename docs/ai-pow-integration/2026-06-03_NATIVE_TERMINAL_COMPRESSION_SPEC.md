@@ -383,14 +383,16 @@ for this route.
   quotient over a disjoint doubled domain. Verification checks
   `folded_diff(zeta) + beta * V_perm_window(zeta) * folded_lookup(zeta) =
   quotient(zeta) * Z_H(zeta)`. The focused regression test round-trips the
-  proof, measures `96,994` bytes / `94.7 KiB` at the production
-  `log_blowup=4, num_queries=15, query_pow_bits=0` profile, and rejects both a
-  nonzero lookup-table-row IO value and a stale permutation-row lookup IO
-  value. This is the current preferred boundary-check candidate because it
-  replaces the separate zero-support and bridge proofs with one FRI proof; it
-  still is not a complete production NPO proof until the NPO-derived projection
-  is tied to the final value-column proximity backend and the internal Tip5
-  lookup/AIR relation is enforced.
+  proof, stores the compressed FRI payload directly, measures `74,685` bytes /
+  `72.9 KiB` at the production `log_blowup=4, num_queries=15,
+  query_pow_bits=0` profile, and rejects both a nonzero lookup-table-row IO
+  value and a stale permutation-row lookup IO value. The stored FRI payload is
+  `73,925` bytes / `72.2 KiB`, down from the restored raw payload's `96,234`
+  bytes / `94.0 KiB`. This is the current preferred boundary-check candidate
+  because it replaces the separate zero-support and bridge proofs with one FRI
+  proof; it still is not a complete production NPO proof until the NPO-derived
+  projection is tied to the final value-column proximity backend and the
+  internal Tip5 lookup/AIR relation is enforced.
 - `TerminalNpoTip5LookupAirAlgebraQuotientProof`: a quotient-backed checkpoint
   for the optimized Tip5 lookup AIR's local algebraic constraints. The prover
   commits the full lookup main trace, samples one folding challenge, commits an
@@ -1111,12 +1113,14 @@ IO against the NPO table. This bridge is not yet a standalone replacement for
 production exhaustive NPO openings because the NPO-derived projection must be
 bound to the final NPO value-column/proximity proof.
 The combined support+bridge quotient batches both boundary relations into one
-FRI proof at 96,994 bytes / 94.7 KiB, with about 3.18 s debug-profile prove
-time and 48.9 ms verify time in the focused NPO-only fixture. It rejects both
-off-window table-row IO and stale permutation-row IO while staying under the
-component target, so it supersedes carrying the separate zero-support and bridge
-proofs. It still depends on the same unresolved NPO-derived projection binding
-and internal Tip5 lookup/AIR relation work.
+FRI proof at 74,685 bytes / 72.9 KiB, with about 3.20 s debug-profile prove
+time and 50.1 ms verify time in the focused NPO-only fixture after storing the
+compressed FRI payload directly. The compressed FRI payload is 73,925 bytes /
+72.2 KiB versus a restored raw payload of 96,234 bytes / 94.0 KiB. It rejects
+both off-window table-row IO and stale permutation-row IO while staying under
+the component target, so it supersedes carrying the separate zero-support and
+bridge proofs. It still depends on the same unresolved NPO-derived projection
+binding and internal Tip5 lookup/AIR relation work.
 The full-trace Tip5 lookup AIR algebra/support quotient now enforces the local
 permutation algebra and rejects stale internal trace columns plus off-window
 terminal IO, but at 141.8 KiB for the stored-compressed component by itself it is
@@ -1228,7 +1232,7 @@ Completion audit against the active terminal-compression requirements:
 | Public values, parameters, relation, proximity schedule, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile and column layout, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
 | Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against a prelude-bound witness oracle. | satisfied for supported NPO row validity |
-| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 94.7 KiB proof, a random linear-combination MLE checkpoint, and a residual-column zero-check checkpoint now exist, including Tip5/MMCS/recompose tamper tests, FRI tampered-claim rejection, stale-profile/column-set rejection, table-row IO hiding rejection, stale lookup-IO bridge rejection, and Merkle-consistent wrong-combination rejection. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over the NPO row constraints. | not complete |
+| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 72.9 KiB proof, a random linear-combination MLE checkpoint, and a residual-column zero-check checkpoint now exist, including Tip5/MMCS/recompose tamper tests, FRI tampered-claim rejection, stale-profile/column-set rejection, table-row IO hiding rejection, stale lookup-IO bridge rejection, and Merkle-consistent wrong-combination rejection. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over the NPO row constraints. | not complete |
 | Full terminal proof has a source-backed soundness calculation | Current doc records 60 pure-query Johnson accounting for the terminal profile and tests verifier binding, but it does not yet derive a complete theorem for the row-product plus NPO-column plus PCS/proximity backend. | incomplete |
 | Zero-knowledge or witness hiding for recursive-verifier witness values | Current production opens 1,377 full-width verifier-circuit witness values plus packed MMCS direction bits for exhaustive NPO checking. That is smaller than full witness serialization, but it is not a zero-knowledge terminal backend. | incomplete if ZK is required |
 
