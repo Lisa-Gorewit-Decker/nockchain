@@ -263,6 +263,17 @@ for this route.
   `mmcs_bit` value column but relation-invalid because the verifier-derived
   `mmcs_bit_present` column is globally zero, and require the padding check to
   reject it.
+- `TerminalNpoPolynomialPaddingQuotientProof`: the quotient-backed padding
+  checkpoint for the full value-column padding relation. The prover commits the
+  witness-value columns, samples a terminal challenge, commits one
+  extension-valued quotient column flattened into Goldilocks basis columns over
+  a verifier-derived disjoint domain, then opens both commitments at the same
+  transcript-derived point with one terminal FRI proof. Verification recomputes
+  the verifier-derived present-bit polynomials at that point and checks the
+  batched identity `sum alpha^i * (1 - present_i(zeta)) * value_i(zeta) =
+  quotient(zeta) * Z_H(zeta)`. This is the Plonky3-style
+  quotient/vanishing-polynomial form needed for mixed present-bit padding; it
+  is still a checkpoint, not yet the complete production NPO relation proof.
 - `TerminalNpoPolynomialColumnOracleSet`: the commit-ready 5-round Tip5 oracle
   set for those fixed columns. Each column uses a verifier-derived
   `npo_polynomial_column/<column-label>` oracle label and the shared row count.
@@ -864,9 +875,9 @@ component. The next viable direction is a shared/batched terminal proximity
 backend that amortizes FRI proof material across primitive and NPO relations, or
 an NPO relation check that consumes the value-column FRI openings without
 adding a second Merkle-heavy proof. The FRI verifier now exposes exactly that
-checked value-column opening handoff, and the first consumed row-polynomial
-constraint now checks globally absent verifier-derived present-bit padding.
-Mixed present-bit padding, Tip5 permutation, chain, MMCS direction-bit
+checked value-column opening handoff. The padding quotient checkpoint now
+checks mixed present-bit value padding with a quotient/vanishing identity over
+the same opened value columns. Tip5 permutation, chain, MMCS direction-bit
 booleanity, recompose, and residual-zero constraints over those openings are
 still pending.
 

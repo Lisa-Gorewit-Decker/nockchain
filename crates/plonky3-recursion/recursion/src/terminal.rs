@@ -17,10 +17,10 @@ use p3_circuit::ops::{
 };
 use p3_circuit::tables::Traces;
 use p3_circuit::{Circuit, WitnessId};
-use p3_commit::{ExtensionMmcs, Pcs};
+use p3_commit::{ExtensionMmcs, Pcs, PolynomialSpace};
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_fri::{FriParameters, TwoAdicFriPcs};
 use p3_goldilocks::Goldilocks;
 use p3_matrix::dense::RowMajorMatrix;
@@ -1102,6 +1102,9 @@ pub enum TerminalNpoPolynomialFriColumnSet {
     /// outputs in the final backend and should not be paid for in the
     /// low-degree commitment.
     WitnessValues,
+    /// One extension-valued quotient column, flattened into terminal
+    /// Goldilocks basis columns, for the batched value-padding relation.
+    PaddingQuotient,
 }
 
 /// FRI commitment shape for the basis-expanded supported-NPO polynomial table.
@@ -1150,6 +1153,23 @@ pub struct TerminalNpoPolynomialFriOpenedColumns {
     pub zeta: TerminalFriChallenge,
     pub labels: Vec<String>,
     pub values: Vec<Vec<TerminalFriChallenge>>,
+}
+
+/// Combined value-column and padding-quotient opening proof.
+///
+/// This is the first quotient-backed NPO row-polynomial checkpoint. It proves
+/// the witness-value columns are low degree, proves a low-degree quotient for
+/// the batched `(1 - present) * value` padding constraints, and opens both at
+/// one transcript-derived point with one terminal FRI proof.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TerminalNpoPolynomialPaddingQuotientProof {
+    pub value_profile: TerminalNpoPolynomialFriProfile,
+    pub quotient_profile: TerminalNpoPolynomialFriProfile,
+    pub value_commitment: TerminalFriCommitment,
+    pub quotient_commitment: TerminalFriCommitment,
+    pub opened_value_basis: Vec<Vec<u64>>,
+    pub opened_quotient_basis: Vec<Vec<u64>>,
+    pub proof: TerminalFriProof,
 }
 
 /// Deterministic polynomial-column projection of [`TerminalNpoPolynomialTable`].
@@ -11085,6 +11105,26 @@ impl NativeTerminalCompiler {
         )
     }
 
+    fn terminal_npo_polynomial_padding_quotient_profile(
+        layout: &TerminalNpoPolynomialColumnLayout,
+    ) -> Result<TerminalNpoPolynomialFriProfile, NativeTerminalVerifyError> {
+        if layout.rows == 0 {
+            return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
+        }
+        let padded_rows = 1usize << layout.log_rows;
+        Ok(TerminalNpoPolynomialFriProfile {
+            column_set: TerminalNpoPolynomialFriColumnSet::PaddingQuotient,
+            rows: layout.rows,
+            padded_rows,
+            log_rows: layout.log_rows,
+            field_basis_dimension:
+                <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION,
+            field_columns: 1,
+            basis_columns: <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION,
+            proximity: TerminalProximityProfile::production_60bit(),
+        })
+    }
+
     fn terminal_npo_polynomial_fri_profile_for_column_count<F>(
         layout: &TerminalNpoPolynomialColumnLayout,
         column_set: TerminalNpoPolynomialFriColumnSet,
@@ -11202,6 +11242,7 @@ impl NativeTerminalCompiler {
                     Self::terminal_npo_polynomial_label_is_witness_value(label).then_some(index)
                 })
                 .collect::<Vec<_>>(),
+            TerminalNpoPolynomialFriColumnSet::PaddingQuotient => Vec::new(),
         };
         if indices.is_empty() {
             return Err(
@@ -11361,6 +11402,254 @@ impl NativeTerminalCompiler {
         })
     }
 
+    pub fn prove_terminal_npo_polynomial_padding_quotient_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        witness: &TerminalWitness<F>,
+        prelude: &TerminalProofPrelude,
+    ) -> Result<TerminalNpoPolynomialPaddingQuotientProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let columns = self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
+        let verifier_columns =
+            self.terminal_npo_polynomial_verifier_derived_columns_goldilocks(verifying_key)?;
+        Self::prove_terminal_npo_polynomial_padding_quotient_from_columns_goldilocks(
+            prelude,
+            &columns,
+            &verifier_columns,
+        )
+    }
+
+    fn prove_terminal_npo_polynomial_padding_quotient_from_columns_goldilocks<F>(
+        prelude: &TerminalProofPrelude,
+        columns: &TerminalNpoPolynomialColumns<F>,
+        verifier_columns: &TerminalNpoPolynomialColumns<F>,
+    ) -> Result<TerminalNpoPolynomialPaddingQuotientProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        let (value_profile, value_matrix) =
+            Self::terminal_npo_polynomial_value_basis_matrix_goldilocks(&columns)?;
+        if value_profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: value_profile.proximity.proof_parameters(),
+                },
+            );
+        }
+        let quotient_profile =
+            Self::terminal_npo_polynomial_padding_quotient_profile(&columns.layout)?;
+        if quotient_profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: quotient_profile.proximity.proof_parameters(),
+                },
+            );
+        }
+
+        let (pcs, mut challenger) = Self::terminal_fri_pcs_and_challenger(value_profile.proximity)?;
+        Self::seed_terminal_npo_padding_quotient_challenger(
+            &mut challenger,
+            prelude,
+            &value_profile,
+            &quotient_profile,
+        );
+        let value_domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                value_profile.padded_rows,
+            );
+        let (value_commitment, value_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(value_domain, value_matrix)],
+            );
+        challenger.observe(value_commitment.clone());
+        let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
+
+        let quotient_domain = value_domain.create_disjoint_domain(quotient_profile.padded_rows);
+        let quotient_matrix = Self::terminal_npo_polynomial_padding_quotient_matrix_goldilocks(
+            value_domain,
+            quotient_domain,
+            &columns,
+            &verifier_columns,
+            alpha,
+        )?;
+        let (quotient_commitment, quotient_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(quotient_domain, quotient_matrix)],
+            );
+        challenger.observe(quotient_commitment.clone());
+        let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let (opened_values, proof) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
+                &pcs,
+                vec![
+                    (&value_data, vec![vec![zeta]]),
+                    (&quotient_data, vec![vec![zeta]]),
+                ],
+                &mut challenger,
+            );
+        let opened_value_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
+        let opened_quotient_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 1)?;
+
+        Ok(TerminalNpoPolynomialPaddingQuotientProof {
+            value_profile,
+            quotient_profile,
+            value_commitment,
+            quotient_commitment,
+            opened_value_basis,
+            opened_quotient_basis,
+            proof,
+        })
+    }
+
+    fn terminal_npo_polynomial_padding_quotient_matrix_goldilocks<F>(
+        value_domain: <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::Domain,
+        quotient_domain: <TerminalFriPcs as Pcs<
+            TerminalFriChallenge,
+            TerminalFriChallenger,
+        >>::Domain,
+        columns: &TerminalNpoPolynomialColumns<F>,
+        verifier_columns: &TerminalNpoPolynomialColumns<F>,
+        alpha: TerminalFriChallenge,
+    ) -> Result<RowMajorMatrix<Goldilocks>, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        let value_profile = Self::terminal_npo_polynomial_fri_profile_for_column_count::<F>(
+            &columns.layout,
+            TerminalNpoPolynomialFriColumnSet::WitnessValues,
+            Self::terminal_npo_polynomial_fri_column_indices(
+                columns,
+                TerminalNpoPolynomialFriColumnSet::WitnessValues,
+            )?
+            .len(),
+        )?;
+        let constraints = Self::terminal_npo_polynomial_padding_constraint_evaluations(
+            columns,
+            verifier_columns,
+            &value_profile,
+        )?;
+        let mut quotient_values = Vec::with_capacity(quotient_domain.size());
+        let mut point = TerminalFriChallenge::from(quotient_domain.first_point());
+        for _ in 0..quotient_domain.size() {
+            let mut folded = TerminalFriChallenge::ZERO;
+            let mut coeff = TerminalFriChallenge::ONE;
+            for (_, present_evals, value_evals) in &constraints {
+                let present = value_domain.evaluate_polynomial_at(present_evals, point);
+                let value = value_domain.evaluate_polynomial_at(value_evals, point);
+                folded += coeff * (TerminalFriChallenge::ONE - present) * value;
+                coeff *= alpha;
+            }
+            let z_h = value_domain.vanishing_poly_at_point(point);
+            quotient_values.push(folded / z_h);
+            point = quotient_domain.next_point(point).ok_or_else(|| {
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                    reason: "terminal NPO padding quotient domain has no successor".into(),
+                }
+            })?;
+        }
+        Ok(RowMajorMatrix::new_col(quotient_values).flatten_to_base())
+    }
+
+    fn terminal_npo_polynomial_padding_constraint_evaluations<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        verifier_columns: &TerminalNpoPolynomialColumns<F>,
+        profile: &TerminalNpoPolynomialFriProfile,
+    ) -> Result<Vec<(String, Vec<Goldilocks>, Vec<Goldilocks>)>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        Self::validate_terminal_npo_polynomial_columns(&columns.layout, columns)?;
+        Self::validate_terminal_npo_polynomial_columns(&verifier_columns.layout, verifier_columns)?;
+        if verifier_columns.layout != columns.layout || verifier_columns.labels != columns.labels {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLayoutMismatch {
+                    expected: columns.layout.clone(),
+                    got: verifier_columns.layout.clone(),
+                },
+            );
+        }
+        let value_indices = Self::terminal_npo_polynomial_fri_column_indices(
+            columns,
+            TerminalNpoPolynomialFriColumnSet::WitnessValues,
+        )?;
+        let mut constraints =
+            Vec::with_capacity(value_indices.len() * profile.field_basis_dimension);
+        for value_column_index in value_indices {
+            let label = &columns.labels[value_column_index];
+            let present_label = Self::terminal_npo_polynomial_value_present_label(label).ok_or(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: label.clone(),
+                },
+            )?;
+            let present_column_index = verifier_columns
+                .labels
+                .iter()
+                .position(|candidate| candidate == &present_label)
+                .ok_or_else(
+                    || NativeTerminalVerifyError::TerminalNpoPolynomialColumnMissing {
+                        label: present_label.clone(),
+                    },
+                )?;
+            let mut present_evals = Vec::with_capacity(profile.padded_rows);
+            for row in 0..profile.padded_rows {
+                let present = if row < profile.rows {
+                    verifier_columns.columns[present_column_index][row]
+                        .as_basis_coefficients_slice()
+                        .first()
+                        .copied()
+                        .unwrap_or(Goldilocks::ZERO)
+                } else {
+                    Goldilocks::ZERO
+                };
+                present_evals.push(present);
+            }
+            for basis_index in 0..profile.field_basis_dimension {
+                let mut value_evals = Vec::with_capacity(profile.padded_rows);
+                for row in 0..profile.padded_rows {
+                    let value = if row < profile.rows {
+                        columns.columns[value_column_index][row]
+                            .as_basis_coefficients_slice()
+                            .get(basis_index)
+                            .copied()
+                            .unwrap_or(Goldilocks::ZERO)
+                    } else {
+                        Goldilocks::ZERO
+                    };
+                    value_evals.push(value);
+                }
+                constraints.push((
+                    format!("{label}/basis_{basis_index}"),
+                    present_evals.clone(),
+                    value_evals,
+                ));
+            }
+        }
+        Ok(constraints)
+    }
+
+    fn terminal_npo_opened_matrix_basis_u64(
+        opened_values: &[Vec<Vec<Vec<TerminalFriChallenge>>>],
+        matrix_index: usize,
+    ) -> Result<Vec<Vec<u64>>, NativeTerminalVerifyError> {
+        Ok(opened_values
+            .get(matrix_index)
+            .and_then(|round| round.first())
+            .and_then(|matrix| matrix.first())
+            .ok_or(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty)?
+            .iter()
+            .map(Self::goldilocks_basis_u64)
+            .collect::<Vec<_>>())
+    }
+
     pub fn verify_terminal_npo_polynomial_fri_opening_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -11493,6 +11782,235 @@ impl NativeTerminalCompiler {
             }
         }
         Ok(opened)
+    }
+
+    pub fn verify_terminal_npo_polynomial_padding_quotient_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoPolynomialPaddingQuotientProof,
+    ) -> Result<TerminalNpoPolynomialFriOpenedColumns, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let layout = Self::terminal_npo_polynomial_column_layout::<F>(verifying_key);
+        let labels = Self::terminal_npo_polynomial_column_labels(&layout);
+        let dummy_columns = TerminalNpoPolynomialColumns::<F> {
+            layout: layout.clone(),
+            labels: labels.clone(),
+            columns: vec![Vec::new(); layout.column_count],
+        };
+        let value_column_indices = Self::terminal_npo_polynomial_fri_column_indices(
+            &dummy_columns,
+            TerminalNpoPolynomialFriColumnSet::WitnessValues,
+        )?;
+        let opened_labels = value_column_indices
+            .iter()
+            .map(|index| labels[*index].clone())
+            .collect::<Vec<_>>();
+        let expected_value_profile = Self::terminal_npo_polynomial_fri_profile_for_column_count::<F>(
+            &layout,
+            TerminalNpoPolynomialFriColumnSet::WitnessValues,
+            value_column_indices.len(),
+        )?;
+        let expected_quotient_profile =
+            Self::terminal_npo_polynomial_padding_quotient_profile(&layout)?;
+        if proof.value_profile != expected_value_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "npo_polynomial_padding_value_profile".into(),
+                    expected: expected_value_profile.basis_columns,
+                    got: proof.value_profile.basis_columns,
+                },
+            );
+        }
+        if proof.quotient_profile != expected_quotient_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "npo_polynomial_padding_quotient_profile".into(),
+                    expected: expected_quotient_profile.basis_columns,
+                    got: proof.quotient_profile.basis_columns,
+                },
+            );
+        }
+        if proof.value_profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: proof.value_profile.proximity.proof_parameters(),
+                },
+            );
+        }
+        if proof.quotient_profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: proof.quotient_profile.proximity.proof_parameters(),
+                },
+            );
+        }
+        if proof.opened_value_basis.len() != proof.value_profile.basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof.value_profile.basis_columns,
+                    got: proof.opened_value_basis.len(),
+                },
+            );
+        }
+        if proof.opened_quotient_basis.len() != proof.quotient_profile.basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof.quotient_profile.basis_columns,
+                    got: proof.opened_quotient_basis.len(),
+                },
+            );
+        }
+
+        let mut opened_value_flat = Vec::with_capacity(proof.opened_value_basis.len());
+        for basis in &proof.opened_value_basis {
+            opened_value_flat
+                .push(Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(basis)?);
+        }
+        let mut opened_quotient_flat = Vec::with_capacity(proof.opened_quotient_basis.len());
+        for basis in &proof.opened_quotient_basis {
+            opened_quotient_flat
+                .push(Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(basis)?);
+        }
+
+        let (pcs, mut challenger) =
+            Self::terminal_fri_pcs_and_challenger(proof.value_profile.proximity)?;
+        Self::seed_terminal_npo_padding_quotient_challenger(
+            &mut challenger,
+            prelude,
+            &proof.value_profile,
+            &proof.quotient_profile,
+        );
+        let value_domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                proof.value_profile.padded_rows,
+            );
+        let quotient_domain =
+            value_domain.create_disjoint_domain(proof.quotient_profile.padded_rows);
+        challenger.observe(proof.value_commitment.clone());
+        let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
+        challenger.observe(proof.quotient_commitment.clone());
+        let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
+            &pcs,
+            vec![
+                (
+                    proof.value_commitment.clone(),
+                    vec![(value_domain, vec![(zeta, opened_value_flat.clone())])],
+                ),
+                (
+                    proof.quotient_commitment.clone(),
+                    vec![(quotient_domain, vec![(zeta, opened_quotient_flat.clone())])],
+                ),
+            ],
+            &proof.proof,
+            &mut challenger,
+        )
+        .map_err(|err| {
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: format!("terminal NPO padding quotient FRI verification failed: {err:?}"),
+            }
+        })?;
+
+        let mut opened_values = Vec::with_capacity(proof.value_profile.field_columns);
+        let mut offset = 0usize;
+        for _ in 0..proof.value_profile.field_columns {
+            let next_offset = offset + proof.value_profile.field_basis_dimension;
+            opened_values.push(opened_value_flat[offset..next_offset].to_vec());
+            offset = next_offset;
+        }
+
+        let quotient =
+            <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
+                &opened_quotient_flat,
+            )
+            .ok_or(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof.quotient_profile.field_basis_dimension,
+                    got: opened_quotient_flat.len(),
+                },
+            )?;
+        let verifier_columns =
+            self.terminal_npo_polynomial_verifier_derived_columns_goldilocks(verifying_key)?;
+        let opened = TerminalNpoPolynomialFriOpenedColumns {
+            profile: proof.value_profile.clone(),
+            zeta,
+            labels: opened_labels,
+            values: opened_values,
+        };
+        self.verify_terminal_npo_padding_quotient_identity_goldilocks(
+            &verifier_columns,
+            value_domain,
+            alpha,
+            quotient,
+            &opened,
+        )?;
+        Ok(opened)
+    }
+
+    fn verify_terminal_npo_padding_quotient_identity_goldilocks<F>(
+        &self,
+        verifier_columns: &TerminalNpoPolynomialColumns<F>,
+        value_domain: <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::Domain,
+        alpha: TerminalFriChallenge,
+        quotient: TerminalFriChallenge,
+        opened: &TerminalNpoPolynomialFriOpenedColumns,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let mut folded = TerminalFriChallenge::ZERO;
+        let mut coeff = TerminalFriChallenge::ONE;
+        for (label, value_basis) in opened.labels.iter().zip(&opened.values) {
+            let present_label = Self::terminal_npo_polynomial_value_present_label(label).ok_or(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: label.clone(),
+                },
+            )?;
+            let present_column_index = verifier_columns
+                .labels
+                .iter()
+                .position(|candidate| candidate == &present_label)
+                .ok_or_else(
+                    || NativeTerminalVerifyError::TerminalNpoPolynomialColumnMissing {
+                        label: present_label.clone(),
+                    },
+                )?;
+            let mut present_evals = Vec::with_capacity(opened.profile.padded_rows);
+            for row in 0..opened.profile.padded_rows {
+                let present = if row < opened.profile.rows {
+                    verifier_columns.columns[present_column_index][row]
+                        .as_basis_coefficients_slice()
+                        .first()
+                        .copied()
+                        .unwrap_or(Goldilocks::ZERO)
+                } else {
+                    Goldilocks::ZERO
+                };
+                present_evals.push(present);
+            }
+            let present = value_domain.evaluate_polynomial_at(&present_evals, opened.zeta);
+            for value in value_basis {
+                folded += coeff * (TerminalFriChallenge::ONE - present) * *value;
+                coeff *= alpha;
+            }
+        }
+        let expected = quotient * value_domain.vanishing_poly_at_point(opened.zeta);
+        if folded != expected {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: "npo_padding_quotient".into(),
+                },
+            );
+        }
+        Ok(())
     }
 
     fn verify_terminal_npo_polynomial_fri_opening_for_column_set_goldilocks<F>(
@@ -11630,6 +12148,48 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
+        Self::observe_terminal_fri_u64(challenger, profile.column_set as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.padded_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.log_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.field_basis_dimension as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.field_columns as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.basis_columns as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.scheme_id as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.log_blowup as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.num_queries as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.max_log_arity as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.log_final_poly_len as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.pure_query_bits as u64);
+    }
+
+    fn seed_terminal_npo_padding_quotient_challenger(
+        challenger: &mut TerminalFriChallenger,
+        prelude: &TerminalProofPrelude,
+        value_profile: &TerminalNpoPolynomialFriProfile,
+        quotient_profile: &TerminalNpoPolynomialFriProfile,
+    ) {
+        Self::observe_terminal_fri_str(challenger, "nock-terminal-npo-padding-quotient-v1");
+        for limb in prelude.challenge_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
+        for limb in prelude.public_values_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.security_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
+        Self::observe_terminal_npo_polynomial_fri_profile(challenger, value_profile);
+        Self::observe_terminal_npo_polynomial_fri_profile(challenger, quotient_profile);
+    }
+
+    fn observe_terminal_npo_polynomial_fri_profile(
+        challenger: &mut TerminalFriChallenger,
+        profile: &TerminalNpoPolynomialFriProfile,
+    ) {
         Self::observe_terminal_fri_u64(challenger, profile.column_set as u64);
         Self::observe_terminal_fri_u64(challenger, profile.rows as u64);
         Self::observe_terminal_fri_u64(challenger, profile.padded_rows as u64);
@@ -23022,6 +23582,46 @@ mod tests {
                 &value_proof,
             )
             .expect("honest value-column FRI openings must satisfy verifier-derived padding");
+        let padding_quotient_proof = compiler
+            .prove_terminal_npo_polynomial_padding_quotient_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &prelude,
+            )
+            .expect("honest terminal NPO padding quotient proof must build");
+        assert_eq!(padding_quotient_proof.value_profile, value_profile);
+        assert_eq!(
+            padding_quotient_proof.quotient_profile.column_set,
+            TerminalNpoPolynomialFriColumnSet::PaddingQuotient
+        );
+        assert_eq!(
+            padding_quotient_proof.opened_quotient_basis.len(),
+            padding_quotient_proof.quotient_profile.basis_columns
+        );
+        let opened_padding = compiler
+            .verify_terminal_npo_polynomial_padding_quotient_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &padding_quotient_proof,
+            )
+            .expect("honest terminal NPO padding quotient proof must verify");
+        assert_eq!(opened_padding.labels, opened_value.labels);
+        let serialized = postcard::to_allocvec(&padding_quotient_proof)
+            .expect("padding quotient proof must serialize");
+        let (roundtrip_padding, trailing): (TerminalNpoPolynomialPaddingQuotientProof, &[u8]) =
+            postcard::take_from_bytes(&serialized)
+                .expect("padding quotient proof must deserialize");
+        assert!(trailing.is_empty());
+        compiler
+            .verify_terminal_npo_polynomial_padding_quotient_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &roundtrip_padding,
+            )
+            .expect("round-tripped padding quotient proof must verify");
 
         let mut bad_padding_columns = columns.clone();
         let mmcs_column = bad_padding_columns
@@ -23057,6 +23657,26 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
                 if label == "mmcs_bit"
+        ));
+        let bad_padding_quotient_proof =
+            NativeTerminalCompiler::prove_terminal_npo_polynomial_padding_quotient_from_columns_goldilocks(
+                &prelude,
+                &bad_padding_columns,
+                &verifier_columns,
+            )
+            .expect("FRI-valid but quotient-invalid padding proof must build");
+        let err = compiler
+            .verify_terminal_npo_polynomial_padding_quotient_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_padding_quotient_proof,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
+                if label == "npo_padding_quotient"
         ));
 
         let mut bad_present_value_columns = columns.clone();
