@@ -352,6 +352,9 @@ pub struct TerminalNpoValidityConsistencyProof {
 /// Exhaustive proof for every supported non-primitive terminal row.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalNpoExhaustiveProof {
+    /// One hidden-input mask per verifier-derived Tip5 NPO row, in NPO row
+    /// order. Recompose rows have no Tip5 hidden inputs, so their zero masks
+    /// are verifier-derived and not serialized.
     pub tip5_hidden_input_nonzero_masks: Vec<u16>,
     pub tip5_hidden_input_values_le: Vec<[u8; 8]>,
     pub witness_multi_opening: TerminalOracleKnownIndexMultiProof,
@@ -4819,7 +4822,7 @@ impl NativeTerminalCompiler {
         Self::verify_prelude_binds_commitment(prelude, &witness_commitment)?;
 
         let npo_rows = Self::terminal_npo_domain_len(verifying_key);
-        let mut tip5_hidden_input_nonzero_masks = Vec::with_capacity(npo_rows);
+        let mut tip5_hidden_input_nonzero_masks = Vec::new();
         let mut tip5_hidden_input_values_le = Vec::new();
         let mut witness_ids = Vec::new();
         let mut boolean_witness_ids = Vec::new();
@@ -4831,58 +4834,63 @@ impl NativeTerminalCompiler {
             }
             let mut serialized_mask = npo_opening.tip5_hidden_input_nonzero_mask;
             let mut serialized_values = npo_opening.tip5_hidden_input_values_le;
-            if let Some(NativeTerminalNpoRowRef::Tip5 { callsite, .. }) =
-                Self::terminal_npo_row(verifying_key, npo_index)
-            {
-                if let Some(witness_id) = callsite.tip5_mmcs_bit {
-                    Self::push_unique_witness(&mut boolean_witness_ids, witness_id);
-                }
-                let mode = callsite.tip5_mode.ok_or(
-                    NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
-                        op_type: Self::tip5_op_type().as_str().into(),
-                        row: npo_index,
-                        field: "tip5_mode",
-                        limb: 0,
-                        expected: Some(1),
-                        got: None,
-                    },
-                )?;
-                let mmcs_bit = if let Some(witness_id) = callsite.tip5_mmcs_bit {
-                    let value = witness.traces.witness_trace.get_value(witness_id).ok_or(
-                        NativeTerminalVerifyError::MissingWitness {
-                            witness_id: witness_id.0,
+            match Self::terminal_npo_row(verifying_key, npo_index) {
+                Some(NativeTerminalNpoRowRef::Tip5 { callsite, .. }) => {
+                    if let Some(witness_id) = callsite.tip5_mmcs_bit {
+                        Self::push_unique_witness(&mut boolean_witness_ids, witness_id);
+                    }
+                    let mode = callsite.tip5_mode.ok_or(
+                        NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                            op_type: Self::tip5_op_type().as_str().into(),
+                            row: npo_index,
+                            field: "tip5_mode",
+                            limb: 0,
+                            expected: Some(1),
+                            got: None,
                         },
                     )?;
-                    let basis = value.as_basis_coefficients_slice();
-                    basis.first().copied().unwrap_or(Goldilocks::ZERO) == Goldilocks::ONE
-                } else {
-                    false
-                };
-                let full_hidden = Self::terminal_tip5_hidden_inputs_from_compact(
-                    npo_index,
-                    verifying_key,
-                    serialized_mask,
-                    &serialized_values,
-                )?;
-                serialized_mask = 0;
-                serialized_values = Vec::new();
-                let has_ctl_output = callsite.outputs.iter().any(Option::is_some);
-                for hidden in full_hidden {
-                    if Self::should_serialize_tip5_hidden_limb(
-                        callsite,
-                        mode,
-                        has_ctl_output,
-                        mmcs_bit,
-                        hidden.limb,
-                    ) && hidden.value_basis[0] != 0
-                    {
-                        serialized_mask |= 1u16 << hidden.limb;
-                        serialized_values.push(hidden.value_basis[0].to_le_bytes());
+                    let mmcs_bit = if let Some(witness_id) = callsite.tip5_mmcs_bit {
+                        let value = witness.traces.witness_trace.get_value(witness_id).ok_or(
+                            NativeTerminalVerifyError::MissingWitness {
+                                witness_id: witness_id.0,
+                            },
+                        )?;
+                        let basis = value.as_basis_coefficients_slice();
+                        basis.first().copied().unwrap_or(Goldilocks::ZERO) == Goldilocks::ONE
+                    } else {
+                        false
+                    };
+                    let full_hidden = Self::terminal_tip5_hidden_inputs_from_compact(
+                        npo_index,
+                        verifying_key,
+                        serialized_mask,
+                        &serialized_values,
+                    )?;
+                    serialized_mask = 0;
+                    serialized_values = Vec::new();
+                    let has_ctl_output = callsite.outputs.iter().any(Option::is_some);
+                    for hidden in full_hidden {
+                        if Self::should_serialize_tip5_hidden_limb(
+                            callsite,
+                            mode,
+                            has_ctl_output,
+                            mmcs_bit,
+                            hidden.limb,
+                        ) && hidden.value_basis[0] != 0
+                        {
+                            serialized_mask |= 1u16 << hidden.limb;
+                            serialized_values.push(hidden.value_basis[0].to_le_bytes());
+                        }
                     }
+                    tip5_hidden_input_nonzero_masks.push(serialized_mask);
+                    tip5_hidden_input_values_le.extend_from_slice(&serialized_values);
                 }
+                Some(NativeTerminalNpoRowRef::Recompose { .. }) => {
+                    debug_assert_eq!(serialized_mask, 0);
+                    debug_assert!(serialized_values.is_empty());
+                }
+                None => {}
             }
-            tip5_hidden_input_nonzero_masks.push(serialized_mask);
-            tip5_hidden_input_values_le.extend_from_slice(&serialized_values);
         }
 
         witness_ids.sort_by_key(|witness_id| witness_id.0);
@@ -4928,17 +4936,35 @@ impl NativeTerminalCompiler {
         Self::verify_prelude_binds_commitment(prelude, witness_commitment)?;
 
         let npo_rows = Self::terminal_npo_domain_len(verifying_key);
-        if proof.tip5_hidden_input_nonzero_masks.len() != npo_rows {
+        let mut expected_tip5_masks = 0usize;
+        let mut expected_hidden_values = 0usize;
+        for npo_index in 0..npo_rows {
+            let row_ref = Self::terminal_npo_row(verifying_key, npo_index).ok_or(
+                NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                    query: npo_index,
+                    expected: npo_index,
+                    got: npo_index,
+                },
+            )?;
+            if matches!(row_ref, NativeTerminalNpoRowRef::Tip5 { .. }) {
+                let mask = proof
+                    .tip5_hidden_input_nonzero_masks
+                    .get(expected_tip5_masks)
+                    .copied()
+                    .ok_or(NativeTerminalVerifyError::TerminalNpoQueryLengthMismatch {
+                        expected: expected_tip5_masks + 1,
+                        got: proof.tip5_hidden_input_nonzero_masks.len(),
+                    })?;
+                expected_tip5_masks += 1;
+                expected_hidden_values += mask.count_ones() as usize;
+            }
+        }
+        if proof.tip5_hidden_input_nonzero_masks.len() != expected_tip5_masks {
             return Err(NativeTerminalVerifyError::TerminalNpoQueryLengthMismatch {
-                expected: npo_rows,
+                expected: expected_tip5_masks,
                 got: proof.tip5_hidden_input_nonzero_masks.len(),
             });
         }
-        let expected_hidden_values = proof
-            .tip5_hidden_input_nonzero_masks
-            .iter()
-            .map(|mask| mask.count_ones() as usize)
-            .sum::<usize>();
         if proof.tip5_hidden_input_values_le.len() != expected_hidden_values {
             return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
                 npo_index: 0,
@@ -4995,18 +5021,10 @@ impl NativeTerminalCompiler {
             )?;
 
         let mut hidden_value_offset = 0usize;
+        let mut tip5_mask_offset = 0usize;
         let mut previous_normal_tip5_output = None;
         let mut previous_merkle_tip5_output = None;
-        for (npo_index, nonzero_mask) in proof
-            .tip5_hidden_input_nonzero_masks
-            .iter()
-            .copied()
-            .enumerate()
-        {
-            let hidden_value_count = nonzero_mask.count_ones() as usize;
-            let hidden_values = &proof.tip5_hidden_input_values_le
-                [hidden_value_offset..hidden_value_offset + hidden_value_count];
-            hidden_value_offset += hidden_value_count;
+        for npo_index in 0..npo_rows {
             let row_ref = Self::terminal_npo_row(verifying_key, npo_index).ok_or(
                 NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
                     query: npo_index,
@@ -5016,6 +5034,12 @@ impl NativeTerminalCompiler {
             )?;
             match row_ref {
                 NativeTerminalNpoRowRef::Tip5 { row, callsite, .. } => {
+                    let nonzero_mask = proof.tip5_hidden_input_nonzero_masks[tip5_mask_offset];
+                    tip5_mask_offset += 1;
+                    let hidden_value_count = nonzero_mask.count_ones() as usize;
+                    let hidden_values = &proof.tip5_hidden_input_values_le
+                        [hidden_value_offset..hidden_value_offset + hidden_value_count];
+                    hidden_value_offset += hidden_value_count;
                     let expected_witness_ids = Self::npo_callsite_witness_ids(callsite);
                     let opened_values = Self::verify_npo_witness_values(
                         npo_index,
@@ -5048,13 +5072,6 @@ impl NativeTerminalCompiler {
                     row,
                     callsite,
                 } => {
-                    if nonzero_mask != 0 || !hidden_values.is_empty() {
-                        return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
-                            npo_index,
-                            expected: 0,
-                            got: hidden_values.len(),
-                        });
-                    }
                     let expected_witness_ids = Self::npo_callsite_witness_ids(callsite);
                     let opened_values = Self::verify_npo_witness_values(
                         npo_index,
@@ -12053,6 +12070,22 @@ mod tests {
         compiler
             .verify_terminal_production_goldilocks(&vk, &public_inputs, &proof)
             .expect("honest production proof with exhaustive NPO rows must verify");
+
+        let mut missing_tip5_mask = proof.clone();
+        missing_tip5_mask
+            .npo_exhaustive_proof
+            .as_mut()
+            .expect("fixture must include exhaustive NPO proof")
+            .tip5_hidden_input_nonzero_masks
+            .pop();
+        let err = compiler
+            .verify_terminal_production_goldilocks(&vk, &public_inputs, &missing_tip5_mask)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoQueryLengthMismatch { .. }
+        ));
+
         let mut missing_value = proof.clone();
         missing_value
             .npo_exhaustive_proof
@@ -12102,6 +12135,44 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
                 | NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical { .. }
+        ));
+    }
+
+    #[test]
+    fn goldilocks_terminal_production_exhaustive_npo_omits_recompose_masks() {
+        let (circuit, public_inputs) = build_many_recompose_test_circuit(8);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_recompose_terminal_witness(&circuit, public_inputs.clone());
+
+        let proof = compiler
+            .prove_terminal_production_goldilocks(&vk, &public_inputs, &witness)
+            .expect("production proof with recompose rows must build");
+        let npo_proof = proof
+            .npo_exhaustive_proof
+            .as_ref()
+            .expect("fixture must include exhaustive NPO proof");
+        assert!(
+            npo_proof.tip5_hidden_input_nonzero_masks.is_empty(),
+            "recompose rows have verifier-derived zero Tip5 masks"
+        );
+        compiler
+            .verify_terminal_production_goldilocks(&vk, &public_inputs, &proof)
+            .expect("honest recompose production proof must verify");
+
+        let mut extra_mask = proof;
+        extra_mask
+            .npo_exhaustive_proof
+            .as_mut()
+            .expect("fixture must include exhaustive NPO proof")
+            .tip5_hidden_input_nonzero_masks
+            .push(0);
+        let err = compiler
+            .verify_terminal_production_goldilocks(&vk, &public_inputs, &extra_mask)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoQueryLengthMismatch { .. }
         ));
     }
 
@@ -16034,6 +16105,61 @@ mod tests {
             GoldilocksD2::from(coeff_values[1]),
             coeff_expected_value,
         ];
+
+        (builder.build().unwrap(), public_inputs)
+    }
+
+    fn build_many_recompose_test_circuit(
+        rows: usize,
+    ) -> (Circuit<GoldilocksD2>, Vec<GoldilocksD2>) {
+        let mut builder = CircuitBuilder::<GoldilocksD2>::new();
+        builder
+            .enable_recompose::<Goldilocks>(generate_recompose_trace::<Goldilocks, GoldilocksD2>);
+
+        let mut public_inputs = Vec::with_capacity(rows * 6);
+        for row in 0..rows {
+            let std_c0 = builder.public_input();
+            let std_c1 = builder.public_input();
+            let std_expected = builder.public_input();
+            let std_out = builder
+                .recompose_base_coeffs_to_ext::<Goldilocks>(&[std_c0, std_c1])
+                .unwrap();
+            let diff = builder.sub(std_out, std_expected);
+            builder.assert_zero(diff);
+
+            let coeff_c0 = builder.public_input();
+            let coeff_c1 = builder.public_input();
+            let coeff_expected = builder.public_input();
+            let coeff_out = builder
+                .recompose_base_coeffs_to_ext_with_coeff_lookups::<Goldilocks>(&[
+                    coeff_c0, coeff_c1,
+                ])
+                .unwrap();
+            let diff = builder.sub(coeff_out, coeff_expected);
+            builder.assert_zero(diff);
+
+            let offset = row as u64 * 8;
+            let std_values = [
+                Goldilocks::from_u64(7 + offset),
+                Goldilocks::from_u64(11 + offset),
+            ];
+            let coeff_values = [
+                Goldilocks::from_u64(13 + offset),
+                Goldilocks::from_u64(17 + offset),
+            ];
+            let std_expected_value =
+                GoldilocksD2::from_basis_coefficients_slice(&std_values).unwrap();
+            let coeff_expected_value =
+                GoldilocksD2::from_basis_coefficients_slice(&coeff_values).unwrap();
+            public_inputs.extend_from_slice(&[
+                GoldilocksD2::from(std_values[0]),
+                GoldilocksD2::from(std_values[1]),
+                std_expected_value,
+                GoldilocksD2::from(coeff_values[0]),
+                GoldilocksD2::from(coeff_values[1]),
+                coeff_expected_value,
+            ]);
+        }
 
         (builder.build().unwrap(), public_inputs)
     }
