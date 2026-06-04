@@ -1177,12 +1177,15 @@ enum TerminalNpoValueQuotientConstraintKind {
     Padding,
     MmcsBooleanBase,
     MmcsBooleanTail,
+    SelectorTimesValue,
+    SelectorTimesDifference,
 }
 
 #[derive(Clone, Debug)]
 struct TerminalNpoValueQuotientConstraint {
-    present_evals: Vec<Goldilocks>,
+    selector_evals: Vec<Goldilocks>,
     value_evals: Vec<Goldilocks>,
+    rhs_evals: Option<Vec<Goldilocks>>,
     kind: TerminalNpoValueQuotientConstraintKind,
 }
 
@@ -11557,13 +11560,19 @@ impl NativeTerminalCompiler {
             let mut folded = TerminalFriChallenge::ZERO;
             let mut coeff = TerminalFriChallenge::ONE;
             for constraint in &constraints {
-                let present = value_domain.evaluate_polynomial_at(&constraint.present_evals, point);
+                let selector =
+                    value_domain.evaluate_polynomial_at(&constraint.selector_evals, point);
                 let value = value_domain.evaluate_polynomial_at(&constraint.value_evals, point);
+                let rhs = constraint
+                    .rhs_evals
+                    .as_ref()
+                    .map(|rhs_evals| value_domain.evaluate_polynomial_at(rhs_evals, point));
                 folded += coeff
                     * Self::terminal_npo_value_quotient_constraint_value(
                         constraint.kind,
-                        present,
+                        selector,
                         value,
+                        rhs,
                     );
                 coeff *= alpha;
             }
@@ -11618,83 +11627,192 @@ impl NativeTerminalCompiler {
                         label: present_label.clone(),
                     },
                 )?;
-            let mut present_evals = Vec::with_capacity(profile.padded_rows);
-            for row in 0..profile.padded_rows {
-                let present = if row < profile.rows {
-                    verifier_columns.columns[present_column_index][row]
-                        .as_basis_coefficients_slice()
-                        .first()
-                        .copied()
-                        .unwrap_or(Goldilocks::ZERO)
-                } else {
-                    Goldilocks::ZERO
-                };
-                present_evals.push(present);
-            }
+            let present_evals = Self::terminal_npo_polynomial_column_basis_evals(
+                verifier_columns,
+                profile,
+                present_column_index,
+                0,
+            );
             for basis_index in 0..profile.field_basis_dimension {
-                let mut value_evals = Vec::with_capacity(profile.padded_rows);
-                for row in 0..profile.padded_rows {
-                    let value = if row < profile.rows {
-                        columns.columns[value_column_index][row]
-                            .as_basis_coefficients_slice()
-                            .get(basis_index)
-                            .copied()
-                            .unwrap_or(Goldilocks::ZERO)
-                    } else {
-                        Goldilocks::ZERO
-                    };
-                    value_evals.push(value);
-                }
+                let value_evals = Self::terminal_npo_polynomial_column_basis_evals(
+                    columns,
+                    profile,
+                    value_column_index,
+                    basis_index,
+                );
                 constraints.push(TerminalNpoValueQuotientConstraint {
-                    present_evals: present_evals.clone(),
+                    selector_evals: present_evals.clone(),
                     value_evals,
+                    rhs_evals: None,
                     kind: TerminalNpoValueQuotientConstraintKind::Padding,
                 });
             }
             if label == "mmcs_bit" {
                 for basis_index in 0..profile.field_basis_dimension {
-                    let mut value_evals = Vec::with_capacity(profile.padded_rows);
-                    for row in 0..profile.padded_rows {
-                        let value = if row < profile.rows {
-                            columns.columns[value_column_index][row]
-                                .as_basis_coefficients_slice()
-                                .get(basis_index)
-                                .copied()
-                                .unwrap_or(Goldilocks::ZERO)
-                        } else {
-                            Goldilocks::ZERO
-                        };
-                        value_evals.push(value);
-                    }
+                    let value_evals = Self::terminal_npo_polynomial_column_basis_evals(
+                        columns,
+                        profile,
+                        value_column_index,
+                        basis_index,
+                    );
                     let kind = if basis_index == 0 {
                         TerminalNpoValueQuotientConstraintKind::MmcsBooleanBase
                     } else {
                         TerminalNpoValueQuotientConstraintKind::MmcsBooleanTail
                     };
                     constraints.push(TerminalNpoValueQuotientConstraint {
-                        present_evals: present_evals.clone(),
+                        selector_evals: present_evals.clone(),
                         value_evals,
+                        rhs_evals: None,
                         kind,
                     });
                 }
             }
         }
+        Self::append_terminal_npo_recompose_value_quotient_constraints(
+            columns,
+            verifier_columns,
+            profile,
+            &mut constraints,
+        )?;
         Ok(constraints)
+    }
+
+    fn append_terminal_npo_recompose_value_quotient_constraints<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        verifier_columns: &TerminalNpoPolynomialColumns<F>,
+        profile: &TerminalNpoPolynomialFriProfile,
+        constraints: &mut Vec<TerminalNpoValueQuotientConstraint>,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let selector_evals = Self::terminal_npo_polynomial_combined_selector_evals(
+            verifier_columns,
+            profile,
+            &["is_recompose", "is_recompose_coeff"],
+        )?;
+        let selector_is_zero = selector_evals
+            .iter()
+            .all(|value| *value == Goldilocks::ZERO);
+        if selector_is_zero {
+            return Ok(());
+        }
+        let output_column = Self::terminal_npo_polynomial_column_index(columns, "output_value_0")?;
+        for basis_index in 0..profile.field_basis_dimension {
+            let input_label = format!("input_value_{basis_index}");
+            let input_column = Self::terminal_npo_polynomial_column_index(columns, &input_label)?;
+            for tail_basis in 1..profile.field_basis_dimension {
+                constraints.push(TerminalNpoValueQuotientConstraint {
+                    selector_evals: selector_evals.clone(),
+                    value_evals: Self::terminal_npo_polynomial_column_basis_evals(
+                        columns,
+                        profile,
+                        input_column,
+                        tail_basis,
+                    ),
+                    rhs_evals: None,
+                    kind: TerminalNpoValueQuotientConstraintKind::SelectorTimesValue,
+                });
+            }
+            constraints.push(TerminalNpoValueQuotientConstraint {
+                selector_evals: selector_evals.clone(),
+                value_evals: Self::terminal_npo_polynomial_column_basis_evals(
+                    columns,
+                    profile,
+                    output_column,
+                    basis_index,
+                ),
+                rhs_evals: Some(Self::terminal_npo_polynomial_column_basis_evals(
+                    columns,
+                    profile,
+                    input_column,
+                    0,
+                )),
+                kind: TerminalNpoValueQuotientConstraintKind::SelectorTimesDifference,
+            });
+        }
+        Ok(())
+    }
+
+    fn terminal_npo_polynomial_column_index<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        label: &str,
+    ) -> Result<usize, NativeTerminalVerifyError> {
+        columns
+            .labels
+            .iter()
+            .position(|candidate| candidate == label)
+            .ok_or_else(
+                || NativeTerminalVerifyError::TerminalNpoPolynomialColumnMissing {
+                    label: label.into(),
+                },
+            )
+    }
+
+    fn terminal_npo_polynomial_column_basis_evals<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        profile: &TerminalNpoPolynomialFriProfile,
+        column_index: usize,
+        basis_index: usize,
+    ) -> Vec<Goldilocks>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let mut evals = Vec::with_capacity(profile.padded_rows);
+        for row in 0..profile.padded_rows {
+            let value = if row < profile.rows {
+                columns.columns[column_index][row]
+                    .as_basis_coefficients_slice()
+                    .get(basis_index)
+                    .copied()
+                    .unwrap_or(Goldilocks::ZERO)
+            } else {
+                Goldilocks::ZERO
+            };
+            evals.push(value);
+        }
+        evals
+    }
+
+    fn terminal_npo_polynomial_combined_selector_evals<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        profile: &TerminalNpoPolynomialFriProfile,
+        labels: &[&str],
+    ) -> Result<Vec<Goldilocks>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let mut combined = vec![Goldilocks::ZERO; profile.padded_rows];
+        for label in labels {
+            let index = Self::terminal_npo_polynomial_column_index(columns, label)?;
+            let evals =
+                Self::terminal_npo_polynomial_column_basis_evals(columns, profile, index, 0);
+            for (acc, value) in combined.iter_mut().zip(evals) {
+                *acc += value;
+            }
+        }
+        Ok(combined)
     }
 
     fn terminal_npo_value_quotient_constraint_value(
         kind: TerminalNpoValueQuotientConstraintKind,
-        present: TerminalFriChallenge,
+        selector: TerminalFriChallenge,
         value: TerminalFriChallenge,
+        rhs: Option<TerminalFriChallenge>,
     ) -> TerminalFriChallenge {
         match kind {
             TerminalNpoValueQuotientConstraintKind::Padding => {
-                (TerminalFriChallenge::ONE - present) * value
+                (TerminalFriChallenge::ONE - selector) * value
             }
             TerminalNpoValueQuotientConstraintKind::MmcsBooleanBase => {
-                present * value * (value - TerminalFriChallenge::ONE)
+                selector * value * (value - TerminalFriChallenge::ONE)
             }
-            TerminalNpoValueQuotientConstraintKind::MmcsBooleanTail => present * value,
+            TerminalNpoValueQuotientConstraintKind::MmcsBooleanTail => selector * value,
+            TerminalNpoValueQuotientConstraintKind::SelectorTimesValue => selector * value,
+            TerminalNpoValueQuotientConstraintKind::SelectorTimesDifference => {
+                selector * (value - rhs.unwrap_or(TerminalFriChallenge::ZERO))
+            }
         }
     }
 
@@ -12065,6 +12183,7 @@ impl NativeTerminalCompiler {
                         TerminalNpoValueQuotientConstraintKind::Padding,
                         present,
                         *value,
+                        None,
                     );
                 coeff *= alpha;
             }
@@ -12076,11 +12195,21 @@ impl NativeTerminalCompiler {
                         TerminalNpoValueQuotientConstraintKind::MmcsBooleanTail
                     };
                     folded += coeff
-                        * Self::terminal_npo_value_quotient_constraint_value(kind, present, *value);
+                        * Self::terminal_npo_value_quotient_constraint_value(
+                            kind, present, *value, None,
+                        );
                     coeff *= alpha;
                 }
             }
         }
+        self.fold_terminal_npo_recompose_value_quotient_identity_goldilocks(
+            verifier_columns,
+            value_domain,
+            alpha,
+            opened,
+            &mut folded,
+            &mut coeff,
+        )?;
         let expected = quotient * value_domain.vanishing_poly_at_point(opened.zeta);
         if folded != expected {
             return Err(
@@ -12090,6 +12219,90 @@ impl NativeTerminalCompiler {
             );
         }
         Ok(())
+    }
+
+    fn fold_terminal_npo_recompose_value_quotient_identity_goldilocks<F>(
+        &self,
+        verifier_columns: &TerminalNpoPolynomialColumns<F>,
+        value_domain: <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::Domain,
+        alpha: TerminalFriChallenge,
+        opened: &TerminalNpoPolynomialFriOpenedColumns,
+        folded: &mut TerminalFriChallenge,
+        coeff: &mut TerminalFriChallenge,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let selector_evals = Self::terminal_npo_polynomial_combined_selector_evals(
+            verifier_columns,
+            &opened.profile,
+            &["is_recompose", "is_recompose_coeff"],
+        )?;
+        if selector_evals
+            .iter()
+            .all(|value| *value == Goldilocks::ZERO)
+        {
+            return Ok(());
+        }
+        let selector = value_domain.evaluate_polynomial_at(&selector_evals, opened.zeta);
+        let output_basis = Self::terminal_npo_opened_value_basis(opened, "output_value_0")?;
+        for basis_index in 0..opened.profile.field_basis_dimension {
+            let input_label = format!("input_value_{basis_index}");
+            let input_basis = Self::terminal_npo_opened_value_basis(opened, &input_label)?;
+            for tail_basis in 1..opened.profile.field_basis_dimension {
+                let value = input_basis.get(tail_basis).copied().ok_or(
+                    NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                        expected: opened.profile.field_basis_dimension,
+                        got: input_basis.len(),
+                    },
+                )?;
+                *folded += *coeff
+                    * Self::terminal_npo_value_quotient_constraint_value(
+                        TerminalNpoValueQuotientConstraintKind::SelectorTimesValue,
+                        selector,
+                        value,
+                        None,
+                    );
+                *coeff *= alpha;
+            }
+            let output = output_basis.get(basis_index).copied().ok_or(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: opened.profile.field_basis_dimension,
+                    got: output_basis.len(),
+                },
+            )?;
+            let input_base = input_basis.first().copied().ok_or(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: opened.profile.field_basis_dimension,
+                    got: input_basis.len(),
+                },
+            )?;
+            *folded += *coeff
+                * Self::terminal_npo_value_quotient_constraint_value(
+                    TerminalNpoValueQuotientConstraintKind::SelectorTimesDifference,
+                    selector,
+                    output,
+                    Some(input_base),
+                );
+            *coeff *= alpha;
+        }
+        Ok(())
+    }
+
+    fn terminal_npo_opened_value_basis<'a>(
+        opened: &'a TerminalNpoPolynomialFriOpenedColumns,
+        label: &str,
+    ) -> Result<&'a Vec<TerminalFriChallenge>, NativeTerminalVerifyError> {
+        opened
+            .labels
+            .iter()
+            .position(|candidate| candidate == label)
+            .map(|index| &opened.values[index])
+            .ok_or_else(
+                || NativeTerminalVerifyError::TerminalNpoPolynomialColumnMissing {
+                    label: label.into(),
+                },
+            )
     }
 
     fn verify_terminal_npo_polynomial_fri_opening_for_column_set_goldilocks<F>(
@@ -23865,6 +24078,26 @@ mod tests {
                 &bad_present_value_proof,
             )
             .expect("padding-only checker must not claim full present-value row semantics");
+        let bad_recompose_quotient_proof =
+            NativeTerminalCompiler::prove_terminal_npo_polynomial_padding_quotient_from_columns_goldilocks(
+                &prelude,
+                &bad_present_value_columns,
+                &verifier_columns,
+            )
+            .expect("FRI-valid but recompose-invalid value quotient proof must build");
+        let err = compiler
+            .verify_terminal_npo_polynomial_padding_quotient_goldilocks::<GoldilocksD2>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_recompose_quotient_proof,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
+                if label == "npo_value_relation_quotient"
+        ));
         let err = compiler
             .verify_terminal_npo_polynomial_fri_opening_goldilocks::<GoldilocksD2>(
                 &vk,
