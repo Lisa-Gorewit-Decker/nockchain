@@ -442,6 +442,18 @@ for this route.
   exhaustive path until a separate relation proof ties this composition
   polynomial to the committed `npo_exhaustive_residual` oracle and the
   witness-derived row table.
+- `TerminalNpoPolynomialCompactResidualZeroProof`: a bound compact-FRI
+  residual-zero checkpoint for the fixed NPO polynomial columns. It commits the
+  randomized combined residual polynomial, opens that same FRI commitment at
+  the transcript-derived zeta point and at the sampled row-domain points used
+  by `TerminalNpoPolynomialColumnOpeningProof`, and checks those row openings
+  against the residual-column linear combination. The focused regression test
+  measures `15,481` bytes / `15.1 KiB` for the 2-row NPO polynomial fixture,
+  debug-profile `prove=150.7ms`, `verify=126.1ms`, and rejects both tampered
+  compact row openings and stale residual columns. This closes the previous
+  "zero proof not tied to residual columns at sampled rows" gap for this
+  checkpoint, but it is still a sampled relation check rather than the final
+  one-shared-composition production backend.
 - `TerminalNpoTip5LookupNpoRowsValueBridgeQuotientProof`: an NPO-row-domain
   value-binding checkpoint for the optimized lookup terminal IO. Instead of
   trusting a prover-supplied lookup-domain NPO projection, it commits the 26
@@ -712,6 +724,13 @@ bytes / `16.6 KiB` for a 17-row fixture padded to 32 rows, with debug
 itself because it does not yet prove equality between the compact composition
 polynomial and the committed residual oracle; it is the measured zero/proximity
 component the next combined backend should absorb.
+The NPO-column variant now adds the missing sampled-row binding: the compact
+FRI commitment is also opened at the same row-domain points authenticated by
+the column-opening proof and those openings are checked against the randomized
+residual-column combination. That bound checkpoint measures `15,481` bytes /
+`15.1 KiB` on the 2-row fixture, with debug `prove=150.7ms` and
+`verify=126.1ms`; it rejects tampered compact row openings and stale residual
+columns.
 
 `TerminalBackendRelationDigest` is the explicit commitment to those backend
 projections. It has its own domain and absorbs `TerminalQuadraticRelation`,
@@ -1118,6 +1137,10 @@ subrelation will exceed the target. The residual-zero compact-composition
 checkpoint is only 16.6 KiB on the 17-row residual fixture, but it is cheap
 because it proves only the zero/proximity opening and not the equality between
 that polynomial, the committed residual oracle, and the NPO row table. The
+bound NPO-column compact residual-zero checkpoint is similarly small at
+15.1 KiB on the 2-row fixture and ties the compact FRI commitment to sampled
+residual-column openings, but it is still a component proof; appending it next
+to the value bridge and Tip5 AIR components is not the final 100 KiB route. The
 LogUp/global-bus byte lookup relation remains a separate soundness obligation.
 The NPO-row value-bridge quotient closes the projection-to-value-column binding
 checkpoint in isolation at 16.1 KiB, while the terminal compact-FRI wrapper
@@ -1455,10 +1478,11 @@ Design conclusions for this codebase:
    `terminal_npo_polynomial_column_residual_values_goldilocks` reconstructs the
    row predicate from those columns. The columns now also basis-expand into a
    Goldilocks matrix accepted by the native Plonky3 FRI PCS with recursive
-   5-round Tip5 commitments. `TerminalNpoExhaustiveResidualFoldProof` still
-   folds the residual oracle under dedicated transcript domains, so the
-   remaining gap is connecting the row constraints to that PCS/proximity
-   argument rather than a missing row predicate.
+   5-round Tip5 commitments. `TerminalNpoPolynomialCompactResidualZeroProof`
+   now binds a compact FRI residual-zero commitment to sampled residual-column
+   openings, so the remaining gap is folding this into one shared
+   composition/proximity argument rather than proving each subrelation as an
+   appended component.
 3. The fixed-column NPO row predicate now covers:
    - Tip5: 5-round Tip5 state transition with explicit row mode, new-start,
      Merkle-path direction, carry/zero derivation, hidden-lane embedding, MMCS

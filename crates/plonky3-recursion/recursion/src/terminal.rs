@@ -1603,6 +1603,23 @@ pub struct TerminalNpoPolynomialResidualZeroProof {
     pub openings: Vec<TerminalResidualFoldQueryOpening>,
 }
 
+/// Compact FRI zero check for the fixed NPO residual-value columns.
+///
+/// The FRI commitment is opened both at the transcript-derived zeta point
+/// and at the verifier-selected row-domain points used by the column-opening
+/// proof. The row openings tie the compact composition polynomial to the
+/// residual columns at sampled rows; the zeta opening gives the low-degree
+/// residual-zero check.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TerminalNpoPolynomialCompactResidualZeroProof {
+    pub column_opening_proof: TerminalNpoPolynomialColumnOpeningProof,
+    pub profile: TerminalCompactCompositionFriProfile,
+    pub composition_commitment: TerminalFriCommitment,
+    pub opened_zero_basis: Vec<Vec<u64>>,
+    pub opened_row_values_basis: Vec<Vec<Vec<u64>>>,
+    pub proof: TerminalCompressedFriProof,
+}
+
 /// One flattened component in the production-equivalent supported-NPO residual
 /// domain.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -6987,6 +7004,316 @@ impl NativeTerminalCompiler {
             round_openings,
             openings,
         })
+    }
+
+    pub fn prove_terminal_npo_polynomial_compact_residual_zero_goldilocks(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<Goldilocks>,
+        witness: &TerminalWitness<Goldilocks>,
+        prelude: &TerminalProofPrelude,
+    ) -> Result<TerminalNpoPolynomialCompactResidualZeroProof, NativeTerminalVerifyError> {
+        let columns = self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
+        self.prove_terminal_npo_polynomial_compact_residual_zero_from_columns_goldilocks(
+            verifying_key,
+            prelude,
+            &columns,
+        )
+    }
+
+    fn prove_terminal_npo_polynomial_compact_residual_zero_from_columns_goldilocks(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<Goldilocks>,
+        prelude: &TerminalProofPrelude,
+        columns: &TerminalNpoPolynomialColumns<Goldilocks>,
+    ) -> Result<TerminalNpoPolynomialCompactResidualZeroProof, NativeTerminalVerifyError> {
+        Self::validate_terminal_npo_polynomial_columns(&columns.layout, columns)?;
+        let oracle_set = Self::commit_terminal_npo_polynomial_column_values_goldilocks(columns)?;
+        let commitments = oracle_set.commitments();
+        let plan = self.derive_terminal_npo_polynomial_column_query_plan::<Goldilocks>(
+            verifying_key,
+            prelude,
+            &commitments,
+        )?;
+        let combination_challenge =
+            Self::derive_terminal_npo_polynomial_residual_combination_challenge::<Goldilocks>(
+                prelude,
+                &commitments,
+            )?;
+        let combined_residual_values =
+            Self::terminal_npo_polynomial_combined_residual_values(columns, combination_challenge)?;
+        let profile = Self::terminal_compact_composition_fri_profile(
+            columns.layout.rows,
+            columns.layout.rows.next_power_of_two(),
+        )?;
+        let matrix = Self::terminal_compact_composition_matrix_from_goldilocks_values(
+            &combined_residual_values,
+            &profile,
+        )?;
+
+        let mut column_openings = Vec::with_capacity(columns.columns.len());
+        for (tree, column) in oracle_set.trees.iter().zip(&columns.columns) {
+            let opening_values = plan
+                .opened_indices
+                .iter()
+                .map(|index| (*index, &column[*index]))
+                .collect::<Vec<_>>();
+            column_openings.push(tree.open_goldilocks_multi_values(&opening_values)?);
+        }
+
+        let (pcs, mut challenger) = Self::terminal_fri_pcs_and_challenger(profile.proximity)?;
+        Self::seed_terminal_compact_composition_fri_challenger(
+            &mut challenger,
+            Self::terminal_npo_polynomial_compact_residual_zero_label(),
+            prelude,
+            &profile,
+        );
+        let domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                profile.padded_rows,
+            );
+        let (composition_commitment, data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(domain, matrix)],
+            );
+        challenger.observe(composition_commitment.clone());
+        let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let mut opening_points = vec![zeta];
+        for index in &plan.opened_indices {
+            opening_points.push(Self::terminal_compact_composition_row_point(
+                domain,
+                *index,
+                &profile,
+            )?);
+        }
+        let (opened_values, plain_proof) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
+                &pcs,
+                vec![(&data, vec![opening_points.clone()])],
+                &mut challenger,
+            );
+        let opened_points_basis =
+            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 0)?;
+        if opened_points_basis.len() != opening_points.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compact_residual_zero_opening_points".into(),
+                    expected: opening_points.len(),
+                    got: opened_points_basis.len(),
+                },
+            );
+        }
+
+        let mut query_challenger = TerminalFriChallenger::new(Tip5Perm);
+        Self::seed_terminal_compact_composition_fri_challenger(
+            &mut query_challenger,
+            Self::terminal_npo_polynomial_compact_residual_zero_label(),
+            prelude,
+            &profile,
+        );
+        query_challenger.observe(composition_commitment.clone());
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        for point_values in &opened_values[0][0] {
+            query_challenger.observe_algebra_slice(point_values);
+        }
+        let query_indices = Self::derive_terminal_fri_query_indices_from_challenger(
+            &mut query_challenger,
+            &plain_proof,
+            profile.proximity,
+        )?;
+        let proof = Self::compress_terminal_fri_proof(&plain_proof, &query_indices)?;
+
+        Ok(TerminalNpoPolynomialCompactResidualZeroProof {
+            column_opening_proof: TerminalNpoPolynomialColumnOpeningProof {
+                commitments,
+                column_openings,
+            },
+            profile,
+            composition_commitment,
+            opened_zero_basis: opened_points_basis[0].clone(),
+            opened_row_values_basis: opened_points_basis[1..].to_vec(),
+            proof,
+        })
+    }
+
+    pub fn verify_terminal_npo_polynomial_compact_residual_zero_goldilocks(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<Goldilocks>,
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoPolynomialCompactResidualZeroProof,
+    ) -> Result<TerminalNpoPolynomialColumnQueryPlan, NativeTerminalVerifyError> {
+        let (plan, opened_columns) = self
+            .verify_terminal_npo_polynomial_column_opening_values_goldilocks::<Goldilocks>(
+                verifying_key,
+                prelude,
+                &proof.column_opening_proof,
+            )?;
+        let expected_profile = Self::terminal_compact_composition_fri_profile(
+            opened_columns.layout.rows,
+            opened_columns.layout.rows.next_power_of_two(),
+        )?;
+        if proof.profile != expected_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compact_residual_zero_profile".into(),
+                    expected: expected_profile.basis_columns,
+                    got: proof.profile.basis_columns,
+                },
+            );
+        }
+        if proof.profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: proof.profile.proximity.proof_parameters(),
+                },
+            );
+        }
+        if proof.opened_row_values_basis.len() != plan.opened_indices.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compact_residual_zero_row_openings".into(),
+                    expected: plan.opened_indices.len(),
+                    got: proof.opened_row_values_basis.len(),
+                },
+            );
+        }
+
+        let mut opened_points = Vec::with_capacity(1 + proof.opened_row_values_basis.len());
+        opened_points.push(Self::terminal_compact_composition_point_values_from_basis(
+            &proof.opened_zero_basis,
+            &proof.profile,
+        )?);
+        for basis in &proof.opened_row_values_basis {
+            opened_points.push(Self::terminal_compact_composition_point_values_from_basis(
+                basis,
+                &proof.profile,
+            )?);
+        }
+
+        let (pcs, mut challenger) = Self::terminal_fri_pcs_and_challenger(proof.profile.proximity)?;
+        Self::seed_terminal_compact_composition_fri_challenger(
+            &mut challenger,
+            Self::terminal_npo_polynomial_compact_residual_zero_label(),
+            prelude,
+            &proof.profile,
+        );
+        let domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                proof.profile.padded_rows,
+            );
+        challenger.observe(proof.composition_commitment.clone());
+        let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let mut opening_points = vec![zeta];
+        for index in &plan.opened_indices {
+            opening_points.push(Self::terminal_compact_composition_row_point(
+                domain,
+                *index,
+                &proof.profile,
+            )?);
+        }
+        let opened = opening_points
+            .into_iter()
+            .zip(opened_points.clone())
+            .collect::<Vec<_>>();
+        let restored = Self::decompress_terminal_fri_proof(&proof.proof)?;
+        <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
+            &pcs,
+            vec![(proof.composition_commitment.clone(), vec![(domain, opened)])],
+            &restored,
+            &mut challenger,
+        )
+        .map_err(|err| {
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: format!(
+                    "terminal compact residual-zero FRI verification failed: {err:?}"
+                ),
+            }
+        })?;
+
+        if opened_points[0]
+            .iter()
+            .any(|value| *value != TerminalFriChallenge::ZERO)
+        {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: Self::terminal_npo_polynomial_compact_residual_zero_label().into(),
+                },
+            );
+        }
+
+        let combination_challenge =
+            Self::derive_terminal_npo_polynomial_residual_combination_challenge::<Goldilocks>(
+                prelude,
+                &proof.column_opening_proof.commitments,
+            )?;
+        let residual_column_indices =
+            Self::terminal_npo_polynomial_residual_value_column_indices(&opened_columns);
+        for (query, (index, opened_value)) in plan
+            .opened_indices
+            .iter()
+            .zip(opened_points.iter().skip(1))
+            .enumerate()
+        {
+            let mut expected_value = Goldilocks::ZERO;
+            let mut coeff = Goldilocks::ONE;
+            for column_index in &residual_column_indices {
+                expected_value += opened_columns.columns[*column_index][*index] * coeff;
+                coeff *= combination_challenge;
+            }
+            if opened_value.first().copied().unwrap_or(TerminalFriChallenge::ZERO)
+                != TerminalFriChallenge::from(expected_value)
+                || opened_value
+                    .iter()
+                    .skip(1)
+                    .any(|value| *value != TerminalFriChallenge::ZERO)
+            {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                        label: Self::terminal_npo_polynomial_compact_residual_zero_label().into(),
+                        row: *index,
+                    },
+                );
+            }
+            let segment = Self::terminal_npo_exhaustive_residual_segment_indices::<Goldilocks>(
+                verifying_key,
+                *index,
+            )?;
+            let mut previous_normal_tip5_output = None;
+            let mut previous_merkle_tip5_output = None;
+            for npo_index in segment {
+                let evaluation = self.evaluate_terminal_npo_polynomial_column_row_goldilocks(
+                    verifying_key,
+                    &opened_columns,
+                    npo_index,
+                    &mut previous_normal_tip5_output,
+                    &mut previous_merkle_tip5_output,
+                )?;
+                let derived =
+                    Self::terminal_npo_row_evaluation_component_values::<Goldilocks>(&evaluation);
+                let opened = Self::terminal_npo_polynomial_column_row_residual_values(
+                    &opened_columns,
+                    npo_index,
+                )?;
+                if opened != derived {
+                    let component_offset = opened
+                        .iter()
+                        .zip(&derived)
+                        .position(|(opened, derived)| opened != derived)
+                        .unwrap_or(opened.len().min(derived.len()));
+                    return Err(
+                        NativeTerminalVerifyError::TerminalNpoPolynomialResidualMismatch {
+                            npo_index,
+                            component_offset,
+                        },
+                    );
+                }
+            }
+            let _ = query;
+        }
+        Ok(plan)
     }
 
     pub fn verify_terminal_npo_polynomial_residual_zero_goldilocks<F>(
@@ -15150,6 +15477,19 @@ impl NativeTerminalCompiler {
             .collect::<Vec<_>>())
     }
 
+    fn terminal_npo_opened_matrix_points_basis_u64(
+        opened_values: &[Vec<Vec<Vec<TerminalFriChallenge>>>],
+        matrix_index: usize,
+    ) -> Result<Vec<Vec<Vec<u64>>>, NativeTerminalVerifyError> {
+        Ok(opened_values
+            .get(matrix_index)
+            .and_then(|round| round.first())
+            .ok_or(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty)?
+            .iter()
+            .map(|point| point.iter().map(Self::goldilocks_basis_u64).collect())
+            .collect::<Vec<_>>())
+    }
+
     fn terminal_compact_composition_matrix_from_goldilocks_values(
         values: &[Goldilocks],
         profile: &TerminalCompactCompositionFriProfile,
@@ -15179,6 +15519,51 @@ impl NativeTerminalCompiler {
             matrix_values[row * profile.basis_columns] = value;
         }
         Ok(RowMajorMatrix::new(matrix_values, profile.basis_columns))
+    }
+
+    fn terminal_compact_composition_point_values_from_basis(
+        basis: &[Vec<u64>],
+        profile: &TerminalCompactCompositionFriProfile,
+    ) -> Result<Vec<TerminalFriChallenge>, NativeTerminalVerifyError> {
+        if basis.len() != profile.basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: profile.basis_columns,
+                    got: basis.len(),
+                },
+            );
+        }
+        basis
+            .iter()
+            .map(|value_basis| {
+                Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(value_basis)
+            })
+            .collect()
+    }
+
+    fn terminal_compact_composition_row_point(
+        domain: <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::Domain,
+        row: usize,
+        profile: &TerminalCompactCompositionFriProfile,
+    ) -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
+        if row >= profile.rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compact_composition_row_point".into(),
+                    expected: profile.rows,
+                    got: row + 1,
+                },
+            );
+        }
+        let mut point = TerminalFriChallenge::from(domain.first_point());
+        for _ in 0..row {
+            point = domain.next_point(point).ok_or_else(|| {
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                    reason: "terminal compact composition row point outside domain".into(),
+                }
+            })?;
+        }
+        Ok(point)
     }
 
     pub fn verify_terminal_npo_polynomial_fri_opening_goldilocks<F>(
@@ -19143,6 +19528,10 @@ impl NativeTerminalCompiler {
 
     fn terminal_npo_exhaustive_residual_compact_composition_label() -> &'static str {
         "nock-terminal-npo-exhaustive-residual-compact-zero-v1"
+    }
+
+    fn terminal_npo_polynomial_compact_residual_zero_label() -> &'static str {
+        "nock-terminal-npo-polynomial-compact-residual-zero-v1"
     }
 
     fn npo_exhaustive_residual_fold_oracle_label(round: usize) -> String {
@@ -25788,6 +26177,50 @@ mod tests {
             .expect("NPO polynomial residual-zero proof must verify");
         assert_eq!(residual_zero_plan, plan);
 
+        let compact_residual_start = std::time::Instant::now();
+        let compact_residual_proof = compiler
+            .prove_terminal_npo_polynomial_compact_residual_zero_goldilocks(
+                &vk, &witness, &prelude,
+            )
+            .expect("compact NPO polynomial residual-zero proof must build");
+        let compact_residual_prove_elapsed = compact_residual_start.elapsed();
+        let compact_residual_verify_start = std::time::Instant::now();
+        let compact_residual_plan = compiler
+            .verify_terminal_npo_polynomial_compact_residual_zero_goldilocks(
+                &vk,
+                &prelude,
+                &compact_residual_proof,
+            )
+            .expect("compact NPO polynomial residual-zero proof must verify");
+        let compact_residual_verify_elapsed = compact_residual_verify_start.elapsed();
+        assert_eq!(compact_residual_plan, plan);
+        let compact_residual_bytes = postcard::to_allocvec(&compact_residual_proof)
+            .expect("compact NPO residual-zero proof must serialize");
+        println!(
+            "terminal NPO polynomial compact residual-zero proof: {} bytes ({:.1} KiB), rows={}, opened_rows={}, prove={:?}, verify={:?}",
+            compact_residual_bytes.len(),
+            compact_residual_bytes.len() as f64 / 1024.0,
+            compact_residual_proof.profile.rows,
+            compact_residual_proof.opened_row_values_basis.len(),
+            compact_residual_prove_elapsed,
+            compact_residual_verify_elapsed,
+        );
+
+        let mut bad_compact_row_opening = compact_residual_proof.clone();
+        bad_compact_row_opening.opened_row_values_basis[0][0][0] ^= 1;
+        let err = compiler
+            .verify_terminal_npo_polynomial_compact_residual_zero_goldilocks(
+                &vk,
+                &prelude,
+                &bad_compact_row_opening,
+            )
+            .expect_err("tampered compact residual-zero row opening must reject");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+                | NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch { .. }
+        ));
+
         let residual_combination_challenge =
             NativeTerminalCompiler::derive_terminal_npo_polynomial_residual_combination_challenge::<
                 Goldilocks,
@@ -25955,6 +26388,25 @@ mod tests {
                 &bad_proof,
             )
             .expect_err("sampled residual check must reject inconsistent NPO columns");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialResidualMismatch { npo_index: 0, .. }
+        ));
+
+        let bad_compact_residual_zero_proof = compiler
+            .prove_terminal_npo_polynomial_compact_residual_zero_from_columns_goldilocks(
+                &single_vk,
+                &bad_prelude,
+                &bad_columns,
+            )
+            .expect("Merkle-consistent bad compact residual-zero proof must build");
+        let err = compiler
+            .verify_terminal_npo_polynomial_compact_residual_zero_goldilocks(
+                &single_vk,
+                &bad_prelude,
+                &bad_compact_residual_zero_proof,
+            )
+            .expect_err("compact residual-zero check must reject stale residual columns");
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialResidualMismatch { npo_index: 0, .. }
