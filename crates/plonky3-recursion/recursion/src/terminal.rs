@@ -14703,6 +14703,26 @@ impl NativeTerminalCompiler {
                 Self::terminal_restore_binary_merkle_paths(&round.pruned_opening_proof)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        // A malformed path dictionary must not panic on later indexing, and it
+        // must not carry ignored authentication paths outside the query count.
+        for paths in &restored_input_paths {
+            if paths.len() != query_count {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                        reason: "terminal compressed FRI input path count mismatch".into(),
+                    },
+                );
+            }
+        }
+        for paths in &restored_commit_paths {
+            if paths.len() != query_count {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                        reason: "terminal compressed FRI commit path count mismatch".into(),
+                    },
+                );
+            }
+        }
 
         let mut query_proofs = Vec::with_capacity(query_count);
         for query in 0..query_count {
@@ -25944,6 +25964,41 @@ mod tests {
         assert!(order_tampered, "compressed FRI input proof must carry query order");
         assert!(matches!(
             NativeTerminalCompiler::decompress_terminal_fri_proof(&malformed_order),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+        ));
+
+        let mut shortened_order = proof.proof.clone();
+        let mut shortened_order_tampered = false;
+        for batch in &mut shortened_order.input_batches {
+            if batch.pruned_opening_proof.original_order.pop().is_some() {
+                shortened_order_tampered = true;
+                break;
+            }
+        }
+        assert!(
+            shortened_order_tampered,
+            "compressed FRI input proof must carry query order"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&shortened_order),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+        ));
+
+        let mut overlong_order = proof.proof.clone();
+        let mut overlong_order_tampered = false;
+        for batch in &mut overlong_order.input_batches {
+            if !batch.pruned_opening_proof.original_order.is_empty() {
+                batch.pruned_opening_proof.original_order.push(0);
+                overlong_order_tampered = true;
+                break;
+            }
+        }
+        assert!(
+            overlong_order_tampered,
+            "compressed FRI input proof must carry query order"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&overlong_order),
             Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
         ));
 
