@@ -27,7 +27,8 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 use p3_tip5_circuit_air::{
-    NUM_ROUNDS as TIP5_PERM_ROUNDS, Tip5Perm, generate_lookup_trace, generate_trace_rows,
+    NUM_ROUNDS as TIP5_PERM_ROUNDS, TABLE_ROWS as TIP5_LOOKUP_TABLE_ROWS, Tip5Perm,
+    generate_lookup_trace, generate_trace_rows, tip5_lookup_air_width,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1034,6 +1035,20 @@ pub struct TerminalNpoPolynomialProfile {
     pub tip5_new_start_rows: usize,
     pub recompose_rows: usize,
     pub recompose_coeff_rows: usize,
+    pub max_constraint_degree: usize,
+    pub tip5_rounds: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerminalNpoTip5LookupTraceProfile {
+    pub tip5_rows: usize,
+    pub lookup_table_rows: usize,
+    pub main_rows: usize,
+    pub main_log_rows: usize,
+    pub main_width: usize,
+    pub preprocessed_width: usize,
+    pub preprocessed_values: usize,
+    pub permutation_row_offset: usize,
     pub max_constraint_degree: usize,
     pub tip5_rounds: usize,
 }
@@ -10872,6 +10887,28 @@ impl NativeTerminalCompiler {
         profile
     }
 
+    fn terminal_npo_tip5_lookup_trace_profile<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+    ) -> TerminalNpoTip5LookupTraceProfile {
+        const PREPROCESSED_WIDTH: usize = 3;
+        let tip5_rows = verifying_key.npo_relation().tip5_rows();
+        let main_rows = (TIP5_LOOKUP_TABLE_ROWS + tip5_rows)
+            .max(1)
+            .next_power_of_two();
+        TerminalNpoTip5LookupTraceProfile {
+            tip5_rows,
+            lookup_table_rows: TIP5_LOOKUP_TABLE_ROWS,
+            main_rows,
+            main_log_rows: Self::terminal_mle_log_size(main_rows),
+            main_width: tip5_lookup_air_width(),
+            preprocessed_width: PREPROCESSED_WIDTH,
+            preprocessed_values: main_rows * PREPROCESSED_WIDTH,
+            permutation_row_offset: TIP5_LOOKUP_TABLE_ROWS,
+            max_constraint_degree: 4,
+            tip5_rounds: TIP5_PERM_ROUNDS,
+        }
+    }
+
     fn terminal_npo_polynomial_column_layout<F>(
         verifying_key: &NativeTerminalVerifyingKey<F>,
     ) -> TerminalNpoPolynomialColumnLayout
@@ -17057,6 +17094,10 @@ impl NativeTerminalCompiler {
             sponge,
             &Self::terminal_npo_polynomial_profile::<F>(verifying_key),
         );
+        Self::absorb_npo_tip5_lookup_trace_profile(
+            sponge,
+            &Self::terminal_npo_tip5_lookup_trace_profile(verifying_key),
+        );
     }
 
     fn absorb_quadratic_relation<F>(
@@ -17178,6 +17219,23 @@ impl NativeTerminalCompiler {
         sponge.absorb_u64(profile.tip5_new_start_rows as u64);
         sponge.absorb_u64(profile.recompose_rows as u64);
         sponge.absorb_u64(profile.recompose_coeff_rows as u64);
+        sponge.absorb_u64(profile.max_constraint_degree as u64);
+        sponge.absorb_u64(profile.tip5_rounds as u64);
+    }
+
+    fn absorb_npo_tip5_lookup_trace_profile(
+        sponge: &mut TerminalDigestSponge,
+        profile: &TerminalNpoTip5LookupTraceProfile,
+    ) {
+        sponge.absorb_str("nock-terminal-npo-tip5-lookup-trace-profile-v1");
+        sponge.absorb_u64(profile.tip5_rows as u64);
+        sponge.absorb_u64(profile.lookup_table_rows as u64);
+        sponge.absorb_u64(profile.main_rows as u64);
+        sponge.absorb_u64(profile.main_log_rows as u64);
+        sponge.absorb_u64(profile.main_width as u64);
+        sponge.absorb_u64(profile.preprocessed_width as u64);
+        sponge.absorb_u64(profile.preprocessed_values as u64);
+        sponge.absorb_u64(profile.permutation_row_offset as u64);
         sponge.absorb_u64(profile.max_constraint_degree as u64);
         sponge.absorb_u64(profile.tip5_rounds as u64);
     }
@@ -19473,24 +19531,29 @@ mod tests {
         let (lookup_inputs, lookup_trace, lookup_preprocessed) = compiler
             .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
             .expect("terminal Tip5 lookup AIR trace must build");
+        let lookup_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
 
         assert_eq!(air_inputs.len(), 2);
         assert_eq!(air_trace.width(), tip5_perm_air_width());
         assert_eq!(air_trace.height(), 2);
         assert_eq!(lookup_inputs, air_inputs);
-        assert_eq!(lookup_trace.width(), tip5_lookup_air_width());
+        assert_eq!(lookup_profile.tip5_rows, air_inputs.len());
+        assert_eq!(lookup_profile.lookup_table_rows, TABLE_ROWS);
+        assert_eq!(lookup_profile.main_width, tip5_lookup_air_width());
+        assert_eq!(lookup_trace.width(), lookup_profile.main_width);
+        assert_eq!(lookup_trace.height(), lookup_profile.main_rows);
         assert_eq!(
-            lookup_trace.height(),
-            (TABLE_ROWS + air_inputs.len()).next_power_of_two()
+            lookup_preprocessed.len(),
+            lookup_profile.preprocessed_values
         );
-        assert_eq!(lookup_preprocessed.len(), lookup_trace.height() * 3);
+        assert_eq!(lookup_profile.permutation_row_offset, TABLE_ROWS);
         for (row_index, input) in air_inputs.iter().enumerate() {
             for (limb, value) in input.iter().enumerate() {
                 assert_eq!(
                     air_trace.values[row_index * air_trace.width() + limb],
                     *value
                 );
-                let lookup_row = TABLE_ROWS + row_index;
+                let lookup_row = lookup_profile.permutation_row_offset + row_index;
                 let lookup_input_col = 2 + limb;
                 assert_eq!(
                     lookup_trace.values[lookup_row * lookup_trace.width() + lookup_input_col],
@@ -20675,6 +20738,36 @@ mod tests {
             backend_digest,
             compiler.backend_relation_digest_goldilocks(&vk),
             "backend digest must absorb the NPO polynomial profile"
+        );
+    }
+
+    #[test]
+    fn goldilocks_backend_relation_digest_tracks_tip5_lookup_trace_profile() {
+        let (single_circuit, _single_public_inputs) = build_tip5_test_circuit();
+        let (two_circuit, _two_public_inputs) = build_two_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_single_pk, single_vk) = compiler
+            .compile_goldilocks_terminal(&single_circuit)
+            .expect("single Tip5 terminal key must compile");
+        let (_two_pk, two_vk) = compiler
+            .compile_goldilocks_terminal(&two_circuit)
+            .expect("two Tip5 terminal key must compile");
+
+        let single_profile =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&single_vk);
+        let two_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&two_vk);
+        assert_eq!(single_profile.tip5_rows, 1);
+        assert_eq!(two_profile.tip5_rows, 2);
+        assert_eq!(single_profile.lookup_table_rows, TABLE_ROWS);
+        assert_eq!(single_profile.main_width, tip5_lookup_air_width());
+        assert_ne!(
+            single_profile, two_profile,
+            "Tip5 lookup profile must bind permutation row count"
+        );
+        assert_ne!(
+            compiler.backend_relation_digest_goldilocks(&single_vk),
+            compiler.backend_relation_digest_goldilocks(&two_vk),
+            "backend digest must track the Tip5 lookup trace profile"
         );
     }
 

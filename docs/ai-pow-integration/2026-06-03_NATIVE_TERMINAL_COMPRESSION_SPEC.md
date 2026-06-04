@@ -314,7 +314,11 @@ for this route.
   permutation rows to the same terminal-derived Tip5 inputs as the lookup-free
   bridge. This is the preferred table source for the eventual production
   permutation backend because it avoids the lookup-free trace's boolean-bit
-  column blowup.
+  column blowup. Its verifier-derived trace profile is absorbed into
+  `TerminalBackendRelationDigest`, binding the lookup-table row count, main
+  trace dimensions, preprocessed table dimensions, permutation-row offset,
+  max constraint degree, and 5-round Tip5 round count without serializing those
+  constants in the production certificate.
 - `TerminalNpoPolynomialColumnQueryPlan`: the verifier-derived row schedule for
   future NPO-column openings. It validates that every fixed column commitment
   has the verifier-derived label, shared row count, and a root already bound in
