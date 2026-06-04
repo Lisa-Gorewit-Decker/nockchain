@@ -1276,6 +1276,32 @@ pub struct TerminalNpoTip5LookupAirAlgebraQuotientProof {
     pub proof: TerminalFriProof,
 }
 
+/// Profile for one compact terminal composition/proximity oracle.
+///
+/// This is the reusable terminal PCS primitive for future shared composition
+/// proofs. It proves low degree and a transcript-bound opening for one
+/// extension-valued composition polynomial; it does not, by itself, prove that
+/// the composition polynomial was computed from any particular relation.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalCompactCompositionFriProfile {
+    pub rows: usize,
+    pub padded_rows: usize,
+    pub log_rows: usize,
+    pub field_basis_dimension: usize,
+    pub field_columns: usize,
+    pub basis_columns: usize,
+    pub proximity: TerminalProximityProfile,
+}
+
+/// Compact-FRI proof for one terminal composition/proximity oracle.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TerminalCompactCompositionFriProof {
+    pub profile: TerminalCompactCompositionFriProfile,
+    pub commitment: TerminalFriCommitment,
+    pub opened_values_basis: Vec<Vec<u64>>,
+    pub proof: TerminalCompressedFriProof,
+}
+
 /// NPO-row-domain profile for the terminal-IO columns selected from the
 /// optimized Tip5 lookup trace.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -13736,6 +13762,229 @@ impl NativeTerminalCompiler {
         ))
     }
 
+    pub fn terminal_compact_composition_fri_profile(
+        rows: usize,
+        padded_rows: usize,
+    ) -> Result<TerminalCompactCompositionFriProfile, NativeTerminalVerifyError> {
+        if rows == 0 || padded_rows == 0 {
+            return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
+        }
+        if !padded_rows.is_power_of_two() {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                    reason: "terminal compact composition FRI rows must be a power of two".into(),
+                },
+            );
+        }
+        if rows > padded_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compact_composition_rows".into(),
+                    expected: padded_rows,
+                    got: rows,
+                },
+            );
+        }
+        Ok(TerminalCompactCompositionFriProfile {
+            rows,
+            padded_rows,
+            log_rows: padded_rows.trailing_zeros() as usize,
+            field_basis_dimension:
+                <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION,
+            field_columns: 1,
+            basis_columns: <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION,
+            proximity: TerminalProximityProfile::production_60bit(),
+        })
+    }
+
+    fn seed_terminal_compact_composition_fri_challenger(
+        challenger: &mut TerminalFriChallenger,
+        transcript_label: &str,
+        prelude: &TerminalProofPrelude,
+        profile: &TerminalCompactCompositionFriProfile,
+    ) {
+        Self::observe_terminal_fri_str(challenger, transcript_label);
+        for limb in prelude.challenge_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
+        for limb in prelude.public_values_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.security_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
+        Self::observe_terminal_fri_u64(challenger, profile.rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.padded_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.log_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.field_basis_dimension as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.field_columns as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.basis_columns as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.scheme_id as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.log_blowup as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.num_queries as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.max_log_arity as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.log_final_poly_len as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.pure_query_bits as u64);
+    }
+
+    pub fn prove_terminal_compact_composition_fri_goldilocks(
+        prelude: &TerminalProofPrelude,
+        transcript_label: &str,
+        profile: TerminalCompactCompositionFriProfile,
+        matrix: RowMajorMatrix<Goldilocks>,
+    ) -> Result<TerminalCompactCompositionFriProof, NativeTerminalVerifyError> {
+        if profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: profile.proximity.proof_parameters(),
+                },
+            );
+        }
+        if matrix.height() != profile.padded_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compact_composition_matrix_rows".into(),
+                    expected: profile.padded_rows,
+                    got: matrix.height(),
+                },
+            );
+        }
+        if matrix.width() != profile.basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compact_composition_matrix_width".into(),
+                    expected: profile.basis_columns,
+                    got: matrix.width(),
+                },
+            );
+        }
+
+        let (pcs, mut challenger) = Self::terminal_fri_pcs_and_challenger(profile.proximity)?;
+        Self::seed_terminal_compact_composition_fri_challenger(
+            &mut challenger,
+            transcript_label,
+            prelude,
+            &profile,
+        );
+        let domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                profile.padded_rows,
+            );
+        let (commitment, data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(domain, matrix)],
+            );
+        challenger.observe(commitment.clone());
+        let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let (opened_values, plain_proof) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
+                &pcs,
+                vec![(&data, vec![vec![zeta]])],
+                &mut challenger,
+            );
+        let opened_values_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
+        let opened_values_ext = opened_values[0][0][0].clone();
+
+        let mut query_challenger = TerminalFriChallenger::new(Tip5Perm);
+        Self::seed_terminal_compact_composition_fri_challenger(
+            &mut query_challenger,
+            transcript_label,
+            prelude,
+            &profile,
+        );
+        query_challenger.observe(commitment.clone());
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        query_challenger.observe_algebra_slice(&opened_values_ext);
+        let query_indices = Self::derive_terminal_fri_query_indices_from_challenger(
+            &mut query_challenger,
+            &plain_proof,
+            profile.proximity,
+        )?;
+        let proof = Self::compress_terminal_fri_proof(&plain_proof, &query_indices)?;
+        Ok(TerminalCompactCompositionFriProof {
+            profile,
+            commitment,
+            opened_values_basis,
+            proof,
+        })
+    }
+
+    pub fn verify_terminal_compact_composition_fri_goldilocks(
+        prelude: &TerminalProofPrelude,
+        transcript_label: &str,
+        expected_profile: &TerminalCompactCompositionFriProfile,
+        proof: &TerminalCompactCompositionFriProof,
+    ) -> Result<Vec<TerminalFriChallenge>, NativeTerminalVerifyError> {
+        if &proof.profile != expected_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "terminal_compact_composition_profile".into(),
+                    expected: expected_profile.basis_columns,
+                    got: proof.profile.basis_columns,
+                },
+            );
+        }
+        if proof.profile.proximity != prelude.relation_profile.proximity {
+            return Err(
+                NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                    expected: prelude.relation_profile.proximity.proof_parameters(),
+                    got: proof.profile.proximity.proof_parameters(),
+                },
+            );
+        }
+        if proof.opened_values_basis.len() != proof.profile.basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof.profile.basis_columns,
+                    got: proof.opened_values_basis.len(),
+                },
+            );
+        }
+        let mut opened_values = Vec::with_capacity(proof.opened_values_basis.len());
+        for basis in &proof.opened_values_basis {
+            opened_values.push(Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(
+                basis,
+            )?);
+        }
+
+        let (pcs, mut challenger) = Self::terminal_fri_pcs_and_challenger(proof.profile.proximity)?;
+        Self::seed_terminal_compact_composition_fri_challenger(
+            &mut challenger,
+            transcript_label,
+            prelude,
+            &proof.profile,
+        );
+        let domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                proof.profile.padded_rows,
+            );
+        challenger.observe(proof.commitment.clone());
+        let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let restored = Self::decompress_terminal_fri_proof(&proof.proof)?;
+        <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
+            &pcs,
+            vec![(
+                proof.commitment.clone(),
+                vec![(domain, vec![(zeta, opened_values.clone())])],
+            )],
+            &restored,
+            &mut challenger,
+        )
+        .map_err(|err| {
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: format!("terminal compact composition FRI verification failed: {err:?}"),
+            }
+        })?;
+        Ok(opened_values)
+    }
+
     pub fn compress_terminal_fri_proof(
         proof: &TerminalFriProof,
         query_indices: &[usize],
@@ -24543,122 +24792,83 @@ mod tests {
                         + commit_phase_paths_bytes.len()
                 ),
         );
-        let (floor_pcs, mut floor_challenger) =
-            NativeTerminalCompiler::terminal_fri_pcs_and_challenger(
-                proof.trace_profile.proximity,
-            )
-            .expect("terminal FRI PCS must build for composition floor");
-        NativeTerminalCompiler::observe_terminal_fri_str(
-            &mut floor_challenger,
-            "nock-terminal-tip5-air-composition-floor-v1",
-        );
-        for limb in prelude.challenge_digest.0 {
-            floor_challenger.observe(Goldilocks::from_u64(limb));
-        }
-        for limb in prelude.public_values_digest.0 {
-            floor_challenger.observe(Goldilocks::from_u64(limb));
-        }
-        let floor_domain =
-            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
-                &floor_pcs,
+        let floor_profile =
+            NativeTerminalCompiler::terminal_compact_composition_fri_profile(
                 proof.quotient_profile.padded_rows,
-            );
-        let floor_width = <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
+                proof.quotient_profile.padded_rows,
+            )
+            .expect("terminal composition floor profile must build");
         let floor_matrix = RowMajorMatrix::new(
-            vec![Goldilocks::ZERO; proof.quotient_profile.padded_rows * floor_width],
-            floor_width,
+            vec![Goldilocks::ZERO; floor_profile.padded_rows * floor_profile.basis_columns],
+            floor_profile.basis_columns,
         );
-        let (floor_commitment, floor_data) =
-            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
-                &floor_pcs,
-                [(floor_domain, floor_matrix)],
-            );
-        floor_challenger.observe(floor_commitment.clone());
-        let floor_zeta: TerminalFriChallenge = floor_challenger.sample_algebra_element();
-        let (floor_opened_values, floor_fri_proof) =
-            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
-                &floor_pcs,
-                vec![(&floor_data, vec![vec![floor_zeta]])],
-                &mut floor_challenger,
-            );
-        let floor_opened_at_zeta = floor_opened_values[0][0][0].clone();
-        let mut floor_query_challenger = TerminalFriChallenger::new(Tip5Perm);
-        NativeTerminalCompiler::observe_terminal_fri_str(
-            &mut floor_query_challenger,
+        let floor_proof = NativeTerminalCompiler::prove_terminal_compact_composition_fri_goldilocks(
+            &prelude,
             "nock-terminal-tip5-air-composition-floor-v1",
-        );
-        for limb in prelude.challenge_digest.0 {
-            floor_query_challenger.observe(Goldilocks::from_u64(limb));
-        }
-        for limb in prelude.public_values_digest.0 {
-            floor_query_challenger.observe(Goldilocks::from_u64(limb));
-        }
-        floor_query_challenger.observe(floor_commitment.clone());
-        let _: TerminalFriChallenge = floor_query_challenger.sample_algebra_element();
-        floor_query_challenger.observe_algebra_slice(&floor_opened_at_zeta);
-        let floor_query_indices =
-            NativeTerminalCompiler::derive_terminal_fri_query_indices_from_challenger(
-                &mut floor_query_challenger,
-                &floor_fri_proof,
-                proof.trace_profile.proximity,
-            )
-            .expect("terminal composition floor FRI query indices must derive");
-        let floor_compressed_fri =
-            NativeTerminalCompiler::compress_terminal_fri_proof(
-                &floor_fri_proof,
-                &floor_query_indices,
-            )
-            .expect("terminal composition floor FRI proof must compress");
-        let floor_compressed_serialized =
-            postcard::to_allocvec(&(
-                &floor_commitment,
-                &floor_opened_values,
-                &floor_compressed_fri,
-            ))
-            .expect("terminal composition floor compressed proof must serialize");
-        let floor_restored_fri =
-            NativeTerminalCompiler::decompress_terminal_fri_proof(&floor_compressed_fri)
-                .expect("terminal composition floor FRI proof must decompress");
-        let mut floor_verify_challenger = TerminalFriChallenger::new(Tip5Perm);
-        NativeTerminalCompiler::observe_terminal_fri_str(
-            &mut floor_verify_challenger,
-            "nock-terminal-tip5-air-composition-floor-v1",
-        );
-        for limb in prelude.challenge_digest.0 {
-            floor_verify_challenger.observe(Goldilocks::from_u64(limb));
-        }
-        for limb in prelude.public_values_digest.0 {
-            floor_verify_challenger.observe(Goldilocks::from_u64(limb));
-        }
-        floor_verify_challenger.observe(floor_commitment.clone());
-        let floor_verify_zeta: TerminalFriChallenge =
-            floor_verify_challenger.sample_algebra_element();
-        assert_eq!(floor_zeta, floor_verify_zeta);
-        <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
-            &floor_pcs,
-            vec![(
-                floor_commitment.clone(),
-                vec![(
-                    floor_domain,
-                    vec![(floor_zeta, floor_opened_at_zeta.clone())],
-                )],
-            )],
-            &floor_restored_fri,
-            &mut floor_verify_challenger,
+            floor_profile.clone(),
+            floor_matrix,
         )
-        .expect("compressed-restored terminal composition floor proof must verify");
-        let floor_serialized =
-            postcard::to_allocvec(&(floor_commitment, floor_opened_values, floor_fri_proof))
-                .expect("terminal composition floor proof must serialize");
+        .expect("terminal composition floor compact proof must build");
+        let floor_opened = NativeTerminalCompiler::verify_terminal_compact_composition_fri_goldilocks(
+            &prelude,
+            "nock-terminal-tip5-air-composition-floor-v1",
+            &floor_profile,
+            &floor_proof,
+        )
+        .expect("terminal composition floor compact proof must verify");
+        assert_eq!(floor_opened.len(), floor_profile.basis_columns);
+        let floor_compact_serialized = postcard::to_allocvec(&floor_proof)
+            .expect("terminal composition floor compact proof must serialize");
         println!(
-            "terminal Tip5 lookup AIR composition-FRI floor: plain={} bytes ({:.1} KiB) compressed={} bytes ({:.1} KiB), rows={}, base_columns={}",
-            floor_serialized.len(),
-            floor_serialized.len() as f64 / 1024.0,
-            floor_compressed_serialized.len(),
-            floor_compressed_serialized.len() as f64 / 1024.0,
-            proof.quotient_profile.padded_rows,
-            floor_width,
+            "terminal Tip5 lookup AIR composition-FRI compact floor: {} bytes ({:.1} KiB), rows={}, base_columns={}",
+            floor_compact_serialized.len(),
+            floor_compact_serialized.len() as f64 / 1024.0,
+            floor_profile.padded_rows,
+            floor_profile.basis_columns,
         );
+        let mut bad_floor_proof = floor_proof.clone();
+        let mut floor_path_tampered = false;
+        for batch in &mut bad_floor_proof.proof.input_batches {
+            if let Some(sibling) = batch
+                .pruned_opening_proof
+                .paths
+                .iter_mut()
+                .find_map(|path| path.siblings.first_mut())
+            {
+                sibling[0] += Goldilocks::ONE;
+                floor_path_tampered = true;
+                break;
+            }
+        }
+        if !floor_path_tampered {
+            for round in &mut bad_floor_proof.proof.commit_rounds {
+                if let Some(sibling) = round
+                    .pruned_opening_proof
+                    .paths
+                    .iter_mut()
+                    .find_map(|path| path.siblings.first_mut())
+                {
+                    sibling[0] += Goldilocks::ONE;
+                    floor_path_tampered = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            floor_path_tampered,
+            "terminal composition compact proof must carry Merkle siblings"
+        );
+        let err = NativeTerminalCompiler::verify_terminal_compact_composition_fri_goldilocks(
+            &prelude,
+            "nock-terminal-tip5-air-composition-floor-v1",
+            &floor_profile,
+            &bad_floor_proof,
+        )
+        .expect_err("corrupted terminal composition compact FRI path must reject");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+        ));
         assert!(
             compressed_fri_bytes.len() < plain_fri_bytes.len(),
             "terminal compressed FRI should reduce AIR algebra path material"

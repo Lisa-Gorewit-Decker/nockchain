@@ -414,9 +414,19 @@ for this route.
   extension-valued composition/quotient polynomial over the same 2048-row
   domain is `82,867` bytes / `80.9 KiB` at the same 60-bit FRI tuple; this is
   not a sound proof by itself, but its terminal compact-FRI form is `59,446`
-  bytes / `58.1 KiB` and the decompressed floor proof verifies. This shows a
-  composition-polynomial terminal backend is plausible only if it replaces the
-  full-trace query openings rather than being appended as another component.
+  bytes / `58.1 KiB` before reusable-profile overhead, and the decompressed
+  floor proof verifies. This shows a composition-polynomial terminal backend is
+  plausible only if it replaces the full-trace query openings rather than being
+  appended as another component.
+- `TerminalCompactCompositionFriProof`: the first-class compact FRI primitive
+  for one terminal composition/proximity oracle. It binds the terminal prelude,
+  production proximity tuple, oracle row count, extension-basis width, and a
+  caller-supplied transcript label before committing the composition matrix and
+  sampling the opening point. It serializes the path-compressed terminal FRI
+  form and verifies by decompressing through the existing Plonky3 PCS verifier.
+  The focused Tip5 AIR test measures this reusable proof object at `60,647`
+  bytes / `59.2 KiB` for a 2048-row, one-extension-column composition oracle,
+  and rejects a corrupted compact Merkle path.
 - `TerminalNpoTip5LookupNpoRowsValueBridgeQuotientProof`: an NPO-row-domain
   value-binding checkpoint for the optimized lookup terminal IO. Instead of
   trusting a prover-supplied lookup-domain NPO projection, it commits the 26
@@ -1076,12 +1086,13 @@ larger batched proximity proof; simply appending this proof would overshoot the
 100 KiB certificate target. The measured row-value cost (`66.7 KiB`) and
 commit-phase path cost (`70.8 KiB`) show that Merkle path compression alone is
 not enough; the production design must avoid opening all 558 trace columns at
-every terminal FRI query. The measured single-composition floor is 80.9 KiB, so
-or 58.1 KiB with terminal compact FRI, so the next backend needs one shared
-composition/proximity proof for Tip5 algebra, NPO value binding, residual-zero,
-and primitive row products; separate FRI proofs for each subrelation will
-exceed the target. The LogUp/global-bus byte lookup relation remains a separate
-soundness obligation.
+every terminal FRI query. The measured single-composition floor is 80.9 KiB
+plain, 58.1 KiB with raw terminal compact FRI, and 59.2 KiB as the reusable
+`TerminalCompactCompositionFriProof` object, so the next backend needs one
+shared composition/proximity proof for Tip5 algebra, NPO value binding,
+residual-zero, and primitive row products; separate FRI proofs for each
+subrelation will exceed the target. The LogUp/global-bus byte lookup relation
+remains a separate soundness obligation.
 The NPO-row value-bridge quotient closes the projection-to-value-column binding
 checkpoint in isolation at 16.1 KiB, while the terminal compact-FRI wrapper
 reduces that component's FRI payload from 15.6 KiB to 10.0 KiB by pruning shared
