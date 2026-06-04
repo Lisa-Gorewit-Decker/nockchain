@@ -1182,7 +1182,7 @@ pub struct TerminalNpoTip5LookupIoZeroQuotientProof {
     pub quotient_commitment: TerminalFriCommitment,
     pub opened_io_basis: Vec<Vec<u64>>,
     pub opened_quotient_basis: Vec<Vec<u64>>,
-    pub proof: TerminalFriProof,
+    pub proof: TerminalCompressedFriProof,
 }
 
 /// Quotient profile for equality between lookup-trace IO columns and the
@@ -1212,7 +1212,7 @@ pub struct TerminalNpoTip5LookupIoBridgeQuotientProof {
     pub opened_lookup_io_basis: Vec<Vec<u64>>,
     pub opened_npo_io_basis: Vec<Vec<u64>>,
     pub opened_quotient_basis: Vec<Vec<u64>>,
-    pub proof: TerminalFriProof,
+    pub proof: TerminalCompressedFriProof,
 }
 
 /// Quotient profile for the batched terminal-IO lookup support and NPO bridge
@@ -5356,7 +5356,7 @@ impl NativeTerminalCompiler {
             );
         challenger.observe(quotient_commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
-        let (opened_values, proof) =
+        let (opened_values, plain_proof) =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
                 &pcs,
                 vec![
@@ -5367,6 +5367,29 @@ impl NativeTerminalCompiler {
             );
         let opened_io_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
         let opened_quotient_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 1)?;
+        let mut query_challenger = TerminalFriChallenger::new(Tip5Perm);
+        Self::seed_terminal_npo_tip5_lookup_io_zero_quotient_challenger(
+            &mut query_challenger,
+            prelude,
+            &io_profile,
+            &quotient_profile,
+        );
+        query_challenger.observe(io_commitment.clone());
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        query_challenger.observe(quotient_commitment.clone());
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        for point_values in &opened_values[0][0] {
+            query_challenger.observe_algebra_slice(point_values);
+        }
+        for point_values in &opened_values[1][0] {
+            query_challenger.observe_algebra_slice(point_values);
+        }
+        let query_indices = Self::derive_terminal_fri_query_indices_from_challenger(
+            &mut query_challenger,
+            &plain_proof,
+            io_profile.proximity,
+        )?;
+        let proof = Self::compress_terminal_fri_proof(&plain_proof, &query_indices)?;
 
         Ok(TerminalNpoTip5LookupIoZeroQuotientProof {
             io_profile,
@@ -5485,7 +5508,7 @@ impl NativeTerminalCompiler {
             );
         challenger.observe(quotient_commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
-        let (opened_values, proof) =
+        let (opened_values, plain_proof) =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
                 &pcs,
                 vec![
@@ -5499,6 +5522,34 @@ impl NativeTerminalCompiler {
             Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
         let opened_npo_io_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 1)?;
         let opened_quotient_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 2)?;
+        let mut query_challenger = TerminalFriChallenger::new(Tip5Perm);
+        Self::seed_terminal_npo_tip5_lookup_io_bridge_quotient_challenger(
+            &mut query_challenger,
+            prelude,
+            &lookup_io_profile,
+            &npo_io_profile,
+            &quotient_profile,
+        );
+        query_challenger.observe(lookup_io_commitment.clone());
+        query_challenger.observe(npo_io_commitment.clone());
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        query_challenger.observe(quotient_commitment.clone());
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        for point_values in &opened_values[0][0] {
+            query_challenger.observe_algebra_slice(point_values);
+        }
+        for point_values in &opened_values[1][0] {
+            query_challenger.observe_algebra_slice(point_values);
+        }
+        for point_values in &opened_values[2][0] {
+            query_challenger.observe_algebra_slice(point_values);
+        }
+        let query_indices = Self::derive_terminal_fri_query_indices_from_challenger(
+            &mut query_challenger,
+            &plain_proof,
+            lookup_io_profile.proximity,
+        )?;
+        let proof = Self::compress_terminal_fri_proof(&plain_proof, &query_indices)?;
 
         Ok(TerminalNpoTip5LookupIoBridgeQuotientProof {
             lookup_io_profile,
@@ -15829,6 +15880,7 @@ impl NativeTerminalCompiler {
         let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
         challenger.observe(proof.quotient_commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let restored = Self::decompress_terminal_fri_proof(&proof.proof)?;
         <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
             &pcs,
             vec![
@@ -15841,7 +15893,7 @@ impl NativeTerminalCompiler {
                     vec![(quotient_domain, vec![(zeta, opened_quotient_flat.clone())])],
                 ),
             ],
-            &proof.proof,
+            &restored,
             &mut challenger,
         )
         .map_err(|err| {
@@ -16008,6 +16060,7 @@ impl NativeTerminalCompiler {
         let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
         challenger.observe(proof.quotient_commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let restored = Self::decompress_terminal_fri_proof(&proof.proof)?;
         <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
             &pcs,
             vec![
@@ -16024,7 +16077,7 @@ impl NativeTerminalCompiler {
                     vec![(quotient_domain, vec![(zeta, opened_quotient_flat.clone())])],
                 ),
             ],
-            &proof.proof,
+            &restored,
             &mut challenger,
         )
         .map_err(|err| {
@@ -24900,13 +24953,24 @@ mod tests {
         assert_eq!(opened.values.len(), 26);
         let serialized = postcard::to_allocvec(&proof)
             .expect("terminal Tip5 lookup IO zero quotient proof must serialize");
+        let restored_fri = NativeTerminalCompiler::decompress_terminal_fri_proof(&proof.proof)
+            .expect("terminal Tip5 lookup IO zero quotient compact FRI proof must decompress");
+        let compressed_fri_bytes = postcard::to_allocvec(&proof.proof)
+            .expect("terminal Tip5 lookup IO zero quotient compact FRI proof must serialize");
+        let plain_fri_bytes = postcard::to_allocvec(&restored_fri)
+            .expect("terminal Tip5 lookup IO zero quotient restored FRI proof must serialize");
         println!(
-            "terminal Tip5 lookup IO zero quotient candidate: {} bytes ({:.1} KiB), prove={:?}, verify={:?}",
+            "terminal Tip5 lookup IO zero quotient candidate: {} bytes ({:.1} KiB), raw_inner_fri={} bytes ({:.1} KiB), compact_inner_fri={} bytes ({:.1} KiB), prove={:?}, verify={:?}",
             serialized.len(),
             serialized.len() as f64 / 1024.0,
+            plain_fri_bytes.len(),
+            plain_fri_bytes.len() as f64 / 1024.0,
+            compressed_fri_bytes.len(),
+            compressed_fri_bytes.len() as f64 / 1024.0,
             prove_elapsed,
             verify_elapsed,
         );
+        assert!(compressed_fri_bytes.len() < plain_fri_bytes.len());
         let (roundtrip, trailing): (TerminalNpoTip5LookupIoZeroQuotientProof, &[u8]) =
             postcard::take_from_bytes(&serialized)
                 .expect("terminal Tip5 lookup IO zero quotient proof must deserialize");
@@ -25001,13 +25065,24 @@ mod tests {
         assert_eq!(opened.values.len(), 26);
         let serialized = postcard::to_allocvec(&proof)
             .expect("terminal Tip5 lookup IO bridge quotient proof must serialize");
+        let restored_fri = NativeTerminalCompiler::decompress_terminal_fri_proof(&proof.proof)
+            .expect("terminal Tip5 lookup IO bridge quotient compact FRI proof must decompress");
+        let compressed_fri_bytes = postcard::to_allocvec(&proof.proof)
+            .expect("terminal Tip5 lookup IO bridge quotient compact FRI proof must serialize");
+        let plain_fri_bytes = postcard::to_allocvec(&restored_fri)
+            .expect("terminal Tip5 lookup IO bridge quotient restored FRI proof must serialize");
         println!(
-            "terminal Tip5 lookup IO bridge quotient candidate: {} bytes ({:.1} KiB), prove={:?}, verify={:?}",
+            "terminal Tip5 lookup IO bridge quotient candidate: {} bytes ({:.1} KiB), raw_inner_fri={} bytes ({:.1} KiB), compact_inner_fri={} bytes ({:.1} KiB), prove={:?}, verify={:?}",
             serialized.len(),
             serialized.len() as f64 / 1024.0,
+            plain_fri_bytes.len(),
+            plain_fri_bytes.len() as f64 / 1024.0,
+            compressed_fri_bytes.len(),
+            compressed_fri_bytes.len() as f64 / 1024.0,
             prove_elapsed,
             verify_elapsed,
         );
+        assert!(compressed_fri_bytes.len() < plain_fri_bytes.len());
         let (roundtrip, trailing): (TerminalNpoTip5LookupIoBridgeQuotientProof, &[u8]) =
             postcard::take_from_bytes(&serialized)
                 .expect("terminal Tip5 lookup IO bridge quotient proof must deserialize");
