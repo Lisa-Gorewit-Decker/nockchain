@@ -19,7 +19,7 @@ use p3_circuit::{Circuit, WitnessId};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_goldilocks::Goldilocks;
 use p3_symmetric::Permutation;
-use p3_tip5_circuit_air::Tip5Perm;
+use p3_tip5_circuit_air::{NUM_ROUNDS as TIP5_PERM_ROUNDS, Tip5Perm};
 use serde::{Deserialize, Serialize};
 
 /// Minimum production soundness accepted for native terminal certificates.
@@ -862,6 +862,32 @@ impl TerminalNpoRelation {
             .filter(|row| row.kind == TerminalNpoRowKind::RecomposeWithCoeffLookups)
             .count()
     }
+}
+
+/// Backend profile for the polynomialized supported-NPO table.
+///
+/// This is the stable table contract for the terminal proximity backend. It is
+/// derived from the verifying key, absorbed into the backend relation digest,
+/// and deliberately kept out of the prelude's serialized relation profile so it
+/// does not increase certificate size.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerminalNpoPolynomialProfile {
+    pub rows: usize,
+    pub log_rows: usize,
+    pub residual_components: usize,
+    pub log_residual_components: usize,
+    pub witness_input_slots: usize,
+    pub witness_output_slots: usize,
+    pub hidden_input_slots: usize,
+    pub max_serialized_hidden_input_slots: usize,
+    pub mmcs_direction_bits: usize,
+    pub tip5_rows: usize,
+    pub tip5_merkle_rows: usize,
+    pub tip5_new_start_rows: usize,
+    pub recompose_rows: usize,
+    pub recompose_coeff_rows: usize,
+    pub max_constraint_degree: usize,
+    pub tip5_rounds: usize,
 }
 
 impl<F: Field> TerminalLinearExpression<F> {
@@ -7856,6 +7882,101 @@ impl NativeTerminalCompiler {
             .sum()
     }
 
+    fn terminal_npo_polynomial_profile<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+    ) -> TerminalNpoPolynomialProfile
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        Self::terminal_npo_polynomial_profile_for_basis_dimension(
+            verifying_key,
+            <F as BasedVectorSpace<Goldilocks>>::DIMENSION,
+        )
+    }
+
+    fn terminal_npo_polynomial_profile_for_basis_dimension<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        basis_dimension: usize,
+    ) -> TerminalNpoPolynomialProfile {
+        let relation = verifying_key.npo_relation();
+        let mut profile = TerminalNpoPolynomialProfile {
+            rows: relation.rows.len(),
+            log_rows: Self::terminal_mle_log_size(relation.rows.len()),
+            residual_components: Self::terminal_npo_validity_domain_len_for_basis_dimension(
+                verifying_key,
+                basis_dimension,
+            ),
+            tip5_rounds: TIP5_PERM_ROUNDS,
+            ..TerminalNpoPolynomialProfile::default()
+        };
+        profile.log_residual_components = Self::terminal_mle_log_size(profile.residual_components);
+
+        for row in &relation.rows {
+            profile.witness_input_slots += row.callsite.inputs.iter().flatten().count();
+            profile.witness_output_slots += row.callsite.outputs.iter().flatten().count();
+            match row.kind {
+                TerminalNpoRowKind::Tip5Goldilocks => {
+                    profile.tip5_rows += 1;
+                    profile.max_constraint_degree = profile.max_constraint_degree.max(4);
+                    profile.hidden_input_slots += row
+                        .callsite
+                        .inputs
+                        .iter()
+                        .filter(|input| input.is_none())
+                        .count();
+                    if row.callsite.tip5_mmcs_bit.is_some() {
+                        profile.mmcs_direction_bits += 1;
+                    }
+                    if let Some(mode) = row.callsite.tip5_mode {
+                        if mode.merkle_path {
+                            profile.tip5_merkle_rows += 1;
+                        }
+                        if mode.new_start {
+                            profile.tip5_new_start_rows += 1;
+                        }
+                        profile.max_serialized_hidden_input_slots +=
+                            Self::max_serialized_tip5_hidden_input_slots(&row.callsite, mode);
+                    }
+                }
+                TerminalNpoRowKind::Recompose => {
+                    profile.recompose_rows += 1;
+                    profile.max_constraint_degree = profile.max_constraint_degree.max(2);
+                }
+                TerminalNpoRowKind::RecomposeWithCoeffLookups => {
+                    profile.recompose_coeff_rows += 1;
+                    profile.max_constraint_degree = profile.max_constraint_degree.max(2);
+                }
+            }
+        }
+
+        profile
+    }
+
+    fn max_serialized_tip5_hidden_input_slots(
+        callsite: &NativeTerminalNpoCallsite,
+        mode: Tip5TerminalMode,
+    ) -> usize {
+        if !mode.merkle_path {
+            return 0;
+        }
+        let has_ctl_output = callsite.outputs.iter().any(Option::is_some);
+        let mut count_without_swap = 0usize;
+        let mut count_with_swap = 0usize;
+        for limb in 0..16 {
+            if callsite.inputs[limb].is_some() {
+                continue;
+            }
+            if Self::should_serialize_tip5_hidden_limb(callsite, mode, has_ctl_output, false, limb)
+            {
+                count_without_swap += 1;
+            }
+            if Self::should_serialize_tip5_hidden_limb(callsite, mode, has_ctl_output, true, limb) {
+                count_with_swap += 1;
+            }
+        }
+        count_without_swap.max(count_with_swap)
+    }
+
     fn terminal_npo_validity_domain_len<F>(verifying_key: &NativeTerminalVerifyingKey<F>) -> usize
     where
         F: BasedVectorSpace<Goldilocks>,
@@ -10560,6 +10681,10 @@ impl NativeTerminalCompiler {
             }
         }
         Self::absorb_npo_relation(sponge, &verifying_key.npo_relation());
+        Self::absorb_npo_polynomial_profile(
+            sponge,
+            &Self::terminal_npo_polynomial_profile::<F>(verifying_key),
+        );
     }
 
     fn absorb_quadratic_relation<F>(
@@ -10659,6 +10784,29 @@ impl NativeTerminalCompiler {
             });
             Self::absorb_npo_callsites(sponge, core::slice::from_ref(&row.callsite));
         }
+    }
+
+    fn absorb_npo_polynomial_profile(
+        sponge: &mut TerminalDigestSponge,
+        profile: &TerminalNpoPolynomialProfile,
+    ) {
+        sponge.absorb_str("nock-terminal-npo-polynomial-profile-v1");
+        sponge.absorb_u64(profile.rows as u64);
+        sponge.absorb_u64(profile.log_rows as u64);
+        sponge.absorb_u64(profile.residual_components as u64);
+        sponge.absorb_u64(profile.log_residual_components as u64);
+        sponge.absorb_u64(profile.witness_input_slots as u64);
+        sponge.absorb_u64(profile.witness_output_slots as u64);
+        sponge.absorb_u64(profile.hidden_input_slots as u64);
+        sponge.absorb_u64(profile.max_serialized_hidden_input_slots as u64);
+        sponge.absorb_u64(profile.mmcs_direction_bits as u64);
+        sponge.absorb_u64(profile.tip5_rows as u64);
+        sponge.absorb_u64(profile.tip5_merkle_rows as u64);
+        sponge.absorb_u64(profile.tip5_new_start_rows as u64);
+        sponge.absorb_u64(profile.recompose_rows as u64);
+        sponge.absorb_u64(profile.recompose_coeff_rows as u64);
+        sponge.absorb_u64(profile.max_constraint_degree as u64);
+        sponge.absorb_u64(profile.tip5_rounds as u64);
     }
 
     fn public_values_digest_goldilocks<F>(public_inputs: &[F]) -> TerminalPublicValuesDigest
@@ -12327,6 +12475,75 @@ mod tests {
             err,
             NativeTerminalVerifyError::RelationDigestMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn goldilocks_npo_polynomial_profile_tracks_supported_table_shape() {
+        let (circuit, _public_inputs, _private_data) = build_many_merkle_tip5_test_circuit(2);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let npo_relation = vk.npo_relation();
+        let profile = NativeTerminalCompiler::terminal_npo_polynomial_profile::<Goldilocks>(&vk);
+
+        assert_eq!(profile.rows, npo_relation.rows.len());
+        assert_eq!(profile.log_rows, 1);
+        assert_eq!(
+            profile.residual_components,
+            NativeTerminalCompiler::terminal_npo_validity_domain_len::<Goldilocks>(&vk)
+        );
+        assert_eq!(
+            profile.log_residual_components,
+            NativeTerminalCompiler::terminal_mle_log_size(profile.residual_components)
+        );
+        assert_eq!(profile.tip5_rows, 2);
+        assert_eq!(profile.tip5_merkle_rows, 2);
+        assert_eq!(profile.tip5_new_start_rows, 2);
+        assert_eq!(profile.recompose_rows, 0);
+        assert_eq!(profile.recompose_coeff_rows, 0);
+        assert_eq!(profile.witness_input_slots, 10);
+        assert_eq!(profile.witness_output_slots, 10);
+        assert_eq!(profile.hidden_input_slots, 22);
+        assert_eq!(profile.max_serialized_hidden_input_slots, 10);
+        assert_eq!(profile.mmcs_direction_bits, 2);
+        assert_eq!(profile.max_constraint_degree, 4);
+        assert_eq!(profile.tip5_rounds, NUM_ROUNDS);
+    }
+
+    #[test]
+    fn goldilocks_backend_relation_digest_binds_npo_polynomial_profile() {
+        let (circuit, _public_inputs) = build_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, mut vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+
+        let profile = NativeTerminalCompiler::terminal_npo_polynomial_profile::<Goldilocks>(&vk);
+        let backend_digest = compiler.backend_relation_digest_goldilocks(&vk);
+        let NativeTerminalConstraint::Tip5Goldilocks { callsites, .. } = vk
+            .constraints
+            .iter_mut()
+            .find(|constraint| {
+                matches!(constraint, NativeTerminalConstraint::Tip5Goldilocks { .. })
+            })
+            .expect("Tip5 constraint must be present")
+        else {
+            unreachable!("matched Tip5 constraint");
+        };
+        let mode = callsites[0]
+            .tip5_mode
+            .as_mut()
+            .expect("Tip5 callsite must carry terminal mode");
+        mode.new_start = !mode.new_start;
+        let tampered_profile =
+            NativeTerminalCompiler::terminal_npo_polynomial_profile::<Goldilocks>(&vk);
+
+        assert_ne!(
+            profile, tampered_profile,
+            "NPO polynomial profile must bind Tip5 row mode counts"
+        );
+        assert_ne!(
+            backend_digest,
+            compiler.backend_relation_digest_goldilocks(&vk),
+            "backend digest must absorb the NPO polynomial profile"
+        );
     }
 
     #[test]
