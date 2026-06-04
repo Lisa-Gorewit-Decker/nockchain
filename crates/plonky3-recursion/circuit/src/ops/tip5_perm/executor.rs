@@ -35,7 +35,9 @@ use crate::CircuitError;
 use crate::ops::tip5_perm::config::{Tip5Config, Tip5PermConfigData, Tip5PermExec};
 use crate::ops::tip5_perm::state::{Tip5ExecutionState, Tip5PermPrivateData};
 use crate::ops::tip5_perm::trace::Tip5CircuitRow;
-use crate::ops::{ExecutionContext, NonPrimitiveExecutor, NpoTypeId, PreprocessedWriter};
+use crate::ops::{
+    ExecutionContext, NonPrimitiveExecutor, NpoTypeId, PreprocessedWriter, Tip5TerminalMode,
+};
 use crate::types::WitnessId;
 
 /// Runtime executor for a single Tip5 permutation row.
@@ -656,6 +658,13 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Tip5PermExecu
 
     fn op_type(&self) -> &NpoTypeId {
         &self.op_type
+    }
+
+    fn tip5_terminal_mode(&self) -> Option<Tip5TerminalMode> {
+        Some(Tip5TerminalMode {
+            new_start: self.new_start,
+            merkle_path: self.merkle_path,
+        })
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

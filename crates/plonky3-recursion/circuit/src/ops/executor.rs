@@ -82,6 +82,13 @@ impl dyn OpExecutionState {
     }
 }
 
+/// Terminal-verifier metadata for Tip5 permutation rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tip5TerminalMode {
+    pub new_start: bool,
+    pub merkle_path: bool,
+}
+
 /// Trait for executable non-primitive operations
 ///
 /// This trait enables dynamic dispatch and allows each operation to control
@@ -102,6 +109,11 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
 
     /// Get operation type identifier (for config lookup, error reporting)
     fn op_type(&self) -> &NpoTypeId;
+
+    /// Return Tip5 terminal row metadata when this executor is a Tip5 permutation.
+    fn tip5_terminal_mode(&self) -> Option<Tip5TerminalMode> {
+        None
+    }
 
     /// Allow downcasting to concrete executor types
     fn as_any(&self) -> &dyn Any;

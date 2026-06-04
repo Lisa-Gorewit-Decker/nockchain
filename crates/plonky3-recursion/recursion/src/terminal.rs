@@ -12,7 +12,7 @@ use alloc::{format, vec};
 
 use p3_circuit::ops::{
     AluOpKind, NpoTypeId, Op, RecomposeCircuitRow, RecomposeTrace, RecomposeTraceKind,
-    Tip5CircuitRow, Tip5Config, Tip5Trace,
+    Tip5CircuitRow, Tip5Config, Tip5TerminalMode, Tip5Trace,
 };
 use p3_circuit::tables::Traces;
 use p3_circuit::{Circuit, WitnessId};
@@ -939,6 +939,7 @@ impl<F: Field> TerminalQuadraticRelation<F> {
 pub struct NativeTerminalNpoCallsite {
     pub inputs: Vec<Option<WitnessId>>,
     pub outputs: Vec<Option<WitnessId>>,
+    pub tip5_mode: Option<Tip5TerminalMode>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -6538,7 +6539,10 @@ impl NativeTerminalCompiler {
                     ..
                 } => {
                     if Self::is_supported_tip5_op(executor.op_type()) {
-                        tip5_goldilocks_callsites.push(Self::tip5_callsite(inputs, outputs));
+                        let mode = executor
+                            .tip5_terminal_mode()
+                            .expect("supported Tip5 terminal op must expose row mode");
+                        tip5_goldilocks_callsites.push(Self::tip5_callsite(inputs, outputs, mode));
                     } else if executor.op_type().as_str() == NpoTypeId::recompose().as_str() {
                         recompose_callsites.push(Self::recompose_callsite(inputs, outputs));
                     } else if executor.op_type().as_str()
@@ -6579,6 +6583,7 @@ impl NativeTerminalCompiler {
     fn tip5_callsite(
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
+        mode: Tip5TerminalMode,
     ) -> NativeTerminalNpoCallsite {
         NativeTerminalNpoCallsite {
             inputs: Self::single_witness_slots(
@@ -6587,6 +6592,7 @@ impl NativeTerminalCompiler {
             outputs: Self::single_witness_slots(
                 outputs.iter().take(Tip5Config::GOLDILOCKS_W16.rate()),
             ),
+            tip5_mode: Some(mode),
         }
     }
 
@@ -6600,6 +6606,7 @@ impl NativeTerminalCompiler {
                 .map(|coeffs| coeffs.iter().copied().map(Some).collect())
                 .unwrap_or_default(),
             outputs: Self::single_witness_slots(outputs.iter().take(1)),
+            tip5_mode: None,
         }
     }
 
@@ -10156,6 +10163,14 @@ impl NativeTerminalCompiler {
     ) {
         sponge.absorb_u64(callsites.len() as u64);
         for callsite in callsites {
+            match callsite.tip5_mode {
+                Some(mode) => {
+                    sponge.absorb_u64(1);
+                    sponge.absorb_u64(mode.new_start as u64);
+                    sponge.absorb_u64(mode.merkle_path as u64);
+                }
+                None => sponge.absorb_u64(0),
+            }
             sponge.absorb_u64(callsite.inputs.len() as u64);
             for input in &callsite.inputs {
                 sponge.absorb_optional_witness(*input);
@@ -10235,6 +10250,26 @@ impl NativeTerminalCompiler {
         callsite: &NativeTerminalNpoCallsite,
         operation: &Tip5CircuitRow<Goldilocks>,
     ) -> Result<(), NativeTerminalVerifyError> {
+        let Some(mode) = callsite.tip5_mode else {
+            return Err(NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                op_type: op_type.into(),
+                row,
+                field: "tip5_mode",
+                limb: 0,
+                expected: Some(1),
+                got: None,
+            });
+        };
+        if operation.new_start != mode.new_start {
+            return Err(NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                op_type: op_type.into(),
+                row,
+                field: "new_start",
+                limb: 0,
+                expected: Some(mode.new_start as u32),
+                got: Some(operation.new_start as u32),
+            });
+        }
         Self::verify_ctl_callsite(
             op_type,
             row,
@@ -11051,6 +11086,48 @@ mod tests {
             relation_digest,
             NativeTerminalCompiler::relation_digest_goldilocks(&vk),
             "relation digest must absorb the NPO projection digest"
+        );
+        let err = compiler
+            .verify_assignment_with_goldilocks_npos(&vk, &witness)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::RelationDigestMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn goldilocks_backend_relation_digest_binds_tip5_row_mode() {
+        let (circuit, public_inputs) = build_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, mut vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs);
+
+        let backend_digest = compiler.backend_relation_digest_goldilocks(&vk);
+        let relation_digest = NativeTerminalCompiler::relation_digest_goldilocks(&vk);
+        let NativeTerminalConstraint::Tip5Goldilocks { callsites, .. } = vk
+            .constraints
+            .iter_mut()
+            .find(|constraint| matches!(constraint, NativeTerminalConstraint::Tip5Goldilocks { .. }))
+            .expect("Tip5 constraint must be present")
+        else {
+            unreachable!("matched Tip5 constraint");
+        };
+        let mode = callsites[0]
+            .tip5_mode
+            .as_mut()
+            .expect("Tip5 callsite must carry terminal mode");
+        mode.new_start = !mode.new_start;
+
+        assert_ne!(
+            backend_digest,
+            compiler.backend_relation_digest_goldilocks(&vk),
+            "backend digest must bind Tip5 new_start mode"
+        );
+        assert_ne!(
+            relation_digest,
+            NativeTerminalCompiler::relation_digest_goldilocks(&vk),
+            "relation digest must absorb Tip5 row mode"
         );
         let err = compiler
             .verify_assignment_with_goldilocks_npos(&vk, &witness)
@@ -13310,15 +13387,21 @@ mod tests {
                 TerminalProofParameters::production_60bit(),
             )
             .expect("NPO-only terminal local proof must build");
-        let validity_index = match &proof.combined_validity_consistency_proof.openings[0] {
+        let npo_query = proof
+            .combined_validity_consistency_proof
+            .openings
+            .iter()
+            .position(|opening| {
+                matches!(opening, TerminalCombinedValidityConsistencyOpening::Npo { .. })
+            })
+            .expect("NPO-only proof must sample an NPO row");
+        let validity_index = match &proof.combined_validity_consistency_proof.openings[npo_query] {
             TerminalCombinedValidityConsistencyOpening::Npo { validity_index, .. } => {
                 *validity_index
             }
-            TerminalCombinedValidityConsistencyOpening::Quadratic { .. } => {
-                panic!("NPO-only proof must sample an NPO row")
-            }
+            TerminalCombinedValidityConsistencyOpening::Quadratic { .. } => unreachable!(),
         };
-        proof.combined_validity_consistency_proof.openings[0] =
+        proof.combined_validity_consistency_proof.openings[npo_query] =
             TerminalCombinedValidityConsistencyOpening::Quadratic {
                 validity_index,
                 witness_openings: Vec::new(),
@@ -13350,7 +13433,14 @@ mod tests {
         let relation = vk
             .primitive_quadratic_relation()
             .expect("quadratic relation must lower");
-        let npo_query = 0;
+        let npo_query = proof
+            .combined_validity_consistency_proof
+            .openings
+            .iter()
+            .position(|opening| {
+                matches!(opening, TerminalCombinedValidityConsistencyOpening::Npo { .. })
+            })
+            .expect("NPO-only proof must sample an NPO row");
         let TerminalCombinedValidityConsistencyOpening::Npo {
             validity_index,
             npo_index,
@@ -14590,6 +14680,37 @@ mod tests {
             .expect("honest 5-round Tip5 assignment must verify");
 
         let op_type = NpoTypeId::tip5_perm(Tip5Config::GOLDILOCKS_W16);
+        let mut stale_mode_vk = vk.clone();
+        let NativeTerminalConstraint::Tip5Goldilocks { callsites, .. } = stale_mode_vk
+            .constraints
+            .iter_mut()
+            .find(|constraint| matches!(constraint, NativeTerminalConstraint::Tip5Goldilocks { .. }))
+            .expect("Tip5 constraint must be present")
+        else {
+            unreachable!("matched Tip5 constraint");
+        };
+        let mode = callsites[0]
+            .tip5_mode
+            .as_mut()
+            .expect("Tip5 callsite must carry terminal mode");
+        mode.new_start = !mode.new_start;
+        stale_mode_vk.header.relation_digest =
+            Some(NativeTerminalCompiler::relation_digest_goldilocks(&stale_mode_vk));
+        let err = compiler
+            .verify_assignment_with_tip5_goldilocks(&stale_mode_vk, &witness)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                op_type: op_type.as_str().into(),
+                row: 0,
+                field: "new_start",
+                limb: 0,
+                expected: Some(0),
+                got: Some(1),
+            }
+        );
+
         let mut tampered = TerminalWitness {
             fingerprint: witness.fingerprint,
             public_inputs: witness.public_inputs.clone(),

@@ -634,23 +634,23 @@ Tip5-L0 verifier circuit:
 
 | component | bytes |
 |---|---:|
-| primitive R1CS row-product proof | 20,734 |
+| primitive R1CS row-product proof | 22,435 |
 | exhaustive NPO proof | 77,519 |
 | exhaustive NPO nonzero masks | 1,123 |
 | exhaustive NPO hidden Tip5 input bytes | 32,234 |
 | exhaustive NPO known-index witness multiproof | 44,162 |
 | exhaustive NPO witness openings | 1,377 |
-| compact production proof body | 98,593 |
-| compact production certificate | 98,814 |
+| compact production proof body | 100,295 |
+| compact production certificate | 100,515 |
 
-The debug-profile measurement is `prove=4.904 s, verify=3.109 s` for the
+The debug-profile measurement is `prove=4.869 s, verify=3.126 s` for the
 production proof body and certificate, with terminal parameters
 `security_bits=60, log_blowup=4, num_queries=15, query_pow_bits=0`. This removes
 the sampled production NPO validity layer and verifies all 668 supported
 Tip5/recompose NPO rows against the committed witness oracle. The NPO proof is
 still the dominant component, but the witness multiproof no longer serializes
 indices that the verifier can derive from the committed terminal relation. This
-puts the production certificate below the ~100 KiB target while retaining the
+puts the production certificate below the 100 KiB gate while retaining the
 required 60 pure-query bits. The remaining production-backend size task is to
 replace this exhaustive Merkle-opening NPO proof with a polynomialized
 Tip5/recompose relation and the final terminal proximity backend.
@@ -661,13 +661,13 @@ component includes that matrix-vector subproof:
 
 | component | bytes |
 |---|---:|
-| sparse R1CS matrix sumcheck proof | 22,349 |
-| R1CS row-product sumcheck proof | 23,810 |
-| row-product rounds | 840 |
-| matrix-sumcheck rounds | 719 |
-| assignment evaluation proof | 22,191 |
+| sparse R1CS matrix sumcheck proof | 23,610 |
+| R1CS row-product sumcheck proof | 24,198 |
+| row-product rounds | 844 |
+| matrix-sumcheck rounds | 716 |
+| assignment evaluation proof | 22,578 |
 | assignment public-prefix proof | 477 |
-| assignment fold commitments | 804 |
+| assignment fold commitments | 803 |
 | assignment fold query indices | 46 |
 | assignment fold round multiproofs | 20,844 |
 
@@ -738,7 +738,7 @@ Completion audit against the active terminal-compression requirements:
 |---|---|---|
 | Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
-| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `98,814` bytes / `96.5 KiB`, debug-profile `prove=4.904s`, `verify=3.109s`. | satisfied on the measured production fixture |
+| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `100,515` bytes / `98.2 KiB`, debug-profile `prove=4.869s`, `verify=3.126s`. | satisfied on the measured production fixture |
 | No confusing low-soundness testing production path | Production certificate verifier accepts only `TerminalProofKind::Production`; `LocalCheckpoint` is rejected by kind mismatch and query domains must support all 15 production queries. | satisfied for public production verifier dispatch |
 | Public values, parameters, relation, and commitments are bound before challenges | Header, public-values digest, backend relation digest, prelude parameters, relation profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
@@ -817,6 +817,11 @@ Security-audit conclusions for the current implementation checkpoint:
   acceptable as a row-validity checkpoint for the measured terminal circuit, but
   it is linear in the supported-NPO witness opening surface and therefore not
   the literature-style terminal PCS/proximity construction.
+- Tip5 NPO callsites now bind row mode (`new_start`, `merkle_path`) into the
+  backend relation digest, and assignment verification rejects stale
+  `new_start` projections. The remaining Tip5-specific verifier work is to
+  enforce the full hidden-limb semantics for chained and Merkle-path rows
+  before replacing exhaustive openings with a polynomialized NPO backend.
 - The sampled primitive and supported-NPO local proofs check real committed
   witness openings, but they are only components. A witness that violates a
   small number of unsampled primitive or NPO rows, or violates a global
@@ -886,7 +891,7 @@ Security-audit conclusions for the current implementation checkpoint:
 - Fixed-int bincode serialization is size-only: it changes the Rust helper's
   byte encoding and rejects trailing bytes on decode, but does not alter the
   proof relation, Fiat-Shamir transcript, FRI parameters, or public inputs.
-- The terminal production checkpoint is now 98,814 bytes, or 96.5 KiB, with 60
+- The terminal production checkpoint is now 100,515 bytes, or 98.2 KiB, with 60
   pure-query bits and exhaustive supported-NPO verification. It reached the
   ~100 KiB size target through structural proof-body changes, especially
   omitting verifier-derived witness indices from the exhaustive NPO multiproof,
