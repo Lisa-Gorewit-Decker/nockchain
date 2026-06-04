@@ -532,6 +532,20 @@ pub struct TerminalNpoValidityFoldProof {
     pub openings: Vec<TerminalResidualFoldQueryOpening>,
 }
 
+/// Merkle-backed multilinear folding proof for the production-equivalent
+/// supported-NPO residual oracle.
+///
+/// The base oracle includes every supported-NPO residual component that the
+/// production exhaustive row verifier checks, including Tip5 chain inputs and
+/// MMCS direction-bit booleanity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalNpoExhaustiveResidualFoldProof {
+    pub fold_commitments: Vec<TerminalOracleCommitment>,
+    pub final_value_basis: Vec<u64>,
+    pub round_openings: Vec<TerminalOracleMultiProof>,
+    pub openings: Vec<TerminalResidualFoldQueryOpening>,
+}
+
 /// Envelope for all implemented terminal local-proof components.
 ///
 /// This is a backend integration checkpoint, not the final compact terminal
@@ -4650,6 +4664,58 @@ impl NativeTerminalCompiler {
         })
     }
 
+    pub fn derive_terminal_npo_exhaustive_residual_fold_query_plan(
+        &self,
+        prelude: &TerminalProofPrelude,
+        residual_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+    ) -> Result<TerminalQueryPlan, NativeTerminalVerifyError> {
+        if residual_commitment.values_len == 0 {
+            return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
+        }
+
+        let num_queries = prelude.parameters.num_queries as usize;
+        let mut indices = Vec::with_capacity(num_queries);
+        let mut counter = 0u64;
+        while indices.len() < num_queries {
+            if counter
+                > (num_queries as u64)
+                    .saturating_mul(4096)
+                    .saturating_add(4096)
+            {
+                return Err(NativeTerminalVerifyError::TerminalQueryDerivationLimitExceeded);
+            }
+            let block = Self::terminal_npo_exhaustive_residual_fold_query_block(
+                prelude,
+                residual_commitment,
+                fold_commitments,
+                counter,
+            );
+            for limb in block {
+                if indices.len() == num_queries {
+                    break;
+                }
+                let bound = residual_commitment.values_len as u64;
+                let zone = u64::MAX - (u64::MAX % bound);
+                if limb < zone {
+                    Self::accept_terminal_query_index(
+                        &mut indices,
+                        (limb % bound) as usize,
+                        residual_commitment.values_len,
+                        num_queries,
+                    );
+                }
+            }
+            counter += 1;
+        }
+
+        Ok(TerminalQueryPlan {
+            oracle_label: residual_commitment.label.clone(),
+            oracle_len: residual_commitment.values_len,
+            indices,
+        })
+    }
+
     pub fn prove_terminal_npo_validity_fold_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -4752,6 +4818,120 @@ impl NativeTerminalCompiler {
         }
 
         Ok(TerminalNpoValidityFoldProof {
+            fold_commitments,
+            final_value_basis,
+            round_openings,
+            openings,
+        })
+    }
+
+    pub fn prove_terminal_npo_exhaustive_residual_fold_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        residual_oracle: &TerminalOracleMerkleTree,
+        witness: &TerminalWitness<F>,
+    ) -> Result<TerminalNpoExhaustiveResidualFoldProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let residual_commitment = residual_oracle.commitment();
+        Self::verify_prelude_binds_commitment(prelude, &residual_commitment)?;
+
+        let mut layers =
+            vec![self.terminal_npo_exhaustive_residual_values_goldilocks(verifying_key, witness)?];
+        let mut trees = Vec::new();
+        let mut fold_commitments = Vec::new();
+        let mut round = 0usize;
+        while layers
+            .last()
+            .expect("base exhaustive NPO residual layer exists")
+            .len()
+            > 1
+        {
+            let challenge = Self::derive_terminal_npo_exhaustive_residual_fold_challenge::<F>(
+                prelude,
+                &residual_commitment,
+                &fold_commitments,
+                round,
+            )?;
+            let current = layers
+                .last()
+                .expect("current exhaustive NPO residual fold layer exists");
+            let mut next = Vec::with_capacity(current.len().div_ceil(2));
+            for pair in current.chunks(2) {
+                let left = pair[0];
+                let right = pair.get(1).copied().unwrap_or(F::ZERO);
+                next.push(left * (F::ONE - challenge) + right * challenge);
+            }
+            let label = Self::npo_exhaustive_residual_fold_oracle_label(round);
+            let tree = TerminalOracleMerkleTree::commit_goldilocks_values(label, &next)?;
+            fold_commitments.push(tree.commitment());
+            trees.push(tree);
+            layers.push(next);
+            round += 1;
+        }
+
+        let final_value = layers
+            .last()
+            .and_then(|layer| layer.first())
+            .copied()
+            .ok_or(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty)?;
+        let final_value_basis = Self::goldilocks_basis_u64(&final_value);
+        let query_plan = self.derive_terminal_npo_exhaustive_residual_fold_query_plan(
+            prelude,
+            &residual_commitment,
+            &fold_commitments,
+        )?;
+
+        let mut expected_round_indices = vec![Vec::new(); fold_commitments.len()];
+        for initial_index in &query_plan.indices {
+            let mut index = *initial_index;
+            let mut current_len = residual_commitment.values_len;
+            for round in 0..fold_commitments.len() {
+                let pair_index = (index / 2) * 2;
+                let next_index = index / 2;
+                NativeTerminalCompiler::push_unique_usize(
+                    &mut expected_round_indices[round],
+                    pair_index,
+                );
+                if pair_index + 1 < current_len {
+                    NativeTerminalCompiler::push_unique_usize(
+                        &mut expected_round_indices[round],
+                        pair_index + 1,
+                    );
+                }
+                index = next_index;
+                current_len = current_len.div_ceil(2);
+            }
+        }
+        let mut round_openings = Vec::with_capacity(fold_commitments.len());
+        for (round, round_indices) in expected_round_indices.iter_mut().enumerate() {
+            round_indices.sort_unstable();
+            let current_tree = if round == 0 {
+                residual_oracle
+            } else {
+                &trees[round - 1]
+            };
+            let current_values = &layers[round];
+            let mut opening_values = Vec::with_capacity(round_indices.len());
+            for index in round_indices {
+                opening_values.push((*index, &current_values[*index]));
+            }
+            round_openings.push(current_tree.open_goldilocks_multi_values(&opening_values)?);
+        }
+
+        let mut openings = Vec::with_capacity(query_plan.indices.len());
+        for initial_index in &query_plan.indices {
+            openings.push(TerminalResidualFoldQueryOpening {
+                initial_index: *initial_index,
+                rounds: Vec::new(),
+            });
+        }
+
+        Ok(TerminalNpoExhaustiveResidualFoldProof {
             fold_commitments,
             final_value_basis,
             round_openings,
@@ -4925,6 +5105,54 @@ impl NativeTerminalCompiler {
         let final_value = Self::field_from_goldilocks_basis_u64::<F>(&proof.final_value_basis)?;
         if final_value != F::ZERO {
             return Err(NativeTerminalVerifyError::TerminalNpoValidityFoldFinalValueNonZero);
+        }
+
+        Ok(query_plan)
+    }
+
+    pub fn verify_terminal_npo_exhaustive_residual_fold_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        residual_commitment: &TerminalOracleCommitment,
+        proof: &TerminalNpoExhaustiveResidualFoldProof,
+    ) -> Result<TerminalQueryPlan, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        Self::verify_prelude_binds_commitment(prelude, residual_commitment)?;
+        self.validate_terminal_npo_exhaustive_residual_fold_commitments(
+            verifying_key,
+            residual_commitment,
+            &proof.fold_commitments,
+        )?;
+
+        let query_plan = self.derive_terminal_npo_exhaustive_residual_fold_query_plan(
+            prelude,
+            residual_commitment,
+            &proof.fold_commitments,
+        )?;
+        self.verify_terminal_compact_fold_openings_goldilocks::<F, _>(
+            residual_commitment,
+            &proof.fold_commitments,
+            &proof.final_value_basis,
+            &proof.round_openings,
+            &proof.openings,
+            &query_plan,
+            |round, fold_commitments| {
+                Self::derive_terminal_npo_exhaustive_residual_fold_challenge::<F>(
+                    prelude,
+                    residual_commitment,
+                    fold_commitments,
+                    round,
+                )
+            },
+        )?;
+        let final_value = Self::field_from_goldilocks_basis_u64::<F>(&proof.final_value_basis)?;
+        if final_value != F::ZERO {
+            return Err(NativeTerminalVerifyError::TerminalResidualFoldFinalValueNonZero);
         }
 
         Ok(query_plan)
@@ -8954,6 +9182,22 @@ impl NativeTerminalCompiler {
         )
     }
 
+    fn verify_terminal_npo_exhaustive_residual_commitment_identity<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        commitment: &TerminalOracleCommitment,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        let expected_len =
+            Self::terminal_npo_polynomial_profile::<F>(verifying_key).residual_components;
+        Self::verify_terminal_oracle_commitment_identity(
+            commitment,
+            Self::npo_exhaustive_residual_oracle_label(),
+            expected_len,
+        )
+    }
+
     fn quadratic_residual_oracle_label() -> &'static str {
         "quadratic_residual"
     }
@@ -8964,6 +9208,10 @@ impl NativeTerminalCompiler {
 
     fn npo_exhaustive_residual_oracle_label() -> &'static str {
         "npo_exhaustive_residual"
+    }
+
+    fn npo_exhaustive_residual_fold_oracle_label(round: usize) -> String {
+        format!("npo_exhaustive_residual_fold_{round}")
     }
 
     fn evaluate_terminal_npo_row_from_witness_goldilocks<F>(
@@ -9881,6 +10129,63 @@ impl NativeTerminalCompiler {
         Ok(())
     }
 
+    fn validate_terminal_npo_exhaustive_residual_fold_commitments<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        residual_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        Self::verify_terminal_npo_exhaustive_residual_commitment_identity::<F>(
+            verifying_key,
+            residual_commitment,
+        )?;
+
+        let mut len = residual_commitment.values_len;
+        let mut expected_rounds = 0usize;
+        while len > 1 {
+            len = len.div_ceil(2);
+            expected_rounds += 1;
+        }
+        if fold_commitments.len() != expected_rounds {
+            return Err(
+                NativeTerminalVerifyError::TerminalResidualFoldCommitmentLengthMismatch {
+                    round: expected_rounds,
+                    expected: expected_rounds,
+                    got: fold_commitments.len(),
+                },
+            );
+        }
+
+        let mut current_len = residual_commitment.values_len;
+        for (round, commitment) in fold_commitments.iter().enumerate() {
+            let expected_len = current_len.div_ceil(2);
+            if commitment.values_len != expected_len {
+                return Err(
+                    NativeTerminalVerifyError::TerminalResidualFoldCommitmentLengthMismatch {
+                        round,
+                        expected: expected_len,
+                        got: commitment.values_len,
+                    },
+                );
+            }
+            let expected_label = Self::npo_exhaustive_residual_fold_oracle_label(round);
+            if commitment.label != expected_label {
+                return Err(
+                    NativeTerminalVerifyError::TerminalResidualFoldCommitmentLabelMismatch {
+                        round,
+                        expected: expected_label,
+                        got: commitment.label.clone(),
+                    },
+                );
+            }
+            current_len = expected_len;
+        }
+        Ok(())
+    }
+
     fn validate_terminal_combined_validity_fold_commitments<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -10280,6 +10585,42 @@ impl NativeTerminalCompiler {
             let block = Self::terminal_npo_validity_fold_challenge_block(
                 prelude,
                 validity_commitment,
+                fold_commitments,
+                round,
+                counter,
+            );
+            for limb in block {
+                if basis.len() == expected {
+                    break;
+                }
+                if limb < Goldilocks::ORDER_U64 {
+                    basis.push(limb);
+                }
+            }
+            counter += 1;
+        }
+        Self::field_from_goldilocks_basis_u64(&basis)
+    }
+
+    fn derive_terminal_npo_exhaustive_residual_fold_challenge<F>(
+        prelude: &TerminalProofPrelude,
+        residual_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+        round: usize,
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let expected = <F as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let mut basis = Vec::with_capacity(expected);
+        let mut counter = 0u64;
+        while basis.len() < expected {
+            if counter > 4096 {
+                return Err(NativeTerminalVerifyError::TerminalQueryDerivationLimitExceeded);
+            }
+            let block = Self::terminal_npo_exhaustive_residual_fold_challenge_block(
+                prelude,
+                residual_commitment,
                 fold_commitments,
                 round,
                 counter,
@@ -11302,6 +11643,50 @@ impl NativeTerminalCompiler {
         Self::absorb_relation_profile(&mut sponge, &prelude.relation_profile);
         sponge.absorb_digest(&prelude.public_values_digest.0);
         Self::absorb_terminal_oracle_commitment(&mut sponge, validity_commitment);
+        sponge.absorb_u64(fold_commitments.len() as u64);
+        for commitment in fold_commitments {
+            Self::absorb_terminal_oracle_commitment(&mut sponge, commitment);
+        }
+        sponge.absorb_u64(counter);
+        sponge.finalize()
+    }
+
+    fn terminal_npo_exhaustive_residual_fold_challenge_block(
+        prelude: &TerminalProofPrelude,
+        residual_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+        round: usize,
+        counter: u64,
+    ) -> [u64; 5] {
+        let mut sponge = TerminalDigestSponge::new();
+        sponge.absorb_str("nock-terminal-npo-exhaustive-residual-fold-challenge-v1");
+        sponge.absorb_digest(&prelude.challenge_digest.0);
+        Self::absorb_terminal_parameters(&mut sponge, prelude.parameters);
+        Self::absorb_relation_profile(&mut sponge, &prelude.relation_profile);
+        sponge.absorb_digest(&prelude.public_values_digest.0);
+        Self::absorb_terminal_oracle_commitment(&mut sponge, residual_commitment);
+        sponge.absorb_u64(fold_commitments.len() as u64);
+        for commitment in fold_commitments {
+            Self::absorb_terminal_oracle_commitment(&mut sponge, commitment);
+        }
+        sponge.absorb_u64(round as u64);
+        sponge.absorb_u64(counter);
+        sponge.finalize()
+    }
+
+    fn terminal_npo_exhaustive_residual_fold_query_block(
+        prelude: &TerminalProofPrelude,
+        residual_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+        counter: u64,
+    ) -> [u64; 5] {
+        let mut sponge = TerminalDigestSponge::new();
+        sponge.absorb_str("nock-terminal-npo-exhaustive-residual-fold-query-v1");
+        sponge.absorb_digest(&prelude.challenge_digest.0);
+        Self::absorb_terminal_parameters(&mut sponge, prelude.parameters);
+        Self::absorb_relation_profile(&mut sponge, &prelude.relation_profile);
+        sponge.absorb_digest(&prelude.public_values_digest.0);
+        Self::absorb_terminal_oracle_commitment(&mut sponge, residual_commitment);
         sponge.absorb_u64(fold_commitments.len() as u64);
         for commitment in fold_commitments {
             Self::absorb_terminal_oracle_commitment(&mut sponge, commitment);
@@ -12785,6 +13170,132 @@ mod tests {
             .copied()
             .collect::<Vec<_>>();
         assert_eq!(nonzero_values, vec![Goldilocks::from_u64(2)]);
+    }
+
+    #[test]
+    fn goldilocks_npo_exhaustive_residual_fold_proof_verifies() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(2);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness_with_private_data(
+            &circuit,
+            public_inputs.clone(),
+            private_data,
+        );
+        let residual_oracle = compiler
+            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
+            .expect("exhaustive NPO residual oracle must commit");
+        let residual_commitment = residual_oracle.commitment();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![residual_commitment.root],
+            )
+            .expect("prelude must bind exhaustive NPO residual oracle");
+
+        let proof = compiler
+            .prove_terminal_npo_exhaustive_residual_fold_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &residual_oracle,
+                &witness,
+            )
+            .expect("exhaustive NPO residual fold proof must build");
+        let plan = compiler
+            .verify_terminal_npo_exhaustive_residual_fold_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &residual_commitment,
+                &proof,
+            )
+            .expect("exhaustive NPO residual fold proof must verify");
+        assert_eq!(
+            plan.oracle_label,
+            NativeTerminalCompiler::npo_exhaustive_residual_oracle_label()
+        );
+        assert_eq!(
+            plan.indices.len(),
+            TerminalProofParameters::production_60bit().num_queries as usize
+        );
+        for (round, commitment) in proof.fold_commitments.iter().enumerate() {
+            assert_eq!(
+                commitment.label,
+                NativeTerminalCompiler::npo_exhaustive_residual_fold_oracle_label(round)
+            );
+        }
+    }
+
+    #[test]
+    fn goldilocks_npo_exhaustive_residual_fold_rejects_nonzero_final_value() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(1);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness_with_private_data(
+            &circuit,
+            public_inputs.clone(),
+            private_data,
+        );
+        let mmcs_bit = vk
+            .npo_relation()
+            .rows
+            .iter()
+            .find_map(|row| row.callsite.tip5_mmcs_bit)
+            .expect("Merkle Tip5 row must bind an MMCS direction bit");
+        let mut bad_witness_values = witness_values(&witness);
+        bad_witness_values[mmcs_bit.0 as usize] = Goldilocks::from_u64(2);
+        let mut bad_traces = witness.traces.clone();
+        bad_traces.witness_trace = WitnessTrace::new(bad_witness_values);
+        let bad_witness = TerminalWitness {
+            fingerprint: witness.fingerprint,
+            public_inputs: witness.public_inputs.clone(),
+            private_inputs: witness.private_inputs.clone(),
+            traces: bad_traces,
+        };
+        let residual_oracle = compiler
+            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &bad_witness)
+            .expect("bad exhaustive NPO residual oracle must commit");
+        let residual_commitment = residual_oracle.commitment();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![residual_commitment.root],
+            )
+            .expect("prelude must bind bad exhaustive NPO residual oracle");
+
+        let proof = compiler
+            .prove_terminal_npo_exhaustive_residual_fold_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &residual_oracle,
+                &bad_witness,
+            )
+            .expect("bad exhaustive NPO residual fold proof must build");
+        let final_value = NativeTerminalCompiler::field_from_goldilocks_basis_u64::<Goldilocks>(
+            &proof.final_value_basis,
+        )
+        .expect("final value must be canonical Goldilocks");
+        assert_ne!(final_value, Goldilocks::ZERO);
+
+        let err = compiler
+            .verify_terminal_npo_exhaustive_residual_fold_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &residual_commitment,
+                &proof,
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            NativeTerminalVerifyError::TerminalResidualFoldFinalValueNonZero
+        );
     }
 
     #[test]

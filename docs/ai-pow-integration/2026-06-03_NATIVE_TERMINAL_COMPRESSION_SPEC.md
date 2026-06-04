@@ -186,6 +186,10 @@ for this route.
   Tip5 input/output residuals, chained hidden-lane residuals, Merkle
   capacity-zero residuals, MMCS direction-bit booleanity, and recompose
   input/output residuals.
+- `TerminalNpoExhaustiveResidualFoldProof`: a Merkle-backed folded zero check
+  for the production-equivalent supported-NPO residual oracle, with transcript
+  domains distinct from both primitive residual folding and legacy sampled NPO
+  validity folding.
 - `TerminalProductionProof`: the typed production proof body for the current
   compact backend checkpoint. It binds a witness oracle for exhaustive NPO row
   openings, an assignment oracle for primitive sparse-R1CS, the primitive
@@ -336,7 +340,10 @@ it gives the final polynomialized NPO backend concrete row-local residual
 equations to commit and test. The implementation now constructs and commits an
 `npo_exhaustive_residual` oracle from the real terminal witness, so the final
 NPO proximity layer can be wired against production-equivalent residual values
-rather than the narrower sampled-validity checkpoint.
+rather than the narrower sampled-validity checkpoint. It also folds that oracle
+with dedicated `nock-terminal-npo-exhaustive-residual-fold-*` transcript domains
+and rejects nonzero folded finals; this is a backend zero-check component, not
+the final Reed-Solomon proximity proof.
 
 `TerminalBackendRelationDigest` is the explicit commitment to those backend
 projections. It has its own domain and absorbs `TerminalQuadraticRelation`,
@@ -626,7 +633,7 @@ Tip5-L0 verifier circuit:
 | compact production proof body | 86,578 |
 | compact production certificate | 86,797 |
 
-The debug-profile measurement is `prove=4.935 s, verify=3.204 s` for the
+The debug-profile measurement is `prove=4.915 s, verify=3.188 s` for the
 production proof body and certificate, with terminal parameters
 `security_bits=60, log_blowup=4, num_queries=15, query_pow_bits=0`. This removes
 the sampled production NPO validity layer and verifies all 668 supported
@@ -728,7 +735,7 @@ Completion audit against the active terminal-compression requirements:
 |---|---|---|
 | Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
-| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `86,797` bytes / `84.8 KiB`, debug-profile `prove=4.935s`, `verify=3.204s`. | satisfied on the measured production fixture |
+| Production certificate is about 100 KiB | Real Tip5-L0 verifier measurement: `86,797` bytes / `84.8 KiB`, debug-profile `prove=4.915s`, `verify=3.188s`. | satisfied on the measured production fixture |
 | No confusing low-soundness testing production path | Production builds expose only `TerminalProofKind::Production`; local checkpoint proof-kind helpers are `cfg(test)`, and public production verification requires all 15 production queries. | satisfied for public production verifier dispatch |
 | Public values, parameters, relation, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile, prelude parameters, relation profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
@@ -971,10 +978,11 @@ Design conclusions for this codebase:
    but it is not the requested polynomial/proximity backend and does not give
    the proof-size structure of Aurora/Spartan-style row checks. The NPO
    polynomial profile now binds the larger production-equivalent residual
-   domain, and `terminal_npo_exhaustive_residual_values_goldilocks` constructs
-   that concrete residual vector from a real witness. The legacy local sampled
-   validity oracle remains an input/output residual checkpoint rather than the
-   final NPO table argument.
+   domain, `terminal_npo_exhaustive_residual_values_goldilocks` constructs that
+   concrete residual vector from a real witness, and
+   `TerminalNpoExhaustiveResidualFoldProof` folds it under dedicated transcript
+   domains. The legacy local sampled validity oracle remains an input/output
+   residual checkpoint rather than the final NPO table argument.
 3. The NPO replacement must first define low-degree row predicates for the
    terminal NPO relation:
    - Tip5: 5-round Tip5 state transition with explicit row mode, new-start,
