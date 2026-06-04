@@ -524,9 +524,11 @@ for this route.
   evaluation proof for one fixed NPO column. It folds the committed column with
   transcript challenges that bind the terminal prelude, column label, column
   root, and prior fold roots, then verifies compact sampled fold openings with
-  dedicated NPO-column transcript domains. This is the PCS-style primitive the
-  final NPO backend needs, but it is not yet batched across all columns or
-  combined with the full proximity/soundness theorem.
+  dedicated NPO-column transcript domains. Standalone verification treats the
+  prelude commitment vector as the exact one-root shape `[column_root]`, so
+  unused roots cannot steer its fold challenges. This is the PCS-style
+  primitive the final NPO backend needs, but it is not yet combined with the
+  full proximity/soundness theorem.
 - `TerminalNpoPolynomialColumnEvaluationBatchProof`: ordered multilinear
   evaluation proofs for every fixed NPO column. Verification derives the fixed
   column label order from the verifying key, rejects missing or reordered
@@ -752,13 +754,14 @@ the column-opening proof and those openings are checked against the randomized
 residual-column combination. That bound checkpoint measures `15,481` bytes /
 `15.1 KiB` on the 2-row fixture, with debug `prove=150.7ms` and
 `verify=126.1ms`; it rejects tampered compact row openings and stale residual
-columns. The NPO polynomial column-opening checkpoint and column-evaluation
-batch now also treat their prelude commitment vectors as exact transcript
-shapes: every verifier-derived column root must appear in order with no missing
-roots and no extra prover-selected roots. This mirrors the production prelude
-hardening and prevents unused roots from steering sampled rows, fold
-challenges, or residual-combination challenges when these checkpoints are
-promoted into the terminal production backend.
+columns. The NPO polynomial column-opening checkpoint, standalone
+column-evaluation proof, and column-evaluation batch now also treat their
+prelude commitment vectors as exact transcript shapes: every verifier-derived
+column root must appear in order with no missing roots and no extra
+prover-selected roots. This mirrors the production prelude hardening and
+prevents unused roots from steering sampled rows, fold challenges, or
+residual-combination challenges when these checkpoints are promoted into the
+terminal production backend.
 
 `TerminalBackendRelationDigest` is the explicit commitment to those backend
 projections. It has its own domain and absorbs `TerminalQuadraticRelation`,

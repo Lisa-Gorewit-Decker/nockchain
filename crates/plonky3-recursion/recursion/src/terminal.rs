@@ -6593,6 +6593,26 @@ impl NativeTerminalCompiler {
     where
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
+        self.prove_terminal_npo_polynomial_column_evaluation_with_prelude_shape(
+            verifying_key,
+            witness,
+            prelude,
+            column_label,
+            true,
+        )
+    }
+
+    fn prove_terminal_npo_polynomial_column_evaluation_with_prelude_shape<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+        prelude: &TerminalProofPrelude,
+        column_label: &str,
+        require_exact_single_prelude: bool,
+    ) -> Result<TerminalNpoPolynomialColumnEvaluationProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
         let columns = self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
         Self::validate_terminal_npo_polynomial_columns(&columns.layout, &columns)?;
         let column_index = columns
@@ -6610,7 +6630,14 @@ impl NativeTerminalCompiler {
             &column_values,
         )?;
         let column_commitment = column_oracle.commitment();
-        Self::verify_prelude_binds_commitment(prelude, &column_commitment)?;
+        if require_exact_single_prelude {
+            Self::verify_npo_polynomial_column_prelude_commitments(
+                prelude,
+                core::slice::from_ref(&column_commitment),
+            )?;
+        } else {
+            Self::verify_prelude_binds_commitment(prelude, &column_commitment)?;
+        }
 
         let mut layers = vec![column_values];
         let mut trees = Vec::new();
@@ -6699,10 +6726,29 @@ impl NativeTerminalCompiler {
     where
         F: Field + BasedVectorSpace<Goldilocks>,
     {
+        self.verify_terminal_npo_polynomial_column_evaluation_with_prelude_shape::<F>(
+            verifying_key,
+            prelude,
+            proof,
+            true,
+        )
+    }
+
+    fn verify_terminal_npo_polynomial_column_evaluation_with_prelude_shape<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoPolynomialColumnEvaluationProof,
+        require_exact_single_prelude: bool,
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
         self.validate_terminal_npo_polynomial_column_evaluation_commitments::<F>(
             verifying_key,
             prelude,
             proof,
+            require_exact_single_prelude,
         )?;
         let query_plan = self.derive_terminal_npo_polynomial_column_fold_query_plan(
             prelude,
@@ -6744,11 +6790,12 @@ impl NativeTerminalCompiler {
         let mut column_evaluations = Vec::with_capacity(labels.len());
         for label in labels {
             column_evaluations.push(
-                self.prove_terminal_npo_polynomial_column_evaluation_goldilocks(
+                self.prove_terminal_npo_polynomial_column_evaluation_with_prelude_shape(
                     verifying_key,
                     witness,
                     prelude,
                     &label,
+                    false,
                 )?,
             );
         }
@@ -6792,10 +6839,11 @@ impl NativeTerminalCompiler {
                 );
             }
             evaluations.push(
-                self.verify_terminal_npo_polynomial_column_evaluation_goldilocks::<F>(
+                self.verify_terminal_npo_polynomial_column_evaluation_with_prelude_shape::<F>(
                     verifying_key,
                     prelude,
                     column_proof,
+                    false,
                 )?,
             );
         }
@@ -7863,6 +7911,7 @@ impl NativeTerminalCompiler {
         verifying_key: &NativeTerminalVerifyingKey<F>,
         prelude: &TerminalProofPrelude,
         proof: &TerminalNpoPolynomialColumnEvaluationProof,
+        require_exact_single_prelude: bool,
     ) -> Result<(), NativeTerminalVerifyError>
     where
         F: BasedVectorSpace<Goldilocks>,
@@ -7894,7 +7943,14 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        Self::verify_prelude_binds_commitment(prelude, &proof.column_commitment)?;
+        if require_exact_single_prelude {
+            Self::verify_npo_polynomial_column_prelude_commitments(
+                prelude,
+                core::slice::from_ref(&proof.column_commitment),
+            )?;
+        } else {
+            Self::verify_prelude_binds_commitment(prelude, &proof.column_commitment)?;
+        }
 
         let mut len = proof.column_commitment.values_len;
         let mut expected_rounds = 0usize;
@@ -26584,26 +26640,53 @@ mod tests {
             .expect("NPO polynomial column sampled residuals must verify");
         assert_eq!(residual_plan, plan);
 
+        let mmcs_bit_column = oracle_set
+            .labels
+            .iter()
+            .position(|label| label == "mmcs_bit")
+            .expect("mmcs_bit column must exist");
+        let single_column_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![commitments[mmcs_bit_column].root],
+            )
+            .expect("single NPO polynomial column prelude must build");
         let evaluation_proof = compiler
             .prove_terminal_npo_polynomial_column_evaluation_goldilocks(
-                &vk, &witness, &prelude, "mmcs_bit",
+                &vk,
+                &witness,
+                &single_column_prelude,
+                "mmcs_bit",
             )
             .expect("NPO polynomial column evaluation proof must build");
         let evaluation = compiler
             .verify_terminal_npo_polynomial_column_evaluation_goldilocks::<Goldilocks>(
                 &vk,
-                &prelude,
+                &single_column_prelude,
                 &evaluation_proof,
             )
             .expect("NPO polynomial column evaluation proof must verify");
         assert_eq!(evaluation, Goldilocks::ZERO);
+        let err = compiler
+            .verify_terminal_npo_polynomial_column_evaluation_goldilocks::<Goldilocks>(
+                &vk,
+                &prelude,
+                &evaluation_proof,
+            )
+            .expect_err("standalone NPO column evaluation must reject extra prelude roots");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch { .. }
+        ));
 
         let mut bad_final_value = evaluation_proof.clone();
         bad_final_value.final_value_basis[0] ^= 1;
         let err = compiler
             .verify_terminal_npo_polynomial_column_evaluation_goldilocks::<Goldilocks>(
                 &vk,
-                &prelude,
+                &single_column_prelude,
                 &bad_final_value,
             )
             .expect_err("tampered NPO column final evaluation must reject");
@@ -26620,7 +26703,7 @@ mod tests {
             let err = compiler
                 .verify_terminal_npo_polynomial_column_evaluation_goldilocks::<Goldilocks>(
                     &vk,
-                    &prelude,
+                    &single_column_prelude,
                     &bad_fold_label,
                 )
                 .expect_err("tampered NPO column fold label must reject");
