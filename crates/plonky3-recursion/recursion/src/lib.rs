@@ -47,10 +47,10 @@ pub use terminal::{
     TerminalPrimitiveConstraintOpening, TerminalPrimitiveConstraintProof, TerminalProductionProof,
     TerminalProductionTip5HiddenInputs, TerminalProofBodyDigest, TerminalProofKind,
     TerminalProofParameters, TerminalProofPrelude, TerminalPublicValuesDigest, TerminalQueryPlan,
-    TerminalR1csSumcheckRound, TerminalRelationDigest, TerminalRelationProfile,
-    TerminalSparseR1csEntry, TerminalSparseR1csMatrix, TerminalSparseR1csRelation,
-    TerminalSparseR1csSumcheckProof, TerminalSparseR1csVariable, TerminalTranscriptChallengeDigest,
-    TerminalWitness,
+    TerminalR1csRowProductRound, TerminalR1csRowProductSumcheckProof, TerminalR1csSumcheckRound,
+    TerminalRelationDigest, TerminalRelationProfile, TerminalSparseR1csEntry,
+    TerminalSparseR1csMatrix, TerminalSparseR1csRelation, TerminalSparseR1csSumcheckProof,
+    TerminalSparseR1csVariable, TerminalTranscriptChallengeDigest, TerminalWitness,
 };
 pub use traits::{
     Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,

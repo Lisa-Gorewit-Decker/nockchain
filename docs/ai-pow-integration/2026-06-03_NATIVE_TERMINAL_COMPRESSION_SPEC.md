@@ -148,10 +148,15 @@ for this route.
   for the sparse terminal R1CS matrices. It proves claimed `A`, `B`, and `C`
   matrix-vector evaluations against the committed assignment vector and consumes
   `TerminalAssignmentEvaluationProof` at the final sumcheck point. It can use
-  either its own transcript-derived row point or an externally supplied row
-  point from a future row-product sumcheck. It deliberately does not check
+  either its own transcript-derived row point or the externally supplied row
+  point from the row-product sumcheck. It deliberately does not check
   `A(r) * B(r) = C(r)`, because that is not a sound multilinear R1CS shortcut;
   the row-product relation still needs its own sumcheck.
+- `TerminalR1csRowProductSumcheckProof`: the degree-3 sumcheck for the primitive
+  row relation `sum_x eq(r, x) * (A(x) * B(x) - C(x)) = 0`. Its final random row
+  point is delegated to `TerminalSparseR1csSumcheckProof`, so the verifier checks
+  the row product against matrix-vector claims that are themselves tied to the
+  assignment commitment.
 - `TerminalNpoValidityFoldProof`: a Merkle-backed folded validity-oracle proof
   for supported NPO rows. This remains as a standalone helper/test component;
   the aggregate `TerminalLocalProof` now uses `combined_validity` instead.
@@ -251,17 +256,18 @@ assignment commitment cannot silently use different public values. The same
 component can now verify at an externally supplied point, so the sparse-R1CS
 sumcheck can bind its final random `y*` to the assignment commitment instead of
 proving an unrelated assignment evaluation. The component still needs to be
-connected to the sparse-R1CS matrix-vector sumcheck before it can replace the
-direct witness-serializing production checker.
+consumed inside a full relation argument before it can replace the direct
+witness-serializing production checker.
 
-The sparse-R1CS matrix-vector sumcheck component is implemented and tested on a
-small Goldilocks circuit. It is intentionally scoped to matrix-vector
-evaluation claims. A previous tempting check, `A(r) * B(r) = C(r)`, is not used:
-even when every Boolean row satisfies `A_i * B_i = C_i`, the product of
-multilinear extensions at a non-Boolean row point is not equal to the
-multilinear extension of the row products. The remaining primitive-relation
-step is therefore a row-product sumcheck over
-`eq(r, x) * (A(x) * B(x) - C(x))`.
+The sparse-R1CS matrix-vector sumcheck component is implemented and tested. It
+is intentionally scoped to matrix-vector evaluation claims. A previous tempting
+check, `A(r) * B(r) = C(r)`, is not used: even when every Boolean row satisfies
+`A_i * B_i = C_i`, the product of multilinear extensions at a non-Boolean row
+point is not equal to the multilinear extension of the row products. The
+primitive-relation step is now a separate degree-3 row-product sumcheck over
+`eq(r, x) * (A(x) * B(x) - C(x))`, with its final `A(x*)`, `B(x*)`, and `C(x*)`
+claims delegated to the matrix-vector sumcheck at the same transcript-derived
+row point.
 
 Performance note: the first correct matrix-vector round evaluator used dense
 partial sums of the product of the matrix MLE and assignment MLE and was stopped
@@ -616,17 +622,20 @@ non-witness polynomial/sumcheck/FRI commitment argument while preserving the
 same relation checks and transcript bindings.
 
 The optimized sparse-R1CS matrix-vector sumcheck component measures separately
-on the same real Tip5-L0 verifier circuit:
+on the same real Tip5-L0 verifier circuit. The completed primitive row-product
+component includes that matrix-vector subproof:
 
 | component | bytes |
 |---|---:|
 | sparse R1CS matrix sumcheck proof | 90,962 |
+| R1CS row-product sumcheck proof | 91,764 |
 
-The debug-profile measurement is `prove=1.678 s, verify=1.054 s`. This is not
-a complete terminal relation proof; it proves only the batched matrix-vector
-evaluation claims and consumes the assignment evaluation proof at the final
-sumcheck point. The primitive row-product sumcheck and NPO/table global
-arguments remain required before this can replace the direct production proof.
+The latest debug-profile measurements are `prove=2.053 s, verify=1.435 s` for
+the matrix-vector component and `prove=2.078 s, verify=1.443 s` for the
+row-product component. This now proves the primitive sparse-R1CS row relation
+against the assignment commitment, but NPO/table global arguments and the final
+polynomial proximity backend remain required before it can replace the direct
+production proof.
 
 Recursive proving uses 5-round Tip5 only. This terminal path must not be read as
 a change to Nockchain's canonical non-recursive 7-round Tip5 hash path.
@@ -712,8 +721,9 @@ Security-audit conclusions for the current implementation checkpoint:
   evaluation proof; it must be consumed by the sparse-R1CS sumcheck before it
   gives a terminal relation proof.
 - The sparse-R1CS matrix-vector sumcheck is only an evaluation subclaim. It
-  avoids the unsound `A(r) * B(r) = C(r)` shortcut and must be paired with a
-  row-product sumcheck before any primitive R1CS relation proof can be accepted.
+  avoids the unsound `A(r) * B(r) = C(r)` shortcut and is now paired with the
+  row-product sumcheck for primitive R1CS rows. It is still not a complete
+  terminal proof for the supported NPO/table rows.
 - The terminal oracle Merkle layer is binding to opened values under the
   recursive 5-round Tip5 assumption, but it is not itself a polynomial
   commitment. The direct production proof recomputes the relation from the full

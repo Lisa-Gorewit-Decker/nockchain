@@ -517,6 +517,31 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
         )
         .expect("terminal sparse R1CS matrix sumcheck must verify");
     let r1cs_sumcheck_verify_elapsed = r1cs_sumcheck_verify_start.elapsed();
+    let r1cs_row_product_prove_start = std::time::Instant::now();
+    let r1cs_row_product_proof = compiler
+        .prove_terminal_r1cs_row_product_sumcheck_goldilocks(
+            &vk,
+            &terminal_witness.public_inputs,
+            &assignment_prelude,
+            &assignment_oracle,
+            &terminal_witness,
+        )
+        .expect("terminal R1CS row-product sumcheck must build");
+    let r1cs_row_product_prove_elapsed = r1cs_row_product_prove_start.elapsed();
+    let r1cs_row_product_size = postcard::to_allocvec(&r1cs_row_product_proof)
+        .expect("terminal R1CS row-product sumcheck must serialize")
+        .len();
+    let r1cs_row_product_verify_start = std::time::Instant::now();
+    compiler
+        .verify_terminal_r1cs_row_product_sumcheck_goldilocks(
+            &vk,
+            &terminal_witness.public_inputs,
+            &assignment_prelude,
+            &assignment_commitment,
+            &r1cs_row_product_proof,
+        )
+        .expect("terminal R1CS row-product sumcheck must verify");
+    let r1cs_row_product_verify_elapsed = r1cs_row_product_verify_start.elapsed();
 
     if let Some((hidden_row, hidden_value)) = production_proof
         .tip5_hidden_inputs
@@ -591,6 +616,13 @@ fn terminal_local_certificate_measures_real_tip5_l0_verifier_circuit() {
         r1cs_sumcheck_size as f64 / 1024.0,
         r1cs_sumcheck_prove_elapsed.as_secs_f64(),
         r1cs_sumcheck_verify_elapsed.as_secs_f64(),
+    );
+    eprintln!(
+        "terminal R1CS row-product sumcheck component: proof={} bytes ({:.1} KiB) prove={:.3}s verify={:.3}s",
+        r1cs_row_product_size,
+        r1cs_row_product_size as f64 / 1024.0,
+        r1cs_row_product_prove_elapsed.as_secs_f64(),
+        r1cs_row_product_verify_elapsed.as_secs_f64(),
     );
 
     assert!(certificate_size > body_size);
