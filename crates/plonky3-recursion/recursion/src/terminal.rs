@@ -23877,6 +23877,65 @@ mod tests {
             >(&vk, &public_inputs, &prelude, &restored_proof)
             .expect("compressed-restored terminal FRI proof must verify");
 
+        let mut malformed_order = compressed_fri.clone();
+        let mut order_tampered = false;
+        for batch in &mut malformed_order.input_batches {
+            if let Some(slot) = batch.pruned_opening_proof.original_order.first_mut() {
+                *slot = u32::MAX;
+                order_tampered = true;
+                break;
+            }
+        }
+        assert!(order_tampered, "compressed FRI input proof must carry query order");
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&malformed_order),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+        ));
+
+        let mut corrupted_path = compressed_fri.clone();
+        let mut path_tampered = false;
+        for batch in &mut corrupted_path.input_batches {
+            if let Some(sibling) = batch
+                .pruned_opening_proof
+                .paths
+                .iter_mut()
+                .find_map(|path| path.siblings.first_mut())
+            {
+                sibling[0] += Goldilocks::ONE;
+                path_tampered = true;
+                break;
+            }
+        }
+        if !path_tampered {
+            for round in &mut corrupted_path.commit_rounds {
+                if let Some(sibling) = round
+                    .pruned_opening_proof
+                    .paths
+                    .iter_mut()
+                    .find_map(|path| path.siblings.first_mut())
+                {
+                    sibling[0] += Goldilocks::ONE;
+                    path_tampered = true;
+                    break;
+                }
+            }
+        }
+        assert!(path_tampered, "compressed FRI proof must carry Merkle siblings");
+        let corrupted_restored =
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&corrupted_path)
+                .expect("corrupted path shape should still decompress");
+        let mut corrupted_proof = proof.clone();
+        corrupted_proof.proof = corrupted_restored;
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_goldilocks::<
+                Goldilocks,
+            >(&vk, &public_inputs, &prelude, &corrupted_proof)
+            .expect_err("corrupted compact FRI path must fail verification");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+        ));
+
         let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
         let (_, trace, _) = compiler
             .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
