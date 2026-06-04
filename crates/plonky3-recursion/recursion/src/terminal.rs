@@ -4008,6 +4008,22 @@ impl NativeTerminalCompiler {
         )
     }
 
+    pub fn commit_terminal_npo_exhaustive_residuals_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+    ) -> Result<TerminalOracleMerkleTree, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let values =
+            self.terminal_npo_exhaustive_residual_values_goldilocks(verifying_key, witness)?;
+        TerminalOracleMerkleTree::commit_goldilocks_values(
+            Self::npo_exhaustive_residual_oracle_label(),
+            &values,
+        )
+    }
+
     pub fn terminal_npo_validity_values_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -4030,6 +4046,41 @@ impl NativeTerminalCompiler {
                 witness,
                 &indexed_witness_values,
                 npo_index,
+            )?;
+            values.extend(Self::terminal_npo_row_evaluation_component_values::<F>(
+                &evaluation,
+            ));
+        }
+        Ok(values)
+    }
+
+    pub fn terminal_npo_exhaustive_residual_values_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+    ) -> Result<Vec<F>, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let witness_values = Self::terminal_witness_values(witness)?;
+        let indexed_witness_values = witness_values
+            .iter()
+            .copied()
+            .enumerate()
+            .collect::<Vec<_>>();
+        let mut previous_normal_tip5_output = None;
+        let mut previous_merkle_tip5_output = None;
+        let mut values = Vec::with_capacity(
+            Self::terminal_npo_polynomial_profile::<F>(verifying_key).residual_components,
+        );
+        for npo_index in 0..Self::terminal_npo_domain_len(verifying_key) {
+            let evaluation = self.evaluate_terminal_npo_row_exhaustive_from_witness_goldilocks(
+                verifying_key,
+                witness,
+                &indexed_witness_values,
+                npo_index,
+                &mut previous_normal_tip5_output,
+                &mut previous_merkle_tip5_output,
             )?;
             values.extend(Self::terminal_npo_row_evaluation_component_values::<F>(
                 &evaluation,
@@ -8911,6 +8962,10 @@ impl NativeTerminalCompiler {
         "witness"
     }
 
+    fn npo_exhaustive_residual_oracle_label() -> &'static str {
+        "npo_exhaustive_residual"
+    }
+
     fn evaluate_terminal_npo_row_from_witness_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -8950,6 +9005,75 @@ impl NativeTerminalCompiler {
                     &hidden_inputs,
                     &expected_witness_ids,
                     &opened_values,
+                )
+            }
+            NativeTerminalNpoRowRef::Recompose {
+                op_type,
+                row,
+                callsite,
+            } => {
+                let expected_witness_ids = Self::npo_callsite_witness_ids(callsite);
+                let opened_values = Self::verify_npo_witness_values(
+                    npo_index,
+                    &expected_witness_ids,
+                    indexed_witness_values,
+                )?;
+                self.evaluate_sampled_recompose_npo_row_values::<F>(
+                    npo_index,
+                    op_type,
+                    row,
+                    callsite,
+                    &[],
+                    &expected_witness_ids,
+                    &opened_values,
+                )
+            }
+        }
+    }
+
+    fn evaluate_terminal_npo_row_exhaustive_from_witness_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+        indexed_witness_values: &[(usize, F)],
+        npo_index: usize,
+        previous_normal_output: &mut Option<[Goldilocks; 16]>,
+        previous_merkle_output: &mut Option<[Goldilocks; 16]>,
+    ) -> Result<TerminalNpoRowEvaluation, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let row_ref = Self::terminal_npo_row(verifying_key, npo_index).ok_or(
+            NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                query: 0,
+                expected: npo_index,
+                got: npo_index,
+            },
+        )?;
+        match row_ref {
+            NativeTerminalNpoRowRef::Tip5 { row, callsite, .. } => {
+                let (local_opening, expected_witness_ids) =
+                    self.terminal_npo_local_opening_goldilocks(verifying_key, witness, npo_index)?;
+                let opened_values = Self::verify_npo_witness_values(
+                    npo_index,
+                    &expected_witness_ids,
+                    indexed_witness_values,
+                )?;
+                let hidden_inputs = Self::terminal_tip5_hidden_inputs_from_compact(
+                    local_opening.npo_index,
+                    verifying_key,
+                    local_opening.tip5_hidden_input_nonzero_mask,
+                    &local_opening.tip5_hidden_input_values_le,
+                )?;
+                self.evaluate_exhaustive_tip5_npo_row_values::<F>(
+                    npo_index,
+                    row,
+                    callsite,
+                    &hidden_inputs,
+                    &expected_witness_ids,
+                    &opened_values,
+                    previous_normal_output,
+                    previous_merkle_output,
                 )
             }
             NativeTerminalNpoRowRef::Recompose {
@@ -12577,6 +12701,90 @@ mod tests {
         assert_eq!(profile.mmcs_direction_bits, 2);
         assert_eq!(profile.max_constraint_degree, 4);
         assert_eq!(profile.tip5_rounds, NUM_ROUNDS);
+    }
+
+    #[test]
+    fn goldilocks_npo_exhaustive_residual_values_match_polynomial_profile() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(2);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness =
+            execute_tip5_terminal_witness_with_private_data(&circuit, public_inputs, private_data);
+        let profile = NativeTerminalCompiler::terminal_npo_polynomial_profile::<Goldilocks>(&vk);
+
+        let sampled_values = compiler
+            .terminal_npo_validity_values_goldilocks(&vk, &witness)
+            .expect("sampled NPO validity values must compute");
+        let exhaustive_values = compiler
+            .terminal_npo_exhaustive_residual_values_goldilocks(&vk, &witness)
+            .expect("exhaustive NPO residual values must compute");
+        assert_eq!(sampled_values.len(), profile.sampled_residual_components);
+        assert_eq!(exhaustive_values.len(), profile.residual_components);
+        assert!(
+            sampled_values
+                .iter()
+                .all(|value| *value == Goldilocks::ZERO)
+        );
+        assert!(
+            exhaustive_values
+                .iter()
+                .all(|value| *value == Goldilocks::ZERO)
+        );
+
+        let commitment = compiler
+            .commit_terminal_npo_exhaustive_residuals_goldilocks(&vk, &witness)
+            .expect("exhaustive NPO residual oracle must commit")
+            .commitment();
+        assert_eq!(
+            commitment.label,
+            NativeTerminalCompiler::npo_exhaustive_residual_oracle_label()
+        );
+        assert_eq!(commitment.values_len, profile.residual_components);
+    }
+
+    #[test]
+    fn goldilocks_npo_exhaustive_residual_values_include_mmcs_booleanity() {
+        let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(1);
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness =
+            execute_tip5_terminal_witness_with_private_data(&circuit, public_inputs, private_data);
+        let mmcs_bit = vk
+            .npo_relation()
+            .rows
+            .iter()
+            .find_map(|row| row.callsite.tip5_mmcs_bit)
+            .expect("Merkle Tip5 row must bind an MMCS direction bit");
+        let mut bad_witness_values = witness_values(&witness);
+        bad_witness_values[mmcs_bit.0 as usize] = Goldilocks::from_u64(2);
+        let mut bad_traces = witness.traces.clone();
+        bad_traces.witness_trace = WitnessTrace::new(bad_witness_values);
+        let bad_witness = TerminalWitness {
+            fingerprint: witness.fingerprint,
+            public_inputs: witness.public_inputs.clone(),
+            private_inputs: witness.private_inputs.clone(),
+            traces: bad_traces,
+        };
+
+        let sampled_values = compiler
+            .terminal_npo_validity_values_goldilocks(&vk, &bad_witness)
+            .expect("sampled NPO validity values must compute");
+        assert!(
+            sampled_values
+                .iter()
+                .all(|value| *value == Goldilocks::ZERO),
+            "legacy sampled validity does not cover MMCS-bit booleanity"
+        );
+
+        let exhaustive_values = compiler
+            .terminal_npo_exhaustive_residual_values_goldilocks(&vk, &bad_witness)
+            .expect("exhaustive NPO residual values must compute");
+        let nonzero_values = exhaustive_values
+            .iter()
+            .filter(|value| **value != Goldilocks::ZERO)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(nonzero_values, vec![Goldilocks::from_u64(2)]);
     }
 
     #[test]
