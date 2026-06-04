@@ -47,7 +47,8 @@ pub use terminal::{
     TerminalPrimitiveConstraintProof, TerminalProductionProof, TerminalProductionTip5HiddenInputs,
     TerminalProofBodyDigest, TerminalProofKind, TerminalProofParameters, TerminalProofPrelude,
     TerminalPublicValuesDigest, TerminalQueryPlan, TerminalRelationDigest, TerminalRelationProfile,
-    TerminalTranscriptChallengeDigest, TerminalWitness,
+    TerminalSparseR1csEntry, TerminalSparseR1csMatrix, TerminalSparseR1csRelation,
+    TerminalSparseR1csVariable, TerminalTranscriptChallengeDigest, TerminalWitness,
 };
 pub use traits::{
     Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,

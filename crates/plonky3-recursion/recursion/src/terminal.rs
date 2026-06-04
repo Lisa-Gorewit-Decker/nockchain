@@ -604,6 +604,53 @@ pub struct TerminalQuadraticRelation<F> {
     pub external_npo_rows: usize,
 }
 
+/// R1CS matrix selected by one sparse multilinear entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalSparseR1csMatrix {
+    A,
+    B,
+    C,
+}
+
+/// Variable column in the sparse terminal R1CS view.
+///
+/// The final polynomial/sumcheck backend treats `One`, public inputs, and
+/// witness values as one concatenated assignment vector. `variable_index` below
+/// is the stable column in that concatenated vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalSparseR1csVariable {
+    One,
+    Public(usize),
+    Witness(WitnessId),
+}
+
+/// One nonzero sparse entry in the terminal R1CS matrices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalSparseR1csEntry<F> {
+    pub matrix: TerminalSparseR1csMatrix,
+    pub row: usize,
+    pub variable: TerminalSparseR1csVariable,
+    pub variable_index: usize,
+    pub coeff: F,
+}
+
+/// Sparse multilinear view of the primitive terminal R1CS relation.
+///
+/// This is the relation table a Spartan/Aurora-style sumcheck backend needs:
+/// rows index quadratic constraints, columns index the concatenated assignment
+/// vector `[1 || public || witness]`, and entries are sparse matrix weights for
+/// `A(z) * B(z) = C(z)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalSparseR1csRelation<F> {
+    pub rows: usize,
+    pub variables: usize,
+    pub public_count: usize,
+    pub witness_count: usize,
+    pub log_rows: usize,
+    pub log_variables: usize,
+    pub entries: Vec<TerminalSparseR1csEntry<F>>,
+}
+
 /// Supported external NPO row kind for backend arithmetization.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalNpoRowKind {
@@ -1367,6 +1414,103 @@ impl<F> NativeTerminalVerifyingKey<F> {
         profile
     }
 
+    pub fn primitive_sparse_r1cs_relation(
+        &self,
+    ) -> Result<TerminalSparseR1csRelation<F>, NativeTerminalVerifyError>
+    where
+        F: Field,
+    {
+        let relation = self.primitive_quadratic_relation()?;
+        Ok(self.sparse_r1cs_relation_from_quadratic(&relation))
+    }
+
+    fn sparse_r1cs_relation_from_quadratic(
+        &self,
+        relation: &TerminalQuadraticRelation<F>,
+    ) -> TerminalSparseR1csRelation<F>
+    where
+        F: Field,
+    {
+        let rows = relation.constraints.len();
+        let public_count = self.header.fingerprint.public_flat_len;
+        let witness_count = self.header.fingerprint.witness_count as usize;
+        let variables = 1 + public_count + witness_count;
+        let mut entries = Vec::new();
+
+        for (row, constraint) in relation.constraints.iter().enumerate() {
+            Self::push_sparse_r1cs_expression(
+                &mut entries,
+                TerminalSparseR1csMatrix::A,
+                row,
+                public_count,
+                &constraint.a,
+            );
+            Self::push_sparse_r1cs_expression(
+                &mut entries,
+                TerminalSparseR1csMatrix::B,
+                row,
+                public_count,
+                &constraint.b,
+            );
+            Self::push_sparse_r1cs_expression(
+                &mut entries,
+                TerminalSparseR1csMatrix::C,
+                row,
+                public_count,
+                &constraint.c,
+            );
+        }
+
+        TerminalSparseR1csRelation {
+            rows,
+            variables,
+            public_count,
+            witness_count,
+            log_rows: NativeTerminalCompiler::terminal_mle_log_size(rows),
+            log_variables: NativeTerminalCompiler::terminal_mle_log_size(variables),
+            entries,
+        }
+    }
+
+    fn push_sparse_r1cs_expression(
+        entries: &mut Vec<TerminalSparseR1csEntry<F>>,
+        matrix: TerminalSparseR1csMatrix,
+        row: usize,
+        public_count: usize,
+        expression: &TerminalLinearExpression<F>,
+    ) where
+        F: Field,
+    {
+        for term in &expression.terms {
+            let (variable, variable_index) =
+                Self::sparse_r1cs_variable_index(public_count, term.variable);
+            entries.push(TerminalSparseR1csEntry {
+                matrix,
+                row,
+                variable,
+                variable_index,
+                coeff: term.coeff,
+            });
+        }
+    }
+
+    fn sparse_r1cs_variable_index(
+        public_count: usize,
+        variable: TerminalLinearVariable,
+    ) -> (TerminalSparseR1csVariable, usize) {
+        match variable {
+            TerminalLinearVariable::One => (TerminalSparseR1csVariable::One, 0),
+            TerminalLinearVariable::Public(public_pos) => (
+                TerminalSparseR1csVariable::Public(public_pos),
+                1 + public_pos,
+            ),
+            TerminalLinearVariable::Witness(witness_id) => (
+                TerminalSparseR1csVariable::Witness(witness_id),
+                1 + public_count + witness_id.0 as usize,
+            ),
+        }
+    }
+
     pub fn primitive_quadratic_relation(
         &self,
     ) -> Result<TerminalQuadraticRelation<F>, NativeTerminalVerifyError>
@@ -1680,6 +1824,13 @@ impl NativeTerminalCompiler {
         }
         inventory.non_primitive_types.sort();
         inventory
+    }
+
+    fn terminal_mle_log_size(size: usize) -> usize {
+        if size <= 1 {
+            return 0;
+        }
+        size.next_power_of_two().trailing_zeros() as usize
     }
 
     pub fn compile_primitive_terminal<F: Field>(
@@ -7032,6 +7183,8 @@ impl NativeTerminalCompiler {
             Ok(relation) => {
                 sponge.absorb_u64(1);
                 Self::absorb_quadratic_relation(sponge, &relation);
+                let sparse_relation = verifying_key.sparse_r1cs_relation_from_quadratic(&relation);
+                Self::absorb_sparse_r1cs_relation(sponge, &sparse_relation);
             }
             Err(_) => {
                 sponge.absorb_u64(0);
@@ -7080,6 +7233,46 @@ impl NativeTerminalCompiler {
                     sponge.absorb_u64(witness_id.0 as u64);
                 }
             }
+        }
+    }
+
+    fn absorb_sparse_r1cs_relation<F>(
+        sponge: &mut TerminalDigestSponge,
+        relation: &TerminalSparseR1csRelation<F>,
+    ) where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        sponge.absorb_str("nock-terminal-sparse-r1cs-v1");
+        sponge.absorb_u64(relation.rows as u64);
+        sponge.absorb_u64(relation.variables as u64);
+        sponge.absorb_u64(relation.public_count as u64);
+        sponge.absorb_u64(relation.witness_count as u64);
+        sponge.absorb_u64(relation.log_rows as u64);
+        sponge.absorb_u64(relation.log_variables as u64);
+        sponge.absorb_u64(relation.entries.len() as u64);
+        for entry in &relation.entries {
+            sponge.absorb_u64(match entry.matrix {
+                TerminalSparseR1csMatrix::A => 1,
+                TerminalSparseR1csMatrix::B => 2,
+                TerminalSparseR1csMatrix::C => 3,
+            });
+            sponge.absorb_u64(entry.row as u64);
+            match entry.variable {
+                TerminalSparseR1csVariable::One => {
+                    sponge.absorb_u64(1);
+                    sponge.absorb_u64(0);
+                }
+                TerminalSparseR1csVariable::Public(public_pos) => {
+                    sponge.absorb_u64(2);
+                    sponge.absorb_u64(public_pos as u64);
+                }
+                TerminalSparseR1csVariable::Witness(witness_id) => {
+                    sponge.absorb_u64(3);
+                    sponge.absorb_u64(witness_id.0 as u64);
+                }
+            }
+            sponge.absorb_u64(entry.variable_index as u64);
+            Self::absorb_goldilocks_basis(sponge, &entry.coeff);
         }
     }
 
@@ -8144,6 +8337,53 @@ mod tests {
         relation
             .verify(&witness.public_inputs, &witness)
             .expect("honest primitive witness must satisfy quadratic relation");
+    }
+
+    #[test]
+    fn primitive_sparse_r1cs_relation_indexes_assignment_vector() {
+        let (circuit, _public_inputs, _) = build_primitive_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_primitive_terminal(&circuit).unwrap();
+        let quadratic_relation = vk
+            .primitive_quadratic_relation()
+            .expect("primitive constraints must lower to quadratic relation");
+        let sparse_relation = vk
+            .primitive_sparse_r1cs_relation()
+            .expect("primitive constraints must lower to sparse R1CS");
+        let expected_variables = 1
+            + vk.header.fingerprint.public_flat_len
+            + vk.header.fingerprint.witness_count as usize;
+
+        assert_eq!(sparse_relation.rows, quadratic_relation.constraints.len());
+        assert_eq!(sparse_relation.variables, expected_variables);
+        assert_eq!(sparse_relation.public_count, 3);
+        assert_eq!(
+            sparse_relation.witness_count,
+            vk.header.fingerprint.witness_count as usize
+        );
+        assert_eq!(
+            sparse_relation.log_rows,
+            sparse_relation.rows.next_power_of_two().trailing_zeros() as usize
+        );
+        assert_eq!(
+            sparse_relation.log_variables,
+            sparse_relation
+                .variables
+                .next_power_of_two()
+                .trailing_zeros() as usize
+        );
+        assert!(sparse_relation.entries.iter().any(|entry| {
+            matches!(entry.variable, TerminalSparseR1csVariable::One) && entry.variable_index == 0
+        }));
+        assert!(sparse_relation.entries.iter().any(|entry| {
+            matches!(entry.variable, TerminalSparseR1csVariable::Public(0))
+                && entry.variable_index == 1
+        }));
+        assert!(sparse_relation.entries.iter().any(|entry| {
+            matches!(entry.variable, TerminalSparseR1csVariable::Witness(witness_id)
+                if entry.variable_index
+                    == 1 + sparse_relation.public_count + witness_id.0 as usize)
+        }));
     }
 
     #[test]

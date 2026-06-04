@@ -157,6 +157,10 @@ for this route.
   equations (booleanity plus output binding), while supported NPO rows remain
   counted as external rows whose validity is handled by the NPO relation,
   validity oracle, and future dedicated algebraic arithmetization.
+- `TerminalSparseR1csRelation`: sparse multilinear table view of that primitive
+  relation. It indexes the assignment vector as `[1 || public || witness]`,
+  stores nonzero entries for the `A`, `B`, and `C` matrices, and records padded
+  row/variable log sizes for the native sumcheck/polynomial backend.
 - `TerminalNpoRelation`: backend-ready external-row relation for supported NPO
   gates. It flattens compiled Tip5/recompose aggregates into stable global NPO
   row IDs, preserving each row's op key, local row number, row kind, and exact
@@ -214,6 +218,15 @@ Tip5 and recompose NPO rows are deliberately not forced into this primitive
 quadratic form; they remain external rows that need dedicated global
 arithmetization.
 
+The same quadratic relation now also lowers into `TerminalSparseR1csRelation`.
+Rows are primitive quadratic equations, columns are `[1 || public || witness]`,
+and each nonzero entry records its matrix (`A`, `B`, or `C`), row, variable
+kind, stable variable index, and coefficient. On the real Tip5 Layer-0 verifier
+circuit this table has the same row count as the primitive quadratic relation
+and variables `1 + 33 + 3043`; its padded multilinear dimensions are tested in
+the integration profile. This is the concrete table a Spartan/Aurora-style
+global sumcheck backend must bind. It is not accepted as a proof by itself.
+
 Those supported NPO rows now also project into `TerminalNpoRelation`: a stable
 global row domain over `tip5_perm/goldilocks_w16_r5`, `recompose`, and
 `recompose/coeff`. Goldilocks verification rejects a supplied NPO relation that
@@ -235,13 +248,13 @@ Tip5/recompose arithmetization and proximity/sumcheck proof.
 
 `TerminalBackendRelationDigest` is the explicit commitment to those backend
 projections. It has its own domain and absorbs both `TerminalQuadraticRelation`
-and `TerminalNpoRelation`; `TerminalRelationDigest` then absorbs the backend
-projection digest under a separate binding domain. Regression tests mutate a
-compiled quadratic equation and a compiled NPO row/call-site ordering under a
-stale signed header and confirm both the backend digest and the outer relation
-digest change, with verification failing before witness checks. This prevents a
-future terminal proof body from proving a projected relation that is not the one
-committed by the terminal key.
+`TerminalSparseR1csRelation`, and `TerminalNpoRelation`; `TerminalRelationDigest`
+then absorbs the backend projection digest under a separate binding domain.
+Regression tests mutate a compiled quadratic equation and a compiled NPO
+row/call-site ordering under a stale signed header and confirm both the backend
+digest and the outer relation digest change, with verification failing before
+witness checks. This prevents a future terminal proof body from proving a
+projected relation that is not the one committed by the terminal key.
 
 The relation is now tested on the real Tip5 Layer-0 verifier circuit used by
 the L1 path (`terminal_compiler_covers_real_tip5_l0_verifier_circuit`): it
@@ -526,11 +539,11 @@ The current real-circuit terminal-local size profile after fold compaction is:
 
 | component | bytes |
 |---|---:|
-| prelude | 217 |
-| combined validity consistency openings | 34,276 |
-| combined validity fold | 61,002 |
-| typed local proof body | 95,619 |
-| typed local certificate | 95,841 |
+| prelude | 222 |
+| combined validity consistency openings | 23,478 |
+| combined validity fold | 61,009 |
+| typed local proof body | 84,836 |
+| typed local certificate | 85,057 |
 
 This profile says the remaining size problem is not generic serialization
 overhead. The large items are still Merkle-authenticated local openings and the
@@ -545,10 +558,10 @@ Tip5-L0 verifier circuit:
 
 | component | bytes |
 |---|---:|
-| direct production proof body | 92,707 |
-| direct production certificate | 92,929 |
+| direct production proof body | 92,781 |
+| direct production certificate | 93,005 |
 
-The debug-profile measurement is `prove=1.275 s, verify=1.451 s`. This meets
+The debug-profile measurement is `prove=1.492 s, verify=1.682 s`. This meets
 the ~100 KiB certificate target and is exact-sound for the compiled terminal
 relation because the verifier recomputes every primitive and supported NPO row
 from committed witness values. It is not the final target backend because it
@@ -630,9 +643,10 @@ Security-audit conclusions for the current implementation checkpoint:
   ignored after certificate binding succeeded around the longer byte string.
 - The backend-projection digest is implemented and bound into the terminal
   relation digest. That closes a key-substitution class where a compact proof
-  could otherwise be generated for a different lowered R1CS/NPO layout than the
-  one implied by the compiled verifier circuit. It is still only a commitment;
-  the proof system must enforce the committed relation globally.
+  could otherwise be generated for a different lowered quadratic, sparse R1CS,
+  or NPO layout than the one implied by the compiled verifier circuit. It is
+  still only a commitment; the proof system must enforce the committed relation
+  globally.
 - The terminal oracle Merkle layer is binding to opened values under the
   recursive 5-round Tip5 assumption, but it is not itself a polynomial
   commitment. The direct production proof recomputes the relation from the full

@@ -319,6 +319,28 @@ fn terminal_compiler_covers_real_tip5_l0_verifier_circuit() {
         quadratic_relation.external_npo_rows,
         profile.non_primitive_rows()
     );
+    let sparse_relation = vk
+        .primitive_sparse_r1cs_relation()
+        .expect("real L1 primitive terminal constraints must lower to sparse R1CS");
+    assert_eq!(sparse_relation.rows, quadratic_relation.constraints.len());
+    assert_eq!(
+        sparse_relation.variables,
+        1 + profile.fingerprint.public_flat_len + profile.fingerprint.witness_count as usize
+    );
+    assert_eq!(
+        sparse_relation.public_count,
+        profile.fingerprint.public_flat_len
+    );
+    assert_eq!(
+        sparse_relation.witness_count,
+        profile.fingerprint.witness_count as usize
+    );
+    assert!(sparse_relation.log_rows >= 11);
+    assert!(sparse_relation.log_variables >= 12);
+    assert!(
+        sparse_relation.entries.len() > sparse_relation.rows,
+        "real sparse R1CS must contain nontrivial matrix entries"
+    );
     quadratic_relation
         .verify(&terminal_witness.public_inputs, &terminal_witness)
         .expect("real Tip5 L0 verifier witness must satisfy primitive quadratic relation");
