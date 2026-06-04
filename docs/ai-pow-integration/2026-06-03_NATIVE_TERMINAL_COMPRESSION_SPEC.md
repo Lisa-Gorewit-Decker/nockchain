@@ -252,6 +252,15 @@ for this route.
   Merkle-backed MLE checkpoint; the final backend must batch or combine it into
   the production PCS/proximity theorem instead of serializing one standalone
   fold proof per column.
+- `TerminalNpoPolynomialCombinedEvaluationProof`: one random linear-combination
+  oracle over all fixed NPO columns. The verifier derives the combination
+  challenge after the ordered, prelude-bound column roots, checks authenticated
+  sampled combined openings against the same authenticated per-column row
+  openings used for row residual evaluation, then verifies one folded MLE proof
+  for the combined oracle. Tests reject an internally Merkle-consistent wrong
+  combined oracle and tampered combined-fold labels. This is the batching
+  primitive the final PCS path needs; it still does not replace the missing
+  Reed-Solomon low-degree/proximity theorem.
 - `TerminalNpoExhaustiveResidualFoldProof`: a Merkle-backed folded zero check
   for the production-equivalent supported-NPO residual oracle, with transcript
   domains distinct from both primitive residual folding and legacy sampled NPO
@@ -828,7 +837,7 @@ Completion audit against the active terminal-compression requirements:
 | Public values, parameters, relation, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile and column layout, prelude parameters, relation profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
 | Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against a prelude-bound witness oracle. | satisfied for supported NPO row validity |
-| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns and verifier-side row residual evaluation now exist, including Tip5/MMCS/recompose tamper tests, but current production still uses exhaustive Merkle openings rather than a low-degree/proximity proof over those columns. | not complete |
+| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, and a random linear-combination MLE checkpoint now exist, including Tip5/MMCS/recompose tamper tests and Merkle-consistent wrong-combination rejection. Current production still uses exhaustive Merkle openings rather than a low-degree/proximity proof over those columns. | not complete |
 | Full terminal proof has a source-backed soundness calculation | Current doc records 60 pure-query Johnson accounting for the terminal profile and tests verifier binding, but it does not yet derive a complete theorem for the row-product plus NPO-column plus PCS/proximity backend. | incomplete |
 | Zero-knowledge or witness hiding for recursive-verifier witness values | Current production opens 1,377 full-width verifier-circuit witness values plus packed MMCS direction bits for exhaustive NPO checking. That is smaller than full witness serialization, but it is not a zero-knowledge terminal backend. | incomplete if ZK is required |
 

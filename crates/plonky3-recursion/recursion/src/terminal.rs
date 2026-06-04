@@ -1045,6 +1045,18 @@ pub struct TerminalNpoPolynomialColumnEvaluationBatchProof {
     pub column_evaluations: Vec<TerminalNpoPolynomialColumnEvaluationProof>,
 }
 
+/// One random linear-combination oracle over every fixed NPO polynomial column.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalNpoPolynomialCombinedEvaluationProof {
+    pub column_opening_proof: TerminalNpoPolynomialColumnOpeningProof,
+    pub combined_commitment: TerminalOracleCommitment,
+    pub combined_opening: TerminalOracleMultiProof,
+    pub fold_commitments: Vec<TerminalOracleCommitment>,
+    pub final_value_basis: Vec<u64>,
+    pub round_openings: Vec<TerminalOracleMultiProof>,
+    pub openings: Vec<TerminalResidualFoldQueryOpening>,
+}
+
 /// One flattened component in the production-equivalent supported-NPO residual
 /// domain.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -4908,6 +4920,228 @@ impl NativeTerminalCompiler {
         Ok(evaluations)
     }
 
+    pub fn prove_terminal_npo_polynomial_combined_evaluation_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+        prelude: &TerminalProofPrelude,
+    ) -> Result<TerminalNpoPolynomialCombinedEvaluationProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let columns = self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
+        Self::validate_terminal_npo_polynomial_columns(&columns.layout, &columns)?;
+        let oracle_set = Self::commit_terminal_npo_polynomial_column_values_goldilocks(&columns)?;
+        let commitments = oracle_set.commitments();
+        let plan = self.derive_terminal_npo_polynomial_column_query_plan::<F>(
+            verifying_key,
+            prelude,
+            &commitments,
+        )?;
+        let combination_challenge =
+            Self::derive_terminal_npo_polynomial_column_combination_challenge::<F>(
+                prelude,
+                &commitments,
+            )?;
+        let combined_values =
+            Self::terminal_npo_polynomial_combined_column_values(&columns, combination_challenge)?;
+        let combined_tree = TerminalOracleMerkleTree::commit_goldilocks_values(
+            Self::npo_polynomial_combined_column_oracle_label(),
+            &combined_values,
+        )?;
+        let combined_commitment = combined_tree.commitment();
+
+        let mut column_openings = Vec::with_capacity(columns.columns.len());
+        for (tree, column) in oracle_set.trees.iter().zip(&columns.columns) {
+            let opening_values = plan
+                .opened_indices
+                .iter()
+                .map(|index| (*index, &column[*index]))
+                .collect::<Vec<_>>();
+            column_openings.push(tree.open_goldilocks_multi_values(&opening_values)?);
+        }
+        let combined_opening_values = plan
+            .opened_indices
+            .iter()
+            .map(|index| (*index, &combined_values[*index]))
+            .collect::<Vec<_>>();
+        let combined_opening =
+            combined_tree.open_goldilocks_multi_values(&combined_opening_values)?;
+
+        let mut layers = vec![combined_values];
+        let mut trees = Vec::new();
+        let mut fold_commitments = Vec::new();
+        let mut round = 0usize;
+        while layers.last().expect("base combined NPO layer exists").len() > 1 {
+            let challenge = Self::derive_terminal_npo_polynomial_combined_fold_challenge::<F>(
+                prelude,
+                &commitments,
+                &combined_commitment,
+                &fold_commitments,
+                round,
+            )?;
+            let current = layers.last().expect("current combined NPO layer exists");
+            let mut next = Vec::with_capacity(current.len().div_ceil(2));
+            for pair in current.chunks(2) {
+                let left = pair[0];
+                let right = pair.get(1).copied().unwrap_or(F::ZERO);
+                next.push(left * (F::ONE - challenge) + right * challenge);
+            }
+            let label = Self::npo_polynomial_combined_column_fold_oracle_label(round);
+            let tree = TerminalOracleMerkleTree::commit_goldilocks_values(label, &next)?;
+            fold_commitments.push(tree.commitment());
+            trees.push(tree);
+            layers.push(next);
+            round += 1;
+        }
+
+        let final_value = layers
+            .last()
+            .and_then(|layer| layer.first())
+            .copied()
+            .ok_or(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty)?;
+        let final_value_basis = Self::goldilocks_basis_u64(&final_value);
+        let query_plan = self.derive_terminal_npo_polynomial_combined_fold_query_plan(
+            prelude,
+            &commitments,
+            &combined_commitment,
+            &fold_commitments,
+        )?;
+        let mut expected_round_indices = Self::terminal_fold_round_indices(
+            &query_plan.indices,
+            combined_commitment.values_len,
+            fold_commitments.len(),
+        );
+        let mut round_openings = Vec::with_capacity(fold_commitments.len());
+        for (round, round_indices) in expected_round_indices.iter_mut().enumerate() {
+            round_indices.sort_unstable();
+            let current_tree = if round == 0 {
+                &combined_tree
+            } else {
+                &trees[round - 1]
+            };
+            let current_values = &layers[round];
+            let opening_values = round_indices
+                .iter()
+                .map(|index| (*index, &current_values[*index]))
+                .collect::<Vec<_>>();
+            round_openings.push(current_tree.open_goldilocks_multi_values(&opening_values)?);
+        }
+        let openings = query_plan
+            .indices
+            .iter()
+            .map(|initial_index| TerminalResidualFoldQueryOpening {
+                initial_index: *initial_index,
+                rounds: Vec::new(),
+            })
+            .collect();
+
+        Ok(TerminalNpoPolynomialCombinedEvaluationProof {
+            column_opening_proof: TerminalNpoPolynomialColumnOpeningProof {
+                commitments,
+                column_openings,
+            },
+            combined_commitment,
+            combined_opening,
+            fold_commitments,
+            final_value_basis,
+            round_openings,
+            openings,
+        })
+    }
+
+    pub fn verify_terminal_npo_polynomial_combined_evaluation_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoPolynomialCombinedEvaluationProof,
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        let (plan, opened_columns) = self
+            .verify_terminal_npo_polynomial_column_opening_values_goldilocks::<F>(
+                verifying_key,
+                prelude,
+                &proof.column_opening_proof,
+            )?;
+        Self::validate_terminal_npo_polynomial_combined_evaluation_commitments(
+            &proof.combined_commitment,
+            &proof.fold_commitments,
+            opened_columns.layout.rows,
+        )?;
+
+        let combined_values = self.verify_terminal_oracle_multi_proof_goldilocks::<F>(
+            &proof.combined_commitment,
+            &proof.combined_opening,
+        )?;
+        if combined_values.len() != plan.opened_indices.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleQueryLengthMismatch {
+                    expected: plan.opened_indices.len(),
+                    got: combined_values.len(),
+                },
+            );
+        }
+        let combination_challenge =
+            Self::derive_terminal_npo_polynomial_column_combination_challenge::<F>(
+                prelude,
+                &proof.column_opening_proof.commitments,
+            )?;
+        for (query, ((index, value), expected_index)) in
+            combined_values.iter().zip(&plan.opened_indices).enumerate()
+        {
+            if *index != *expected_index {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleQueryIndexMismatch {
+                        query,
+                        expected: *expected_index,
+                        got: *index,
+                    },
+                );
+            }
+            let mut expected_value = F::ZERO;
+            let mut coeff = F::ONE;
+            for column in &opened_columns.columns {
+                expected_value += column[*index] * coeff;
+                coeff *= combination_challenge;
+            }
+            if *value != expected_value {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                        label: Self::npo_polynomial_combined_column_oracle_label().into(),
+                        row: *index,
+                    },
+                );
+            }
+        }
+
+        let query_plan = self.derive_terminal_npo_polynomial_combined_fold_query_plan(
+            prelude,
+            &proof.column_opening_proof.commitments,
+            &proof.combined_commitment,
+            &proof.fold_commitments,
+        )?;
+        self.verify_terminal_compact_fold_openings_goldilocks::<F, _>(
+            &proof.combined_commitment,
+            &proof.fold_commitments,
+            &proof.final_value_basis,
+            &proof.round_openings,
+            &proof.openings,
+            &query_plan,
+            |round, prior| {
+                Self::derive_terminal_npo_polynomial_combined_fold_challenge::<F>(
+                    prelude,
+                    &proof.column_opening_proof.commitments,
+                    &proof.combined_commitment,
+                    prior,
+                    round,
+                )
+            },
+        )?;
+        Self::field_from_goldilocks_basis_u64::<F>(&proof.final_value_basis)
+    }
+
     fn verify_terminal_npo_polynomial_column_opening_values_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -5042,6 +5276,58 @@ impl NativeTerminalCompiler {
         })
     }
 
+    fn derive_terminal_npo_polynomial_combined_fold_query_plan(
+        &self,
+        prelude: &TerminalProofPrelude,
+        column_commitments: &[TerminalOracleCommitment],
+        combined_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+    ) -> Result<TerminalQueryPlan, NativeTerminalVerifyError> {
+        if combined_commitment.values_len == 0 {
+            return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
+        }
+        let num_queries = prelude.parameters.num_queries as usize;
+        let mut indices = Vec::with_capacity(num_queries);
+        let mut counter = 0u64;
+        while indices.len() < num_queries {
+            if counter
+                > (num_queries as u64)
+                    .saturating_mul(4096)
+                    .saturating_add(4096)
+            {
+                return Err(NativeTerminalVerifyError::TerminalQueryDerivationLimitExceeded);
+            }
+            let block = Self::terminal_npo_polynomial_combined_fold_query_block(
+                prelude,
+                column_commitments,
+                combined_commitment,
+                fold_commitments,
+                counter,
+            );
+            for limb in block {
+                if indices.len() == num_queries {
+                    break;
+                }
+                let bound = combined_commitment.values_len as u64;
+                let zone = u64::MAX - (u64::MAX % bound);
+                if limb < zone {
+                    Self::accept_terminal_query_index(
+                        &mut indices,
+                        (limb % bound) as usize,
+                        combined_commitment.values_len,
+                        num_queries,
+                    );
+                }
+            }
+            counter += 1;
+        }
+        Ok(TerminalQueryPlan {
+            oracle_label: combined_commitment.label.clone(),
+            oracle_len: combined_commitment.values_len,
+            indices,
+        })
+    }
+
     fn validate_terminal_npo_polynomial_column_evaluation_commitments<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -5109,6 +5395,71 @@ impl NativeTerminalCompiler {
             }
             let expected_label =
                 Self::npo_polynomial_column_fold_oracle_label(&proof.column_label, round);
+            if commitment.label != expected_label {
+                return Err(
+                    NativeTerminalVerifyError::TerminalResidualFoldCommitmentLabelMismatch {
+                        round,
+                        expected: expected_label,
+                        got: commitment.label.clone(),
+                    },
+                );
+            }
+            current_len = expected_len;
+        }
+        Ok(())
+    }
+
+    fn validate_terminal_npo_polynomial_combined_evaluation_commitments(
+        combined_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+        rows: usize,
+    ) -> Result<(), NativeTerminalVerifyError> {
+        let expected_label = Self::npo_polynomial_combined_column_oracle_label();
+        if combined_commitment.label != expected_label {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleCommitmentLabelMismatch {
+                    expected: expected_label.into(),
+                    got: combined_commitment.label.clone(),
+                },
+            );
+        }
+        if combined_commitment.values_len != rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleCommitmentLengthMismatch {
+                    label: combined_commitment.label.clone(),
+                    expected: rows,
+                    got: combined_commitment.values_len,
+                },
+            );
+        }
+        let mut len = combined_commitment.values_len;
+        let mut expected_rounds = 0usize;
+        while len > 1 {
+            len = len.div_ceil(2);
+            expected_rounds += 1;
+        }
+        if fold_commitments.len() != expected_rounds {
+            return Err(
+                NativeTerminalVerifyError::TerminalResidualFoldCommitmentLengthMismatch {
+                    round: expected_rounds,
+                    expected: expected_rounds,
+                    got: fold_commitments.len(),
+                },
+            );
+        }
+        let mut current_len = combined_commitment.values_len;
+        for (round, commitment) in fold_commitments.iter().enumerate() {
+            let expected_len = current_len.div_ceil(2);
+            if commitment.values_len != expected_len {
+                return Err(
+                    NativeTerminalVerifyError::TerminalResidualFoldCommitmentLengthMismatch {
+                        round,
+                        expected: expected_len,
+                        got: commitment.values_len,
+                    },
+                );
+            }
+            let expected_label = Self::npo_polynomial_combined_column_fold_oracle_label(round);
             if commitment.label != expected_label {
                 return Err(
                     NativeTerminalVerifyError::TerminalResidualFoldCommitmentLabelMismatch {
@@ -9870,6 +10221,25 @@ impl NativeTerminalCompiler {
         })
     }
 
+    fn terminal_npo_polynomial_combined_column_values<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+        challenge: F,
+    ) -> Result<Vec<F>, NativeTerminalVerifyError>
+    where
+        F: Field,
+    {
+        Self::validate_terminal_npo_polynomial_columns(&columns.layout, columns)?;
+        let mut combined = vec![F::ZERO; columns.layout.rows];
+        let mut coeff = F::ONE;
+        for column in &columns.columns {
+            for (acc, value) in combined.iter_mut().zip(column) {
+                *acc += *value * coeff;
+            }
+            coeff *= challenge;
+        }
+        Ok(combined)
+    }
+
     fn validate_terminal_npo_polynomial_column_commitments<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -11574,6 +11944,14 @@ impl NativeTerminalCompiler {
         format!("npo_polynomial_column_fold/{label}/{round}")
     }
 
+    fn npo_polynomial_combined_column_oracle_label() -> &'static str {
+        "npo_polynomial_column/combined"
+    }
+
+    fn npo_polynomial_combined_column_fold_oracle_label(round: usize) -> String {
+        format!("npo_polynomial_column_combined_fold/{round}")
+    }
+
     fn evaluate_terminal_npo_row_from_witness_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -13257,6 +13635,76 @@ impl NativeTerminalCompiler {
         Self::field_from_goldilocks_basis_u64(&basis)
     }
 
+    fn derive_terminal_npo_polynomial_column_combination_challenge<F>(
+        prelude: &TerminalProofPrelude,
+        column_commitments: &[TerminalOracleCommitment],
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let expected = <F as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let mut basis = Vec::with_capacity(expected);
+        let mut counter = 0u64;
+        while basis.len() < expected {
+            if counter > 4096 {
+                return Err(NativeTerminalVerifyError::TerminalQueryDerivationLimitExceeded);
+            }
+            let block = Self::terminal_npo_polynomial_column_combination_challenge_block(
+                prelude,
+                column_commitments,
+                counter,
+            );
+            for limb in block {
+                if basis.len() == expected {
+                    break;
+                }
+                if limb < Goldilocks::ORDER_U64 {
+                    basis.push(limb);
+                }
+            }
+            counter += 1;
+        }
+        Self::field_from_goldilocks_basis_u64(&basis)
+    }
+
+    fn derive_terminal_npo_polynomial_combined_fold_challenge<F>(
+        prelude: &TerminalProofPrelude,
+        column_commitments: &[TerminalOracleCommitment],
+        combined_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+        round: usize,
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let expected = <F as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let mut basis = Vec::with_capacity(expected);
+        let mut counter = 0u64;
+        while basis.len() < expected {
+            if counter > 4096 {
+                return Err(NativeTerminalVerifyError::TerminalQueryDerivationLimitExceeded);
+            }
+            let block = Self::terminal_npo_polynomial_combined_fold_challenge_block(
+                prelude,
+                column_commitments,
+                combined_commitment,
+                fold_commitments,
+                round,
+                counter,
+            );
+            for limb in block {
+                if basis.len() == expected {
+                    break;
+                }
+                if limb < Goldilocks::ORDER_U64 {
+                    basis.push(limb);
+                }
+            }
+            counter += 1;
+        }
+        Self::field_from_goldilocks_basis_u64(&basis)
+    }
+
     fn derive_terminal_r1cs_row_point<F>(
         prelude: &TerminalProofPrelude,
         assignment_commitment: &TerminalOracleCommitment,
@@ -14574,6 +15022,79 @@ impl NativeTerminalCompiler {
         sponge.absorb_digest(&prelude.public_values_digest.0);
         sponge.absorb_str(column_label);
         Self::absorb_terminal_oracle_commitment(&mut sponge, column_commitment);
+        sponge.absorb_u64(fold_commitments.len() as u64);
+        for commitment in fold_commitments {
+            Self::absorb_terminal_oracle_commitment(&mut sponge, commitment);
+        }
+        sponge.absorb_u64(counter);
+        sponge.finalize()
+    }
+
+    fn terminal_npo_polynomial_column_combination_challenge_block(
+        prelude: &TerminalProofPrelude,
+        column_commitments: &[TerminalOracleCommitment],
+        counter: u64,
+    ) -> [u64; 5] {
+        let mut sponge = TerminalDigestSponge::new();
+        sponge.absorb_str("nock-terminal-npo-polynomial-column-combination-challenge-v1");
+        sponge.absorb_digest(&prelude.challenge_digest.0);
+        Self::absorb_terminal_parameters(&mut sponge, prelude.parameters);
+        Self::absorb_relation_profile(&mut sponge, &prelude.relation_profile);
+        sponge.absorb_digest(&prelude.public_values_digest.0);
+        sponge.absorb_u64(column_commitments.len() as u64);
+        for commitment in column_commitments {
+            Self::absorb_terminal_oracle_commitment(&mut sponge, commitment);
+        }
+        sponge.absorb_u64(counter);
+        sponge.finalize()
+    }
+
+    fn terminal_npo_polynomial_combined_fold_challenge_block(
+        prelude: &TerminalProofPrelude,
+        column_commitments: &[TerminalOracleCommitment],
+        combined_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+        round: usize,
+        counter: u64,
+    ) -> [u64; 5] {
+        let mut sponge = TerminalDigestSponge::new();
+        sponge.absorb_str("nock-terminal-npo-polynomial-combined-fold-challenge-v1");
+        sponge.absorb_digest(&prelude.challenge_digest.0);
+        Self::absorb_terminal_parameters(&mut sponge, prelude.parameters);
+        Self::absorb_relation_profile(&mut sponge, &prelude.relation_profile);
+        sponge.absorb_digest(&prelude.public_values_digest.0);
+        sponge.absorb_u64(column_commitments.len() as u64);
+        for commitment in column_commitments {
+            Self::absorb_terminal_oracle_commitment(&mut sponge, commitment);
+        }
+        Self::absorb_terminal_oracle_commitment(&mut sponge, combined_commitment);
+        sponge.absorb_u64(fold_commitments.len() as u64);
+        for commitment in fold_commitments {
+            Self::absorb_terminal_oracle_commitment(&mut sponge, commitment);
+        }
+        sponge.absorb_u64(round as u64);
+        sponge.absorb_u64(counter);
+        sponge.finalize()
+    }
+
+    fn terminal_npo_polynomial_combined_fold_query_block(
+        prelude: &TerminalProofPrelude,
+        column_commitments: &[TerminalOracleCommitment],
+        combined_commitment: &TerminalOracleCommitment,
+        fold_commitments: &[TerminalOracleCommitment],
+        counter: u64,
+    ) -> [u64; 5] {
+        let mut sponge = TerminalDigestSponge::new();
+        sponge.absorb_str("nock-terminal-npo-polynomial-combined-fold-query-v1");
+        sponge.absorb_digest(&prelude.challenge_digest.0);
+        Self::absorb_terminal_parameters(&mut sponge, prelude.parameters);
+        Self::absorb_relation_profile(&mut sponge, &prelude.relation_profile);
+        sponge.absorb_digest(&prelude.public_values_digest.0);
+        sponge.absorb_u64(column_commitments.len() as u64);
+        for commitment in column_commitments {
+            Self::absorb_terminal_oracle_commitment(&mut sponge, commitment);
+        }
+        Self::absorb_terminal_oracle_commitment(&mut sponge, combined_commitment);
         sponge.absorb_u64(fold_commitments.len() as u64);
         for commitment in fold_commitments {
             Self::absorb_terminal_oracle_commitment(&mut sponge, commitment);
@@ -16163,6 +16684,83 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. }
         ));
+
+        let combined_proof = compiler
+            .prove_terminal_npo_polynomial_combined_evaluation_goldilocks(&vk, &witness, &prelude)
+            .expect("combined NPO polynomial column evaluation proof must build");
+        let combined_evaluation = compiler
+            .verify_terminal_npo_polynomial_combined_evaluation_goldilocks::<Goldilocks>(
+                &vk,
+                &prelude,
+                &combined_proof,
+            )
+            .expect("combined NPO polynomial column evaluation proof must verify");
+        let _ = combined_evaluation;
+
+        let columns = compiler
+            .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
+            .expect("NPO polynomial columns must rebuild for tamper test");
+        let combination_challenge =
+            NativeTerminalCompiler::derive_terminal_npo_polynomial_column_combination_challenge::<
+                Goldilocks,
+            >(&prelude, &combined_proof.column_opening_proof.commitments)
+            .expect("combined-column challenge must derive");
+        let mut bad_combined_values =
+            NativeTerminalCompiler::terminal_npo_polynomial_combined_column_values(
+                &columns,
+                combination_challenge,
+            )
+            .expect("combined NPO values must build");
+        bad_combined_values[0] += Goldilocks::ONE;
+        let bad_combined_tree = TerminalOracleMerkleTree::commit_goldilocks_values(
+            NativeTerminalCompiler::npo_polynomial_combined_column_oracle_label(),
+            &bad_combined_values,
+        )
+        .expect("bad combined NPO oracle must commit");
+        let bad_combined_plan = compiler
+            .derive_terminal_npo_polynomial_column_query_plan::<Goldilocks>(
+                &vk,
+                &prelude,
+                &combined_proof.column_opening_proof.commitments,
+            )
+            .expect("bad combined NPO query plan must derive");
+        let bad_opening_values = bad_combined_plan
+            .opened_indices
+            .iter()
+            .map(|index| (*index, &bad_combined_values[*index]))
+            .collect::<Vec<_>>();
+        let mut bad_combined_proof = combined_proof.clone();
+        bad_combined_proof.combined_commitment = bad_combined_tree.commitment();
+        bad_combined_proof.combined_opening = bad_combined_tree
+            .open_goldilocks_multi_values(&bad_opening_values)
+            .expect("bad combined NPO opening must build");
+        let err = compiler
+            .verify_terminal_npo_polynomial_combined_evaluation_goldilocks::<Goldilocks>(
+                &vk,
+                &prelude,
+                &bad_combined_proof,
+            )
+            .expect_err("Merkle-consistent wrong combined NPO value must reject");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch { .. }
+        ));
+
+        let mut bad_combined_fold_label = combined_proof.clone();
+        if let Some(first_fold) = bad_combined_fold_label.fold_commitments.first_mut() {
+            first_fold.label.push_str("/bad");
+            let err = compiler
+                .verify_terminal_npo_polynomial_combined_evaluation_goldilocks::<Goldilocks>(
+                    &vk,
+                    &prelude,
+                    &bad_combined_fold_label,
+                )
+                .expect_err("tampered combined NPO fold label must reject");
+            assert!(matches!(
+                err,
+                NativeTerminalVerifyError::TerminalResidualFoldCommitmentLabelMismatch { .. }
+            ));
+        }
 
         let mut missing_column = proof.clone();
         missing_column.column_openings.pop();
