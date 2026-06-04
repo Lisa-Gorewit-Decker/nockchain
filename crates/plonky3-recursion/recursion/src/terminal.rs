@@ -1039,6 +1039,12 @@ pub struct TerminalNpoPolynomialColumnEvaluationProof {
     pub openings: Vec<TerminalResidualFoldQueryOpening>,
 }
 
+/// Multilinear evaluation proofs for every fixed NPO polynomial column.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalNpoPolynomialColumnEvaluationBatchProof {
+    pub column_evaluations: Vec<TerminalNpoPolynomialColumnEvaluationProof>,
+}
+
 /// One flattened component in the production-equivalent supported-NPO residual
 /// domain.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -4834,6 +4840,72 @@ impl NativeTerminalCompiler {
             },
         )?;
         Self::field_from_goldilocks_basis_u64::<F>(&proof.final_value_basis)
+    }
+
+    pub fn prove_terminal_npo_polynomial_column_evaluation_batch_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+        prelude: &TerminalProofPrelude,
+    ) -> Result<TerminalNpoPolynomialColumnEvaluationBatchProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let layout = Self::terminal_npo_polynomial_column_layout::<F>(verifying_key);
+        let labels = Self::terminal_npo_polynomial_column_labels(&layout);
+        let mut column_evaluations = Vec::with_capacity(labels.len());
+        for label in labels {
+            column_evaluations.push(
+                self.prove_terminal_npo_polynomial_column_evaluation_goldilocks(
+                    verifying_key,
+                    witness,
+                    prelude,
+                    &label,
+                )?,
+            );
+        }
+        Ok(TerminalNpoPolynomialColumnEvaluationBatchProof { column_evaluations })
+    }
+
+    pub fn verify_terminal_npo_polynomial_column_evaluation_batch_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoPolynomialColumnEvaluationBatchProof,
+    ) -> Result<Vec<F>, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        let layout = Self::terminal_npo_polynomial_column_layout::<F>(verifying_key);
+        let labels = Self::terminal_npo_polynomial_column_labels(&layout);
+        if proof.column_evaluations.len() != labels.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "npo_polynomial_column_evaluations".into(),
+                    expected: labels.len(),
+                    got: proof.column_evaluations.len(),
+                },
+            );
+        }
+        let mut evaluations = Vec::with_capacity(labels.len());
+        for (expected_label, column_proof) in labels.iter().zip(&proof.column_evaluations) {
+            if &column_proof.column_label != expected_label {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch {
+                        label: expected_label.clone(),
+                        row: 0,
+                    },
+                );
+            }
+            evaluations.push(
+                self.verify_terminal_npo_polynomial_column_evaluation_goldilocks::<F>(
+                    verifying_key,
+                    prelude,
+                    column_proof,
+                )?,
+            );
+        }
+        Ok(evaluations)
     }
 
     fn verify_terminal_npo_polynomial_column_opening_values_goldilocks<F>(
@@ -16049,6 +16121,48 @@ mod tests {
                 NativeTerminalVerifyError::TerminalResidualFoldCommitmentLabelMismatch { .. }
             ));
         }
+
+        let batch_proof = compiler
+            .prove_terminal_npo_polynomial_column_evaluation_batch_goldilocks(
+                &vk, &witness, &prelude,
+            )
+            .expect("NPO polynomial column evaluation batch must build");
+        let batch_evaluations = compiler
+            .verify_terminal_npo_polynomial_column_evaluation_batch_goldilocks::<Goldilocks>(
+                &vk,
+                &prelude,
+                &batch_proof,
+            )
+            .expect("NPO polynomial column evaluation batch must verify");
+        assert_eq!(batch_evaluations.len(), oracle_set.layout.column_count);
+
+        let mut reordered_batch = batch_proof.clone();
+        reordered_batch.column_evaluations.swap(0, 1);
+        let err = compiler
+            .verify_terminal_npo_polynomial_column_evaluation_batch_goldilocks::<Goldilocks>(
+                &vk,
+                &prelude,
+                &reordered_batch,
+            )
+            .expect_err("reordered NPO column evaluation batch must reject");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnValueMismatch { .. }
+        ));
+
+        let mut missing_batch = batch_proof.clone();
+        missing_batch.column_evaluations.pop();
+        let err = compiler
+            .verify_terminal_npo_polynomial_column_evaluation_batch_goldilocks::<Goldilocks>(
+                &vk,
+                &prelude,
+                &missing_batch,
+            )
+            .expect_err("missing NPO column evaluation must reject");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. }
+        ));
 
         let mut missing_column = proof.clone();
         missing_column.column_openings.pop();

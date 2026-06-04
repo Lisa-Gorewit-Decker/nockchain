@@ -245,6 +245,13 @@ for this route.
   dedicated NPO-column transcript domains. This is the PCS-style primitive the
   final NPO backend needs, but it is not yet batched across all columns or
   combined with the full proximity/soundness theorem.
+- `TerminalNpoPolynomialColumnEvaluationBatchProof`: ordered multilinear
+  evaluation proofs for every fixed NPO column. Verification derives the fixed
+  column label order from the verifying key, rejects missing or reordered
+  labels, and returns the per-column folded evaluations. This remains a
+  Merkle-backed MLE checkpoint; the final backend must batch or combine it into
+  the production PCS/proximity theorem instead of serializing one standalone
+  fold proof per column.
 - `TerminalNpoExhaustiveResidualFoldProof`: a Merkle-backed folded zero check
   for the production-equivalent supported-NPO residual oracle, with transcript
   domains distinct from both primitive residual folding and legacy sampled NPO
