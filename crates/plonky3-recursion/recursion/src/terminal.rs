@@ -417,6 +417,31 @@ pub struct TerminalAssignmentEvaluationProof {
     pub openings: Vec<TerminalResidualFoldQueryOpening>,
 }
 
+/// One degree-2 univariate round in the sparse-R1CS matrix-vector sumcheck.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalR1csSumcheckRound {
+    pub eval_0_basis: Vec<u64>,
+    pub eval_1_basis: Vec<u64>,
+    pub eval_2_basis: Vec<u64>,
+}
+
+/// Batched sparse-R1CS matrix-vector sumcheck for primitive terminal rows.
+///
+/// The proof claims `A(r)`, `B(r)`, and `C(r)` at a transcript-derived row
+/// point `r`, proves those batched matrix-vector evaluations against the
+/// committed assignment vector, and carries the assignment evaluation proof at
+/// the final sumcheck point `y*`. It intentionally does not check
+/// `A(r) * B(r) = C(r)`, which would be an unsound shortcut for multilinear
+/// R1CS; the row-product relation needs its own row-sumcheck.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalSparseR1csSumcheckProof {
+    pub claimed_a_basis: Vec<u64>,
+    pub claimed_b_basis: Vec<u64>,
+    pub claimed_c_basis: Vec<u64>,
+    pub rounds: Vec<TerminalR1csSumcheckRound>,
+    pub assignment_evaluation: TerminalAssignmentEvaluationProof,
+}
+
 /// Merkle-backed multilinear folding proof for supported NPO validity rows.
 ///
 /// The base oracle is a row-validity residual vector over supported NPO
@@ -5200,6 +5225,224 @@ impl NativeTerminalCompiler {
         Self::field_from_goldilocks_basis_u64::<F>(&proof.final_value_basis)
     }
 
+    pub fn prove_terminal_sparse_r1cs_sumcheck_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        assignment_oracle: &TerminalOracleMerkleTree,
+        witness: &TerminalWitness<F>,
+    ) -> Result<TerminalSparseR1csSumcheckProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let assignment_commitment = assignment_oracle.commitment();
+        Self::verify_terminal_assignment_commitment_identity(
+            verifying_key,
+            &assignment_commitment,
+        )?;
+        Self::verify_prelude_binds_commitment(prelude, &assignment_commitment)?;
+
+        let sparse_relation = verifying_key.primitive_sparse_r1cs_relation()?;
+        let witness_values = Self::terminal_witness_values(witness)?;
+        let assignment_values =
+            Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)?;
+        let row_point = Self::derive_terminal_r1cs_row_point::<F>(
+            prelude,
+            &assignment_commitment,
+            sparse_relation.log_rows,
+        )?;
+        let (claimed_a, claimed_b, claimed_c) = Self::sparse_r1cs_matrix_evaluations_at_row(
+            &sparse_relation,
+            &row_point,
+            &assignment_values,
+        )?;
+        let claimed_a_basis = Self::goldilocks_basis_u64(&claimed_a);
+        let claimed_b_basis = Self::goldilocks_basis_u64(&claimed_b);
+        let claimed_c_basis = Self::goldilocks_basis_u64(&claimed_c);
+        let alpha = Self::derive_terminal_r1cs_batch_challenge::<F>(
+            prelude,
+            &assignment_commitment,
+            &row_point,
+            &claimed_a_basis,
+            &claimed_b_basis,
+            &claimed_c_basis,
+        )?;
+        let alpha_sq = alpha.square();
+        let mut current_claim = claimed_a + alpha * claimed_b + alpha_sq * claimed_c;
+        let mut variable_point = Vec::with_capacity(sparse_relation.log_variables);
+        let mut rounds = Vec::with_capacity(sparse_relation.log_variables);
+
+        for round in 0..sparse_relation.log_variables {
+            let evals = Self::sparse_r1cs_sumcheck_round_evaluations(
+                &sparse_relation,
+                &row_point,
+                &assignment_values,
+                alpha,
+                round,
+                &variable_point,
+            )?;
+            if evals[0] + evals[1] != current_claim {
+                return Err(
+                    NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
+                        query: 0,
+                        round,
+                    },
+                );
+            }
+            rounds.push(TerminalR1csSumcheckRound {
+                eval_0_basis: Self::goldilocks_basis_u64(&evals[0]),
+                eval_1_basis: Self::goldilocks_basis_u64(&evals[1]),
+                eval_2_basis: Self::goldilocks_basis_u64(&evals[2]),
+            });
+            let challenge = Self::derive_terminal_r1cs_sumcheck_round_challenge::<F>(
+                prelude,
+                &assignment_commitment,
+                &row_point,
+                &claimed_a_basis,
+                &claimed_b_basis,
+                &claimed_c_basis,
+                &current_claim,
+                &rounds,
+                round,
+            )?;
+            variable_point.push(challenge);
+            current_claim = Self::interpolate_degree_two_at(evals, challenge);
+        }
+
+        let assignment_evaluation = self.prove_terminal_assignment_evaluation_at_point_goldilocks(
+            verifying_key,
+            public_inputs,
+            prelude,
+            assignment_oracle,
+            witness,
+            &variable_point,
+        )?;
+        let assignment_eval =
+            Self::field_from_goldilocks_basis_u64::<F>(&assignment_evaluation.final_value_basis)?;
+        let matrix_eval = Self::evaluate_sparse_r1cs_matrix_combo_at_point(
+            &sparse_relation,
+            &row_point,
+            &variable_point,
+            alpha,
+        );
+        if current_claim != matrix_eval * assignment_eval {
+            return Err(
+                NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
+                    query: 0,
+                    round: sparse_relation.log_variables,
+                },
+            );
+        }
+
+        Ok(TerminalSparseR1csSumcheckProof {
+            claimed_a_basis,
+            claimed_b_basis,
+            claimed_c_basis,
+            rounds,
+            assignment_evaluation,
+        })
+    }
+
+    pub fn verify_terminal_sparse_r1cs_sumcheck_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        assignment_commitment: &TerminalOracleCommitment,
+        proof: &TerminalSparseR1csSumcheckProof,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        Self::verify_terminal_assignment_commitment_identity(verifying_key, assignment_commitment)?;
+        Self::verify_prelude_binds_commitment(prelude, assignment_commitment)?;
+        let sparse_relation = verifying_key.primitive_sparse_r1cs_relation()?;
+        if proof.rounds.len() != sparse_relation.log_variables {
+            return Err(
+                NativeTerminalVerifyError::TerminalResidualFoldRoundCountMismatch {
+                    query: 0,
+                    expected: sparse_relation.log_variables,
+                    got: proof.rounds.len(),
+                },
+            );
+        }
+
+        let claimed_a = Self::field_from_goldilocks_basis_u64::<F>(&proof.claimed_a_basis)?;
+        let claimed_b = Self::field_from_goldilocks_basis_u64::<F>(&proof.claimed_b_basis)?;
+        let claimed_c = Self::field_from_goldilocks_basis_u64::<F>(&proof.claimed_c_basis)?;
+        let row_point = Self::derive_terminal_r1cs_row_point::<F>(
+            prelude,
+            assignment_commitment,
+            sparse_relation.log_rows,
+        )?;
+        let alpha = Self::derive_terminal_r1cs_batch_challenge::<F>(
+            prelude,
+            assignment_commitment,
+            &row_point,
+            &proof.claimed_a_basis,
+            &proof.claimed_b_basis,
+            &proof.claimed_c_basis,
+        )?;
+        let alpha_sq = alpha.square();
+        let mut current_claim = claimed_a + alpha * claimed_b + alpha_sq * claimed_c;
+        let mut variable_point = Vec::with_capacity(sparse_relation.log_variables);
+
+        for (round, round_proof) in proof.rounds.iter().enumerate() {
+            let eval_0 = Self::field_from_goldilocks_basis_u64::<F>(&round_proof.eval_0_basis)?;
+            let eval_1 = Self::field_from_goldilocks_basis_u64::<F>(&round_proof.eval_1_basis)?;
+            let eval_2 = Self::field_from_goldilocks_basis_u64::<F>(&round_proof.eval_2_basis)?;
+            let evals = [eval_0, eval_1, eval_2];
+            if eval_0 + eval_1 != current_claim {
+                return Err(
+                    NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
+                        query: 0,
+                        round,
+                    },
+                );
+            }
+            let challenge = Self::derive_terminal_r1cs_sumcheck_round_challenge::<F>(
+                prelude,
+                assignment_commitment,
+                &row_point,
+                &proof.claimed_a_basis,
+                &proof.claimed_b_basis,
+                &proof.claimed_c_basis,
+                &current_claim,
+                &proof.rounds[..=round],
+                round,
+            )?;
+            variable_point.push(challenge);
+            current_claim = Self::interpolate_degree_two_at(evals, challenge);
+        }
+
+        let assignment_eval = self.verify_terminal_assignment_evaluation_at_point_goldilocks(
+            verifying_key,
+            public_inputs,
+            prelude,
+            assignment_commitment,
+            &proof.assignment_evaluation,
+            &variable_point,
+        )?;
+        let matrix_eval = Self::evaluate_sparse_r1cs_matrix_combo_at_point(
+            &sparse_relation,
+            &row_point,
+            &variable_point,
+            alpha,
+        );
+        if current_claim != matrix_eval * assignment_eval {
+            return Err(
+                NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
+                    query: 0,
+                    round: sparse_relation.log_variables,
+                },
+            );
+        }
+        Ok(())
+    }
+
     pub fn verify_terminal_production_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -5891,6 +6134,239 @@ impl NativeTerminalCompiler {
         values.extend_from_slice(public_inputs);
         values.extend_from_slice(witness_values);
         Ok(values)
+    }
+
+    fn sparse_r1cs_matrix_evaluations_at_row<F>(
+        relation: &TerminalSparseR1csRelation<F>,
+        row_point: &[F],
+        assignment_values: &[F],
+    ) -> Result<(F, F, F), NativeTerminalVerifyError>
+    where
+        F: Field + Copy,
+    {
+        let mut a = F::ZERO;
+        let mut b = F::ZERO;
+        let mut c = F::ZERO;
+        for entry in &relation.entries {
+            let assignment = assignment_values.get(entry.variable_index).copied().ok_or(
+                NativeTerminalVerifyError::TerminalConstraintOpeningWitnessMismatch {
+                    constraint_index: entry.row,
+                    opening: entry.variable_index,
+                    expected: relation.variables as u32,
+                    got: assignment_values.len(),
+                },
+            )?;
+            let term =
+                entry.coeff * Self::terminal_eq_index_point(entry.row, row_point) * assignment;
+            match entry.matrix {
+                TerminalSparseR1csMatrix::A => a += term,
+                TerminalSparseR1csMatrix::B => b += term,
+                TerminalSparseR1csMatrix::C => c += term,
+            }
+        }
+        Ok((a, b, c))
+    }
+
+    fn sparse_r1cs_sumcheck_round_evaluations<F>(
+        relation: &TerminalSparseR1csRelation<F>,
+        row_point: &[F],
+        assignment_values: &[F],
+        alpha: F,
+        round: usize,
+        prefix_point: &[F],
+    ) -> Result<[F; 3], NativeTerminalVerifyError>
+    where
+        F: Field + Copy,
+    {
+        let mut evals = [F::ZERO; 3];
+        let remaining_bits = relation.log_variables.checked_sub(round + 1).ok_or(
+            NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch { query: 0, round },
+        )?;
+        let suffix_count = 1usize << remaining_bits;
+        let points = [F::ZERO, F::ONE, F::ONE + F::ONE];
+        for (eval, point) in evals.iter_mut().zip(points) {
+            for suffix in 0..suffix_count {
+                let matrix_eval = Self::evaluate_sparse_r1cs_matrix_combo_at_sumcheck_point(
+                    relation,
+                    row_point,
+                    prefix_point,
+                    round,
+                    point,
+                    suffix,
+                    alpha,
+                );
+                let assignment_eval = Self::evaluate_assignment_at_sumcheck_point(
+                    assignment_values,
+                    relation.log_variables,
+                    prefix_point,
+                    round,
+                    point,
+                    suffix,
+                );
+                *eval += matrix_eval * assignment_eval;
+            }
+        }
+        Ok(evals)
+    }
+
+    fn evaluate_sparse_r1cs_matrix_combo_at_point<F>(
+        relation: &TerminalSparseR1csRelation<F>,
+        row_point: &[F],
+        variable_point: &[F],
+        alpha: F,
+    ) -> F
+    where
+        F: Field + Copy,
+    {
+        let alpha_sq = alpha.square();
+        let mut acc = F::ZERO;
+        for entry in &relation.entries {
+            let matrix_weight = match entry.matrix {
+                TerminalSparseR1csMatrix::A => F::ONE,
+                TerminalSparseR1csMatrix::B => alpha,
+                TerminalSparseR1csMatrix::C => alpha_sq,
+            };
+            acc += entry.coeff
+                * matrix_weight
+                * Self::terminal_eq_index_point(entry.row, row_point)
+                * Self::terminal_eq_index_point(entry.variable_index, variable_point);
+        }
+        acc
+    }
+
+    fn evaluate_sparse_r1cs_matrix_combo_at_sumcheck_point<F>(
+        relation: &TerminalSparseR1csRelation<F>,
+        row_point: &[F],
+        prefix_point: &[F],
+        round: usize,
+        point: F,
+        suffix: usize,
+        alpha: F,
+    ) -> F
+    where
+        F: Field + Copy,
+    {
+        let alpha_sq = alpha.square();
+        let mut acc = F::ZERO;
+        for entry in &relation.entries {
+            let matrix_weight = match entry.matrix {
+                TerminalSparseR1csMatrix::A => F::ONE,
+                TerminalSparseR1csMatrix::B => alpha,
+                TerminalSparseR1csMatrix::C => alpha_sq,
+            };
+            acc += entry.coeff
+                * matrix_weight
+                * Self::terminal_eq_index_point(entry.row, row_point)
+                * Self::terminal_eq_index_sumcheck_point(
+                    entry.variable_index,
+                    relation.log_variables,
+                    prefix_point,
+                    round,
+                    point,
+                    suffix,
+                );
+        }
+        acc
+    }
+
+    fn evaluate_assignment_at_sumcheck_point<F>(
+        assignment_values: &[F],
+        log_variables: usize,
+        prefix_point: &[F],
+        round: usize,
+        point: F,
+        suffix: usize,
+    ) -> F
+    where
+        F: Field + Copy,
+    {
+        let padded_len = 1usize << log_variables;
+        let mut acc = F::ZERO;
+        for index in 0..padded_len {
+            let value = assignment_values.get(index).copied().unwrap_or(F::ZERO);
+            if value == F::ZERO {
+                continue;
+            }
+            acc += value
+                * Self::terminal_eq_index_sumcheck_point(
+                    index,
+                    log_variables,
+                    prefix_point,
+                    round,
+                    point,
+                    suffix,
+                );
+        }
+        acc
+    }
+
+    fn terminal_eq_index_point<F>(index: usize, point: &[F]) -> F
+    where
+        F: Field + Copy,
+    {
+        Self::terminal_eq_index_point_prefix(index, point)
+    }
+
+    fn terminal_eq_index_point_prefix<F>(index: usize, point: &[F]) -> F
+    where
+        F: Field + Copy,
+    {
+        let mut acc = F::ONE;
+        for (bit_index, challenge) in point.iter().copied().enumerate() {
+            if ((index >> bit_index) & 1) == 1 {
+                acc *= challenge;
+            } else {
+                acc *= F::ONE - challenge;
+            }
+        }
+        acc
+    }
+
+    fn terminal_eq_index_sumcheck_point<F>(
+        index: usize,
+        log_variables: usize,
+        prefix_point: &[F],
+        round: usize,
+        point: F,
+        suffix: usize,
+    ) -> F
+    where
+        F: Field + Copy,
+    {
+        let mut acc = Self::terminal_eq_index_point_prefix(index, prefix_point);
+        if ((index >> round) & 1) == 1 {
+            acc *= point;
+        } else {
+            acc *= F::ONE - point;
+        }
+        for suffix_bit in 0..log_variables.saturating_sub(round + 1) {
+            let bit_index = round + 1 + suffix_bit;
+            let selector = if ((suffix >> suffix_bit) & 1) == 1 {
+                if ((index >> bit_index) & 1) == 1 {
+                    F::ONE
+                } else {
+                    F::ZERO
+                }
+            } else if ((index >> bit_index) & 1) == 1 {
+                F::ZERO
+            } else {
+                F::ONE
+            };
+            acc *= selector;
+            if acc == F::ZERO {
+                break;
+            }
+        }
+        acc
+    }
+
+    fn interpolate_degree_two_at<F>(evals: [F; 3], point: F) -> F
+    where
+        F: Field + Copy,
+    {
+        let two_inv = (F::ONE + F::ONE).inverse();
+        let second = (evals[2] - evals[1] - evals[1] + evals[0]) * two_inv;
+        evals[0] + (evals[1] - evals[0]) * point + second * point * (point - F::ONE)
     }
 
     fn flatten_goldilocks_basis_values<F>(values: &[F]) -> Vec<u64>
@@ -7724,6 +8200,111 @@ impl NativeTerminalCompiler {
         Self::field_from_goldilocks_basis_u64(&basis)
     }
 
+    fn derive_terminal_r1cs_row_point<F>(
+        prelude: &TerminalProofPrelude,
+        assignment_commitment: &TerminalOracleCommitment,
+        log_rows: usize,
+    ) -> Result<Vec<F>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let mut point = Vec::with_capacity(log_rows);
+        for round in 0..log_rows {
+            point.push(Self::derive_terminal_r1cs_field_challenge(|counter| {
+                Self::terminal_r1cs_row_challenge_block(
+                    prelude,
+                    assignment_commitment,
+                    round,
+                    counter,
+                )
+            })?);
+        }
+        Ok(point)
+    }
+
+    fn derive_terminal_r1cs_batch_challenge<F>(
+        prelude: &TerminalProofPrelude,
+        assignment_commitment: &TerminalOracleCommitment,
+        row_point: &[F],
+        claimed_a_basis: &[u64],
+        claimed_b_basis: &[u64],
+        claimed_c_basis: &[u64],
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let row_point_basis = Self::flatten_goldilocks_basis_values(row_point);
+        Self::derive_terminal_r1cs_field_challenge(|counter| {
+            Self::terminal_r1cs_batch_challenge_block(
+                prelude,
+                assignment_commitment,
+                &row_point_basis,
+                claimed_a_basis,
+                claimed_b_basis,
+                claimed_c_basis,
+                counter,
+            )
+        })
+    }
+
+    fn derive_terminal_r1cs_sumcheck_round_challenge<F>(
+        prelude: &TerminalProofPrelude,
+        assignment_commitment: &TerminalOracleCommitment,
+        row_point: &[F],
+        claimed_a_basis: &[u64],
+        claimed_b_basis: &[u64],
+        claimed_c_basis: &[u64],
+        current_claim: &F,
+        rounds: &[TerminalR1csSumcheckRound],
+        round: usize,
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let row_point_basis = Self::flatten_goldilocks_basis_values(row_point);
+        let current_claim_basis = Self::goldilocks_basis_u64(current_claim);
+        Self::derive_terminal_r1cs_field_challenge(|counter| {
+            Self::terminal_r1cs_sumcheck_round_challenge_block(
+                prelude,
+                assignment_commitment,
+                &row_point_basis,
+                claimed_a_basis,
+                claimed_b_basis,
+                claimed_c_basis,
+                &current_claim_basis,
+                rounds,
+                round,
+                counter,
+            )
+        })
+    }
+
+    fn derive_terminal_r1cs_field_challenge<F>(
+        mut block: impl FnMut(u64) -> [u64; 5],
+    ) -> Result<F, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let expected = <F as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let mut basis = Vec::with_capacity(expected);
+        let mut counter = 0u64;
+        while basis.len() < expected {
+            if counter > 4096 {
+                return Err(NativeTerminalVerifyError::TerminalQueryDerivationLimitExceeded);
+            }
+            for limb in block(counter) {
+                if basis.len() == expected {
+                    break;
+                }
+                if limb < Goldilocks::ORDER_U64 {
+                    basis.push(limb);
+                }
+            }
+            counter += 1;
+        }
+        Self::field_from_goldilocks_basis_u64(&basis)
+    }
+
     fn residual_fold_oracle_label(round: usize) -> String {
         format!("quadratic_residual_fold_{round}")
     }
@@ -8436,6 +9017,83 @@ impl NativeTerminalCompiler {
         sponge.finalize()
     }
 
+    fn terminal_r1cs_row_challenge_block(
+        prelude: &TerminalProofPrelude,
+        assignment_commitment: &TerminalOracleCommitment,
+        round: usize,
+        counter: u64,
+    ) -> [u64; 5] {
+        let mut sponge = TerminalDigestSponge::new();
+        sponge.absorb_str("nock-terminal-sparse-r1cs-row-challenge-v1");
+        sponge.absorb_digest(&prelude.challenge_digest.0);
+        Self::absorb_terminal_parameters(&mut sponge, prelude.parameters);
+        Self::absorb_relation_profile(&mut sponge, &prelude.relation_profile);
+        sponge.absorb_digest(&prelude.public_values_digest.0);
+        Self::absorb_terminal_oracle_commitment(&mut sponge, assignment_commitment);
+        sponge.absorb_u64(round as u64);
+        sponge.absorb_u64(counter);
+        sponge.finalize()
+    }
+
+    fn terminal_r1cs_batch_challenge_block(
+        prelude: &TerminalProofPrelude,
+        assignment_commitment: &TerminalOracleCommitment,
+        row_point_basis: &[u64],
+        claimed_a_basis: &[u64],
+        claimed_b_basis: &[u64],
+        claimed_c_basis: &[u64],
+        counter: u64,
+    ) -> [u64; 5] {
+        let mut sponge = TerminalDigestSponge::new();
+        sponge.absorb_str("nock-terminal-sparse-r1cs-batch-challenge-v1");
+        sponge.absorb_digest(&prelude.challenge_digest.0);
+        Self::absorb_terminal_parameters(&mut sponge, prelude.parameters);
+        Self::absorb_relation_profile(&mut sponge, &prelude.relation_profile);
+        sponge.absorb_digest(&prelude.public_values_digest.0);
+        Self::absorb_terminal_oracle_commitment(&mut sponge, assignment_commitment);
+        Self::absorb_u64_slice(&mut sponge, row_point_basis);
+        Self::absorb_u64_slice(&mut sponge, claimed_a_basis);
+        Self::absorb_u64_slice(&mut sponge, claimed_b_basis);
+        Self::absorb_u64_slice(&mut sponge, claimed_c_basis);
+        sponge.absorb_u64(counter);
+        sponge.finalize()
+    }
+
+    fn terminal_r1cs_sumcheck_round_challenge_block(
+        prelude: &TerminalProofPrelude,
+        assignment_commitment: &TerminalOracleCommitment,
+        row_point_basis: &[u64],
+        claimed_a_basis: &[u64],
+        claimed_b_basis: &[u64],
+        claimed_c_basis: &[u64],
+        current_claim_basis: &[u64],
+        rounds: &[TerminalR1csSumcheckRound],
+        round: usize,
+        counter: u64,
+    ) -> [u64; 5] {
+        let mut sponge = TerminalDigestSponge::new();
+        sponge.absorb_str("nock-terminal-sparse-r1cs-sumcheck-round-v1");
+        sponge.absorb_digest(&prelude.challenge_digest.0);
+        Self::absorb_terminal_parameters(&mut sponge, prelude.parameters);
+        Self::absorb_relation_profile(&mut sponge, &prelude.relation_profile);
+        sponge.absorb_digest(&prelude.public_values_digest.0);
+        Self::absorb_terminal_oracle_commitment(&mut sponge, assignment_commitment);
+        Self::absorb_u64_slice(&mut sponge, row_point_basis);
+        Self::absorb_u64_slice(&mut sponge, claimed_a_basis);
+        Self::absorb_u64_slice(&mut sponge, claimed_b_basis);
+        Self::absorb_u64_slice(&mut sponge, claimed_c_basis);
+        Self::absorb_u64_slice(&mut sponge, current_claim_basis);
+        sponge.absorb_u64(rounds.len() as u64);
+        for round_proof in rounds {
+            Self::absorb_u64_slice(&mut sponge, &round_proof.eval_0_basis);
+            Self::absorb_u64_slice(&mut sponge, &round_proof.eval_1_basis);
+            Self::absorb_u64_slice(&mut sponge, &round_proof.eval_2_basis);
+        }
+        sponge.absorb_u64(round as u64);
+        sponge.absorb_u64(counter);
+        sponge.finalize()
+    }
+
     fn terminal_constraint_query_block(
         prelude: &TerminalProofPrelude,
         domain_len: usize,
@@ -8615,6 +9273,13 @@ impl NativeTerminalCompiler {
         sponge.absorb_u64(coeffs.len() as u64);
         for coeff in coeffs {
             sponge.absorb_u64(PrimeField64::as_canonical_u64(coeff));
+        }
+    }
+
+    fn absorb_u64_slice(sponge: &mut TerminalDigestSponge, values: &[u64]) {
+        sponge.absorb_u64(values.len() as u64);
+        for value in values {
+            sponge.absorb_u64(*value);
         }
     }
 
@@ -9874,6 +10539,60 @@ mod tests {
                 )
                 .is_err(),
             "assignment proof must bind the externally supplied evaluation point"
+        );
+    }
+
+    #[test]
+    fn goldilocks_terminal_sparse_r1cs_matrix_sumcheck_round_trips_and_rejects_tampering() {
+        let circuit = build_goldilocks_const_circuit(5);
+        let public_inputs = vec![Goldilocks::from_u64(5)];
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+        let assignment_oracle = compiler
+            .commit_terminal_assignment_goldilocks(&vk, &public_inputs, &witness)
+            .expect("assignment oracle must commit");
+        let assignment_commitment = assignment_oracle.commitment();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![assignment_commitment.root],
+            )
+            .expect("sumcheck prelude must build");
+        let proof = compiler
+            .prove_terminal_sparse_r1cs_sumcheck_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &assignment_oracle,
+                &witness,
+            )
+            .expect("sparse R1CS matrix sumcheck proof must build");
+        compiler
+            .verify_terminal_sparse_r1cs_sumcheck_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &assignment_commitment,
+                &proof,
+            )
+            .expect("honest sparse R1CS matrix sumcheck must verify");
+
+        let mut tampered = proof;
+        tampered.claimed_a_basis[0] += 1;
+        assert!(
+            compiler
+                .verify_terminal_sparse_r1cs_sumcheck_goldilocks(
+                    &vk,
+                    &public_inputs,
+                    &prelude,
+                    &assignment_commitment,
+                    &tampered,
+                )
+                .is_err(),
+            "sumcheck must bind claimed matrix-vector evaluations"
         );
     }
 
