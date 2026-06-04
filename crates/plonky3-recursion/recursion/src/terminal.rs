@@ -1430,6 +1430,10 @@ pub enum NativeTerminalVerifyError {
         expected: usize,
         got: usize,
     },
+    TerminalNpoValidityResidualMismatch {
+        query: usize,
+        npo_index: usize,
+    },
     TerminalNpoValidityNonZero {
         query: usize,
         npo_index: usize,
@@ -3965,8 +3969,26 @@ impl NativeTerminalCompiler {
     where
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
-        self.verify_assignment_with_goldilocks_npos(verifying_key, witness)?;
-        Ok(vec![F::ZERO; Self::terminal_npo_domain_len(verifying_key)])
+        let witness_values = Self::terminal_witness_values(witness)?;
+        let indexed_witness_values = witness_values
+            .iter()
+            .copied()
+            .enumerate()
+            .collect::<Vec<_>>();
+        let mut values = Vec::with_capacity(Self::terminal_npo_domain_len(verifying_key));
+        for npo_index in 0..Self::terminal_npo_domain_len(verifying_key) {
+            let evaluation = self.evaluate_terminal_npo_row_from_witness_goldilocks(
+                verifying_key,
+                witness,
+                &indexed_witness_values,
+                npo_index,
+            )?;
+            values.push(Self::terminal_npo_row_evaluation_value::<F>(
+                npo_index,
+                &evaluation,
+            ));
+        }
+        Ok(values)
     }
 
     pub fn commit_terminal_combined_validity_goldilocks<F>(
@@ -5208,12 +5230,6 @@ impl NativeTerminalCompiler {
                 },
             )?;
             let validity = Self::field_from_goldilocks_basis_u64::<F>(validity_basis)?;
-            if validity != F::ZERO {
-                return Err(NativeTerminalVerifyError::TerminalNpoValidityNonZero {
-                    query,
-                    npo_index: *expected_index,
-                });
-            }
             if opening.npo_opening.npo_index != *expected_index {
                 return Err(NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
                     query,
@@ -5236,7 +5252,7 @@ impl NativeTerminalCompiler {
                         &expected_witness_ids,
                         &witness_values,
                     )?;
-                    self.verify_sampled_tip5_npo_row_values::<F>(
+                    let evaluation = self.evaluate_sampled_tip5_npo_row_values::<F>(
                         *expected_index,
                         row,
                         callsite,
@@ -5249,6 +5265,22 @@ impl NativeTerminalCompiler {
                         &expected_witness_ids,
                         &opened_values,
                     )?;
+                    let recomputed_validity =
+                        Self::terminal_npo_row_evaluation_value::<F>(*expected_index, &evaluation);
+                    if validity != recomputed_validity {
+                        return Err(
+                            NativeTerminalVerifyError::TerminalNpoValidityResidualMismatch {
+                                query,
+                                npo_index: *expected_index,
+                            },
+                        );
+                    }
+                    if validity != F::ZERO {
+                        return Err(NativeTerminalVerifyError::TerminalNpoValidityNonZero {
+                            query,
+                            npo_index: *expected_index,
+                        });
+                    }
                 }
                 NativeTerminalNpoRowRef::Recompose {
                     op_type,
@@ -5270,7 +5302,7 @@ impl NativeTerminalCompiler {
                         &expected_witness_ids,
                         &witness_values,
                     )?;
-                    self.verify_sampled_recompose_npo_row_values::<F>(
+                    let evaluation = self.evaluate_sampled_recompose_npo_row_values::<F>(
                         *expected_index,
                         op_type,
                         row,
@@ -5279,6 +5311,22 @@ impl NativeTerminalCompiler {
                         &expected_witness_ids,
                         &opened_values,
                     )?;
+                    let recomputed_validity =
+                        Self::terminal_npo_row_evaluation_value::<F>(*expected_index, &evaluation);
+                    if validity != recomputed_validity {
+                        return Err(
+                            NativeTerminalVerifyError::TerminalNpoValidityResidualMismatch {
+                                query,
+                                npo_index: *expected_index,
+                            },
+                        );
+                    }
+                    if validity != F::ZERO {
+                        return Err(NativeTerminalVerifyError::TerminalNpoValidityNonZero {
+                            query,
+                            npo_index: *expected_index,
+                        });
+                    }
                 }
             }
         }
@@ -5533,12 +5581,6 @@ impl NativeTerminalCompiler {
                             },
                         );
                     }
-                    if opened_validity != F::ZERO {
-                        return Err(NativeTerminalVerifyError::TerminalNpoValidityNonZero {
-                            query,
-                            npo_index: *npo_index,
-                        });
-                    }
                     if npo_opening.npo_index != *npo_index {
                         return Err(NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
                             query,
@@ -5555,27 +5597,83 @@ impl NativeTerminalCompiler {
                     )?;
                     match row_ref {
                         NativeTerminalNpoRowRef::Tip5 { row, callsite, .. } => {
-                            self.verify_sampled_tip5_npo_row::<F>(
+                            let expected_witness_ids = Self::npo_callsite_witness_ids(callsite);
+                            let opened_values = self.verify_npo_witness_openings::<F>(
+                                *npo_index,
+                                &expected_witness_ids,
+                                witness_commitment,
+                                &npo_opening.witness_openings,
+                            )?;
+                            let evaluation = self.evaluate_sampled_tip5_npo_row_values::<F>(
                                 *npo_index,
                                 row,
                                 callsite,
-                                witness_commitment,
-                                npo_opening,
+                                &npo_opening.tip5_hidden_input_values,
+                                &expected_witness_ids,
+                                &opened_values,
                             )?;
+                            let recomputed_validity = Self::terminal_npo_row_evaluation_value::<F>(
+                                *npo_index,
+                                &evaluation,
+                            );
+                            if opened_validity != recomputed_validity {
+                                return Err(
+                                    NativeTerminalVerifyError::TerminalNpoValidityResidualMismatch {
+                                        query,
+                                        npo_index: *npo_index,
+                                    },
+                                );
+                            }
+                            if opened_validity != F::ZERO {
+                                return Err(
+                                    NativeTerminalVerifyError::TerminalNpoValidityNonZero {
+                                        query,
+                                        npo_index: *npo_index,
+                                    },
+                                );
+                            }
                         }
                         NativeTerminalNpoRowRef::Recompose {
                             op_type,
                             row,
                             callsite,
                         } => {
-                            self.verify_sampled_recompose_npo_row::<F>(
+                            let expected_witness_ids = Self::npo_callsite_witness_ids(callsite);
+                            let opened_values = self.verify_npo_witness_openings::<F>(
+                                *npo_index,
+                                &expected_witness_ids,
+                                witness_commitment,
+                                &npo_opening.witness_openings,
+                            )?;
+                            let evaluation = self.evaluate_sampled_recompose_npo_row_values::<F>(
                                 *npo_index,
                                 op_type,
                                 row,
                                 callsite,
-                                witness_commitment,
-                                npo_opening,
+                                &npo_opening.tip5_hidden_input_values,
+                                &expected_witness_ids,
+                                &opened_values,
                             )?;
+                            let recomputed_validity = Self::terminal_npo_row_evaluation_value::<F>(
+                                *npo_index,
+                                &evaluation,
+                            );
+                            if opened_validity != recomputed_validity {
+                                return Err(
+                                    NativeTerminalVerifyError::TerminalNpoValidityResidualMismatch {
+                                        query,
+                                        npo_index: *npo_index,
+                                    },
+                                );
+                            }
+                            if opened_validity != F::ZERO {
+                                return Err(
+                                    NativeTerminalVerifyError::TerminalNpoValidityNonZero {
+                                        query,
+                                        npo_index: *npo_index,
+                                    },
+                                );
+                            }
                         }
                     }
                 }
@@ -8423,6 +8521,138 @@ impl NativeTerminalCompiler {
 
     fn witness_oracle_label() -> &'static str {
         "witness"
+    }
+
+    fn evaluate_terminal_npo_row_from_witness_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+        indexed_witness_values: &[(usize, F)],
+        npo_index: usize,
+    ) -> Result<TerminalNpoRowEvaluation, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let row_ref = Self::terminal_npo_row(verifying_key, npo_index).ok_or(
+            NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                query: 0,
+                expected: npo_index,
+                got: npo_index,
+            },
+        )?;
+        match row_ref {
+            NativeTerminalNpoRowRef::Tip5 { row, callsite, .. } => {
+                let (local_opening, expected_witness_ids) =
+                    self.terminal_npo_local_opening_goldilocks(verifying_key, witness, npo_index)?;
+                let opened_values = Self::verify_npo_witness_values(
+                    npo_index,
+                    &expected_witness_ids,
+                    indexed_witness_values,
+                )?;
+                let hidden_inputs = Self::terminal_tip5_hidden_inputs_from_compact(
+                    local_opening.npo_index,
+                    verifying_key,
+                    local_opening.tip5_hidden_input_nonzero_mask,
+                    &local_opening.tip5_hidden_input_values_le,
+                )?;
+                self.evaluate_sampled_tip5_npo_row_values::<F>(
+                    npo_index,
+                    row,
+                    callsite,
+                    &hidden_inputs,
+                    &expected_witness_ids,
+                    &opened_values,
+                )
+            }
+            NativeTerminalNpoRowRef::Recompose {
+                op_type,
+                row,
+                callsite,
+            } => {
+                let expected_witness_ids = Self::npo_callsite_witness_ids(callsite);
+                let opened_values = Self::verify_npo_witness_values(
+                    npo_index,
+                    &expected_witness_ids,
+                    indexed_witness_values,
+                )?;
+                self.evaluate_sampled_recompose_npo_row_values::<F>(
+                    npo_index,
+                    op_type,
+                    row,
+                    callsite,
+                    &[],
+                    &expected_witness_ids,
+                    &opened_values,
+                )
+            }
+        }
+    }
+
+    fn terminal_npo_row_evaluation_value<F>(
+        npo_index: usize,
+        evaluation: &TerminalNpoRowEvaluation,
+    ) -> F
+    where
+        F: Field + From<Goldilocks>,
+    {
+        let mut acc = F::ZERO;
+        for residual in &evaluation.residuals {
+            for (basis_index, coeff) in residual.basis.iter().copied().enumerate() {
+                if coeff == Goldilocks::ZERO {
+                    continue;
+                }
+                let alpha = Self::terminal_npo_residual_composition_coeff(
+                    npo_index,
+                    evaluation.row_kind,
+                    residual.kind,
+                    residual.limb,
+                    basis_index,
+                );
+                acc += F::from(alpha) * F::from(coeff);
+            }
+        }
+        acc
+    }
+
+    fn terminal_npo_row_kind_code(kind: TerminalNpoRowKind) -> u64 {
+        match kind {
+            TerminalNpoRowKind::Tip5Goldilocks => 1,
+            TerminalNpoRowKind::Recompose => 2,
+            TerminalNpoRowKind::RecomposeWithCoeffLookups => 3,
+        }
+    }
+
+    fn terminal_npo_residual_kind_code(kind: TerminalNpoResidualKind) -> u64 {
+        match kind {
+            TerminalNpoResidualKind::Tip5Input => 1,
+            TerminalNpoResidualKind::Tip5Output => 2,
+            TerminalNpoResidualKind::Tip5ChainInput => 3,
+            TerminalNpoResidualKind::Tip5MmcsBit => 4,
+            TerminalNpoResidualKind::RecomposeInput => 5,
+            TerminalNpoResidualKind::RecomposeOutput => 6,
+        }
+    }
+
+    fn terminal_npo_residual_composition_coeff(
+        npo_index: usize,
+        row_kind: TerminalNpoRowKind,
+        residual_kind: TerminalNpoResidualKind,
+        limb: usize,
+        basis_index: usize,
+    ) -> Goldilocks {
+        let mut sponge = TerminalDigestSponge::new();
+        sponge.absorb_str("nock-terminal-npo-row-residual-composition-v1");
+        sponge.absorb_u64(npo_index as u64);
+        sponge.absorb_u64(Self::terminal_npo_row_kind_code(row_kind));
+        sponge.absorb_u64(Self::terminal_npo_residual_kind_code(residual_kind));
+        sponge.absorb_u64(limb as u64);
+        sponge.absorb_u64(basis_index as u64);
+        let coeff = Goldilocks::from_u64(sponge.finalize()[0]);
+        if coeff == Goldilocks::ZERO {
+            Goldilocks::ONE
+        } else {
+            coeff
+        }
     }
 
     fn terminal_goldilocks_residual(
@@ -15465,6 +15695,138 @@ mod tests {
             .expect("tampered recompose output must produce a residual");
         assert_eq!(residual.kind, TerminalNpoResidualKind::RecomposeOutput);
         assert!(!residual.is_zero());
+    }
+
+    #[test]
+    fn goldilocks_terminal_npo_validity_values_are_row_residuals() {
+        let (circuit, public_inputs) = build_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs);
+        let honest_values = compiler
+            .terminal_npo_validity_values_goldilocks(&vk, &witness)
+            .expect("honest NPO validity values must compute");
+        assert_eq!(honest_values, vec![Goldilocks::ZERO]);
+
+        let output_wid = vk
+            .constraints
+            .iter()
+            .find_map(|constraint| match constraint {
+                NativeTerminalConstraint::Tip5Goldilocks { callsites, .. } => {
+                    callsites.first()?.outputs.first().copied().flatten()
+                }
+                _ => None,
+            })
+            .expect("Tip5 output witness must be bound");
+        let mut bad_witness_values = witness_values(&witness);
+        bad_witness_values[output_wid.0 as usize] += Goldilocks::ONE;
+        let mut bad_traces = witness.traces.clone();
+        bad_traces.witness_trace = WitnessTrace::new(bad_witness_values);
+        let bad_witness = TerminalWitness {
+            fingerprint: witness.fingerprint,
+            public_inputs: witness.public_inputs.clone(),
+            private_inputs: witness.private_inputs.clone(),
+            traces: bad_traces,
+        };
+        let bad_values = compiler
+            .terminal_npo_validity_values_goldilocks(&vk, &bad_witness)
+            .expect("tampered NPO validity values must compute");
+        assert_eq!(bad_values.len(), 1);
+        assert_ne!(bad_values[0], Goldilocks::ZERO);
+    }
+
+    #[test]
+    fn goldilocks_terminal_npo_validity_consistency_rejects_stale_zero_residual() {
+        let (circuit, public_inputs) = build_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+        let output_wid = vk
+            .constraints
+            .iter()
+            .find_map(|constraint| match constraint {
+                NativeTerminalConstraint::Tip5Goldilocks { callsites, .. } => {
+                    callsites.first()?.outputs.first().copied().flatten()
+                }
+                _ => None,
+            })
+            .expect("Tip5 output witness must be bound");
+        let mut bad_witness_values = witness_values(&witness);
+        bad_witness_values[output_wid.0 as usize] += Goldilocks::ONE;
+        let witness_tree = TerminalOracleMerkleTree::commit_goldilocks_values(
+            NativeTerminalCompiler::witness_oracle_label(),
+            &bad_witness_values,
+        )
+        .expect("bad witness oracle must commit");
+        let witness_commitment = witness_tree.commitment();
+        let mut bad_traces = witness.traces.clone();
+        bad_traces.witness_trace = WitnessTrace::new(bad_witness_values);
+        let bad_witness = TerminalWitness {
+            fingerprint: witness.fingerprint,
+            public_inputs: witness.public_inputs.clone(),
+            private_inputs: witness.private_inputs.clone(),
+            traces: bad_traces,
+        };
+        let stale_validity_tree = TerminalOracleMerkleTree::commit_goldilocks_values(
+            NativeTerminalCompiler::npo_validity_oracle_label(),
+            &[Goldilocks::ZERO],
+        )
+        .expect("stale zero NPO validity oracle must commit");
+        let stale_validity_commitment = stale_validity_tree.commitment();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![witness_commitment.root, stale_validity_commitment.root],
+            )
+            .expect("prelude must bind stale zero validity oracle");
+        let fold_plan = compiler
+            .derive_terminal_npo_validity_fold_query_plan(&prelude, &stale_validity_commitment, &[])
+            .expect("one-row NPO validity fold plan must derive");
+        let fold_proof = TerminalNpoValidityFoldProof {
+            fold_commitments: Vec::new(),
+            final_value_basis: vec![0],
+            round_openings: Vec::new(),
+            openings: fold_plan
+                .indices
+                .iter()
+                .map(|index| TerminalResidualFoldQueryOpening {
+                    initial_index: *index,
+                    rounds: Vec::new(),
+                })
+                .collect(),
+        };
+        let consistency_proof = compiler
+            .prove_terminal_npo_validity_consistency_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &witness_tree,
+                &stale_validity_tree,
+                &fold_proof,
+                &bad_witness,
+            )
+            .expect("stale zero consistency openings must build");
+
+        let err = compiler
+            .verify_terminal_npo_validity_consistency_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &witness_commitment,
+                &stale_validity_commitment,
+                &fold_proof,
+                &consistency_proof,
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoValidityResidualMismatch {
+                query: 0,
+                npo_index: 0,
+            }
+        );
     }
 
     #[test]
