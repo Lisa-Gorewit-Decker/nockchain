@@ -23,6 +23,7 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_fri::{FriParameters, TwoAdicFriPcs};
 use p3_goldilocks::Goldilocks;
+use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
@@ -1226,6 +1227,22 @@ pub struct TerminalNpoPolynomialColumnOracleSet {
 }
 
 impl TerminalNpoPolynomialColumnOracleSet {
+    pub fn commitments(&self) -> Vec<TerminalOracleCommitment> {
+        self.trees
+            .iter()
+            .map(TerminalOracleMerkleTree::commitment)
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalNpoTip5LookupAirOracleSet {
+    pub profile: TerminalNpoTip5LookupTraceProfile,
+    pub labels: Vec<String>,
+    pub trees: Vec<TerminalOracleMerkleTree>,
+}
+
+impl TerminalNpoTip5LookupAirOracleSet {
     pub fn commitments(&self) -> Vec<TerminalOracleCommitment> {
         self.trees
             .iter()
@@ -4841,6 +4858,63 @@ impl NativeTerminalCompiler {
             .collect::<Vec<[u64; 16]>>();
         let (trace, preprocessed) = generate_lookup_trace(&raw_inputs);
         Ok((inputs, trace, preprocessed))
+    }
+
+    pub fn commit_terminal_npo_tip5_lookup_air_trace_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+    ) -> Result<TerminalNpoTip5LookupAirOracleSet, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let (_, trace, _) =
+            self.terminal_npo_tip5_lookup_air_trace_goldilocks(verifying_key, witness)?;
+        Self::commit_terminal_npo_tip5_lookup_air_trace_values_goldilocks(
+            &Self::terminal_npo_tip5_lookup_trace_profile(verifying_key),
+            &trace,
+        )
+    }
+
+    fn commit_terminal_npo_tip5_lookup_air_trace_values_goldilocks(
+        profile: &TerminalNpoTip5LookupTraceProfile,
+        trace: &RowMajorMatrix<Goldilocks>,
+    ) -> Result<TerminalNpoTip5LookupAirOracleSet, NativeTerminalVerifyError> {
+        if trace.width() != profile.main_width {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_air_main_width".into(),
+                    expected: profile.main_width,
+                    got: trace.width(),
+                },
+            );
+        }
+        if trace.height() != profile.main_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_air_main_rows".into(),
+                    expected: profile.main_rows,
+                    got: trace.height(),
+                },
+            );
+        }
+
+        let labels = Self::terminal_npo_tip5_lookup_air_main_column_labels(profile);
+        let mut trees = Vec::with_capacity(profile.main_width);
+        for col in 0..profile.main_width {
+            let values = (0..profile.main_rows)
+                .map(|row| trace.values[row * profile.main_width + col])
+                .collect::<Vec<_>>();
+            trees.push(TerminalOracleMerkleTree::commit_goldilocks_values(
+                Self::terminal_npo_tip5_lookup_air_main_column_oracle_label(col),
+                &values,
+            )?);
+        }
+        Ok(TerminalNpoTip5LookupAirOracleSet {
+            profile: profile.clone(),
+            labels,
+            trees,
+        })
     }
 
     fn terminal_npo_tip5_air_inputs_from_table<F>(
@@ -14720,6 +14794,18 @@ impl NativeTerminalCompiler {
         format!("npo_polynomial_column/{label}")
     }
 
+    fn terminal_npo_tip5_lookup_air_main_column_labels(
+        profile: &TerminalNpoTip5LookupTraceProfile,
+    ) -> Vec<String> {
+        (0..profile.main_width)
+            .map(|col| format!("tip5_lookup_air_main_col_{col}"))
+            .collect()
+    }
+
+    fn terminal_npo_tip5_lookup_air_main_column_oracle_label(col: usize) -> String {
+        format!("npo_tip5_lookup_air_main_col/{col}")
+    }
+
     fn npo_polynomial_column_fold_oracle_label(label: &str, round: usize) -> String {
         format!("npo_polynomial_column_fold/{label}/{round}")
     }
@@ -19532,6 +19618,9 @@ mod tests {
             .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
             .expect("terminal Tip5 lookup AIR trace must build");
         let lookup_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
+        let lookup_oracle_set = compiler
+            .commit_terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
+            .expect("terminal Tip5 lookup AIR oracle set must commit");
 
         assert_eq!(air_inputs.len(), 2);
         assert_eq!(air_trace.width(), tip5_perm_air_width());
@@ -19547,6 +19636,15 @@ mod tests {
             lookup_profile.preprocessed_values
         );
         assert_eq!(lookup_profile.permutation_row_offset, TABLE_ROWS);
+        assert_eq!(lookup_oracle_set.profile, lookup_profile);
+        assert_eq!(lookup_oracle_set.labels.len(), lookup_profile.main_width);
+        assert_eq!(lookup_oracle_set.trees.len(), lookup_profile.main_width);
+        assert!(
+            lookup_oracle_set
+                .commitments()
+                .iter()
+                .all(|commitment| commitment.values_len == lookup_profile.main_rows)
+        );
         for (row_index, input) in air_inputs.iter().enumerate() {
             for (limb, value) in input.iter().enumerate() {
                 assert_eq!(
@@ -19561,6 +19659,18 @@ mod tests {
                 );
             }
         }
+        let input_0_column = (0..lookup_profile.main_rows)
+            .map(|row| lookup_trace.values[row * lookup_trace.width() + 2])
+            .collect::<Vec<_>>();
+        let expected_input_0_tree = TerminalOracleMerkleTree::commit_goldilocks_values(
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_air_main_column_oracle_label(2),
+            &input_0_column,
+        )
+        .expect("independent Tip5 lookup input-0 oracle must commit");
+        assert_eq!(
+            expected_input_0_tree.commitment(),
+            lookup_oracle_set.commitments()[2]
+        );
 
         let tip5_rows = table
             .rows

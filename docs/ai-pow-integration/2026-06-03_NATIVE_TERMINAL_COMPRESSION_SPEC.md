@@ -318,7 +318,10 @@ for this route.
   `TerminalBackendRelationDigest`, binding the lookup-table row count, main
   trace dimensions, preprocessed table dimensions, permutation-row offset,
   max constraint degree, and 5-round Tip5 round count without serializing those
-  constants in the production certificate.
+  constants in the production certificate. The prover-controlled main trace is
+  now commit-ready as one terminal oracle per column under verifier-derived
+  `npo_tip5_lookup_air_main_col/<index>` labels; the verifier-fixed
+  preprocessed lookup table is not committed by the prover.
 - `TerminalNpoPolynomialColumnQueryPlan`: the verifier-derived row schedule for
   future NPO-column openings. It validates that every fixed column commitment
   has the verifier-derived label, shared row count, and a root already bound in
