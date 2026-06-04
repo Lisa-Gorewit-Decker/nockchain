@@ -496,14 +496,34 @@ for this route.
   polynomial fixture, debug-profile `prove=71.9ms`, `verify=60.9ms`, and
   rejects both tampered compact row openings, tampered extension limbs, and
   stale residual columns. On the real Tip5-L0 verifier circuit, the opt-in
-  benchmark measures `409,037` bytes / `399.5 KiB`, of which `359,273` bytes
-  are selected-column Merkle openings and `49,448` bytes are compact FRI
+  benchmark measures `376,642` bytes / `367.8 KiB`, of which `327,866` bytes
+  are selected-column Merkle openings and `48,495` bytes are compact FRI
   material; the selected column commitments serialize to `7,903` bytes for
   `89` selected columns out of `186`. This closes the previous "zero proof not
   tied to residual columns at sampled rows" gap for this checkpoint and removes
   deterministic-column openings, but it also rules out appending this component
   as the production route: the final backend must avoid the sampled
   prover-dependent column-opening layer.
+- `TerminalNpoPolynomialFriCompactResidualZeroProof`: the FRI-native successor
+  checkpoint for the residual-zero layer. It commits the prover-dependent NPO
+  columns as one FRI matrix under `TerminalNpoPolynomialFriColumnSet::ProverDependent`,
+  samples a residual-column folding challenge after that selected FRI root is
+  fixed, commits the folded residual-composition polynomial, then opens both
+  commitments at one transcript-derived zeta point with one compressed
+  terminal FRI proof. Verification reconstructs the selected labels from the
+  verifying key, requires the selected FRI root to be the exact prelude
+  commitment, checks the opened composition is zero, and checks that it equals
+  the folded opened residual columns at zeta. This removes the sampled
+  selected-column Merkle opening layer. The D2 focused fixture measures
+  `6,360` bytes / `6.2 KiB`, with raw inner FRI `11,156` bytes and compressed
+  inner FRI `6,101` bytes, and rejects a FRI-valid proof over nonzero residual
+  columns. On the real Tip5-L0 verifier circuit, the opt-in benchmark measures
+  `61,683` bytes / `60.2 KiB`, with `1,174` bytes of selected zeta openings,
+  `60,372` bytes of compact FRI material, `prove=1.567s`, and
+  `verify=0.496s`. This is still a checkpoint rather than a production NPO
+  proof because the residual columns still need a quotient tying them to the
+  witness-value columns and verifier-derived row relation over the whole NPO
+  domain.
 - `TerminalNpoTip5LookupNpoRowsValueBridgeQuotientProof`: an NPO-row-domain
   value-binding checkpoint for the optimized lookup terminal IO. Instead of
   trusting a prover-supplied lookup-domain NPO projection, it commits the 26
@@ -1110,7 +1130,7 @@ Tip5-L0 verifier circuit:
 | compact production proof body | 86,223 |
 | compact production certificate | 86,446 |
 
-The latest debug-profile measurement is `prove=5.295 s, verify=3.555 s` for
+The latest debug-profile measurement is `prove=4.558 s, verify=3.501 s` for
 the production proof body and certificate, with terminal parameters
 `security_bits=60, log_blowup=4, num_queries=15, query_pow_bits=0`. Recent
 debug-profile runs of this fixture have ranged from `84,681` to `87,382`
@@ -1141,18 +1161,18 @@ component includes that matrix-vector subproof:
 
 | component | bytes |
 |---|---:|
-| sparse R1CS matrix sumcheck proof | 22,044 |
-| R1CS row-product sumcheck proof | 23,954 |
-| row-product rounds | 842 |
-| matrix-sumcheck rounds | 720 |
-| assignment evaluation proof | 21,674 |
+| sparse R1CS matrix sumcheck proof | 23,075 |
+| R1CS row-product sumcheck proof | 23,068 |
+| row-product rounds | 848 |
+| matrix-sumcheck rounds | 716 |
+| assignment evaluation proof | 21,444 |
 | assignment public-prefix proof | 477 |
-| assignment fold commitments | 807 |
-| assignment fold query indices | 46 |
-| assignment fold round multiproofs | 20,323 |
+| assignment fold commitments | 808 |
+| assignment fold query indices | 45 |
+| assignment fold round multiproofs | 20,094 |
 
-The latest debug-profile measurements are `prove=2.278 s, verify=1.483 s` for
-the matrix-vector component and `prove=2.307 s, verify=1.484 s` for the
+The latest debug-profile measurements are `prove=2.308 s, verify=1.479 s` for
+the matrix-vector component and `prove=2.457 s, verify=1.491 s` for the
 row-product component. This now proves the primitive sparse-R1CS row relation
 against the assignment commitment with compact public-prefix authentication, but
 NPO/table global arguments and the final polynomial proximity backend remain
@@ -1164,20 +1184,21 @@ Tip5-L0 verifier circuit produced:
 
 | NPO candidate | bytes | inner FRI | compact inner | prove | verify |
 |---|---:|---:|---:|---:|---:|
-| full-table NPO FRI opening proof, 186 field columns / 372 basis columns | 78,202 | 96,236 | 74,830 | 2.389 s | 0.500 s |
-| witness-value-column NPO FRI opening proof, 43 field columns / 86 basis columns | 59,241 | 80,647 | 58,268 | 1.075 s | 0.492 s |
+| full-table NPO FRI opening proof, 186 field columns / 372 basis columns | 78,989 | 96,440 | 75,620 | 2.411 s | 0.627 s |
+| witness-value-column NPO FRI opening proof, 43 field columns / 86 basis columns | 60,672 | 80,543 | 59,704 | 1.164 s | 0.501 s |
 | optimized Tip5 lookup main-trace FRI opening proof, 558 Goldilocks columns | 119,448 | 130,206 | 109,977 | 3.294 s | 0.060 s |
 | optimized Tip5 lookup terminal-IO FRI projection, 26 Goldilocks columns | 48,801 | 65,781 | 48,474 | 5.354 s | 0.047 s |
 | optimized Tip5 lookup terminal-IO zero-support quotient, 26 columns + 1 quotient | 62,132 | 85,385 | 61,704 | 14.050 s | 0.050 s |
 | optimized Tip5 lookup terminal-IO bridge quotient, lookup IO + NPO-derived IO + 1 quotient | 70,220 | 96,188 | 69,481 | 11.804 s | 0.074 s |
-| Merkle residual-zero candidate, opt-in real Tip5-L0 measurement | 634,155 | - | - | 56.284 s | 5.082 s |
-| selected-column compact residual-zero FRI candidate, opt-in real Tip5-L0 measurement | 409,037 | - | 49,448 | 26.190 s | 2.508 s |
+| Merkle residual-zero candidate, opt-in real Tip5-L0 measurement | 734,249 | - | - | 56.449 s | 4.627 s |
+| selected-column compact residual-zero FRI candidate, opt-in real Tip5-L0 measurement | 376,642 | - | 48,495 | 26.304 s | 2.273 s |
+| FRI-native compact residual-zero candidate, opt-in real Tip5-L0 measurement | 61,683 | - | 60,372 | 1.567 s | 0.496 s |
 
 The full-table FRI candidate is too large to combine with the primitive
 row-product proof. The witness-value column split is a real table optimization
 because deterministic metadata, selectors, present bits, and residual-present
 shape are now verifier-derived and need not be committed as FRI columns. It is
-still incomplete by itself: `59,241 + 23,954` bytes leaves about 16 KiB
+still incomplete by itself: `60,672 + 23,068` bytes leaves about 16 KiB
 before adding the missing NPO row-polynomial relation checks and certificate
 framing. The Merkle-backed residual-zero proof is rejected as a production route
 because its column-opening payload dominates the real Tip5-L0 fixture. The
@@ -1185,14 +1206,18 @@ selected-column compact residual-zero FRI candidate now reconstructs
 verifier-derived metadata, selector, present-bit, and residual-present columns
 locally and opens only the 89 prover-dependent witness/residual columns. That
 cuts the real compact-residual checkpoint from the previous `700.4 KiB`
-full-column experiment to `399.5 KiB`, with `359,273` bytes of selected-column
-openings and `49,448` bytes of compact FRI material. This proves terminal
-compact FRI itself is not the dominant cost there, but it still rules out
-appending this component as the production route. The next viable direction is
-a shared/batched terminal proximity backend that commits the NPO row columns
+full-column experiment to `367.8 KiB` in the latest run, but its
+`327,866` bytes of selected-column openings still rule it out. The FRI-native
+compact residual-zero checkpoint removes that layer entirely and measures
+`60.2 KiB`, dominated by its `60,372` byte compact FRI payload with only
+`1,174` bytes of selected zeta openings. This is the right residual-zero size
+floor, but it is not production-sound by itself: the final backend still needs
+the row-relation quotient tying residual columns to the committed witness-value
+columns and verifier-derived fixed columns. The next viable direction is a
+shared/batched terminal proximity backend that commits the NPO row columns
 through one low-degree object and amortizes FRI proof material across primitive
-and NPO relations, or an NPO relation check that consumes the value-column FRI
-openings without adding a second Merkle-heavy proof. The FRI verifier now
+and NPO relations, or an NPO relation check that consumes the selected/value
+FRI openings without adding a second Merkle-heavy proof. The FRI verifier now
 exposes exactly that checked value-column opening handoff. The padding quotient
 checkpoint now
 checks mixed present-bit value padding and MMCS direction-bit booleanity with a
@@ -1356,12 +1381,12 @@ Completion audit against the active terminal-compression requirements:
 |---|---|---|
 | Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
-| Production certificate is about 100 KiB | Latest real Tip5-L0 verifier measurement: `86,446` bytes / `84.4 KiB`, debug-profile `prove=4.548s`, `verify=3.502s`; recent runs ranged from `84,681` to `87,382` serialized certificate bytes. | satisfied on the measured production fixture |
+| Production certificate is about 100 KiB | Latest real Tip5-L0 verifier measurement: `86,446` bytes / `84.4 KiB`, debug-profile `prove=4.558s`, `verify=3.501s`; recent runs ranged from `84,681` to `87,382` serialized certificate bytes. | satisfied on the measured production fixture |
 | No confusing low-soundness testing production path | Production builds expose only `TerminalProofKind::Production`; local checkpoint proof-kind helpers are `cfg(test)`, and public production verification requires all 15 production queries. | satisfied for public production verifier dispatch |
 | Public values, parameters, relation, proximity schedule, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile and column layout, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
 | Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against the same prelude-bound assignment oracle used by primitive R1CS. | satisfied for supported NPO row validity |
-| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 71.6 KiB proof, a random linear-combination MLE checkpoint, and a residual-column zero-check checkpoint now exist, including Tip5/MMCS/recompose tamper tests, FRI tampered-claim rejection, stale-profile/column-set rejection, table-row IO hiding rejection, stale lookup-IO bridge rejection, and Merkle-consistent wrong-combination rejection. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over the NPO row constraints. | not complete |
+| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 71.6 KiB proof, a random linear-combination MLE checkpoint, a sampled selected-column residual-zero checkpoint, and a FRI-native residual-zero checkpoint now exist, including Tip5/MMCS/recompose tamper tests, FRI tampered-claim rejection, stale-profile/column-set rejection, table-row IO hiding rejection, stale lookup-IO bridge rejection, Merkle-consistent wrong-combination rejection, and FRI-valid nonzero residual-column rejection. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over the NPO row constraints. | not complete |
 | Full terminal proof has a source-backed soundness calculation | Current doc records 60 pure-query Johnson accounting for the terminal profile and tests verifier binding, but it does not yet derive a complete theorem for the row-product plus NPO-column plus PCS/proximity backend. | incomplete |
 | Zero-knowledge or witness hiding for recursive-verifier witness values | Current production opens 1,377 full-width verifier-circuit witness values plus packed MMCS direction bits for exhaustive NPO checking. That is smaller than full witness serialization, but it is not a zero-knowledge terminal backend. | incomplete if ZK is required |
 
@@ -1618,14 +1643,16 @@ Design conclusions for this codebase:
    `terminal_npo_polynomial_column_residual_values_goldilocks` reconstructs the
    row predicate from those columns. The columns now also basis-expand into a
    Goldilocks matrix accepted by the native Plonky3 FRI PCS with recursive
-   5-round Tip5 commitments. `TerminalNpoPolynomialCompactResidualZeroProof`
-   now binds a compact FRI residual-zero commitment to sampled selected-column
-   openings over both base and quadratic-extension Goldilocks verifier fields.
-   The real-circuit measurement shows the sampled prover-dependent column
-   opening layer remains far too large even after verifier-derived columns are
-   reconstructed locally, so the remaining gap is replacing that layer with one
-   shared composition/proximity argument rather than proving each subrelation as
-   an appended component.
+   5-round Tip5 commitments.
+   `TerminalNpoPolynomialFriCompactResidualZeroProof` now replaces the sampled
+   selected-column residual-zero opening layer with a FRI-native selected-column
+   plus residual-composition opening at one zeta over both base and
+   quadratic-extension Goldilocks verifier fields. The real-circuit measurement
+   brings that residual-zero checkpoint down to `60.2 KiB`, so the remaining NPO
+   proximity gap is no longer sampled selected-column Merkle openings; it is
+   the row-relation quotient tying residual columns to witness-value columns and
+   verifier-derived fixed columns without appending another large standalone
+   proof.
 3. The fixed-column NPO row predicate now covers:
    - Tip5: 5-round Tip5 state transition with explicit row mode, new-start,
      Merkle-path direction, carry/zero derivation, hidden-lane embedding, MMCS

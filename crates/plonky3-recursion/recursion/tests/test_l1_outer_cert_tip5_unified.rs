@@ -707,6 +707,56 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
             let npo_compact_residual_zero_verify_elapsed =
                 npo_compact_residual_zero_verify_start.elapsed();
 
+            let npo_fri_compact_residual_zero_roots =
+                NativeTerminalCompiler::terminal_npo_polynomial_fri_prelude_commitments_goldilocks(
+                    &npo_polynomial_columns,
+                    TerminalNpoPolynomialFriColumnSet::ProverDependent,
+                )
+                .expect("terminal NPO prover-dependent FRI root must commit");
+            let npo_fri_compact_residual_zero_prelude = compiler
+                .build_proof_prelude_goldilocks(
+                    &vk,
+                    &terminal_witness.public_inputs,
+                    parameters,
+                    npo_fri_compact_residual_zero_roots,
+                )
+                .expect("terminal NPO FRI-native compact residual-zero prelude must build");
+            let npo_fri_compact_residual_zero_prove_start = std::time::Instant::now();
+            let npo_fri_compact_residual_zero_proof = compiler
+                .prove_terminal_npo_polynomial_fri_compact_residual_zero_goldilocks(
+                    &vk,
+                    &terminal_witness.public_inputs,
+                    &terminal_witness,
+                    &npo_fri_compact_residual_zero_prelude,
+                )
+                .expect("terminal NPO FRI-native compact residual-zero proof must build");
+            let npo_fri_compact_residual_zero_prove_elapsed =
+                npo_fri_compact_residual_zero_prove_start.elapsed();
+            let npo_fri_compact_residual_zero_size =
+                postcard::to_allocvec(&npo_fri_compact_residual_zero_proof)
+                    .expect("terminal NPO FRI-native compact residual-zero proof must serialize")
+                    .len();
+            let npo_fri_compact_residual_zero_opened_selected_size = postcard::to_allocvec(
+                &npo_fri_compact_residual_zero_proof.opened_selected_basis,
+            )
+            .expect("terminal NPO FRI-native compact residual-zero selected openings must serialize")
+            .len();
+            let npo_fri_compact_residual_zero_fri_size =
+                postcard::to_allocvec(&npo_fri_compact_residual_zero_proof.proof)
+                    .expect("terminal NPO FRI-native compact residual-zero FRI proof must serialize")
+                    .len();
+            let npo_fri_compact_residual_zero_verify_start = std::time::Instant::now();
+            compiler
+                .verify_terminal_npo_polynomial_fri_compact_residual_zero_goldilocks::<Challenge>(
+                    &vk,
+                    &terminal_witness.public_inputs,
+                    &npo_fri_compact_residual_zero_prelude,
+                    &npo_fri_compact_residual_zero_proof,
+                )
+                .expect("terminal NPO FRI-native compact residual-zero proof must verify");
+            let npo_fri_compact_residual_zero_verify_elapsed =
+                npo_fri_compact_residual_zero_verify_start.elapsed();
+
             Some((
                 npo_column_oracles.layout.rows,
                 npo_column_oracles.layout.column_count,
@@ -724,6 +774,11 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
                 npo_compact_residual_zero_fri_size,
                 npo_compact_residual_zero_prove_elapsed,
                 npo_compact_residual_zero_verify_elapsed,
+                npo_fri_compact_residual_zero_size,
+                npo_fri_compact_residual_zero_opened_selected_size,
+                npo_fri_compact_residual_zero_fri_size,
+                npo_fri_compact_residual_zero_prove_elapsed,
+                npo_fri_compact_residual_zero_verify_elapsed,
             ))
         } else {
             None
@@ -930,6 +985,11 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         npo_compact_residual_zero_fri_size,
         npo_compact_residual_zero_prove_elapsed,
         npo_compact_residual_zero_verify_elapsed,
+        npo_fri_compact_residual_zero_size,
+        npo_fri_compact_residual_zero_opened_selected_size,
+        npo_fri_compact_residual_zero_fri_size,
+        npo_fri_compact_residual_zero_prove_elapsed,
+        npo_fri_compact_residual_zero_verify_elapsed,
     )) = npo_residual_zero_measurement
     {
         eprintln!(
@@ -956,6 +1016,15 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
             npo_compact_residual_zero_fri_size,
             npo_compact_residual_zero_prove_elapsed.as_secs_f64(),
             npo_compact_residual_zero_verify_elapsed.as_secs_f64(),
+        );
+        eprintln!(
+            "terminal NPO FRI-native compact residual-zero candidate: proof={} bytes ({:.1} KiB) opened_selected={} compact_fri={} prove={:.3}s verify={:.3}s",
+            npo_fri_compact_residual_zero_size,
+            npo_fri_compact_residual_zero_size as f64 / 1024.0,
+            npo_fri_compact_residual_zero_opened_selected_size,
+            npo_fri_compact_residual_zero_fri_size,
+            npo_fri_compact_residual_zero_prove_elapsed.as_secs_f64(),
+            npo_fri_compact_residual_zero_verify_elapsed.as_secs_f64(),
         );
         eprintln!(
             "terminal NPO selected columns: columns={} commitments={} bytes",
