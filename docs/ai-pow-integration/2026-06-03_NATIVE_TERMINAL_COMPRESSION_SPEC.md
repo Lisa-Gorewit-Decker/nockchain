@@ -897,6 +897,82 @@ The compact backend must be native over the current field/circuit stack:
   backend relation digest, public input digest, NPO type keys, Tip5 5-round
   variant, and proof-parameter profile.
 
+## Literature-Grounded Security Audit
+
+The remaining terminal backend must be analyzed as a polynomial IOP compiled
+through Fiat-Shamir, not as an ad hoc collection of Merkle openings.
+
+Primary references used for the current design audit:
+
+- Interactive Oracle Proofs, Ben-Sasson/Chiesa/Spooner, ePrint 2016/116:
+  https://eprint.iacr.org/2016/116.pdf
+- Aurora, Ben-Sasson/Chiesa/Riabzev/Spooner/Virza/Ward, ePrint 2018/828:
+  https://eprint.iacr.org/2018/828.pdf
+- Spartan, Setty, Microsoft Research publication page:
+  https://www.microsoft.com/en-us/research/publication/spartan-efficient-and-general-purpose-zksnarks-without-trusted-setup/
+- Fast Reed-Solomon Interactive Oracle Proofs of Proximity, ICALP 2018:
+  https://doi.org/10.4230/LIPIcs.ICALP.2018.14
+- STIR, Arnon/Chiesa/Fenzi/Yogev, ePrint 2024/390:
+  https://eprint.iacr.org/2024/390.pdf
+- WHIR, Arnon/Chiesa/Fenzi/Yogev, EUROCRYPT 2025 / ePrint 2024/1586:
+  https://iacr.org/cryptodb/data/paper.php?pubkey=35004
+
+Design conclusions for this codebase:
+
+1. The existing primitive terminal component follows the Spartan/Aurora
+   direction: commit to the assignment vector, prove sparse matrix-vector
+   claims, and check the row product with sumcheck. The implementation still
+   needs a written theorem combining row-product sumcheck, sparse matrix-vector
+   claims, assignment evaluation, Fiat-Shamir, and the terminal Merkle
+   commitment model.
+2. Supported NPO rows are not yet in that polynomial IOP. Exhaustively opening
+   every Tip5/recompose row is sound for the current committed witness oracle,
+   but it is not the requested polynomial/proximity backend and does not give
+   the proof-size structure of Aurora/Spartan-style row checks.
+3. The NPO replacement must first define low-degree row predicates for the
+   terminal NPO relation:
+   - Tip5: 5-round Tip5 state transition with explicit row mode, new-start,
+     Merkle-path direction, carry/zero derivation, and exact call-site witness
+     wiring;
+   - Recompose: base-to-extension coefficient reconstruction and optional
+     coefficient-lookup row kind;
+   - all rows: stable NPO row IDs, op keys, local row numbers, public relation
+     digest binding, and no prover-supplied query indices.
+4. The proximity layer is a separate requirement from algebraic row checking.
+   FRI is the in-tree conservative choice because the code already implements
+   15 pure queries at blowup 16 for 60 bits. STIR and WHIR are relevant future
+   options because they target Reed-Solomon proximity with fewer queries or
+   faster verification, but this spec cannot count their security or size
+   benefits until a native implementation, transcript, and parameter theorem are
+   present.
+5. Fiat-Shamir ordering is security-critical. The verifier must derive every
+   row/proximity query only after binding the terminal relation digest, backend
+   relation digest, public input digest, NPO relation metadata, oracle roots,
+   final-polynomial commitments, and arity/proximity schedule. Serialized query
+   indices remain forbidden because they would let a prover steer openings away
+   from transcript challenges.
+6. The 60-bit production claim must continue to come from pure queries. Query
+   PoW may remain useful for historical batch-STARK profiles, but it is not
+   counted toward terminal production soundness.
+7. The current production checkpoint is not zero-knowledge: it opens 1,377
+   verifier-circuit witness values plus hidden Tip5 lanes for exhaustive NPO
+   checking. If witness hiding becomes a production requirement, the polynomial
+   backend needs masking/blinding analysis rather than relying on the current
+   Merkle-opening artifact.
+
+Completion evidence required before this section can be marked satisfied:
+
+- code implementing the polynomialized NPO row predicate and its prover/verifier;
+- a proximity/PCS proof that covers both primitive and NPO relation oracles;
+- tests that tamper Tip5 mode bits, Merkle direction bits, carry state,
+  hidden-lane payloads, recompose coefficients, NPO row order, op keys, public
+  values, relation digests, proximity commitments, and transcript-derived query
+  schedules;
+- a source-backed soundness calculation showing at least 60 bits without
+  terminal query PoW;
+- production measurement proving the final recursive certificate remains near
+  100 KiB and recursive proof generation remains near 30 s.
+
 ## Implementation Plan
 
 1. Keep the typed compact production certificate as the active terminal
