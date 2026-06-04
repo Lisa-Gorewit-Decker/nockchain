@@ -391,6 +391,30 @@ for this route.
   still is not a complete production NPO proof until the NPO-derived projection
   is tied to the final value-column proximity backend and the internal Tip5
   lookup/AIR relation is enforced.
+- `TerminalNpoTip5LookupNpoRowsValueBridgeQuotientProof`: an NPO-row-domain
+  value-binding checkpoint for the optimized lookup terminal IO. Instead of
+  trusting a prover-supplied lookup-domain NPO projection, it commits the 26
+  terminal IO columns on the supported-NPO row domain alongside the committed
+  NPO witness-value columns. A single quotient proves that each lookup IO lane
+  equals the verifier-derived selector-weighted value-column expression on
+  Tip5 rows and is zero off those rows. The focused regression test measures
+  `16,535` bytes / `16.1 KiB` for this binding component, rejects stale
+  committed value columns, rejects stale lookup IO, and round-trips the proof.
+  This closes the specific "NPO projection not tied to value columns" checkpoint
+  in isolation, but production still needs the internal Tip5 lookup/AIR
+  relation and a shared final proximity backend before replacing exhaustive NPO
+  verification.
+- `TerminalCompressedFriProof`: a terminal-only path-compressed wrapper around
+  the existing Plonky3 `FriProof` shape. It follows the Plonky2 terminal
+  compression model without using Plonky2 code: query indices are not
+  serialized, the verifier must rederive them from the Fiat-Shamir transcript,
+  and same-tree binary Merkle paths are sorted, deduplicated, and pruned by
+  shared ancestors. On the NPO-row value-bridge checkpoint, the plain FRI
+  payload measured `15,957` bytes / `15.6 KiB`; the compressed wrapper measured
+  `10,245` bytes / `10.0 KiB` and decompresses to a proof accepted by the
+  existing verifier. This is not yet the production verifier path, but it
+  demonstrates a concrete route to terminal path compression inside the
+  vendored Plonky3-recursion stack.
 - `TerminalNpoPolynomialColumnQueryPlan`: the verifier-derived row schedule for
   future NPO-column openings. It validates that every fixed column commitment
   has the verifier-derived label, shared row count, and a root already bound in
@@ -1010,6 +1034,10 @@ off-window table-row IO and stale permutation-row IO while staying under the
 component target, so it supersedes carrying the separate zero-support and bridge
 proofs. It still depends on the same unresolved NPO-derived projection binding
 and internal Tip5 lookup/AIR relation work.
+The NPO-row value-bridge quotient closes the projection-to-value-column binding
+checkpoint in isolation at 16.1 KiB, while the terminal compact-FRI wrapper
+reduces that component's FRI payload from 15.6 KiB to 10.0 KiB by pruning shared
+binary Merkle authentication paths across the 15 transcript-derived queries.
 Tip5 permutation, prior-output chain transitions, and residual-zero constraints
 over those openings are still pending.
 
