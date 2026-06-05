@@ -461,7 +461,7 @@ for this route.
   it still accepted an honest value-bridge component plus a different
   internally valid AIR+LogUp trace component.
 
-  The next linked checkpoint adds a trace-to-IO projection proof and the
+  The next linked checkpoint added a trace-to-IO projection proof and the
   trace-domain support bridge under one prelude ordered as
   `[selected+lookup, full-main trace, trace-domain lookup IO,
   trace-domain NPO IO]`. The projection proof opens the full-main trace and
@@ -473,17 +473,27 @@ for this route.
   bridge `11,888` bytes / `11.6 KiB`, AIR+LogUp `140,817` bytes /
   `137.5 KiB`, trace-to-IO projection `98,925` bytes / `96.6 KiB`, and
   support bridge `51,304` bytes / `50.1 KiB`; `prove=5.544s`,
-  `verify=56.1ms`. This is a soundness-audit checkpoint, not a production
-  size route. The remaining theorem still has to tie the trace-domain NPO IO
-  projection commitment to the same selected/value commitment used by the
-  NPO-row value bridge, then eliminate the duplicate FRI openings instead of
-  appending another projection proof. A stronger adversarial audit now forges
-  that trace-domain NPO IO projection from modified NPO value columns matching
-  a divergent AIR trace, while keeping the merged selected/value proof honest.
-  The current linked verifier accepts that forged projection checkpoint at
-  `330,010` bytes / `322.3 KiB`, proving the remaining obligation is not just
-  a documentation caveat: the next bridge must bind the trace-domain NPO IO
-  projection root to the selected/value root, or merge both into one
+  `verify=56.1ms`. A stronger adversarial audit then forged that trace-domain
+  NPO IO projection from modified NPO value columns matching a divergent AIR
+  trace, while keeping the merged selected/value proof honest; the linked
+  verifier accepted the forged projection checkpoint at `330,010` bytes /
+  `322.3 KiB`, proving the missing obligation was not just a documentation
+  caveat.
+
+  The current linked checkpoint closes that forged-projection audit with
+  `TerminalNpoTip5LookupTraceDomainNpoIoExhaustiveBridgeProof`. The proof
+  absorbs the same four-root prelude span, opens the selected+lookup
+  commitment on every verifier-derived Tip5 NPO row, opens the trace-domain
+  NPO-IO projection on the matching permutation rows, and checks equality of
+  the 26 IO lanes. The honest focused measurement is `362,813` bytes /
+  `354.3 KiB`, with compact FRI payloads: merged value bridge `11,888` bytes /
+  `11.6 KiB`, AIR+LogUp `140,817` bytes / `137.5 KiB`, trace-to-IO projection
+  `98,925` bytes / `96.6 KiB`, support bridge `51,304` bytes / `50.1 KiB`,
+  and exhaustive bridge `31,589` bytes / `30.8 KiB`; `prove=5.897s`,
+  `verify=67.6ms`. The forged trace-domain NPO IO audit now rejects and
+  serializes to `362,576` bytes / `354.1 KiB`. This is a correctness
+  checkpoint, not a production size route: the next step is to replace the
+  exhaustive multipoint opening with a LogUp-style bridge or merge it into one
   commitment/proximity proof.
 
   The intended bridge is a LogUp-style multiset equality, not another
@@ -1619,7 +1629,7 @@ Completion audit against the active terminal-compression requirements:
 | Public values, parameters, relation, proximity schedule, fixed terminal tables, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile, column layout, and fixed Tip5 lookup preprocessed-table digest, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
 | Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against the same prelude-bound assignment oracle used by primitive R1CS. | satisfied for supported NPO row validity |
-| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace with a fixed preprocessed-table digest bound into the relation profile, a transcript-bound terminal LogUp rational-sum accumulator checkpoint for fixed-table byte-pair semantics, a committed split LogUp running-sum/proximity checkpoint for the byte-table relation, a combined full-main AIR-algebra+LogUp quotient proof in one arity-8 `143.5 KiB` FRI opening, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 66.0 KiB proof, a random linear-combination MLE checkpoint, a sampled selected-column residual-zero checkpoint, a FRI-native residual-zero checkpoint, a FRI-native recompose residual-relation quotient, and a merged FRI-native residual-zero+recompose+value-bridge proof now exist. The merged value-bridge proof uses one selected+lookup commitment, binds all selected/value/lookup/composition/recompose/value-bridge profiles before challenge sampling, dimension-checks merged openings, rejects stale selected+lookup prelude roots, stale lookup/value columns, malformed compact FRI path material, and profile/opening-shape tampering, and measures `99,647` bytes / `97.3 KiB` at the pure 60-bit terminal tuple. A linked combined-prelude checkpoint adds a full-trace-to-terminal-IO projection proof and rejects the measured divergent trace/value pair, but it measures `330,247` bytes / `322.5 KiB`. A stronger forged-projection audit still passes at `330,010` bytes / `322.3 KiB` by choosing trace-domain NPO IO values consistent with the divergent trace while keeping the selected/value proof honest. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over every supported NPO/table constraint, and the lookup AIR+LogUp, boundary bridge, and value-column checkpoints are not yet merged into one complete ~100 KiB terminal theorem. | not complete |
+| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace with a fixed preprocessed-table digest bound into the relation profile, a transcript-bound terminal LogUp rational-sum accumulator checkpoint for fixed-table byte-pair semantics, a committed split LogUp running-sum/proximity checkpoint for the byte-table relation, a combined full-main AIR-algebra+LogUp quotient proof in one arity-8 `143.5 KiB` FRI opening, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 66.0 KiB proof, a random linear-combination MLE checkpoint, a sampled selected-column residual-zero checkpoint, a FRI-native residual-zero checkpoint, a FRI-native recompose residual-relation quotient, and a merged FRI-native residual-zero+recompose+value-bridge proof now exist. The merged value-bridge proof uses one selected+lookup commitment, binds all selected/value/lookup/composition/recompose/value-bridge profiles before challenge sampling, dimension-checks merged openings, rejects stale selected+lookup prelude roots, stale lookup/value columns, malformed compact FRI path material, and profile/opening-shape tampering, and measures `99,647` bytes / `97.3 KiB` at the pure 60-bit terminal tuple. A linked combined-prelude checkpoint adds a full-trace-to-terminal-IO projection proof, a support bridge, and an exhaustive selected+lookup-to-trace-domain-NPO-IO bridge; it rejects both the measured divergent trace/value pair and the forged trace-domain NPO IO projection that previously passed, but it measures `362,813` bytes / `354.3 KiB`. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over every supported NPO/table constraint, and the lookup AIR+LogUp, boundary bridge, and value-column checkpoints are not yet merged into one complete ~100 KiB terminal theorem. | not complete |
 | Full terminal proof has a source-backed soundness calculation | Current doc records 60 pure-query Johnson accounting for the terminal profile and tests verifier binding, but it does not yet derive a complete theorem for the row-product plus NPO-column plus PCS/proximity backend. | incomplete |
 | Zero-knowledge or witness hiding for recursive-verifier witness values | Current production opens 1,377 full-width verifier-circuit witness values plus packed MMCS direction bits for exhaustive NPO checking. That is smaller than full witness serialization, but it is not a zero-knowledge terminal backend. | incomplete if ZK is required |
 
