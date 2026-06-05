@@ -623,7 +623,16 @@ for this route.
   `117.0 KiB`, `prove=27.773s`), `max_log_arity=5` (`112,738` bytes /
   `110.1 KiB`), `max_log_arity=2` (`115,773` bytes / `113.1 KiB`), and
   `log_final_poly_len=4`, which violates the Plonky3 FRI domain-height
-  assertion for this backend. An older 2026-06-05 integrated group-size sweep
+  assertion for this backend. A structural pass also tested removing the
+  `TIN[16]` carry columns from the row-per-round Tip5 trace and replacing the
+  one-row final terminal-IO bridge with a two-row bridge: round 0 `IN[16]`
+  supplies input limbs and the final round `OUT[10]` supplies output limbs. This
+  reduced the full trace opening from 117 to 101 limbs, but it made the complete
+  integrated checkpoint larger: `106,679` bytes / `104.2 KiB` at
+  `max_log_arity=3`, and `105,042` bytes / `102.6 KiB` after retuning
+  `max_log_arity=4`. The extra two-row support/proximity pressure outweighed the
+  saved trace values, so the production layout keeps the carried-input one-row
+  terminal-IO bridge. An older 2026-06-05 integrated group-size sweep
   kept the 60-bit pure-query FRI tuple
   fixed and tested the accumulator width versus quotient-degree tradeoff
   directly: 1-lane groups measured `252,162` bytes / `246.3 KiB`, compact FRI
