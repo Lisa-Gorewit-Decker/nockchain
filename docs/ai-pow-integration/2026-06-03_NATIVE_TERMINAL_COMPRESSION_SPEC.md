@@ -485,6 +485,30 @@ for this route.
   a documentation caveat: the next bridge must bind the trace-domain NPO IO
   projection root to the selected/value root, or merge both into one
   commitment/proximity proof.
+
+  The intended bridge is a LogUp-style multiset equality, not another
+  standalone projection commitment. After absorbing the selected+lookup root,
+  full-main trace root, trace-domain lookup-IO root, trace-domain NPO-IO root,
+  fixed NPO row layout, fixed Tip5 row count, and production proximity profile,
+  the verifier samples tuple-compression challenges for
+  `(tip5_rank, io_limb, value)`. The row-domain side reads the lookup-IO suffix
+  of the selected+lookup commitment on verifier-derived Tip5 NPO rows; the
+  trace-domain side reads the NPO-IO projection on permutation-window rows.
+  A logarithmic-derivative accumulator then proves the signed sums of
+  reciprocals are equal, following Haboeck's LogUp lookup construction
+  ([IACR ePrint 2022/1530](https://eprint.iacr.org/2022/1530.pdf)), while FRI
+  continues to provide the low-degree/proximity layer
+  ([BBHR18 FRI](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ICALP.2018.14);
+  [DEEP-FRI](https://arxiv.org/abs/1903.12243) is relevant background for
+  proximity soundness but is not the active in-tree PCS). Fiat-Shamir
+  soundness depends on sampling those challenges only after all bridge roots,
+  profiles, final accumulator commitments, and the arity schedule are fixed,
+  consistent with modern analyses of Fiat-Shamir for multi-round proofs
+  ([Journal of Cryptology 2023](https://link.springer.com/article/10.1007/s00145-023-09478-y)).
+  The production implementation should merge this accumulator and quotient
+  with the existing AIR+LogUp/value-bridge openings; appending a separate
+  proof would close the forged-projection audit but stay far above the 100 KiB
+  certificate target.
 - `TerminalNpoTip5LookupFriOpeningProof`: a native terminal FRI opening
   checkpoint for the optimized Tip5 lookup AIR main trace. The prover commits
   the whole Goldilocks-valued lookup main matrix with recursive 5-round Tip5
