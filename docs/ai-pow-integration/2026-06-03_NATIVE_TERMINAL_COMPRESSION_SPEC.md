@@ -416,7 +416,15 @@ for this route.
   `prove=40.258s`, `verify=101.1ms`. This is a substantial reduction versus
   appending standalone full-main AIR algebra plus full-main LogUp proofs, but
   it is still too large to be the final ~100 KiB production NPO theorem by
-  itself.
+  itself. A column-dependency audit rules out a sound smaller projection for
+  this combined relation: the AIR algebra quotient uses the full-main `KIND`
+  column, the 16 input lanes, and every per-round split, inverse, power, and
+  round-output column, omitting only `TMULT`; the LogUp quotient needs `TMULT`
+  plus `KIND` and the split byte columns. Their union is the full-main trace,
+  so a smaller combined projection would either leave `TMULT` unbound for
+  LogUp or drop internal AIR witness columns. The remaining size route is a
+  composition-polynomial proof that avoids opening the full trace at every FRI
+  query, not a narrower column projection of the same relation.
 - `TerminalNpoTip5LookupFriOpeningProof`: a native terminal FRI opening
   checkpoint for the optimized Tip5 lookup AIR main trace. The prover commits
   the whole Goldilocks-valued lookup main matrix with recursive 5-round Tip5

@@ -174,6 +174,14 @@ measurement is `185,396` bytes (`181.1 KiB`), with compact FRI payload
 `170,003` bytes (`166.0 KiB`), so this is a useful merge checkpoint but still
 too large to be the final production NPO theorem.
 
+2026-06-05 follow-up: a column-dependency audit rules out a sound narrower
+projection for the shared AIR+LogUp relation. AIR algebra needs `KIND`, all
+input lanes, and every split/inverse/power/round-output column, omitting only
+`TMULT`; LogUp needs `TMULT`, `KIND`, and split byte columns. The union is the
+full-main trace, so further size reduction must come from a composition-style
+argument that avoids full trace query openings rather than from dropping
+committed columns.
+
 ## Commands Run For This Checkpoint
 
 ```text
