@@ -401,7 +401,13 @@ for this route.
   payload of `157,483` bytes / `153.8 KiB`. This closes the committed LogUp
   soundness checkpoint in isolation, and grouping saves another 28.5 KiB
   relative to the LogUp-projected split checkpoint, but appending it to the AIR
-  algebra and boundary proofs is still not the final ~100 KiB route.
+  algebra and boundary proofs is still not the final ~100 KiB route. The
+  verifier also accepts the same LogUp relation over the full-main trace
+  commitment, rejecting unsupported trace column sets; the focused full-main
+  regression measures `176,429` bytes / `172.3 KiB`, with compact FRI payload
+  `161,232` bytes / `157.5 KiB`, so full-main LogUp is a shared-trace
+  ingredient for a future merged AIR+LogUp proof rather than a standalone size
+  improvement.
 - `TerminalNpoTip5LookupFriOpeningProof`: a native terminal FRI opening
   checkpoint for the optimized Tip5 lookup AIR main trace. The prover commits
   the whole Goldilocks-valued lookup main matrix with recursive 5-round Tip5

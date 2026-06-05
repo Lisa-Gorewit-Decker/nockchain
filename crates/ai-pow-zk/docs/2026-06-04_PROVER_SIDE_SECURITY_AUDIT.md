@@ -157,6 +157,13 @@ or challenge stream. Focused native/parallel tests cover profile construction,
 trace construction, support-bridge verification, AIR algebra verification, and
 the merged value-bridge checkpoint before commit.
 
+2026-06-05 follow-up: the LogUp quotient checkpoint now verifies against either
+the compact `LogupMain` projection or the `FullMain` trace commitment, while
+rejecting unsupported trace column sets. The public standalone prover still uses
+the smaller `LogupMain` route; the full-main path exists to prepare a future
+shared AIR-algebra+LogUp FRI opening. Its focused measurement is `176,429`
+bytes (`172.3 KiB`), so it is not a standalone production-size improvement.
+
 ## Commands Run For This Checkpoint
 
 ```text

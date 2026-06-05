@@ -6083,6 +6083,7 @@ impl NativeTerminalCompiler {
             prelude,
             &Self::terminal_npo_tip5_lookup_trace_profile(verifying_key),
             &trace,
+            TerminalNpoTip5LookupFriColumnSet::LogupMain,
         )
     }
 
@@ -6090,13 +6091,10 @@ impl NativeTerminalCompiler {
         prelude: &TerminalProofPrelude,
         trace_profile: &TerminalNpoTip5LookupTraceProfile,
         trace: &RowMajorMatrix<Goldilocks>,
+        column_set: TerminalNpoTip5LookupFriColumnSet,
     ) -> Result<TerminalNpoTip5LookupLogupQuotientProof, NativeTerminalVerifyError> {
         let (trace_fri_profile, trace_matrix) =
-            Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(
-                trace_profile,
-                trace,
-                TerminalNpoTip5LookupFriColumnSet::LogupMain,
-            )?;
+            Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(trace_profile, trace, column_set)?;
         if trace_fri_profile.proximity != prelude.relation_profile.proximity {
             return Err(
                 NativeTerminalVerifyError::TerminalProximityParametersMismatch {
@@ -15692,7 +15690,11 @@ impl NativeTerminalCompiler {
     fn terminal_npo_tip5_lookup_logup_accumulator_profile(
         trace_profile: &TerminalNpoTip5LookupFriProfile,
     ) -> Result<TerminalNpoTip5LookupLogupAccumulatorProfile, NativeTerminalVerifyError> {
-        if trace_profile.column_set != TerminalNpoTip5LookupFriColumnSet::LogupMain {
+        if !matches!(
+            trace_profile.column_set,
+            TerminalNpoTip5LookupFriColumnSet::LogupMain
+                | TerminalNpoTip5LookupFriColumnSet::FullMain
+        ) {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_lookup_logup_accumulator_trace_column_set".into(),
@@ -15719,7 +15721,11 @@ impl NativeTerminalCompiler {
     fn terminal_npo_tip5_lookup_logup_quotient_profile(
         trace_profile: &TerminalNpoTip5LookupFriProfile,
     ) -> Result<TerminalNpoTip5LookupLogupQuotientProfile, NativeTerminalVerifyError> {
-        if trace_profile.column_set != TerminalNpoTip5LookupFriColumnSet::LogupMain {
+        if !matches!(
+            trace_profile.column_set,
+            TerminalNpoTip5LookupFriColumnSet::LogupMain
+                | TerminalNpoTip5LookupFriColumnSet::FullMain
+        ) {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_lookup_logup_trace_column_set".into(),
@@ -15948,7 +15954,11 @@ impl NativeTerminalCompiler {
         challenges: &[(TerminalFriChallenge, TerminalFriChallenge)],
         gamma: TerminalFriChallenge,
     ) -> Result<RowMajorMatrix<Goldilocks>, NativeTerminalVerifyError> {
-        if trace_profile.column_set != TerminalNpoTip5LookupFriColumnSet::LogupMain {
+        if !matches!(
+            trace_profile.column_set,
+            TerminalNpoTip5LookupFriColumnSet::LogupMain
+                | TerminalNpoTip5LookupFriColumnSet::FullMain
+        ) {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_lookup_logup_quotient_trace_column_set".into(),
@@ -20545,9 +20555,22 @@ impl NativeTerminalCompiler {
             Self::terminal_fri_commitment_digest(&proof.trace_commitment)?;
         Self::verify_terminal_fri_prelude_commitments(prelude, &[trace_commitment_digest])?;
         let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
+        if !matches!(
+            proof.trace_profile.column_set,
+            TerminalNpoTip5LookupFriColumnSet::LogupMain
+                | TerminalNpoTip5LookupFriColumnSet::FullMain
+        ) {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_logup_trace_column_set".into(),
+                    expected: TerminalNpoTip5LookupFriColumnSet::LogupMain as usize,
+                    got: proof.trace_profile.column_set as usize,
+                },
+            );
+        }
         let expected_trace_profile = Self::terminal_npo_tip5_lookup_fri_profile_for_column_set(
             &trace_profile,
-            TerminalNpoTip5LookupFriColumnSet::LogupMain,
+            proof.trace_profile.column_set,
         )?;
         if proof.trace_profile != expected_trace_profile {
             return Err(
@@ -30881,6 +30904,79 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
                 | NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn goldilocks_npo_tip5_lookup_logup_quotient_accepts_full_main_trace() {
+        let (circuit, public_inputs) = build_npo_only_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+        let (trace_profile, trace) = terminal_test_tip5_lookup_trace(&compiler, &vk, &witness);
+        let prelude = terminal_test_tip5_lookup_fri_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &witness,
+            TerminalNpoTip5LookupFriColumnSet::FullMain,
+        );
+
+        let prove_start = std::time::Instant::now();
+        let proof =
+            NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_logup_quotient_from_trace_goldilocks(
+                &prelude,
+                &trace_profile,
+                &trace,
+                TerminalNpoTip5LookupFriColumnSet::FullMain,
+            )
+            .expect("terminal Tip5 lookup full-main LogUp quotient proof must build");
+        let prove_elapsed = prove_start.elapsed();
+        assert_eq!(
+            proof.trace_profile.column_set,
+            TerminalNpoTip5LookupFriColumnSet::FullMain
+        );
+        assert_eq!(proof.trace_profile.field_columns, trace_profile.main_width);
+
+        let verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_tip5_lookup_logup_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &proof,
+            )
+            .expect("terminal Tip5 lookup full-main LogUp quotient proof must verify");
+        let verify_elapsed = verify_start.elapsed();
+        let serialized = postcard::to_allocvec(&proof)
+            .expect("terminal Tip5 lookup full-main LogUp quotient proof must serialize");
+        let compressed_fri_bytes = postcard::to_allocvec(&proof.proof)
+            .expect("terminal Tip5 lookup full-main LogUp compact FRI proof must serialize");
+        println!(
+            "terminal Tip5 lookup full-main LogUp quotient candidate: {} bytes ({:.1} KiB), compact_inner_fri={} bytes ({:.1} KiB), prove={:?}, verify={:?}",
+            serialized.len(),
+            serialized.len() as f64 / 1024.0,
+            compressed_fri_bytes.len(),
+            compressed_fri_bytes.len() as f64 / 1024.0,
+            prove_elapsed,
+            verify_elapsed,
+        );
+
+        let mut unsupported_column_set = proof;
+        unsupported_column_set.trace_profile.column_set =
+            TerminalNpoTip5LookupFriColumnSet::TerminalIo;
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_logup_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &unsupported_column_set,
+            )
+            .expect_err("LogUp verifier must reject unsupported trace column sets");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { label, .. }
+                if label == "tip5_lookup_logup_trace_column_set"
         ));
     }
 
