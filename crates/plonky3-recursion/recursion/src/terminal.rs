@@ -1293,6 +1293,66 @@ pub struct TerminalNpoTip5LookupTraceDomainNpoIoExhaustiveBridgeProof {
     pub proof: TerminalCompressedFriProof,
 }
 
+/// Accumulator profile for the LogUp-style equality bridge between the
+/// row-domain selected+lookup commitment and the trace-domain NPO-IO
+/// projection.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalNpoTip5LookupTraceDomainNpoIoLogupAccumulatorProfile {
+    pub rows: usize,
+    pub padded_rows: usize,
+    pub log_rows: usize,
+    pub field_basis_dimension: usize,
+    pub field_columns: usize,
+    pub basis_columns: usize,
+    pub proximity: TerminalProximityProfile,
+}
+
+/// Quotient profile for one side of the LogUp-style trace-domain NPO-IO
+/// equality bridge.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile {
+    pub rows: usize,
+    pub padded_rows: usize,
+    pub log_rows: usize,
+    pub field_basis_dimension: usize,
+    pub field_columns: usize,
+    pub basis_columns: usize,
+    pub proximity: TerminalProximityProfile,
+}
+
+/// FRI checkpoint for a signed LogUp-style multiset equality between
+/// `(tip5_rank, io_limb, value)` tuples read from the NPO-row lookup-IO suffix
+/// in the selected+lookup commitment and from the trace-domain NPO-IO
+/// projection. This is the size-oriented replacement candidate for
+/// `TerminalNpoTip5LookupTraceDomainNpoIoExhaustiveBridgeProof`.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TerminalNpoTip5LookupTraceDomainNpoIoLogupBridgeProof {
+    pub selected_profile: TerminalNpoPolynomialFriProfile,
+    pub lookup_io_profile: TerminalNpoTip5LookupNpoRowsIoProfile,
+    pub trace_npo_io_profile: TerminalNpoTip5LookupFriProfile,
+    pub selected_accumulator_profile: TerminalNpoTip5LookupTraceDomainNpoIoLogupAccumulatorProfile,
+    pub trace_accumulator_profile: TerminalNpoTip5LookupTraceDomainNpoIoLogupAccumulatorProfile,
+    pub selected_quotient_profile: TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile,
+    pub trace_quotient_profile: TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile,
+    pub selected_lookup_commitment: TerminalFriCommitment,
+    pub trace_commitment: TerminalFriCommitment,
+    pub lookup_io_commitment: TerminalFriCommitment,
+    pub trace_npo_io_commitment: TerminalFriCommitment,
+    pub selected_accumulator_commitment: TerminalFriCommitment,
+    pub trace_accumulator_commitment: TerminalFriCommitment,
+    pub selected_quotient_commitment: TerminalFriCommitment,
+    pub trace_quotient_commitment: TerminalFriCommitment,
+    pub selected_final_cumulative_basis: Vec<Vec<u64>>,
+    pub trace_final_cumulative_basis: Vec<Vec<u64>>,
+    pub opened_selected_lookup_basis: Vec<Vec<u64>>,
+    pub opened_trace_npo_io_basis: Vec<Vec<u64>>,
+    pub opened_selected_accumulator_points_basis: Vec<Vec<Vec<u64>>>,
+    pub opened_trace_accumulator_points_basis: Vec<Vec<Vec<u64>>>,
+    pub opened_selected_quotient_basis: Vec<Vec<u64>>,
+    pub opened_trace_quotient_basis: Vec<Vec<u64>>,
+    pub proof: TerminalCompressedFriProof,
+}
+
 /// Quotient profile for the optimized Tip5 lookup AIR's internal algebraic
 /// constraints. This does not include the global LogUp byte-table argument;
 /// it checks the low-degree local relations over the committed main trace:
@@ -6370,6 +6430,434 @@ impl NativeTerminalCompiler {
             trace_npo_io_commitment,
             opened_selected_lookup_points_basis,
             opened_trace_npo_io_points_basis,
+            proof,
+        })
+    }
+
+    pub fn prove_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        witness: &TerminalWitness<F>,
+        prelude: &TerminalProofPrelude,
+    ) -> Result<TerminalNpoTip5LookupTraceDomainNpoIoLogupBridgeProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let columns = self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
+        let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
+        let (_, trace, _) =
+            self.terminal_npo_tip5_lookup_air_trace_goldilocks(verifying_key, witness)?;
+        Self::prove_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_from_columns_goldilocks(
+            prelude,
+            &trace_profile,
+            &columns,
+            &trace,
+        )
+    }
+
+    fn prove_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_from_columns_goldilocks<F>(
+        prelude: &TerminalProofPrelude,
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+        columns: &TerminalNpoPolynomialColumns<F>,
+        trace: &RowMajorMatrix<Goldilocks>,
+    ) -> Result<TerminalNpoTip5LookupTraceDomainNpoIoLogupBridgeProof, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let (selected_profile, selected_matrix) =
+            Self::terminal_npo_polynomial_basis_matrix_for_column_set_goldilocks(
+                columns,
+                TerminalNpoPolynomialFriColumnSet::ProverDependent,
+            )?;
+        let (lookup_io_profile, lookup_io_matrix) =
+            Self::terminal_npo_tip5_lookup_npo_rows_io_matrix_goldilocks(
+                trace_profile,
+                columns,
+                trace,
+            )?;
+        if lookup_io_profile.padded_rows != selected_profile.padded_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_selected_rows".into(),
+                    expected: selected_profile.padded_rows,
+                    got: lookup_io_profile.padded_rows,
+                },
+            );
+        }
+        let (trace_fri_profile, trace_matrix) =
+            Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(
+                trace_profile,
+                trace,
+                TerminalNpoTip5LookupFriColumnSet::FullMain,
+            )?;
+        let (trace_lookup_io_profile, trace_lookup_io_matrix) =
+            Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(
+                trace_profile,
+                trace,
+                TerminalNpoTip5LookupFriColumnSet::TerminalIo,
+            )?;
+        let (trace_npo_io_profile, trace_npo_io_matrix) =
+            Self::terminal_npo_tip5_lookup_io_projection_matrix_from_columns_goldilocks(
+                trace_profile,
+                columns,
+            )?;
+        if trace_lookup_io_profile != trace_npo_io_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_trace_profiles".into(),
+                    expected: trace_lookup_io_profile.basis_columns,
+                    got: trace_npo_io_profile.basis_columns,
+                },
+            );
+        }
+
+        let selected_accumulator_profile =
+            Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_accumulator_profile(
+                selected_profile.rows,
+                selected_profile.padded_rows,
+                selected_profile.proximity,
+            )?;
+        let trace_accumulator_profile =
+            Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_accumulator_profile(
+                trace_npo_io_profile.rows,
+                trace_npo_io_profile.padded_rows,
+                trace_npo_io_profile.proximity,
+            )?;
+        let selected_quotient_profile =
+            Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_quotient_profile(
+                selected_profile.rows,
+                selected_profile.padded_rows,
+                selected_profile.proximity,
+            )?;
+        let trace_quotient_profile =
+            Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_quotient_profile(
+                trace_npo_io_profile.rows,
+                trace_npo_io_profile.padded_rows,
+                trace_npo_io_profile.proximity,
+            )?;
+        for profile in [
+            selected_profile.proximity,
+            lookup_io_profile.proximity,
+            trace_fri_profile.proximity,
+            trace_lookup_io_profile.proximity,
+            trace_npo_io_profile.proximity,
+            selected_accumulator_profile.proximity,
+            trace_accumulator_profile.proximity,
+            selected_quotient_profile.proximity,
+            trace_quotient_profile.proximity,
+        ] {
+            if profile != prelude.relation_profile.proximity {
+                return Err(
+                    NativeTerminalVerifyError::TerminalProximityParametersMismatch {
+                        expected: prelude.relation_profile.proximity.proof_parameters(),
+                        got: profile.proof_parameters(),
+                    },
+                );
+            }
+        }
+
+        let (selected_selector_evals, selected_rank_evals) =
+            Self::terminal_npo_tip5_lookup_selected_row_selector_rank_evals(columns)?;
+        let (trace_selector_evals, trace_rank_evals) =
+            Self::terminal_npo_tip5_lookup_trace_row_selector_rank_evals(trace_profile)?;
+
+        let (pcs, mut challenger) =
+            Self::terminal_fri_pcs_and_challenger(selected_profile.proximity)?;
+        let selected_domain = <TerminalFriPcs as Pcs<
+            TerminalFriChallenge,
+            TerminalFriChallenger,
+        >>::natural_domain_for_degree(
+            &pcs, selected_profile.padded_rows
+        );
+        let trace_domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                trace_fri_profile.padded_rows,
+            );
+        let selected_lookup_matrix = Self::terminal_row_major_matrix_horizontal_concat_goldilocks(
+            "tip5_lookup_trace_domain_npo_io_logup_selected_lookup",
+            &selected_matrix,
+            &lookup_io_matrix,
+        )?;
+        let (selected_lookup_commitment, selected_lookup_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(selected_domain, selected_lookup_matrix.clone())],
+            );
+        let (trace_commitment, _trace_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(trace_domain, trace_matrix)],
+            );
+        let (lookup_io_commitment, _lookup_io_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(trace_domain, trace_lookup_io_matrix)],
+            );
+        let (trace_npo_io_commitment, trace_npo_io_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(trace_domain, trace_npo_io_matrix.clone())],
+            );
+        let selected_lookup_commitment_digest =
+            Self::terminal_fri_commitment_digest(&selected_lookup_commitment)?;
+        let trace_commitment_digest = Self::terminal_fri_commitment_digest(&trace_commitment)?;
+        let lookup_io_commitment_digest =
+            Self::terminal_fri_commitment_digest(&lookup_io_commitment)?;
+        let trace_npo_io_commitment_digest =
+            Self::terminal_fri_commitment_digest(&trace_npo_io_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(
+            prelude,
+            &[
+                selected_lookup_commitment_digest,
+                trace_commitment_digest,
+                lookup_io_commitment_digest,
+                trace_npo_io_commitment_digest,
+            ],
+        )?;
+
+        Self::seed_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_challenger(
+            &mut challenger,
+            prelude,
+            &selected_profile,
+            &lookup_io_profile,
+            &trace_npo_io_profile,
+            &selected_accumulator_profile,
+            &trace_accumulator_profile,
+            &selected_quotient_profile,
+            &trace_quotient_profile,
+        );
+        challenger.observe(selected_lookup_commitment.clone());
+        challenger.observe(trace_commitment.clone());
+        challenger.observe(lookup_io_commitment.clone());
+        challenger.observe(trace_npo_io_commitment.clone());
+        let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
+        let beta_rank: TerminalFriChallenge = challenger.sample_algebra_element();
+        let beta_limb: TerminalFriChallenge = challenger.sample_algebra_element();
+
+        let (selected_accumulator_matrix, selected_final_cumulatives) =
+            Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_accumulator_matrix_goldilocks(
+                &selected_lookup_matrix,
+                selected_profile.basis_columns,
+                selected_profile.rows,
+                selected_profile.padded_rows,
+                &selected_selector_evals,
+                &selected_rank_evals,
+                TerminalFriChallenge::ONE,
+                alpha,
+                beta_rank,
+                beta_limb,
+            )?;
+        let (trace_accumulator_matrix, trace_final_cumulatives) =
+            Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_accumulator_matrix_goldilocks(
+                &trace_npo_io_matrix,
+                0,
+                trace_npo_io_profile.rows,
+                trace_npo_io_profile.padded_rows,
+                &trace_selector_evals,
+                &trace_rank_evals,
+                -TerminalFriChallenge::ONE,
+                alpha,
+                beta_rank,
+                beta_limb,
+            )?;
+        for (selected, trace) in selected_final_cumulatives
+            .iter()
+            .zip(trace_final_cumulatives.iter())
+        {
+            if *selected + *trace != TerminalFriChallenge::ZERO {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                        label: "tip5_lookup_trace_domain_npo_io_logup_final".into(),
+                    },
+                );
+            }
+        }
+
+        let (selected_accumulator_commitment, selected_accumulator_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(selected_domain, selected_accumulator_matrix.clone())],
+            );
+        let (trace_accumulator_commitment, trace_accumulator_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(trace_domain, trace_accumulator_matrix.clone())],
+            );
+        challenger.observe(selected_accumulator_commitment.clone());
+        challenger.observe(trace_accumulator_commitment.clone());
+        challenger.observe_algebra_slice(&selected_final_cumulatives);
+        challenger.observe_algebra_slice(&trace_final_cumulatives);
+        let gamma: TerminalFriChallenge = challenger.sample_algebra_element();
+
+        let selected_quotient_domain =
+            selected_domain.create_disjoint_domain(selected_quotient_profile.padded_rows);
+        let trace_quotient_domain =
+            trace_domain.create_disjoint_domain(trace_quotient_profile.padded_rows);
+        let selected_quotient_matrix =
+            Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_quotient_matrix_goldilocks(
+                selected_domain,
+                selected_quotient_domain,
+                &selected_lookup_matrix,
+                &selected_accumulator_matrix,
+                &selected_final_cumulatives,
+                &selected_selector_evals,
+                &selected_rank_evals,
+                selected_profile.basis_columns,
+                selected_profile.rows,
+                selected_profile.padded_rows,
+                TerminalFriChallenge::ONE,
+                alpha,
+                beta_rank,
+                beta_limb,
+                gamma,
+            )?;
+        let trace_quotient_matrix =
+            Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_quotient_matrix_goldilocks(
+                trace_domain,
+                trace_quotient_domain,
+                &trace_npo_io_matrix,
+                &trace_accumulator_matrix,
+                &trace_final_cumulatives,
+                &trace_selector_evals,
+                &trace_rank_evals,
+                0,
+                trace_npo_io_profile.rows,
+                trace_npo_io_profile.padded_rows,
+                -TerminalFriChallenge::ONE,
+                alpha,
+                beta_rank,
+                beta_limb,
+                gamma,
+            )?;
+        let (selected_quotient_commitment, selected_quotient_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(selected_quotient_domain, selected_quotient_matrix)],
+            );
+        let (trace_quotient_commitment, trace_quotient_data) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [(trace_quotient_domain, trace_quotient_matrix)],
+            );
+        challenger.observe(selected_quotient_commitment.clone());
+        challenger.observe(trace_quotient_commitment.clone());
+        let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let selected_next_zeta = selected_domain.next_point(zeta).ok_or_else(|| {
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason:
+                    "terminal Tip5 selected-domain NPO IO LogUp opening domain has no successor"
+                        .into(),
+            }
+        })?;
+        let trace_next_zeta = trace_domain.next_point(zeta).ok_or_else(|| {
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: "terminal Tip5 trace-domain NPO IO LogUp opening domain has no successor"
+                    .into(),
+            }
+        })?;
+        let (opened_values, plain_proof) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
+                &pcs,
+                vec![
+                    (&selected_lookup_data, vec![vec![zeta]]),
+                    (&trace_npo_io_data, vec![vec![zeta]]),
+                    (
+                        &selected_accumulator_data,
+                        vec![vec![zeta, selected_next_zeta]],
+                    ),
+                    (&trace_accumulator_data, vec![vec![zeta, trace_next_zeta]]),
+                    (&selected_quotient_data, vec![vec![zeta]]),
+                    (&trace_quotient_data, vec![vec![zeta]]),
+                ],
+                &mut challenger,
+            );
+        let opened_selected_lookup_basis =
+            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
+        let opened_trace_npo_io_basis =
+            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 1)?;
+        let opened_selected_accumulator_points_basis =
+            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 2)?;
+        let opened_trace_accumulator_points_basis =
+            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 3)?;
+        let opened_selected_quotient_basis =
+            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 4)?;
+        let opened_trace_quotient_basis =
+            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 5)?;
+
+        let mut query_challenger = TerminalFriChallenger::new(Tip5Perm);
+        Self::seed_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_challenger(
+            &mut query_challenger,
+            prelude,
+            &selected_profile,
+            &lookup_io_profile,
+            &trace_npo_io_profile,
+            &selected_accumulator_profile,
+            &trace_accumulator_profile,
+            &selected_quotient_profile,
+            &trace_quotient_profile,
+        );
+        query_challenger.observe(selected_lookup_commitment.clone());
+        query_challenger.observe(trace_commitment.clone());
+        query_challenger.observe(lookup_io_commitment.clone());
+        query_challenger.observe(trace_npo_io_commitment.clone());
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        query_challenger.observe(selected_accumulator_commitment.clone());
+        query_challenger.observe(trace_accumulator_commitment.clone());
+        query_challenger.observe_algebra_slice(&selected_final_cumulatives);
+        query_challenger.observe_algebra_slice(&trace_final_cumulatives);
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        query_challenger.observe(selected_quotient_commitment.clone());
+        query_challenger.observe(trace_quotient_commitment.clone());
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        for matrix in &opened_values {
+            for round in matrix {
+                for point_values in round {
+                    query_challenger.observe_algebra_slice(point_values);
+                }
+            }
+        }
+        let query_indices = Self::derive_terminal_fri_query_indices_from_challenger(
+            &mut query_challenger,
+            &plain_proof,
+            selected_profile.proximity,
+        )?;
+        let proof = Self::compress_terminal_fri_proof(&plain_proof, &query_indices)?;
+
+        Ok(TerminalNpoTip5LookupTraceDomainNpoIoLogupBridgeProof {
+            selected_profile,
+            lookup_io_profile,
+            trace_npo_io_profile,
+            selected_accumulator_profile,
+            trace_accumulator_profile,
+            selected_quotient_profile,
+            trace_quotient_profile,
+            selected_lookup_commitment,
+            trace_commitment,
+            lookup_io_commitment,
+            trace_npo_io_commitment,
+            selected_accumulator_commitment,
+            trace_accumulator_commitment,
+            selected_quotient_commitment,
+            trace_quotient_commitment,
+            selected_final_cumulative_basis: selected_final_cumulatives
+                .iter()
+                .map(Self::goldilocks_basis_u64)
+                .collect(),
+            trace_final_cumulative_basis: trace_final_cumulatives
+                .iter()
+                .map(Self::goldilocks_basis_u64)
+                .collect(),
+            opened_selected_lookup_basis,
+            opened_trace_npo_io_basis,
+            opened_selected_accumulator_points_basis,
+            opened_trace_accumulator_points_basis,
+            opened_selected_quotient_basis,
+            opened_trace_quotient_basis,
             proof,
         })
     }
@@ -17840,6 +18328,419 @@ impl NativeTerminalCompiler {
         Ok(rows)
     }
 
+    const fn terminal_npo_tip5_lookup_trace_domain_npo_io_logup_lanes() -> usize {
+        26
+    }
+
+    const fn terminal_npo_tip5_lookup_trace_domain_npo_io_logup_group_size() -> usize {
+        3
+    }
+
+    const fn terminal_npo_tip5_lookup_trace_domain_npo_io_logup_groups() -> usize {
+        let lanes = Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_lanes();
+        let group_size = Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_group_size();
+        (lanes + group_size - 1) / group_size
+    }
+
+    fn terminal_npo_tip5_lookup_trace_domain_npo_io_logup_accumulator_profile(
+        rows: usize,
+        padded_rows: usize,
+        proximity: TerminalProximityProfile,
+    ) -> Result<
+        TerminalNpoTip5LookupTraceDomainNpoIoLogupAccumulatorProfile,
+        NativeTerminalVerifyError,
+    > {
+        if rows == 0 || padded_rows == 0 {
+            return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
+        }
+        let field_basis_dimension =
+            <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let field_columns = Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_groups();
+        Ok(
+            TerminalNpoTip5LookupTraceDomainNpoIoLogupAccumulatorProfile {
+                rows,
+                padded_rows,
+                log_rows: padded_rows.trailing_zeros() as usize,
+                field_basis_dimension,
+                field_columns,
+                basis_columns: field_columns * field_basis_dimension,
+                proximity,
+            },
+        )
+    }
+
+    fn terminal_npo_tip5_lookup_trace_domain_npo_io_logup_quotient_profile(
+        rows: usize,
+        padded_rows: usize,
+        proximity: TerminalProximityProfile,
+    ) -> Result<TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile, NativeTerminalVerifyError>
+    {
+        if rows == 0 || padded_rows == 0 {
+            return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
+        }
+        let degree = Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_group_size() + 1;
+        let quotient_rows = padded_rows.checked_mul(degree).ok_or(
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: "terminal Tip5 trace-domain NPO IO LogUp quotient domain overflow".into(),
+            },
+        )?;
+        Ok(TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile {
+            rows,
+            padded_rows: quotient_rows,
+            log_rows: quotient_rows.trailing_zeros() as usize,
+            field_basis_dimension:
+                <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION,
+            field_columns: 1,
+            basis_columns: <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION,
+            proximity,
+        })
+    }
+
+    fn terminal_npo_tip5_lookup_selected_row_selector_rank_evals<F>(
+        columns: &TerminalNpoPolynomialColumns<F>,
+    ) -> Result<(Vec<Goldilocks>, Vec<Goldilocks>), NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let rows = Self::terminal_npo_polynomial_tip5_row_indices(columns)?;
+        let padded_rows = 1usize << columns.layout.log_rows;
+        let mut selector = vec![Goldilocks::ZERO; padded_rows];
+        let mut rank = vec![Goldilocks::ZERO; padded_rows];
+        for (tip5_rank, row) in rows.iter().copied().enumerate() {
+            selector[row] = Goldilocks::ONE;
+            rank[row] = Goldilocks::from_u64(tip5_rank as u64);
+        }
+        Ok((selector, rank))
+    }
+
+    fn terminal_npo_tip5_lookup_trace_row_selector_rank_evals(
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+    ) -> Result<(Vec<Goldilocks>, Vec<Goldilocks>), NativeTerminalVerifyError> {
+        Self::verify_terminal_npo_tip5_lookup_trace_profile_digest(trace_profile)?;
+        let padded_rows = trace_profile.main_rows.next_power_of_two();
+        let mut selector = vec![Goldilocks::ZERO; padded_rows];
+        let mut rank = vec![Goldilocks::ZERO; padded_rows];
+        for tip5_rank in 0..trace_profile.tip5_rows {
+            let row = trace_profile.permutation_row_offset + tip5_rank;
+            if row >= padded_rows {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                        label: "tip5_lookup_trace_domain_npo_io_logup_trace_rank_row".into(),
+                        expected: padded_rows,
+                        got: row + 1,
+                    },
+                );
+            }
+            selector[row] = Goldilocks::ONE;
+            rank[row] = Goldilocks::from_u64(tip5_rank as u64);
+        }
+        Ok((selector, rank))
+    }
+
+    fn terminal_npo_tip5_lookup_trace_domain_npo_io_logup_accumulator_matrix_goldilocks(
+        value_matrix: &RowMajorMatrix<Goldilocks>,
+        value_offset: usize,
+        rows: usize,
+        padded_rows: usize,
+        selector_evals: &[Goldilocks],
+        rank_evals: &[Goldilocks],
+        sign: TerminalFriChallenge,
+        alpha: TerminalFriChallenge,
+        beta_rank: TerminalFriChallenge,
+        beta_limb: TerminalFriChallenge,
+    ) -> Result<(RowMajorMatrix<Goldilocks>, Vec<TerminalFriChallenge>), NativeTerminalVerifyError>
+    {
+        let lanes = Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_lanes();
+        if value_offset + lanes > value_matrix.width() {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_value_width".into(),
+                    expected: value_offset + lanes,
+                    got: value_matrix.width(),
+                },
+            );
+        }
+        if value_matrix.height() != padded_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_value_rows".into(),
+                    expected: padded_rows,
+                    got: value_matrix.height(),
+                },
+            );
+        }
+        if selector_evals.len() != padded_rows || rank_evals.len() != padded_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_fixed_rows".into(),
+                    expected: padded_rows,
+                    got: selector_evals.len().min(rank_evals.len()),
+                },
+            );
+        }
+        if rows > padded_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_rows".into(),
+                    expected: padded_rows,
+                    got: rows,
+                },
+            );
+        }
+
+        let group_count = Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_groups();
+        let group_size = Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_group_size();
+        let basis_dimension = <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let mut values = Vec::with_capacity(padded_rows * group_count * basis_dimension);
+        let mut running = vec![TerminalFriChallenge::ZERO; group_count];
+        for row in 0..padded_rows {
+            for value in &running {
+                values.extend_from_slice(value.as_basis_coefficients_slice());
+            }
+            let selector = TerminalFriChallenge::from(selector_evals[row]);
+            if selector == TerminalFriChallenge::ZERO {
+                continue;
+            }
+            let rank = TerminalFriChallenge::from(rank_evals[row]);
+            for (group, running_group) in running.iter_mut().enumerate() {
+                let start = group * group_size;
+                let end = (start + group_size).min(lanes);
+                for limb in start..end {
+                    let value = TerminalFriChallenge::from(
+                        value_matrix.values[row * value_matrix.width() + value_offset + limb],
+                    );
+                    let limb_challenge =
+                        TerminalFriChallenge::from(Goldilocks::from_u64(limb as u64));
+                    let combined = rank * beta_rank + limb_challenge * beta_limb + value;
+                    let denominator = alpha - combined;
+                    let inverse = denominator.try_inverse().ok_or_else(|| {
+                        NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                            reason: "terminal Tip5 trace-domain NPO IO LogUp challenge hit a denominator pole".into(),
+                        }
+                    })?;
+                    *running_group += sign * selector * inverse;
+                }
+            }
+        }
+        Ok((
+            RowMajorMatrix::new(values, group_count * basis_dimension),
+            running,
+        ))
+    }
+
+    fn terminal_npo_tip5_lookup_trace_domain_npo_io_logup_group_constraint_at_point(
+        values: &[TerminalFriChallenge],
+        value_offset: usize,
+        accumulator: TerminalFriChallenge,
+        next_accumulator: TerminalFriChallenge,
+        final_cumulative: TerminalFriChallenge,
+        selector: TerminalFriChallenge,
+        rank: TerminalFriChallenge,
+        sign: TerminalFriChallenge,
+        alpha: TerminalFriChallenge,
+        beta_rank: TerminalFriChallenge,
+        beta_limb: TerminalFriChallenge,
+        group: usize,
+        first_selector: TerminalFriChallenge,
+        last_selector: TerminalFriChallenge,
+        transition_selector: TerminalFriChallenge,
+    ) -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
+        let lanes = Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_lanes();
+        let group_size = Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_group_size();
+        if group >= Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_groups() {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_group".into(),
+                    expected: Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_groups(),
+                    got: group + 1,
+                },
+            );
+        }
+        if value_offset + lanes > values.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: value_offset + lanes,
+                    got: values.len(),
+                },
+            );
+        }
+        let start = group * group_size;
+        let end = (start + group_size).min(lanes);
+        let mut denominators = Vec::with_capacity(end - start);
+        for limb in start..end {
+            let limb_challenge = TerminalFriChallenge::from(Goldilocks::from_u64(limb as u64));
+            let combined =
+                rank * beta_rank + limb_challenge * beta_limb + values[value_offset + limb];
+            denominators.push(alpha - combined);
+        }
+
+        let mut denominator_product = TerminalFriChallenge::ONE;
+        for denominator in &denominators {
+            denominator_product *= *denominator;
+        }
+        let mut numerator = TerminalFriChallenge::ZERO;
+        for term in 0..denominators.len() {
+            let mut other_denominators = TerminalFriChallenge::ONE;
+            for (other, denominator) in denominators.iter().enumerate() {
+                if other != term {
+                    other_denominators *= *denominator;
+                }
+            }
+            numerator += sign * selector * other_denominators;
+        }
+
+        let transition = (next_accumulator - accumulator) * denominator_product - numerator;
+        let final_row = (final_cumulative - accumulator) * denominator_product - numerator;
+        Ok(first_selector * accumulator
+            + transition_selector * transition
+            + last_selector * final_row)
+    }
+
+    fn terminal_npo_tip5_lookup_trace_domain_npo_io_logup_quotient_matrix_goldilocks(
+        domain: <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::Domain,
+        quotient_domain: <TerminalFriPcs as Pcs<
+            TerminalFriChallenge,
+            TerminalFriChallenger,
+        >>::Domain,
+        value_matrix: &RowMajorMatrix<Goldilocks>,
+        accumulator_matrix: &RowMajorMatrix<Goldilocks>,
+        final_cumulatives: &[TerminalFriChallenge],
+        selector_evals: &[Goldilocks],
+        rank_evals: &[Goldilocks],
+        value_offset: usize,
+        rows: usize,
+        padded_rows: usize,
+        sign: TerminalFriChallenge,
+        alpha: TerminalFriChallenge,
+        beta_rank: TerminalFriChallenge,
+        beta_limb: TerminalFriChallenge,
+        gamma: TerminalFriChallenge,
+    ) -> Result<RowMajorMatrix<Goldilocks>, NativeTerminalVerifyError> {
+        if value_matrix.height() != padded_rows || accumulator_matrix.height() != padded_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_quotient_rows".into(),
+                    expected: padded_rows,
+                    got: value_matrix.height().min(accumulator_matrix.height()),
+                },
+            );
+        }
+        if rows > padded_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_quotient_real_rows".into(),
+                    expected: padded_rows,
+                    got: rows,
+                },
+            );
+        }
+        if selector_evals.len() != padded_rows || rank_evals.len() != padded_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_quotient_fixed_rows".into(),
+                    expected: padded_rows,
+                    got: selector_evals.len().min(rank_evals.len()),
+                },
+            );
+        }
+        let group_count = Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_groups();
+        let basis_dimension = <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        if final_cumulatives.len() != group_count
+            || accumulator_matrix.width() != group_count * basis_dimension
+        {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: group_count * basis_dimension,
+                    got: accumulator_matrix.width(),
+                },
+            );
+        }
+
+        let quotient_basis_dimension =
+            <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let mut quotient_values = Vec::with_capacity(quotient_domain.size());
+        let mut point = TerminalFriChallenge::from(quotient_domain.first_point());
+        for _ in 0..quotient_domain.size() {
+            let opened_values = value_matrix.interpolate_coset(domain.shift(), point);
+            let opened_accumulator_basis =
+                accumulator_matrix.interpolate_coset(domain.shift(), point);
+            let next_point = domain.next_point(point).ok_or_else(|| {
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                    reason:
+                        "terminal Tip5 trace-domain NPO IO LogUp quotient domain has no successor"
+                            .into(),
+                }
+            })?;
+            let opened_next_accumulator_basis =
+                accumulator_matrix.interpolate_coset(domain.shift(), next_point);
+            let selector = domain.evaluate_polynomial_at(selector_evals, point);
+            let rank = domain.evaluate_polynomial_at(rank_evals, point);
+            let selectors = domain.selectors_at_point(point);
+            let mut relation = TerminalFriChallenge::ZERO;
+            let mut coeff = TerminalFriChallenge::ONE;
+            for group in 0..group_count {
+                let offset = group * basis_dimension;
+                let accumulator =
+                    <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
+                        &opened_accumulator_basis[offset..offset + basis_dimension],
+                    )
+                    .ok_or(
+                        NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                            expected: quotient_basis_dimension,
+                            got: opened_accumulator_basis.len(),
+                        },
+                    )?;
+                let next_accumulator =
+                    <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
+                        &opened_next_accumulator_basis[offset..offset + basis_dimension],
+                    )
+                    .ok_or(
+                        NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                            expected: quotient_basis_dimension,
+                            got: opened_next_accumulator_basis.len(),
+                        },
+                    )?;
+                relation += coeff
+                    * Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_group_constraint_at_point(
+                        &opened_values,
+                        value_offset,
+                        accumulator,
+                        next_accumulator,
+                        final_cumulatives[group],
+                        TerminalFriChallenge::from(selector),
+                        TerminalFriChallenge::from(rank),
+                        sign,
+                        alpha,
+                        beta_rank,
+                        beta_limb,
+                        group,
+                        selectors.is_first_row,
+                        selectors.is_last_row,
+                        selectors.is_transition,
+                    )?;
+                coeff *= gamma;
+            }
+            quotient_values.push(relation / domain.vanishing_poly_at_point(point));
+            point = quotient_domain.next_point(point).ok_or_else(|| {
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                    reason:
+                        "terminal Tip5 trace-domain NPO IO LogUp quotient domain has no successor"
+                            .into(),
+                }
+            })?;
+        }
+        let quotient = RowMajorMatrix::new_col(quotient_values).flatten_to_base();
+        if quotient.width() != quotient_basis_dimension {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: quotient_basis_dimension,
+                    got: quotient.width(),
+                },
+            );
+        }
+        Ok(quotient)
+    }
+
     fn terminal_npo_tip5_lookup_io_projection_matrix_from_columns_goldilocks<F>(
         trace_profile: &TerminalNpoTip5LookupTraceProfile,
         columns: &TerminalNpoPolynomialColumns<F>,
@@ -21564,6 +22465,506 @@ impl NativeTerminalCompiler {
         Ok(())
     }
 
+    pub fn verify_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        proof: &TerminalNpoTip5LookupTraceDomainNpoIoLogupBridgeProof,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let selected_lookup_commitment_digest =
+            Self::terminal_fri_commitment_digest(&proof.selected_lookup_commitment)?;
+        let trace_commitment_digest =
+            Self::terminal_fri_commitment_digest(&proof.trace_commitment)?;
+        let lookup_io_commitment_digest =
+            Self::terminal_fri_commitment_digest(&proof.lookup_io_commitment)?;
+        let trace_npo_io_commitment_digest =
+            Self::terminal_fri_commitment_digest(&proof.trace_npo_io_commitment)?;
+        Self::verify_terminal_fri_prelude_commitments(
+            prelude,
+            &[
+                selected_lookup_commitment_digest,
+                trace_commitment_digest,
+                lookup_io_commitment_digest,
+                trace_npo_io_commitment_digest,
+            ],
+        )?;
+
+        let layout = Self::terminal_npo_polynomial_column_layout::<F>(verifying_key);
+        let labels = Self::terminal_npo_polynomial_column_labels(&layout);
+        let verifier_columns =
+            self.terminal_npo_polynomial_verifier_derived_columns_goldilocks(verifying_key)?;
+        let dummy_columns = TerminalNpoPolynomialColumns::<F> {
+            layout: layout.clone(),
+            labels,
+            columns: vec![Vec::new(); layout.column_count],
+        };
+        let selected_indices = Self::terminal_npo_polynomial_fri_column_indices(
+            &dummy_columns,
+            TerminalNpoPolynomialFriColumnSet::ProverDependent,
+        )?;
+        let expected_selected_profile =
+            Self::terminal_npo_polynomial_fri_profile_for_column_count::<F>(
+                &layout,
+                TerminalNpoPolynomialFriColumnSet::ProverDependent,
+                selected_indices.len(),
+            )?;
+        let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
+        let expected_lookup_io_profile =
+            Self::terminal_npo_tip5_lookup_npo_rows_io_profile(&trace_profile, &layout)?;
+        let expected_trace_npo_io_profile =
+            Self::terminal_npo_tip5_lookup_fri_profile_for_column_set(
+                &trace_profile,
+                TerminalNpoTip5LookupFriColumnSet::TerminalIo,
+            )?;
+        let expected_selected_accumulator_profile =
+            Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_accumulator_profile(
+                expected_selected_profile.rows,
+                expected_selected_profile.padded_rows,
+                expected_selected_profile.proximity,
+            )?;
+        let expected_trace_accumulator_profile =
+            Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_accumulator_profile(
+                expected_trace_npo_io_profile.rows,
+                expected_trace_npo_io_profile.padded_rows,
+                expected_trace_npo_io_profile.proximity,
+            )?;
+        let expected_selected_quotient_profile =
+            Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_quotient_profile(
+                expected_selected_profile.rows,
+                expected_selected_profile.padded_rows,
+                expected_selected_profile.proximity,
+            )?;
+        let expected_trace_quotient_profile =
+            Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_quotient_profile(
+                expected_trace_npo_io_profile.rows,
+                expected_trace_npo_io_profile.padded_rows,
+                expected_trace_npo_io_profile.proximity,
+            )?;
+        if proof.selected_profile != expected_selected_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_selected_profile".into(),
+                    expected: expected_selected_profile.basis_columns,
+                    got: proof.selected_profile.basis_columns,
+                },
+            );
+        }
+        if proof.lookup_io_profile != expected_lookup_io_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_lookup_io_profile".into(),
+                    expected: expected_lookup_io_profile.basis_columns,
+                    got: proof.lookup_io_profile.basis_columns,
+                },
+            );
+        }
+        if proof.trace_npo_io_profile != expected_trace_npo_io_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_trace_npo_io_profile".into(),
+                    expected: expected_trace_npo_io_profile.basis_columns,
+                    got: proof.trace_npo_io_profile.basis_columns,
+                },
+            );
+        }
+        if proof.selected_accumulator_profile != expected_selected_accumulator_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_selected_accumulator_profile"
+                        .into(),
+                    expected: expected_selected_accumulator_profile.basis_columns,
+                    got: proof.selected_accumulator_profile.basis_columns,
+                },
+            );
+        }
+        if proof.trace_accumulator_profile != expected_trace_accumulator_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_trace_accumulator_profile".into(),
+                    expected: expected_trace_accumulator_profile.basis_columns,
+                    got: proof.trace_accumulator_profile.basis_columns,
+                },
+            );
+        }
+        if proof.selected_quotient_profile != expected_selected_quotient_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_selected_quotient_profile".into(),
+                    expected: expected_selected_quotient_profile.basis_columns,
+                    got: proof.selected_quotient_profile.basis_columns,
+                },
+            );
+        }
+        if proof.trace_quotient_profile != expected_trace_quotient_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_trace_quotient_profile".into(),
+                    expected: expected_trace_quotient_profile.basis_columns,
+                    got: proof.trace_quotient_profile.basis_columns,
+                },
+            );
+        }
+
+        let group_count = Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_groups();
+        if proof.selected_final_cumulative_basis.len() != group_count {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: group_count,
+                    got: proof.selected_final_cumulative_basis.len(),
+                },
+            );
+        }
+        if proof.trace_final_cumulative_basis.len() != group_count {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: group_count,
+                    got: proof.trace_final_cumulative_basis.len(),
+                },
+            );
+        }
+        let selected_final_cumulatives = Self::terminal_field_values_from_basis_u64::<
+            TerminalFriChallenge,
+        >(&proof.selected_final_cumulative_basis)?;
+        let trace_final_cumulatives = Self::terminal_field_values_from_basis_u64::<
+            TerminalFriChallenge,
+        >(&proof.trace_final_cumulative_basis)?;
+        for (selected, trace) in selected_final_cumulatives
+            .iter()
+            .zip(trace_final_cumulatives.iter())
+        {
+            if *selected + *trace != TerminalFriChallenge::ZERO {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                        label: "tip5_lookup_trace_domain_npo_io_logup_final".into(),
+                    },
+                );
+            }
+        }
+        let selected_lookup_width =
+            proof.selected_profile.basis_columns + proof.lookup_io_profile.basis_columns;
+        Self::validate_terminal_opening_basis_len(
+            proof.opened_selected_lookup_basis.len(),
+            selected_lookup_width,
+        )?;
+        Self::validate_terminal_opening_basis_len(
+            proof.opened_trace_npo_io_basis.len(),
+            proof.trace_npo_io_profile.basis_columns,
+        )?;
+        let opened_selected_lookup = Self::terminal_field_values_from_basis_u64::<
+            TerminalFriChallenge,
+        >(&proof.opened_selected_lookup_basis)?;
+        let opened_trace_npo_io = Self::terminal_field_values_from_basis_u64::<TerminalFriChallenge>(
+            &proof.opened_trace_npo_io_basis,
+        )?;
+        let selected_accumulator_points_basis =
+            proof.opened_selected_accumulator_points_basis.as_slice();
+        let trace_accumulator_points_basis = proof.opened_trace_accumulator_points_basis.as_slice();
+        if selected_accumulator_points_basis.len() != 2 {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: 2,
+                    got: selected_accumulator_points_basis.len(),
+                },
+            );
+        }
+        if trace_accumulator_points_basis.len() != 2 {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: 2,
+                    got: trace_accumulator_points_basis.len(),
+                },
+            );
+        }
+        let mut opened_selected_accumulator_points = Vec::with_capacity(2);
+        for point_basis in selected_accumulator_points_basis {
+            Self::validate_terminal_opening_basis_len(
+                point_basis.len(),
+                proof.selected_accumulator_profile.basis_columns,
+            )?;
+            opened_selected_accumulator_points.push(Self::terminal_field_values_from_basis_u64::<
+                TerminalFriChallenge,
+            >(point_basis)?);
+        }
+        let mut opened_trace_accumulator_points = Vec::with_capacity(2);
+        for point_basis in trace_accumulator_points_basis {
+            Self::validate_terminal_opening_basis_len(
+                point_basis.len(),
+                proof.trace_accumulator_profile.basis_columns,
+            )?;
+            opened_trace_accumulator_points.push(Self::terminal_field_values_from_basis_u64::<
+                TerminalFriChallenge,
+            >(point_basis)?);
+        }
+        Self::validate_terminal_opening_basis_len(
+            proof.opened_selected_quotient_basis.len(),
+            proof.selected_quotient_profile.basis_columns,
+        )?;
+        Self::validate_terminal_opening_basis_len(
+            proof.opened_trace_quotient_basis.len(),
+            proof.trace_quotient_profile.basis_columns,
+        )?;
+        let opened_selected_quotient_flat = Self::terminal_field_values_from_basis_u64::<
+            TerminalFriChallenge,
+        >(&proof.opened_selected_quotient_basis)?;
+        let opened_trace_quotient_flat = Self::terminal_field_values_from_basis_u64::<
+            TerminalFriChallenge,
+        >(&proof.opened_trace_quotient_basis)?;
+        let selected_quotient =
+            <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
+                &opened_selected_quotient_flat,
+            )
+            .ok_or(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof.selected_quotient_profile.field_basis_dimension,
+                    got: opened_selected_quotient_flat.len(),
+                },
+            )?;
+        let trace_quotient =
+            <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
+                &opened_trace_quotient_flat,
+            )
+            .ok_or(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof.trace_quotient_profile.field_basis_dimension,
+                    got: opened_trace_quotient_flat.len(),
+                },
+            )?;
+
+        let (selected_selector_evals, selected_rank_evals) =
+            Self::terminal_npo_tip5_lookup_selected_row_selector_rank_evals(&verifier_columns)?;
+        let (trace_selector_evals, trace_rank_evals) =
+            Self::terminal_npo_tip5_lookup_trace_row_selector_rank_evals(&trace_profile)?;
+        let (pcs, mut challenger) =
+            Self::terminal_fri_pcs_and_challenger(proof.selected_profile.proximity)?;
+        Self::seed_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_challenger(
+            &mut challenger,
+            prelude,
+            &proof.selected_profile,
+            &proof.lookup_io_profile,
+            &proof.trace_npo_io_profile,
+            &proof.selected_accumulator_profile,
+            &proof.trace_accumulator_profile,
+            &proof.selected_quotient_profile,
+            &proof.trace_quotient_profile,
+        );
+        let selected_domain = <TerminalFriPcs as Pcs<
+            TerminalFriChallenge,
+            TerminalFriChallenger,
+        >>::natural_domain_for_degree(
+            &pcs, proof.selected_profile.padded_rows
+        );
+        let trace_domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                proof.trace_npo_io_profile.padded_rows,
+            );
+        let selected_quotient_domain =
+            selected_domain.create_disjoint_domain(proof.selected_quotient_profile.padded_rows);
+        let trace_quotient_domain =
+            trace_domain.create_disjoint_domain(proof.trace_quotient_profile.padded_rows);
+        challenger.observe(proof.selected_lookup_commitment.clone());
+        challenger.observe(proof.trace_commitment.clone());
+        challenger.observe(proof.lookup_io_commitment.clone());
+        challenger.observe(proof.trace_npo_io_commitment.clone());
+        let alpha: TerminalFriChallenge = challenger.sample_algebra_element();
+        let beta_rank: TerminalFriChallenge = challenger.sample_algebra_element();
+        let beta_limb: TerminalFriChallenge = challenger.sample_algebra_element();
+        challenger.observe(proof.selected_accumulator_commitment.clone());
+        challenger.observe(proof.trace_accumulator_commitment.clone());
+        challenger.observe_algebra_slice(&selected_final_cumulatives);
+        challenger.observe_algebra_slice(&trace_final_cumulatives);
+        let gamma: TerminalFriChallenge = challenger.sample_algebra_element();
+        challenger.observe(proof.selected_quotient_commitment.clone());
+        challenger.observe(proof.trace_quotient_commitment.clone());
+        let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let selected_next_zeta = selected_domain.next_point(zeta).ok_or_else(|| {
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason:
+                    "terminal Tip5 selected-domain NPO IO LogUp opening domain has no successor"
+                        .into(),
+            }
+        })?;
+        let trace_next_zeta = trace_domain.next_point(zeta).ok_or_else(|| {
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: "terminal Tip5 trace-domain NPO IO LogUp opening domain has no successor"
+                    .into(),
+            }
+        })?;
+        let restored = Self::decompress_terminal_fri_proof(&proof.proof)?;
+        <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
+            &pcs,
+            vec![
+                (
+                    proof.selected_lookup_commitment.clone(),
+                    vec![(selected_domain, vec![(zeta, opened_selected_lookup.clone())])],
+                ),
+                (
+                    proof.trace_npo_io_commitment.clone(),
+                    vec![(trace_domain, vec![(zeta, opened_trace_npo_io.clone())])],
+                ),
+                (
+                    proof.selected_accumulator_commitment.clone(),
+                    vec![(
+                        selected_domain,
+                        vec![
+                            (zeta, opened_selected_accumulator_points[0].clone()),
+                            (
+                                selected_next_zeta,
+                                opened_selected_accumulator_points[1].clone(),
+                            ),
+                        ],
+                    )],
+                ),
+                (
+                    proof.trace_accumulator_commitment.clone(),
+                    vec![(
+                        trace_domain,
+                        vec![
+                            (zeta, opened_trace_accumulator_points[0].clone()),
+                            (trace_next_zeta, opened_trace_accumulator_points[1].clone()),
+                        ],
+                    )],
+                ),
+                (
+                    proof.selected_quotient_commitment.clone(),
+                    vec![(
+                        selected_quotient_domain,
+                        vec![(zeta, opened_selected_quotient_flat.clone())],
+                    )],
+                ),
+                (
+                    proof.trace_quotient_commitment.clone(),
+                    vec![(
+                        trace_quotient_domain,
+                        vec![(zeta, opened_trace_quotient_flat.clone())],
+                    )],
+                ),
+            ],
+            &restored,
+            &mut challenger,
+        )
+        .map_err(|err| {
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: format!(
+                    "terminal Tip5 trace-domain NPO IO LogUp bridge FRI verification failed: {err:?}"
+                ),
+            }
+        })?;
+
+        let selected_selector =
+            selected_domain.evaluate_polynomial_at(&selected_selector_evals, zeta);
+        let selected_rank = selected_domain.evaluate_polynomial_at(&selected_rank_evals, zeta);
+        let trace_selector = trace_domain.evaluate_polynomial_at(&trace_selector_evals, zeta);
+        let trace_rank = trace_domain.evaluate_polynomial_at(&trace_rank_evals, zeta);
+        let selected_selectors = selected_domain.selectors_at_point(zeta);
+        let trace_selectors = trace_domain.selectors_at_point(zeta);
+        let basis_dimension = <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let mut selected_relation = TerminalFriChallenge::ZERO;
+        let mut trace_relation = TerminalFriChallenge::ZERO;
+        let mut coeff = TerminalFriChallenge::ONE;
+        for group in 0..group_count {
+            let offset = group * basis_dimension;
+            let selected_accumulator =
+                <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
+                    &opened_selected_accumulator_points[0][offset..offset + basis_dimension],
+                )
+                .ok_or(
+                    NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                        expected: basis_dimension,
+                        got: opened_selected_accumulator_points[0].len(),
+                    },
+                )?;
+            let selected_next_accumulator =
+                <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
+                    &opened_selected_accumulator_points[1][offset..offset + basis_dimension],
+                )
+                .ok_or(
+                    NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                        expected: basis_dimension,
+                        got: opened_selected_accumulator_points[1].len(),
+                    },
+                )?;
+            let trace_accumulator =
+                <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
+                    &opened_trace_accumulator_points[0][offset..offset + basis_dimension],
+                )
+                .ok_or(
+                    NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                        expected: basis_dimension,
+                        got: opened_trace_accumulator_points[0].len(),
+                    },
+                )?;
+            let trace_next_accumulator =
+                <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
+                    &opened_trace_accumulator_points[1][offset..offset + basis_dimension],
+                )
+                .ok_or(
+                    NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                        expected: basis_dimension,
+                        got: opened_trace_accumulator_points[1].len(),
+                    },
+                )?;
+            selected_relation += coeff
+                * Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_group_constraint_at_point(
+                    &opened_selected_lookup,
+                    proof.selected_profile.basis_columns,
+                    selected_accumulator,
+                    selected_next_accumulator,
+                    selected_final_cumulatives[group],
+                    selected_selector,
+                    selected_rank,
+                    TerminalFriChallenge::ONE,
+                    alpha,
+                    beta_rank,
+                    beta_limb,
+                    group,
+                    selected_selectors.is_first_row,
+                    selected_selectors.is_last_row,
+                    selected_selectors.is_transition,
+                )?;
+            trace_relation += coeff
+                * Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_group_constraint_at_point(
+                    &opened_trace_npo_io,
+                    0,
+                    trace_accumulator,
+                    trace_next_accumulator,
+                    trace_final_cumulatives[group],
+                    trace_selector,
+                    trace_rank,
+                    -TerminalFriChallenge::ONE,
+                    alpha,
+                    beta_rank,
+                    beta_limb,
+                    group,
+                    trace_selectors.is_first_row,
+                    trace_selectors.is_last_row,
+                    trace_selectors.is_transition,
+                )?;
+            coeff *= gamma;
+        }
+        if selected_relation != selected_quotient * selected_domain.vanishing_poly_at_point(zeta) {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_selected_quotient".into(),
+                },
+            );
+        }
+        if trace_relation != trace_quotient * trace_domain.vanishing_poly_at_point(zeta) {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: "tip5_lookup_trace_domain_npo_io_logup_trace_quotient".into(),
+                },
+            );
+        }
+
+        Ok(())
+    }
+
     pub fn verify_terminal_npo_tip5_lookup_backend_trace_value_bridge_goldilocks<F>(
         &self,
         verifying_key: &NativeTerminalVerifyingKey<F>,
@@ -21649,6 +23050,93 @@ impl NativeTerminalCompiler {
             public_inputs,
             prelude,
             exhaustive_bridge_proof,
+        )?;
+        Ok(())
+    }
+
+    pub fn verify_terminal_npo_tip5_lookup_backend_trace_value_logup_bridge_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        merged_proof: &TerminalNpoPolynomialFriResidualZeroRecomposeValueBridgeProof,
+        air_logup_proof: &TerminalNpoTip5LookupAirLogupQuotientProof,
+        projection_proof: &TerminalNpoTip5LookupTraceIoProjectionProof,
+        support_bridge_proof: &TerminalNpoTip5LookupIoSupportBridgeQuotientProof,
+        logup_bridge_proof: &TerminalNpoTip5LookupTraceDomainNpoIoLogupBridgeProof,
+    ) -> Result<(), NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        if merged_proof.selected_lookup_commitment != logup_bridge_proof.selected_lookup_commitment
+        {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: "tip5_lookup_backend_selected_lookup_logup_bridge".into(),
+                },
+            );
+        }
+        if air_logup_proof.trace_commitment != projection_proof.trace_commitment {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: "tip5_lookup_backend_trace_commitment_logup_bridge".into(),
+                },
+            );
+        }
+        if air_logup_proof.trace_commitment != logup_bridge_proof.trace_commitment {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: "tip5_lookup_backend_trace_logup_bridge".into(),
+                },
+            );
+        }
+        if projection_proof.io_commitment != support_bridge_proof.lookup_io_commitment {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: "tip5_lookup_backend_io_commitment_logup_bridge".into(),
+                },
+            );
+        }
+        if projection_proof.io_commitment != logup_bridge_proof.lookup_io_commitment {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: "tip5_lookup_backend_lookup_io_logup_bridge".into(),
+                },
+            );
+        }
+        if support_bridge_proof.npo_io_commitment != logup_bridge_proof.trace_npo_io_commitment {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
+                    label: "tip5_lookup_backend_trace_npo_io_logup_bridge".into(),
+                },
+            );
+        }
+        self.verify_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks::<
+            F,
+        >(verifying_key, public_inputs, prelude, merged_proof)?;
+        self.verify_terminal_npo_tip5_lookup_air_logup_quotient_goldilocks::<F>(
+            verifying_key,
+            public_inputs,
+            prelude,
+            air_logup_proof,
+        )?;
+        self.verify_terminal_npo_tip5_lookup_trace_io_projection_goldilocks::<F>(
+            verifying_key,
+            public_inputs,
+            prelude,
+            projection_proof,
+        )?;
+        self.verify_terminal_npo_tip5_lookup_io_support_bridge_quotient_goldilocks::<F>(
+            verifying_key,
+            public_inputs,
+            prelude,
+            support_bridge_proof,
+        )?;
+        self.verify_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_goldilocks::<F>(
+            verifying_key,
+            public_inputs,
+            prelude,
+            logup_bridge_proof,
         )?;
         Ok(())
     }
@@ -23734,6 +25222,53 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_npo_io_profile);
     }
 
+    fn seed_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_challenger(
+        challenger: &mut TerminalFriChallenger,
+        prelude: &TerminalProofPrelude,
+        selected_profile: &TerminalNpoPolynomialFriProfile,
+        lookup_io_profile: &TerminalNpoTip5LookupNpoRowsIoProfile,
+        trace_npo_io_profile: &TerminalNpoTip5LookupFriProfile,
+        selected_accumulator_profile: &TerminalNpoTip5LookupTraceDomainNpoIoLogupAccumulatorProfile,
+        trace_accumulator_profile: &TerminalNpoTip5LookupTraceDomainNpoIoLogupAccumulatorProfile,
+        selected_quotient_profile: &TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile,
+        trace_quotient_profile: &TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile,
+    ) {
+        Self::observe_terminal_fri_str(
+            challenger,
+            "nock-terminal-npo-tip5-lookup-trace-domain-npo-io-logup-bridge-v1",
+        );
+        for limb in prelude.challenge_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
+        for limb in prelude.public_values_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.security_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
+        Self::observe_terminal_npo_polynomial_fri_profile(challenger, selected_profile);
+        Self::observe_terminal_npo_tip5_lookup_npo_rows_io_profile(challenger, lookup_io_profile);
+        Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_npo_io_profile);
+        Self::observe_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_accumulator_profile(
+            challenger,
+            selected_accumulator_profile,
+        );
+        Self::observe_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_accumulator_profile(
+            challenger,
+            trace_accumulator_profile,
+        );
+        Self::observe_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_quotient_profile(
+            challenger,
+            selected_quotient_profile,
+        );
+        Self::observe_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_quotient_profile(
+            challenger,
+            trace_quotient_profile,
+        );
+    }
+
     fn seed_terminal_npo_tip5_lookup_air_algebra_quotient_challenger(
         challenger: &mut TerminalFriChallenger,
         prelude: &TerminalProofPrelude,
@@ -24026,6 +25561,44 @@ impl NativeTerminalCompiler {
         profile: &TerminalNpoTip5LookupNpoRowsIoProfile,
     ) {
         Self::observe_terminal_npo_tip5_lookup_trace_profile(challenger, &profile.trace);
+        Self::observe_terminal_fri_u64(challenger, profile.rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.padded_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.log_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.field_basis_dimension as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.field_columns as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.basis_columns as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.scheme_id as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.log_blowup as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.num_queries as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.max_log_arity as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.log_final_poly_len as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.pure_query_bits as u64);
+    }
+
+    fn observe_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_accumulator_profile(
+        challenger: &mut TerminalFriChallenger,
+        profile: &TerminalNpoTip5LookupTraceDomainNpoIoLogupAccumulatorProfile,
+    ) {
+        Self::observe_terminal_fri_u64(challenger, profile.rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.padded_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.log_rows as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.field_basis_dimension as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.field_columns as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.basis_columns as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.scheme_id as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.log_blowup as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.num_queries as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.max_log_arity as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.log_final_poly_len as u64);
+        Self::observe_terminal_fri_u64(challenger, profile.proximity.pure_query_bits as u64);
+    }
+
+    fn observe_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_quotient_profile(
+        challenger: &mut TerminalFriChallenger,
+        profile: &TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile,
+    ) {
         Self::observe_terminal_fri_u64(challenger, profile.rows as u64);
         Self::observe_terminal_fri_u64(challenger, profile.padded_rows as u64);
         Self::observe_terminal_fri_u64(challenger, profile.log_rows as u64);
@@ -33039,6 +34612,53 @@ mod tests {
             verify_elapsed,
         );
 
+        let logup_prove_start = std::time::Instant::now();
+        let logup_bridge_proof = compiler
+            .prove_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &combined_prelude,
+            )
+            .expect("trace-domain NPO IO LogUp bridge proof must build under combined prelude");
+        let logup_prove_elapsed = logup_prove_start.elapsed();
+        let logup_verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_tip5_lookup_backend_trace_value_logup_bridge_goldilocks::<
+                Goldilocks,
+            >(
+                &vk,
+                &public_inputs,
+                &combined_prelude,
+                &merged_proof,
+                &air_logup_proof,
+                &projection_proof,
+                &support_bridge_proof,
+                &logup_bridge_proof,
+            )
+            .expect("LogUp-linked terminal backend checkpoint must verify under combined prelude");
+        let logup_verify_elapsed = logup_verify_start.elapsed();
+        let logup_serialized = postcard::to_allocvec(&(
+            combined_prelude.clone(),
+            merged_proof.clone(),
+            air_logup_proof.clone(),
+            projection_proof.clone(),
+            support_bridge_proof.clone(),
+            logup_bridge_proof.clone(),
+        ))
+        .expect("LogUp-linked terminal backend checkpoint must serialize");
+        let logup_bridge_fri_bytes = postcard::to_allocvec(&logup_bridge_proof.proof)
+            .expect("trace-domain NPO IO LogUp bridge compact FRI must serialize");
+        println!(
+            "terminal Tip5 lookup backend LogUp-linked combined-prelude checkpoint: {} bytes ({:.1} KiB), logup_bridge_fri={} bytes ({:.1} KiB), logup_bridge_prove={:?}, logup_linked_verify={:?}",
+            logup_serialized.len(),
+            logup_serialized.len() as f64 / 1024.0,
+            logup_bridge_fri_bytes.len(),
+            logup_bridge_fri_bytes.len() as f64 / 1024.0,
+            logup_prove_elapsed,
+            logup_verify_elapsed,
+        );
+
         let missing_trace_prelude = compiler
             .build_proof_prelude_goldilocks(
                 &vk,
@@ -33078,6 +34698,101 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch { .. }
                 | NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+        ));
+    }
+
+    #[test]
+    fn goldilocks_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_measures_checkpoint() {
+        let (circuit, public_inputs) = build_npo_only_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+        let columns = compiler
+            .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
+            .expect("terminal NPO polynomial columns must build");
+        let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
+        let (_, trace, _) = compiler
+            .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
+            .expect("terminal Tip5 lookup trace must build");
+
+        let merged_roots =
+            NativeTerminalCompiler::terminal_npo_fri_residual_zero_recompose_value_bridge_prelude_commitments_goldilocks(
+                &trace_profile,
+                &columns,
+                &trace,
+            )
+            .expect("merged value-bridge prelude roots must build");
+        let projection_roots =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_io_projection_prelude_commitments_goldilocks(
+                &trace_profile,
+                &trace,
+            )
+            .expect("trace-IO projection prelude roots must build");
+        let support_bridge_roots =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_io_bridge_prelude_commitments_goldilocks(
+                &trace_profile,
+                &columns,
+                &trace,
+            )
+            .expect("trace-domain support bridge prelude roots must build");
+        assert_eq!(projection_roots[1], support_bridge_roots[0]);
+        let mut combined_roots = merged_roots;
+        combined_roots.extend_from_slice(&projection_roots);
+        combined_roots.push(support_bridge_roots[1]);
+        let combined_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                combined_roots,
+            )
+            .expect("combined terminal backend prelude must build");
+
+        let prove_start = std::time::Instant::now();
+        let proof = compiler
+            .prove_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &combined_prelude,
+            )
+            .expect("trace-domain NPO IO LogUp bridge proof must build");
+        let prove_elapsed = prove_start.elapsed();
+        let verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_goldilocks::<
+                Goldilocks,
+            >(&vk, &public_inputs, &combined_prelude, &proof)
+            .expect("trace-domain NPO IO LogUp bridge proof must verify");
+        let verify_elapsed = verify_start.elapsed();
+
+        let serialized = postcard::to_allocvec(&(combined_prelude.clone(), proof.clone()))
+            .expect("trace-domain NPO IO LogUp bridge checkpoint must serialize");
+        let fri_bytes = postcard::to_allocvec(&proof.proof)
+            .expect("trace-domain NPO IO LogUp bridge compact FRI must serialize");
+        println!(
+            "terminal Tip5 trace-domain NPO IO LogUp bridge checkpoint: {} bytes ({:.1} KiB), bridge_fri={} bytes ({:.1} KiB), prove={:?}, verify={:?}",
+            serialized.len(),
+            serialized.len() as f64 / 1024.0,
+            fri_bytes.len(),
+            fri_bytes.len() as f64 / 1024.0,
+            prove_elapsed,
+            verify_elapsed,
+        );
+
+        let mut tampered = proof;
+        tampered.selected_final_cumulative_basis[0][0] =
+            tampered.selected_final_cumulative_basis[0][0].wrapping_add(1);
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_goldilocks::<
+                Goldilocks,
+            >(&vk, &public_inputs, &combined_prelude, &tampered)
+            .expect_err("LogUp bridge must reject tampered final cumulative");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+                | NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { .. }
+                | NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
         ));
     }
 
@@ -33491,6 +35206,14 @@ mod tests {
                 &honest_trace,
             )
             .expect("honest exhaustive bridge proof must build");
+        let honest_logup_bridge_proof =
+            NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_trace_domain_npo_io_logup_bridge_from_columns_goldilocks(
+                &honest_bridge_prelude,
+                &trace_profile,
+                &columns,
+                &honest_trace,
+            )
+            .expect("honest LogUp bridge proof must build");
 
         let err = compiler
             .verify_terminal_npo_tip5_lookup_backend_trace_value_bridge_goldilocks::<Goldilocks>(
@@ -33509,6 +35232,25 @@ mod tests {
             NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
                 | NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { .. }
         ));
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_backend_trace_value_logup_bridge_goldilocks::<
+                Goldilocks,
+            >(
+                &vk,
+                &public_inputs,
+                &combined_prelude,
+                &merged_proof,
+                &divergent_air_logup_proof,
+                &divergent_projection_proof,
+                &forged_support_bridge_proof,
+                &honest_logup_bridge_proof,
+            )
+            .expect_err("LogUp-linked backend must reject forged trace-domain NPO IO projection");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+                | NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { .. }
+        ));
 
         let serialized = postcard::to_allocvec(&(
             combined_prelude,
@@ -33517,6 +35259,7 @@ mod tests {
             divergent_projection_proof,
             forged_support_bridge_proof,
             honest_exhaustive_bridge_proof,
+            honest_logup_bridge_proof,
         ))
         .expect("forged trace-domain NPO IO audit checkpoint must serialize");
         println!(

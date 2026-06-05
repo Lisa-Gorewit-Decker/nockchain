@@ -518,7 +518,20 @@ for this route.
   The production implementation should merge this accumulator and quotient
   with the existing AIR+LogUp/value-bridge openings; appending a separate
   proof would close the forged-projection audit but stay far above the 100 KiB
-  certificate target.
+  certificate target. An in-tree standalone version now implements this
+  signed two-domain LogUp bridge with grouped `(tip5_rank, io_limb, value)`
+  denominators. With 3-lane groups it measures `71,679` bytes / `70.0 KiB`
+  as a standalone bridge checkpoint, with compact FRI payload `68,797` bytes /
+  `67.2 KiB`, `prove=2.902s`, and `verify=18.9ms`; inserted into the current
+  linked checkpoint in place of the exhaustive bridge, it measures `401,613`
+  bytes / `392.2 KiB`, worse than the exhaustive-linked `362,813` bytes /
+  `354.3 KiB`. A 26-lane single-group sweep was also worse: `86,187` bytes /
+  `84.2 KiB`, compact FRI payload `84,355` bytes / `82.4 KiB`, and
+  `prove=17.634s`. The result is useful but negative: this bridge is the
+  right asymptotic shape for larger Tip5 row counts, but the current small
+  fixture and separate-proof transcript overhead require merging it with the
+  existing AIR+LogUp/value-bridge openings before it can help the ~100 KiB
+  production target.
 - `TerminalNpoTip5LookupFriOpeningProof`: a native terminal FRI opening
   checkpoint for the optimized Tip5 lookup AIR main trace. The prover commits
   the whole Goldilocks-valued lookup main matrix with recursive 5-round Tip5
