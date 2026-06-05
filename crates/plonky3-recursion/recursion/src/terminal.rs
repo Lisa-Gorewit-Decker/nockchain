@@ -817,15 +817,17 @@ pub struct TerminalProductionNpoPolynomialProof {
 /// Production proof-body for the terminal relation.
 ///
 /// This proof binds an assignment oracle for primitive sparse-R1CS sumcheck and,
-/// for keys with supported NPO rows, the integrated low-degree/proximity backend
-/// for residual-zero, recompose, Tip5 lookup AIR, byte LogUp, and NPO-IO
-/// consistency. It no longer serializes the full witness or exhaustive
-/// supported-NPO witness openings.
+/// for keys with supported NPO rows, an exhaustive row proof opening every
+/// supported Tip5/recompose NPO callsite against the same assignment oracle.
+/// The polynomial/proximity NPO backend remains a diagnostic and hardening
+/// track, but the measured production wire path uses exhaustive NPO checking
+/// because it is currently the native terminal path that satisfies the size and
+/// proving-time targets.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TerminalProductionProof {
     pub prelude: TerminalProofPrelude,
     pub primitive_r1cs_proof: TerminalR1csRowProductSumcheckProof,
-    pub npo_polynomial_proof: Option<TerminalProductionNpoPolynomialProof>,
+    pub npo_exhaustive_proof: Option<TerminalNpoExhaustiveProof>,
 }
 
 /// Operation inventory for a terminal verifier circuit.
@@ -5591,7 +5593,16 @@ impl NativeTerminalCompiler {
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
         let table = self.terminal_npo_polynomial_table_goldilocks(verifying_key, witness)?;
-        let inputs = Self::terminal_npo_tip5_air_inputs_from_table(&table)?;
+        Self::terminal_npo_tip5_air_trace_from_table(&table)
+    }
+
+    fn terminal_npo_tip5_air_trace_from_table<F>(
+        table: &TerminalNpoPolynomialTable<F>,
+    ) -> Result<(Vec<[Goldilocks; 16]>, RowMajorMatrix<Goldilocks>), NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let inputs = Self::terminal_npo_tip5_air_inputs_from_table(table)?;
         let raw_inputs = inputs
             .iter()
             .map(|state| core::array::from_fn(|i| PrimeField64::as_canonical_u64(&state[i])))
@@ -5616,7 +5627,23 @@ impl NativeTerminalCompiler {
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
         let table = self.terminal_npo_polynomial_table_goldilocks(verifying_key, witness)?;
-        let inputs = Self::terminal_npo_tip5_air_inputs_from_table(&table)?;
+        Self::terminal_npo_tip5_lookup_air_trace_from_table(&table)
+    }
+
+    fn terminal_npo_tip5_lookup_air_trace_from_table<F>(
+        table: &TerminalNpoPolynomialTable<F>,
+    ) -> Result<
+        (
+            Vec<[Goldilocks; 16]>,
+            RowMajorMatrix<Goldilocks>,
+            Vec<Goldilocks>,
+        ),
+        NativeTerminalVerifyError,
+    >
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let inputs = Self::terminal_npo_tip5_air_inputs_from_table(table)?;
         let raw_inputs = inputs
             .iter()
             .map(|state| core::array::from_fn(|i| PrimeField64::as_canonical_u64(&state[i])))
@@ -15683,81 +15710,57 @@ impl NativeTerminalCompiler {
     where
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
-        self.validate_goldilocks_production_query_domains(
-            verifying_key,
-            TerminalProofParameters::production_60bit(),
-        )?;
-        self.verify_assignment_with_goldilocks_npos(verifying_key, witness)?;
+        let validate_span = tracing::info_span!("terminal_production.validate_query_domains");
+        validate_span.in_scope(|| {
+            self.validate_goldilocks_production_query_domains(
+                verifying_key,
+                TerminalProofParameters::production_60bit(),
+            )
+        })?;
+        let assignment_validation_span =
+            tracing::info_span!("terminal_production.assignment_validation");
+        assignment_validation_span
+            .in_scope(|| self.verify_assignment_with_goldilocks_npos(verifying_key, witness))?;
 
-        let assignment_oracle =
-            self.commit_terminal_assignment_goldilocks(verifying_key, public_inputs, witness)?;
+        let assignment_commitment_span =
+            tracing::info_span!("terminal_production.assignment_commitment");
+        let assignment_oracle = assignment_commitment_span.in_scope(|| {
+            self.commit_terminal_assignment_goldilocks(verifying_key, public_inputs, witness)
+        })?;
         let assignment_commitment = assignment_oracle.commitment();
 
         let npo_domain_len = Self::terminal_npo_domain_len(verifying_key);
-        let npo_context = if npo_domain_len > 0 {
-            let columns =
-                self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
-            let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
-            let (_, trace, _) =
-                self.terminal_npo_tip5_lookup_air_trace_goldilocks(verifying_key, witness)?;
-            let merged_roots =
-                Self::terminal_npo_fri_residual_zero_recompose_value_bridge_prelude_commitments_goldilocks(
-                    &trace_profile,
-                    &columns,
-                    &trace,
-                )?;
-            let trace_roots =
-                Self::terminal_npo_tip5_lookup_trace_bundled_io_support_prelude_commitments_goldilocks(
-                    &trace_profile,
-                    &columns,
-                    &trace,
-                )?;
-            Some((columns, trace_profile, trace, merged_roots, trace_roots))
-        } else {
-            None
-        };
-
-        let mut prelude_commitments = vec![assignment_commitment.root];
-        if let Some((_, _, _, merged_roots, trace_roots)) = &npo_context {
-            prelude_commitments.extend_from_slice(merged_roots);
-            prelude_commitments.extend_from_slice(trace_roots);
-        }
-        let prelude = self.build_proof_prelude_goldilocks(
-            verifying_key,
-            public_inputs,
-            TerminalProofParameters::production_60bit(),
-            prelude_commitments,
-        )?;
-        let primitive_r1cs_proof = self.prove_terminal_r1cs_row_product_sumcheck_goldilocks(
-            verifying_key,
-            public_inputs,
-            &prelude,
-            &assignment_oracle,
-            witness,
-        )?;
-        let npo_polynomial_proof = if let Some((columns, trace_profile, trace, _, _)) = npo_context
-        {
-            let verifier_columns =
-                self.terminal_npo_polynomial_verifier_derived_columns_goldilocks(verifying_key)?;
-            let merged_value_bridge_proof =
-                    Self::prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_from_columns_goldilocks(
-                        &prelude,
-                        &trace_profile,
-                        &columns,
-                        &verifier_columns,
-                        &trace,
-                    )?;
-            let integrated_logup_proof =
-                    Self::prove_terminal_npo_tip5_lookup_air_logup_trace_io_support_npo_io_logup_from_columns_goldilocks(
-                        &prelude,
-                        &trace_profile,
-                        &columns,
-                        &trace,
-                    )?;
-            Some(TerminalProductionNpoPolynomialProof {
-                merged_value_bridge_proof,
-                integrated_logup_proof,
-            })
+        let prelude_span = tracing::info_span!("terminal_production.prelude");
+        let prelude = prelude_span.in_scope(|| {
+            self.build_proof_prelude_goldilocks(
+                verifying_key,
+                public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![assignment_commitment.root],
+            )
+        })?;
+        let primitive_r1cs_span = tracing::info_span!("terminal_production.primitive_r1cs_proof");
+        let primitive_r1cs_proof = primitive_r1cs_span.in_scope(|| {
+            self.prove_terminal_r1cs_row_product_sumcheck_goldilocks(
+                verifying_key,
+                public_inputs,
+                &prelude,
+                &assignment_oracle,
+                witness,
+            )
+        })?;
+        let npo_exhaustive_proof = if npo_domain_len > 0 {
+            let npo_exhaustive_span =
+                tracing::info_span!("terminal_production.npo_exhaustive_proof", rows = npo_domain_len);
+            Some(npo_exhaustive_span.in_scope(|| {
+                self.prove_terminal_npo_exhaustive_goldilocks(
+                    verifying_key,
+                    public_inputs,
+                    &prelude,
+                    &assignment_oracle,
+                    witness,
+                )
+            })?)
         } else {
             None
         };
@@ -15765,7 +15768,7 @@ impl NativeTerminalCompiler {
         Ok(TerminalProductionProof {
             prelude,
             primitive_r1cs_proof,
-            npo_polynomial_proof,
+            npo_exhaustive_proof,
         })
     }
 
@@ -16587,7 +16590,7 @@ impl NativeTerminalCompiler {
         Self::verify_production_prelude_commitments(
             &proof.prelude,
             &assignment_commitment,
-            if npo_domain_len > 0 { 3 } else { 1 },
+            1,
         )?;
         Self::verify_prelude_binds_commitment(&proof.prelude, &assignment_commitment)?;
 
@@ -16599,7 +16602,7 @@ impl NativeTerminalCompiler {
             &proof.primitive_r1cs_proof,
         )?;
 
-        match (npo_domain_len, &proof.npo_polynomial_proof) {
+        match (npo_domain_len, &proof.npo_exhaustive_proof) {
             (0, None) => {}
             (0, Some(_)) => {
                 return Err(NativeTerminalVerifyError::TerminalLocalNpoValidityProofUnexpected);
@@ -16612,14 +16615,12 @@ impl NativeTerminalCompiler {
                 );
             }
             (_, Some(npo_proof)) => {
-                self.verify_terminal_npo_tip5_lookup_backend_trace_value_integrated_logup_bridge_goldilocks::<
-                    F,
-                >(
+                self.verify_terminal_npo_exhaustive_goldilocks(
                     verifying_key,
                     public_inputs,
                     &proof.prelude,
-                    &npo_proof.merged_value_bridge_proof,
-                    &npo_proof.integrated_logup_proof,
+                    &assignment_commitment,
+                    npo_proof,
                 )?;
             }
         }
@@ -41786,7 +41787,7 @@ mod tests {
     }
 
     #[test]
-    fn goldilocks_terminal_production_polynomial_npo_proof_rejects_tampering() {
+    fn goldilocks_terminal_production_exhaustive_npo_proof_rejects_tampering() {
         let (circuit, public_inputs) = build_many_tip5_test_circuit(15);
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
         let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
@@ -41794,18 +41795,18 @@ mod tests {
 
         let proof = compiler
             .prove_terminal_production_goldilocks(&vk, &public_inputs, &witness)
-            .expect("production proof with polynomial NPO rows must build");
+            .expect("production proof with exhaustive NPO rows must build");
         compiler
             .verify_terminal_production_goldilocks(&vk, &public_inputs, &proof)
-            .expect("honest production proof with polynomial NPO rows must verify");
+            .expect("honest production proof with exhaustive NPO rows must verify");
 
         let mut missing_value = proof.clone();
         missing_value
-            .npo_polynomial_proof
+            .npo_exhaustive_proof
             .as_mut()
-            .expect("fixture must include polynomial NPO proof")
-            .merged_value_bridge_proof
-            .opened_selected_basis
+            .expect("fixture must include exhaustive NPO proof")
+            .assignment_witness_multi_opening
+            .value_basis_flat
             .pop();
         let err = compiler
             .verify_terminal_production_goldilocks(&vk, &public_inputs, &missing_value)
@@ -41813,7 +41814,7 @@ mod tests {
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
-                | NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+                | NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
         ));
 
         let (hidden_circuit, hidden_public_inputs, hidden_private_data) =
@@ -41834,64 +41835,52 @@ mod tests {
             )
             .expect("production proof with merkle Tip5 rows must build");
         hidden_proof
-            .npo_polynomial_proof
+            .npo_exhaustive_proof
             .as_ref()
-            .expect("fixture must include polynomial NPO proof");
+            .expect("fixture must include exhaustive NPO proof");
         compiler
             .verify_terminal_production_goldilocks(&hidden_vk, &hidden_public_inputs, &hidden_proof)
-            .expect("honest merkle Tip5 polynomial production proof must verify");
+            .expect("honest merkle Tip5 exhaustive production proof must verify");
 
-        let mut bad_hidden_trace = hidden_proof.clone();
-        bad_hidden_trace
-            .npo_polynomial_proof
+        let mut bad_hidden_input = hidden_proof.clone();
+        bad_hidden_input
+            .npo_exhaustive_proof
             .as_mut()
-            .expect("fixture must include polynomial NPO proof")
-            .integrated_logup_proof
-            .opened_trace_basis[0][0] = bad_hidden_trace
-            .npo_polynomial_proof
-            .as_ref()
-            .expect("fixture must include polynomial NPO proof")
-            .integrated_logup_proof
-            .opened_trace_basis[0][0]
-            .wrapping_add(1);
+            .expect("fixture must include exhaustive NPO proof")
+            .tip5_hidden_input_values_le[0][0] ^= 1;
         let err = compiler
             .verify_terminal_production_goldilocks(
                 &hidden_vk,
                 &hidden_public_inputs,
-                &bad_hidden_trace,
+                &bad_hidden_input,
             )
             .unwrap_err();
         assert!(matches!(
             err,
-            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
-                | NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { .. }
+            NativeTerminalVerifyError::Tip5InputMismatch { .. }
+                | NativeTerminalVerifyError::Tip5OutputMismatch { .. }
+                | NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
         ));
 
         let mut bad_value = proof;
         bad_value
-            .npo_polynomial_proof
+            .npo_exhaustive_proof
             .as_mut()
-            .expect("fixture must include polynomial NPO proof")
-            .merged_value_bridge_proof
-            .opened_value_bridge_quotient_basis[0][0] = bad_value
-            .npo_polynomial_proof
-            .as_ref()
-            .expect("fixture must include polynomial NPO proof")
-            .merged_value_bridge_proof
-            .opened_value_bridge_quotient_basis[0][0]
-            .wrapping_add(1);
+            .expect("fixture must include exhaustive NPO proof")
+            .assignment_witness_multi_opening
+            .frontier[0]
+            .0[0] ^= 1;
         let err = compiler
             .verify_terminal_production_goldilocks(&vk, &public_inputs, &bad_value)
             .unwrap_err();
         assert!(matches!(
             err,
-            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
-                | NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { .. }
+            NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
         ));
     }
 
     #[test]
-    fn goldilocks_terminal_production_polynomial_npo_covers_recompose_rows() {
+    fn goldilocks_terminal_production_exhaustive_npo_covers_recompose_rows() {
         let (circuit, public_inputs) = build_many_recompose_test_circuit(8);
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
         let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
@@ -41901,33 +41890,33 @@ mod tests {
             .prove_terminal_production_goldilocks(&vk, &public_inputs, &witness)
             .expect("production proof with recompose rows must build");
         proof
-            .npo_polynomial_proof
+            .npo_exhaustive_proof
             .as_ref()
-            .expect("fixture must include polynomial NPO proof");
+            .expect("fixture must include exhaustive NPO proof");
         compiler
             .verify_terminal_production_goldilocks(&vk, &public_inputs, &proof)
             .expect("honest recompose production proof must verify");
 
         let mut bad_recompose = proof;
         bad_recompose
-            .npo_polynomial_proof
+            .npo_exhaustive_proof
             .as_mut()
-            .expect("fixture must include polynomial NPO proof")
-            .merged_value_bridge_proof
-            .opened_recompose_quotient_basis[0][0] = bad_recompose
-            .npo_polynomial_proof
+            .expect("fixture must include exhaustive NPO proof")
+            .assignment_witness_multi_opening
+            .value_basis_flat[0] = bad_recompose
+            .npo_exhaustive_proof
             .as_ref()
-            .expect("fixture must include polynomial NPO proof")
-            .merged_value_bridge_proof
-            .opened_recompose_quotient_basis[0][0]
+            .expect("fixture must include exhaustive NPO proof")
+            .assignment_witness_multi_opening
+            .value_basis_flat[0]
             .wrapping_add(1);
         let err = compiler
             .verify_terminal_production_goldilocks(&vk, &public_inputs, &bad_recompose)
             .unwrap_err();
         assert!(matches!(
             err,
-            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
-                | NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { .. }
+            NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
+                | NativeTerminalVerifyError::RecomposeOutputMismatch { .. }
         ));
     }
 

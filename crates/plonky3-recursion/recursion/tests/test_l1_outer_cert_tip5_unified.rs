@@ -76,6 +76,18 @@ const RATE: usize = 10;
 
 type InnerFri = InnerFriGeneric<Tip5Layer0Config, Tip5Sponge, Tip5Compress, DIGEST_ELEMS>;
 
+fn init_terminal_prover_profile_tracing() {
+    if std::env::var_os("NOCK_TERMINAL_PROFILE_PROVER").is_none() {
+        return;
+    }
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("p3_recursion::terminal=info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+        .try_init();
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct LiftTip5;
 impl Permutation<[Challenge; 16]> for LiftTip5 {
@@ -351,6 +363,8 @@ fn terminal_compiler_covers_real_tip5_l0_verifier_circuit() {
 
 #[test]
 fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
+    init_terminal_prover_profile_tracing();
+
     let BuiltLayer0Circuit {
         circuit,
         public_inputs,
@@ -418,30 +432,30 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
     let production_r1cs_size = postcard::to_allocvec(&production_proof.primitive_r1cs_proof)
         .expect("terminal production R1CS proof must serialize")
         .len();
-    let production_npo_polynomial_size = production_proof
-        .npo_polynomial_proof
+    let production_npo_exhaustive_size = production_proof
+        .npo_exhaustive_proof
         .as_ref()
         .map(|proof| {
             postcard::to_allocvec(proof)
-                .expect("terminal production polynomial NPO proof must serialize")
+                .expect("terminal production exhaustive NPO proof must serialize")
                 .len()
         })
         .unwrap_or(0);
-    let production_npo_merged_value_bridge_size = production_proof
-        .npo_polynomial_proof
+    let production_npo_exhaustive_hidden_size = production_proof
+        .npo_exhaustive_proof
         .as_ref()
         .map(|proof| {
-            postcard::to_allocvec(&proof.merged_value_bridge_proof)
-                .expect("terminal production merged NPO value-bridge proof must serialize")
+            postcard::to_allocvec(&proof.tip5_hidden_input_values_le)
+                .expect("terminal production exhaustive NPO hidden Tip5 inputs must serialize")
                 .len()
         })
         .unwrap_or(0);
-    let production_npo_integrated_logup_size = production_proof
-        .npo_polynomial_proof
+    let production_npo_exhaustive_assignment_witness_size = production_proof
+        .npo_exhaustive_proof
         .as_ref()
         .map(|proof| {
-            postcard::to_allocvec(&proof.integrated_logup_proof)
-                .expect("terminal production integrated NPO LogUp proof must serialize")
+            postcard::to_allocvec(&proof.assignment_witness_multi_opening)
+                .expect("terminal production exhaustive NPO assignment-witness proof must serialize")
                 .len()
         })
         .unwrap_or(0);
@@ -1030,14 +1044,56 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         .expect("terminal R1CS row-product sumcheck must verify");
     let r1cs_row_product_verify_elapsed = r1cs_row_product_verify_start.elapsed();
 
-    if production_proof.npo_polynomial_proof.is_some() {
+    let exhaustive_npo_prove_start = std::time::Instant::now();
+    let exhaustive_npo_proof = compiler
+        .prove_terminal_npo_exhaustive_goldilocks(
+            &vk,
+            &terminal_witness.public_inputs,
+            &assignment_prelude,
+            &assignment_oracle,
+            &terminal_witness,
+        )
+        .expect("terminal exhaustive NPO proof must build for real Tip5 L0 verifier circuit");
+    let exhaustive_npo_prove_elapsed = exhaustive_npo_prove_start.elapsed();
+    let exhaustive_npo_size = postcard::to_allocvec(&exhaustive_npo_proof)
+        .expect("terminal exhaustive NPO proof must serialize")
+        .len();
+    let exhaustive_npo_hidden_size =
+        postcard::to_allocvec(&exhaustive_npo_proof.tip5_hidden_input_values_le)
+            .expect("terminal exhaustive NPO hidden Tip5 inputs must serialize")
+            .len();
+    let exhaustive_npo_assignment_witness_size = postcard::to_allocvec(
+        &exhaustive_npo_proof.assignment_witness_multi_opening,
+    )
+    .expect("terminal exhaustive NPO assignment-witness multiproof must serialize")
+    .len();
+    let exhaustive_candidate_body_size = postcard::to_allocvec(&(
+        assignment_prelude.clone(),
+        r1cs_row_product_proof.clone(),
+        exhaustive_npo_proof.clone(),
+    ))
+    .expect("terminal exhaustive production candidate body must serialize")
+    .len();
+    let exhaustive_npo_verify_start = std::time::Instant::now();
+    compiler
+        .verify_terminal_npo_exhaustive_goldilocks(
+            &vk,
+            &terminal_witness.public_inputs,
+            &assignment_prelude,
+            &assignment_commitment,
+            &exhaustive_npo_proof,
+        )
+        .expect("terminal exhaustive NPO proof must verify for real Tip5 L0 verifier circuit");
+    let exhaustive_npo_verify_elapsed = exhaustive_npo_verify_start.elapsed();
+
+    if production_proof.npo_exhaustive_proof.is_some() {
         let mut missing_npo_opening = production_proof.clone();
         missing_npo_opening
-            .npo_polynomial_proof
+            .npo_exhaustive_proof
             .as_mut()
-            .expect("real production proof must carry polynomial NPO proof")
-            .merged_value_bridge_proof
-            .opened_selected_basis
+            .expect("real production proof must carry exhaustive NPO proof")
+            .assignment_witness_multi_opening
+            .value_basis_flat
             .pop();
         let err = compiler
             .verify_terminal_production_goldilocks(
@@ -1048,8 +1104,9 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
             .unwrap_err();
         assert!(matches!(
             err,
-            p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
-                | p3_recursion::terminal::NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+            p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleQueryLengthMismatch { .. }
+                | p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+                | p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
         ));
     }
 
@@ -1063,13 +1120,23 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         production_verify_elapsed.as_secs_f64(),
     );
     eprintln!(
-        "terminal production compact components: r1cs_row_product={} npo_polynomial={}",
-        production_r1cs_size, production_npo_polynomial_size,
+        "terminal production compact components: r1cs_row_product={} npo_exhaustive={}",
+        production_r1cs_size, production_npo_exhaustive_size,
     );
     eprintln!(
-        "terminal production NPO breakdown: merged_value_bridge={} integrated_logup={}",
-        production_npo_merged_value_bridge_size,
-        production_npo_integrated_logup_size,
+        "terminal production exhaustive NPO breakdown: hidden_tip5={} assignment_witness={}",
+        production_npo_exhaustive_hidden_size,
+        production_npo_exhaustive_assignment_witness_size,
+    );
+    eprintln!(
+        "terminal exhaustive production candidate: tuple_body={} bytes ({:.1} KiB) npo={} hidden_tip5={} assignment_witness={} prove={:.3}s verify={:.3}s",
+        exhaustive_candidate_body_size,
+        exhaustive_candidate_body_size as f64 / 1024.0,
+        exhaustive_npo_size,
+        exhaustive_npo_hidden_size,
+        exhaustive_npo_assignment_witness_size,
+        exhaustive_npo_prove_elapsed.as_secs_f64(),
+        exhaustive_npo_verify_elapsed.as_secs_f64(),
     );
     eprintln!(
         "terminal NPO polynomial FRI candidate: rows={} field_columns={} proof={} bytes ({:.1} KiB) plain_inner={} compact_inner={} opened_values={} basis_columns={} prove={:.3}s verify={:.3}s",

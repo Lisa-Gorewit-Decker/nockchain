@@ -647,16 +647,21 @@ for this route.
   proof commits a bundled trace matrix containing the full Tip5 lookup trace
   and the verifier-shape-masked trace-domain NPO-IO projection under one FRI
   root. This keeps the AIR proof over the full trace while making the
-  selected-vs-trace LogUp multiset compare masked IO values. A prior native /
-  Rayon production-candidate checkpoint was recorded as `99,289` bytes /
-  `97.0 KiB`, integrated NPO compact FRI payload `80,885` bytes / `79.0 KiB`,
-  `total_prove=23.688s`, and `total_verify=62.6ms`. A later re-run of the real
-  Tip5 L0 verifier-circuit measurement produced `226,248` bytes / `220.9 KiB`
-  and failed the hard 100 KiB gate, so the earlier checkpoint is not current
-  production evidence. The decompressor rejects non-canonical packed digest
-  limbs before restoring the ordinary Plonky3 FRI proof, so digest packing is
-  representation-only for the verifier algebra. An older 2026-06-05 integrated
-  group-size sweep
+  selected-vs-trace LogUp multiset compare masked IO values. A prior polynomial
+  native / Rayon production-candidate checkpoint was recorded as `99,289`
+  bytes / `97.0 KiB`, integrated NPO compact FRI payload `80,885` bytes /
+  `79.0 KiB`, `total_prove=23.688s`, and `total_verify=62.6ms`; the complete
+  polynomial NPO production rerun later measured `226,248` bytes / `220.9 KiB`
+  and failed the hard 100 KiB gate. The active production path therefore uses
+  exhaustive supported-NPO row checking under the native terminal certificate:
+  the real Tip5 L0 verifier-circuit release measurement is `85,948` bytes /
+  `83.9 KiB`, with `prove=1.492s` and `verify=1.181s`. The polynomial
+  NPO/proximity backend remains implemented as a diagnostic and future
+  hardening path. The current reduction and fallback analysis is summarized in
+  `2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md`. The
+  decompressor rejects non-canonical packed digest limbs before restoring the
+  ordinary Plonky3 FRI proof, so digest packing is representation-only for the
+  verifier algebra. An older 2026-06-05 integrated group-size sweep
   kept the 60-bit pure-query FRI tuple
   fixed and tested the accumulator width versus quotient-degree tradeoff
   directly: 1-lane groups measured `252,162` bytes / `246.3 KiB`, compact FRI
@@ -1481,18 +1486,18 @@ Tip5-L0 verifier circuit:
 
 | component | bytes |
 |---|---:|
-| primitive R1CS row-product proof | 23,214 |
+| primitive R1CS row-product proof | 22,631 |
 | exhaustive NPO proof | 62,909 |
 | exhaustive NPO hidden Tip5 input bytes | 17,402 |
 | exhaustive NPO known-index assignment-witness multiproof | 45,507 |
 | exhaustive NPO sparse assignment-witness basis coefficients | 1,521 |
-| compact production proof body | 86,306 |
-| compact production certificate | 86,527 |
+| compact production proof body | 85,726 |
+| compact production certificate | 85,948 |
 
-The latest debug-profile measurement is `prove=4.391 s, verify=3.425 s` for
+The latest release-profile measurement is `prove=1.492 s, verify=1.181 s` for
 the production proof body and certificate, with terminal parameters
 `security_bits=60, log_blowup=4, num_queries=15, query_pow_bits=0`. This
-measured run produced an `86,527` byte / `84.5 KiB` serialized certificate,
+measured run produced an `85,948` byte / `83.9 KiB` serialized certificate,
 below the 100 KiB target while preserving the 60 pure-query-bit tuple. This removes
 the sampled production NPO validity layer and verifies all 668 supported
 Tip5/recompose NPO rows against the committed assignment oracle. The NPO proof
@@ -1782,14 +1787,14 @@ Completion audit against the active terminal-compression requirements:
 |---|---|---|
 | Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
-| Production certificate is about 100 KiB | Earlier sub-100 KiB fixtures did not cover the complete sound terminal polynomial/proximity backend. A prior checkpoint was recorded as `99,289` bytes / `97.0 KiB`, but the current real Tip5 L0 verifier-circuit measurement produced `226,248` bytes / `220.9 KiB` and failed the hard size assertion. | not satisfied by the current real integrated measurement |
+| Production certificate is about 100 KiB | The current real Tip5 L0 verifier-circuit release measurement produced `85,948` bytes / `83.9 KiB` and passed the hard size assertion. The previous polynomial NPO production body measured `226,248` bytes / `220.9 KiB` and remains diagnostic, not the production wire path. | satisfied by the current exhaustive-NPO production measurement |
 | No confusing low-soundness testing production path | Production builds expose only `TerminalProofKind::Production`; local checkpoint proof-kind helpers are `cfg(test)`, and public production verification requires all 15 production queries. | satisfied for public production verifier dispatch |
 | Public values, parameters, relation, proximity schedule, fixed terminal tables, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile, column layout, and fixed Tip5 lookup preprocessed-table digest, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
-| Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity or uses exhaustive Merkle NPO openings. Supported Tip5/recompose rows are covered by the merged residual-zero/recompose/value-bridge proof plus the integrated Tip5 lookup AIR, byte-table LogUp, and selected-vs-trace NPO-IO LogUp bridge under the same prelude. The hidden-output audit found that unmasked direct full-trace IO would be unsound for Merkle Tip5 rows; production now binds a bundled full-trace plus verifier-shape-masked trace-domain NPO-IO projection commitment and rejects missing/tampered selected, trace, value-bridge, and recompose openings. | satisfied for supported NPO row validity |
-| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace with a fixed preprocessed-table digest bound into the relation profile, a transcript-bound terminal LogUp rational-sum accumulator checkpoint for fixed-table byte-pair semantics, a combined full-main AIR-algebra+LogUp quotient proof, a bundled full-trace plus masked trace-domain NPO-IO projection commitment, a random linear-combination MLE checkpoint, a FRI-native residual-zero checkpoint, a FRI-native recompose residual-relation quotient, and a merged FRI-native residual-zero+recompose+value-bridge proof now exist in the public production proof body. The current production checkpoint uses one selected+lookup commitment, one bundled trace+masked-projection commitment, grouped AIR/LogUp/NPO-IO accumulator commitments, `max_log_arity=3`, fixed-width canonical compact-FRI Merkle path digest packing, and the canonical `log_blowup=4`, `num_queries=15`, `query_pow_bits=0` tuple. The relation is implemented, but the current measured proof size is `226,248` bytes / `220.9 KiB`, not ~100 KiB. | implemented; size target not satisfied |
-| Full terminal proof has a source-backed soundness calculation | The theorem below states the production terminal argument as a Fiat-Shamir polynomial IOP: primitive sparse-R1CS row-product sumcheck, merged residual-zero/recompose/value bridge, Tip5 lookup AIR, fixed byte-table LogUp, selected-vs-trace NPO-IO LogUp, terminal FRI/PCS, and 5-round Tip5 Merkle binding. The production profile enforces `log_blowup=4`, `num_queries=15`, and `query_pow_bits=0`; the 60-bit production floor is a codebase profile requirement backed by the selected Plonky3 FRI theorem/assumption, not by terminal query PoW. | satisfied as a source-backed conditional theorem |
-| Zero-knowledge or witness hiding for recursive-verifier witness values | Current production no longer serializes the full witness or exhaustive supported-NPO witness openings, but the terminal argument is still not specified as zero-knowledge. FRI openings reveal selected evaluations of witness-derived low-degree columns. | incomplete if ZK is required |
+| Supported NPO rows cannot hide invalid sampled rows | Production does not sample supported NPO validity. `TerminalNpoExhaustiveProof` opens every verifier-derived supported Tip5/recompose callsite against the same assignment oracle used by primitive R1CS, checks hidden Tip5 lanes, MMCS direction-bit booleanity, row modes, predecessor-chain semantics, and recompose rows deterministically, and rejects missing/tampered assignment-witness multiproof material or hidden-input payloads. | satisfied for supported NPO row validity |
+| Supported NPO/table rows are polynomialized into a final proximity backend | The polynomial/proximity backend exists and remains tested as a diagnostic and future hardening path, but it is not the production wire body because the complete two-subproof polynomial payload measured `226,248` bytes / `220.9 KiB`. | implemented as diagnostic; not the active production payload |
+| Full terminal proof has a source-backed soundness calculation | The theorem below states the active production terminal argument as primitive sparse-R1CS row-product sumcheck plus exhaustive supported-NPO row checking under one assignment-root prelude, with 5-round Tip5 Merkle binding and `log_blowup=4`, `num_queries=15`, `query_pow_bits=0` for the primitive row-product/assignment-evaluation proximity checks. The 60-bit production floor is not backed by terminal query PoW. | satisfied as a source-backed conditional theorem |
+| Zero-knowledge or witness hiding for recursive-verifier witness values | Current production does not serialize the full witness, but exhaustive supported-NPO openings reveal selected recursive-verifier witness material, including hidden Tip5 input lanes needed to recompute hidden-input rows. | incomplete if ZK is required |
 
 Security-audit conclusions for the current implementation checkpoint:
 
@@ -1846,15 +1851,14 @@ Security-audit conclusions for the current implementation checkpoint:
   gives a terminal relation proof.
 - The sparse-R1CS matrix-vector sumcheck is an evaluation subclaim. It avoids
   the unsound `A(r) * B(r) = C(r)` shortcut and is paired with the row-product
-  sumcheck for primitive R1CS rows. Supported NPO/table rows are covered by the
-  separate integrated polynomial/FRI backend below rather than by the primitive
-  sparse-R1CS proof.
+  sumcheck for primitive R1CS rows. Supported NPO/table rows are covered by
+  exhaustive row checking against the same assignment oracle rather than by the
+  primitive sparse-R1CS proof.
 - The terminal oracle Merkle layer is binding to opened values under the
   recursive 5-round Tip5 assumption, but it is not itself a polynomial
   commitment. The compact production proof now removes full witness
-  serialization and exhaustive supported-NPO witness openings; supported NPO
-  rows are handled by the merged residual/recompose/value-bridge proof and the
-  integrated Tip5 AIR/LogUp/NPO-IO proof.
+  serialization; supported NPO rows are handled by known-index exhaustive
+  assignment-witness openings plus verifier-selected hidden Tip5 input payloads.
 - The known-index exhaustive NPO multiproof is sound only because the verifier
   derives the exact sorted witness-ID set from the committed terminal relation
   before recomputing the Merkle root. It is not a generic replacement for
@@ -1866,10 +1870,10 @@ Security-audit conclusions for the current implementation checkpoint:
   queries are consumed by restored Plonky3 FRI proofs and polynomial identity
   checks; query derivation alone is still treated as a binding mechanism, not a
   standalone soundness argument.
-- The previous exhaustive NPO production verifier avoided a sampled-row gap by
-  checking every supported row, but it was too linear in the supported-NPO
-  witness-opening surface. The current public production verifier uses the
-  integrated polynomial/proximity backend instead.
+- The exhaustive NPO production verifier avoids a sampled-row gap by checking
+  every supported row. Its proof remains linear in the supported-NPO
+  witness-opening surface, but the current measurement is still under the byte
+  and time targets.
 - Tip5 NPO callsites now bind row mode (`new_start`, `merkle_path`) and MMCS
   direction-bit witness IDs into the backend relation digest. Production NPO
   verification opens those direction bits, rejects non-boolean values, enforces
@@ -1878,12 +1882,12 @@ Security-audit conclusions for the current implementation checkpoint:
 - The sampled primitive and supported-NPO local proofs remain useful regression
   components, but public production does not rely on sampled local NPO openings.
   A violating production witness must now pass the primitive row-product
-  argument, the NPO residual/recompose/value-bridge identities, the Tip5
-  AIR/LogUp identities, and terminal FRI openings under the same prelude.
+  argument plus exhaustive supported-NPO row checks under the same assignment
+  root.
 - The quadratic residual oracle and fold proofs remain useful checkpoints for
   testing composition-oracle behavior. Production primitive soundness is carried
   by the row-product sparse-R1CS proof, while production NPO soundness is
-  carried by the integrated polynomial/FRI backend.
+  carried by exhaustive row checking.
 - The residual fold proof gives the primitive residual oracle a transcript-bound
   folded global check in local regression tests: a nonzero residual vector must
   survive random folding or break sampled fold-layer consistency. It is retained
@@ -1903,9 +1907,9 @@ Security-audit conclusions for the current implementation checkpoint:
   transcript-bound validity-vector checkpoint for local regression tests. Its
   base oracle is computed over explicit Tip5/recompose residual components
   rather than one cancellation-prone scalar per row or a placeholder zero vector
-  after a full assignment check. Production now relies on the polynomialized
-  Tip5/recompose/value bridge and integrated Tip5 AIR/LogUp/NPO-IO proof
-  instead.
+  after a full assignment check. Production now relies on exhaustive
+  supported-NPO row checking instead; polynomialized NPO proofs remain
+  diagnostics and future hardening work.
 - Direct NPO validity consistency verification now validates the referenced fold
   commitment schedule before deriving consistency query rows. This keeps the
   internal regression verifier fail-closed even when exercised directly by
@@ -1940,8 +1944,8 @@ Security-audit conclusions for the current implementation checkpoint:
   bincode production codec would be relation-neutral, but current measurements
   show it increases the active terminal proof sizes, so postcard remains the
   production proof-body codec.
-- The typed exhaustive-Merkle terminal production checkpoint is measured at
-  86,527 bytes, or 84.5 KiB, with 60 pure-query bits and exhaustive
+- The typed exhaustive-Merkle terminal production path is measured at
+  85,948 bytes, or 83.9 KiB, with 60 pure-query bits and exhaustive
   supported-NPO verification. It reached the ~100 KiB size target through
   structural proof-body changes, especially
   omitting verifier-derived witness indices from the exhaustive NPO assignment
@@ -1955,15 +1959,16 @@ Security-audit conclusions for the current implementation checkpoint:
   payload. These reductions are structural proof-body changes, not generic
   compression, digest dictionaries, fixed-width integer serialization,
   Pearl/Plonky2-style Merkle path compression, or another batch-STARK layer.
-  The subsequent integrated polynomialized NPO/proximity backend preserves the
-  checks above without carrying exhaustive NPO witness openings and is the
-  current public production path.
-- Completion status: the public production certificate uses the integrated
-  primitive+polynomial-NPO backend at the canonical 60 pure-query-bit terminal
-  profile, but the current real measurement is `226,248` bytes / `220.9 KiB`
-  and fails the hard 100 KiB target. The written theorem and source-backed
-  cryptographic review below document the conditional soundness model, subject
-  to the stated FRI, Fiat-Shamir, and Tip5 assumptions.
+  The integrated polynomialized NPO/proximity backend preserves a lower-leakage
+  direction for future hardening, but it is not the current public production
+  path because it misses the byte/time target.
+- Completion status: the public production certificate uses primitive
+  row-product plus exhaustive supported-NPO checking at the canonical 60
+  pure-query-bit terminal profile. The current real release measurement is
+  `85,948` bytes / `83.9 KiB` with `prove=1.492s`, satisfying the hard target.
+  The written theorem and source-backed cryptographic review below document the
+  conditional soundness model, subject to the stated FRI, Fiat-Shamir, and Tip5
+  assumptions.
 
 ## Certificate Binding Requirements
 
@@ -2046,10 +2051,9 @@ Codebase references used in this audit:
   dictionaries, and non-canonical digest limbs before restoring the Plonky3 FRI
   proof.
 - The production path in `crates/plonky3-recursion/recursion/src/terminal.rs`
-  builds `TerminalProductionProof` from one assignment root, one
-  selected/value-bridge root, and one bundled full-trace plus masked NPO-IO root,
-  then verifies the primitive row-product proof and the integrated
-  residual/recompose/value-bridge plus Tip5 AIR/LogUp/NPO-IO proof.
+  builds `TerminalProductionProof` from one assignment root, then verifies the
+  primitive row-product proof and, for supported NPO rows, an exhaustive NPO
+  proof against the same assignment commitment.
 
 ### Production Soundness Statement
 
@@ -2074,10 +2078,9 @@ Assume:
    counted;
 3. the row-product sumcheck and sparse matrix-vector subclaims have the usual
    Schwartz-Zippel/sumcheck soundness over the terminal challenge field;
-4. the LogUp denominator challenges avoid poles except with the standard
-   rational-identity failure probability over the extension challenge field;
-5. the verifier computes public-value digests, relation digests, fixed columns,
-   table digests, and verifier-derived columns honestly from `R`.
+4. the verifier computes public-value digests, relation digests, supported-NPO
+   callsites, hidden-lane rules, fixed tables, and verifier-derived witness
+   index sets honestly from `R`.
 
 Then any polynomial-time prover that causes public
 `verify_terminal_production_goldilocks` to accept either knows an assignment
@@ -2087,11 +2090,8 @@ the union of:
 
 - the primitive row-product sumcheck error;
 - the sparse matrix-vector/assignment-evaluation subclaim error;
-- the polynomial identity test errors for residual-zero, recompose, value
-  bridge, Tip5 AIR, byte-table LogUp, and selected-vs-trace NPO-IO LogUp;
-- LogUp pole/collision events in the compressed row denominators;
-- the terminal FRI/PCS proximity/opening error for the committed low-degree
-  matrices;
+- a false supported-NPO row passing the deterministic exhaustive Tip5/recompose
+  row verifier against assignment-oracle openings;
 - 5-round Tip5 Merkle binding or Fiat-Shamir random-oracle failures.
 
 The implementation enforces the 60-bit production floor by rejecting every
@@ -2108,8 +2108,8 @@ configuration.
 1. Prelude binding. `TerminalCertificate` binds the protocol id, production
    proof kind, public-values digest, proof-body digest, and terminal binding
    digest. `TerminalProofPrelude` binds the production parameters, compiled
-   relation profile, public-values digest, backend roots, zero query-PoW nonce,
-   and proximity schedule before any backend challenge is sampled. This matches
+   relation profile, public-values digest, assignment root, zero query-PoW
+   nonce, and proximity schedule before any backend challenge is sampled. This matches
    the Fiat-Shamir ordering requirement in the FRI/FS literature and prevents
    public-value, relation, parameter, or unused-root grinding.
 2. Primitive rows. The assignment oracle commits to `[1 || public || witness]`.
@@ -2118,22 +2118,14 @@ configuration.
    false and the Merkle/PCS openings are binding, the prover must either make a
    false low-degree/sumcheck identity pass at random challenge points or break
    the assignment commitment.
-3. Supported NPO residuals. The merged NPO FRI proof commits witness-derived
-   NPO value columns and verifier-derived fixed columns under the same prelude,
-   checks residual-zero columns, recompose relations, and selected/value bridge
-   openings at transcript-derived points, and verifies them through terminal
-   FRI. A stale or independently substituted NPO column therefore has to pass a
-   polynomial identity check and the FRI opening checks under the prelude-bound
-   roots.
-4. Tip5 table semantics. The integrated Tip5 proof commits a full 5-round
-   lookup trace plus a verifier-shape-masked trace-domain NPO-IO projection in
-   one FRI matrix. The AIR constraints enforce the row-to-row 5-round Tip5
-   transition; the fixed byte-table LogUp enforces byte/table multiplicities;
-   the selected-vs-trace NPO-IO LogUp equates the selected terminal NPO IO
-   multiset with the trace-domain projection. This fixes the hidden-output
-   issue for Merkle Tip5 rows because only verifier-selected output lanes are
-   compared across the selected and trace domains.
-5. FRI restoration. `TerminalCompressedFriProof` is soundness-neutral
+3. Supported NPO rows. `TerminalNpoExhaustiveProof` opens the exact
+   verifier-derived witness IDs for every supported Tip5/recompose callsite
+   against the same assignment commitment. The verifier recomputes hidden Tip5
+   lane placement, row modes, MMCS direction-bit booleanity, predecessor-chain
+   carry lanes, normal Tip5 rows, Merkle Tip5 rows, and recompose rows. A stale
+   or independently substituted NPO witness therefore has to either break the
+   assignment Merkle opening or satisfy the actual supported-NPO row semantics.
+4. FRI restoration. `TerminalCompressedFriProof` is soundness-neutral
    serialization: the verifier restores an ordinary Plonky3 FRI proof, derives
    query indices after observing commit-phase commitments, final polynomial,
    arity schedule, and query-PoW witness, then calls the normal FRI verifier.
@@ -2143,8 +2135,9 @@ configuration.
 ### Residual Risks And Non-Goals
 
 - The production proof is not zero-knowledge. It is smaller than full witness or
-  exhaustive supported-NPO opening serialization, but FRI openings still reveal
-  selected evaluations of witness-derived low-degree columns.
+  full-witness serialization, but exhaustive supported-NPO openings reveal
+  selected recursive-verifier witness material, including hidden Tip5 input
+  lanes needed to recompute hidden-input rows.
 - The 60-bit claim is a production profile and theorem-assumption claim, not an
   audited standalone derivation of all concrete Plonky3 FRI constants in this
   document. If the upstream FRI proximity bound or proximity-gap assumptions are
@@ -2159,13 +2152,15 @@ configuration.
 
 Completion evidence now in tree:
 
-- production proof body uses the integrated primitive+polynomial-NPO backend;
+- production proof body uses primitive row-product plus exhaustive
+  supported-NPO checking under one assignment-root prelude;
 - focused tests tamper production proof bodies, noncanonical production
-  parameters, stale preludes, missing roots, recompose/value columns, trace
-  NPO-IO openings, divergent value columns, and forged trace-domain NPO-IO
-  projections;
-- the current real production measurement is `226,248` bytes / `220.9 KiB` for
-  the full primitive+NPO terminal proof body and fails the hard size gate;
+  parameters, stale preludes, missing roots, missing exhaustive assignment
+  openings, hidden Tip5 input tampering, assignment-witness multiproof
+  tampering, and recompose-row witness tampering;
+- the current real production measurement is `85,948` bytes / `83.9 KiB` with
+  `prove=1.492s` and `verify=1.181s` in release mode for the full
+  primitive+exhaustive-NPO terminal proof body;
 - terminal query-PoW remains zero and noncanonical terminal profiles are
   rejected by public production verification.
 
@@ -2173,8 +2168,8 @@ Completion evidence now in tree:
 
 1. Keep the typed compact production certificate as the only public terminal
    path: 60 pure-query profile, zero terminal PoW bits, 5-round Tip5 recursive
-   hashing, primitive sparse-R1CS row-product proof, and integrated
-   polynomial/proximity supported-NPO proof.
+   hashing, primitive sparse-R1CS row-product proof, and exhaustive
+   supported-NPO proof.
 2. Preserve the canonical production tuple
    `log_blowup=4, num_queries=15, query_pow_bits=0, max_log_arity=3,
    log_final_poly_len=0` unless a replacement profile has a written theorem,
@@ -2182,8 +2177,10 @@ Completion evidence now in tree:
    promotion.
 3. Measure proof bytes, prove time, verify time, and the explicit soundness
    accounting after every major relation/proof-shape change. The current real
-   measurement is `226,248` bytes / `220.9 KiB` and must be reduced before the
-   terminal path satisfies the production constraint.
+   measurement is `85,948` bytes / `83.9 KiB` with `prove=1.492s` and
+   `verify=1.181s` in release mode. The retired polynomial NPO production
+   candidate measured `226,248` bytes / `220.9 KiB` and remains a diagnostic
+   hardening track, not the active production wire path.
 4. Keep the focused adversarial tests for public-input, parameter,
    circuit-fingerprint, relation digest, prelude root, NPO row/call-site,
    recompose/value column, trace-IO, and compact-FRI shape swaps close to any

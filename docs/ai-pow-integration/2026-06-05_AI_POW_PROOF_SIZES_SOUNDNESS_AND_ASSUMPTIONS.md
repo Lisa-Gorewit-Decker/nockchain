@@ -29,16 +29,16 @@ must not be treated as the production block/wire artifact.
 |---|---|---:|---|
 | Layer-0 composite proof | Regular STARK proof of the AI-PoW puzzle statement; consumed by recursion; diagnostic/intermediate, not persisted by consensus | `303,896` bytes / `296.8 KiB` | `2026-05-29_AI_ZKP_NOUN_WIRE_SPEC.md`, `prod_recursion_measure 15` |
 | Hardened L1 batch-STARK recursive certificate | Soundness-hardened recursive verifier checkpoint/fallback path; not acceptable as the production wire artifact because it exceeds the size budget | `205,446` bytes / `200.6 KiB` fixed-int bincode (`231,235` bytes / `225.8 KiB` legacy postcard) | `prod_recursion_measure 15` |
-| Production native terminal certificate target | Intended production recursive proof target | Required: about `100 KiB` and `<30s` release proving. Current re-run of `terminal_production_certificate_measures_real_tip5_l0_verifier_circuit` produced `226,248` bytes / `220.9 KiB` and failed the 100 KiB assertion. | current test evidence, 2026-06-05 |
+| Production native terminal certificate | Intended production recursive proof target | `85,948` bytes / `83.9 KiB`; release prove `1.492s`, verify `1.181s` | `RUSTFLAGS="-C target-cpu=native" cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --release --test test_l1_outer_cert_tip5_unified terminal_production_certificate_measures_real_tip5_l0_verifier_circuit -- --nocapture`, 2026-06-05 |
 
 The active production target is therefore:
 
 - regular Layer-0 proof: **296.8 KiB** if materialized;
 - hardened batch-STARK L1 checkpoint: **200.6 KiB**, soundness-relevant but too
   large for production wire use;
-- native terminal recursive certificate: required production target, but the
-  current real Tip5 L0 verifier-circuit measurement is **220.9 KiB**, so the
-  implementation does not currently satisfy the hard wire-size constraint.
+- native terminal recursive certificate: **85,948 bytes / 83.9 KiB**, satisfying
+  the about-100 KiB and `<30s` release-proving production gates in the current
+  real Tip5 L0 verifier-circuit measurement.
 
 Verifier status after the 2026-06-05 hardening pass: the batch-STARK
 `AiPowRecursiveCertificate` verifier now calls
@@ -50,6 +50,65 @@ statement public inputs in the Rust test suite. This hardening does not make
 the batch-STARK L1 certificate the production wire artifact. The Hoon/kernel
 path remains fail-closed for `%ai-pow` until verifier wiring is explicitly
 added.
+
+## Current Native Terminal Size And Runtime Breakdown
+
+The current native terminal production certificate uses exhaustive supported-NPO
+row checking, not the large two-subproof polynomial NPO payload. The real Tip5
+L0 verifier-circuit release measurement is:
+
+| Component | Current bytes | Role |
+|---|---:|---|
+| Production certificate body | `85,726` bytes / `83.7 KiB` | Typed native terminal proof body |
+| Production certificate | `85,948` bytes / `83.9 KiB` | Consensus-facing recursive certificate envelope |
+| `primitive_r1cs_proof` / row-product sumcheck | `22,631` bytes | Proves primitive recursive-circuit rows through sparse-R1CS row-product sumcheck and assignment evaluation |
+| `npo_exhaustive_proof` | `62,909` bytes | Opens every supported Tip5/recompose NPO callsite against the same assignment oracle and checks each row deterministically |
+| Exhaustive hidden Tip5 input payload | `17,402` bytes | Revealed hidden Tip5 lanes needed to recompute hidden-input rows |
+| Exhaustive assignment-witness multiproof | `45,507` bytes | Known-index Merkle multiproof binding NPO row witnesses to the assignment oracle |
+
+The release-profile timing from the same run is `prove=1.492s` and
+`verify=1.181s`. The standalone exhaustive NPO component measured
+`prove=0.162s` and `verify=0.288s`; the standalone R1CS row-product component
+measured `prove=0.740s` and `verify=0.515s`.
+
+Source-backed production shape:
+
+- `crates/plonky3-recursion/recursion/src/terminal.rs::TerminalProductionProof`
+  serializes a prelude, a `TerminalR1csRowProductSumcheckProof`, and an optional
+  `TerminalNpoExhaustiveProof`.
+- `prove_terminal_production_goldilocks` builds one production prelude binding
+  exactly the assignment root, proves the primitive R1CS component against that
+  assignment oracle, and for supported NPO rows proves exhaustive row openings
+  against the same assignment oracle.
+- `verify_terminal_production_goldilocks` rejects extra prelude commitments,
+  verifies the primitive row-product proof, and then verifies every supported
+  NPO row with `verify_terminal_npo_exhaustive_goldilocks`.
+
+The terminal profile remains the canonical pure-query 60-bit profile:
+`TerminalProofParameters::production_60bit()` uses `log_blowup=4`,
+`num_queries=15`, and `query_pow_bits=0`. The exhaustive NPO component itself
+does not rely on sampling or terminal query PoW: it checks every supported NPO
+row deterministically against verifier-derived callsites and assignment-oracle
+openings.
+
+The polynomial/proximity NPO backend remains in tree as a diagnostic and future
+hardening track, but it is not the production wire artifact. The current
+diagnostic measurements explain why it was removed from production:
+
+| Diagnostic candidate | Bytes | Meaning |
+|---|---:|---|
+| Previous polynomial production certificate | `226,248` bytes / `220.9 KiB` | Failed the hard size gate |
+| Previous `TerminalProductionNpoPolynomialProof` | `204,039` bytes | Dominated the old body |
+| Previous `merged_value_bridge_proof` | `67,133` bytes | One independent FRI-backed NPO subproof |
+| Previous `integrated_logup_proof` | `136,906` bytes | Second independent FRI-backed NPO subproof |
+| Full NPO polynomial FRI opening candidate | `48,803` bytes / `47.7 KiB` | A single FRI opening over 668 rows and 186 field columns is far smaller than the old two-subproof NPO body |
+| NPO value-column FRI candidate | `30,325` bytes / `29.6 KiB` | Value-only proximity proof is not the blocker by itself |
+
+Engineering conclusion: the current production path meets the stated byte and
+release-time targets by using exhaustive supported-NPO checking. The remaining
+polynomial/proximity work is a hardening and possible witness-hiding direction,
+not the production path unless a unified NPO proof can beat the exhaustive
+certificate without weakening the soundness story.
 
 ## Soundness Summary
 
@@ -231,26 +290,28 @@ Cryptographic assumptions:
   commitment roots are absorbed before terminal challenges.
 - Primitive circuit constraints are checked through the sparse-R1CS row-product
   sumcheck plus assignment evaluation proof.
-- Supported Tip5/recompose NPO rows are checked by the merged
-  residual-zero/recompose/value-bridge proof plus the integrated Tip5 lookup
-  AIR, byte-table LogUp, and selected-vs-trace NPO-IO LogUp bridge.
-- Terminal FRI/PCS openings and 5-round Tip5 Merkle commitments are binding
-  under the stated Plonky3 FRI and Tip5 assumptions.
+- Supported Tip5/recompose NPO rows are checked exhaustively: verifier-derived
+  callsites determine the exact assignment-witness openings, hidden Tip5 lanes,
+  MMCS direction bits, row modes, and predecessor-chain semantics to verify.
+- Terminal FRI/PCS openings for primitive row-product sumcheck and 5-round Tip5
+  Merkle commitments are binding under the stated Plonky3 FRI and Tip5
+  assumptions.
 
 Implementation anchors:
 
 - `docs/ai-pow-integration/2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md`
-  records the production terminal interface and theorem, but its previous
-  97.0 KiB checkpoint is not current evidence for the real integrated
-  verifier-circuit test after the polynomial NPO proof shape.
+  records the production terminal interface and theorem. Its previous
+  polynomial-NPO checkpoint was too large, but the current exhaustive-NPO
+  production measurement is `85,948` bytes / `83.9 KiB`.
 - `crates/plonky3-recursion/recursion/src/terminal.rs` implements
   `TerminalCertificate`, `TerminalProofParameters::production_60bit`,
   `prove_terminal_production_goldilocks`, and
   `verify_terminal_production_goldilocks`.
 - Terminal production tests reject malformed proof bodies, wrong proof kind,
-  noncanonical parameters, missing commitments, and tampered openings. The real
-  Tip5 L0 verifier-circuit measurement test currently fails the hard size gate:
-  `226,248` bytes / `220.9 KiB`.
+  noncanonical parameters, missing commitments, missing exhaustive assignment
+  openings, tampered hidden Tip5 input payloads, and tampered assignment
+  witness multiproofs. The real Tip5 L0 verifier-circuit measurement test now
+  passes the hard size gate at `85,948` bytes / `83.9 KiB`.
 
 Citations:
 
@@ -299,16 +360,17 @@ does not satisfy the production wire budget.
 - No claim that the 200.6 KiB L1 batch-STARK checkpoint is the production
   block/wire artifact.
 - No zero-knowledge claim for the production native terminal certificate.
-  Selected FRI openings may reveal evaluations of witness-derived columns.
+  Exhaustive NPO openings reveal selected recursive-verifier witness material,
+  including hidden Tip5 input lanes needed to recompute hidden-input rows.
 
 ## Clear End-To-End Claim
 
 For the intended production path, the block-facing recursive proof target is
-the native terminal certificate, but the current real integrated measurement
-does not satisfy the hard constraint: it produced **226,248 bytes / 220.9 KiB**
-and failed the 100 KiB assertion. The materialized Layer-0 proof is **303,896
-bytes / 296.8 KiB**, but it is an intermediate diagnostic artifact rather than
-the consensus wire object.
+the native terminal certificate. The current real Tip5 L0 verifier-circuit
+measurement satisfies the hard constraint: **85,948 bytes / 83.9 KiB** with
+release prove **1.492 s** and verify **1.181 s**. The materialized Layer-0
+proof is **303,896 bytes / 296.8 KiB**, but it is an intermediate diagnostic
+artifact rather than the consensus wire object.
 
 The hardened batch-STARK L1 certificate is **205,446 bytes / 200.6 KiB** under
 the fixed-int helper. It is retained as a soundness-hardened checkpoint and
