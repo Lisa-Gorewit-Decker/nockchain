@@ -383,7 +383,7 @@ impl TerminalProximityProfile {
             log_blowup: 4,
             num_queries: 15,
             query_pow_bits: 0,
-            max_log_arity: 4,
+            max_log_arity: 3,
             log_final_poly_len: 0,
             pure_query_bits: MIN_TERMINAL_SECURITY_BITS,
         }
@@ -19562,7 +19562,7 @@ impl NativeTerminalCompiler {
     }
 
     const fn terminal_npo_tip5_lookup_trace_domain_npo_io_logup_group_size() -> usize {
-        3
+        7
     }
 
     const fn terminal_npo_tip5_lookup_trace_domain_npo_io_logup_groups() -> usize {
