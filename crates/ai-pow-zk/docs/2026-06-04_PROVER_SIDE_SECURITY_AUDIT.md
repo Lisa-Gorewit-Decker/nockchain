@@ -149,6 +149,14 @@ expects dimension-check rejection. The focused test and full
 `p3-recursion` crate suite passed before commit
 `32c6c2ba Harden terminal value bridge verifier tests`.
 
+2026-06-04 follow-up: the optimized Tip5 lookup trace profile now carries a
+Tip5 digest of the verifier-fixed preprocessed L-table rows. The backend
+relation digest and lookup-trace FRI transcripts absorb that digest, so a
+profile-compatible table substitution cannot share the same terminal statement
+or challenge stream. Focused native/parallel tests cover profile construction,
+trace construction, support-bridge verification, AIR algebra verification, and
+the merged value-bridge checkpoint before commit.
+
 ## Commands Run For This Checkpoint
 
 ```text

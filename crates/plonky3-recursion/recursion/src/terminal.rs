@@ -31,9 +31,10 @@ use p3_matrix::interpolation::Interpolate;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 use p3_tip5_circuit_air::{
-    NUM_ROUNDS as TIP5_PERM_ROUNDS, ROUND_CONSTANTS as TIP5_ROUND_CONSTANTS,
-    TABLE_ROWS as TIP5_LOOKUP_TABLE_ROWS, Tip5Perm, generate_lookup_trace, generate_trace_rows,
-    mds_matrix as tip5_mds_matrix, rc_precomp as tip5_rc_precomp, tip5_lookup_air_width,
+    LOOKUP_TABLE as TIP5_LOOKUP_TABLE, NUM_ROUNDS as TIP5_PERM_ROUNDS,
+    ROUND_CONSTANTS as TIP5_ROUND_CONSTANTS, TABLE_ROWS as TIP5_LOOKUP_TABLE_ROWS, Tip5Perm,
+    generate_lookup_trace, generate_trace_rows, mds_matrix as tip5_mds_matrix,
+    rc_precomp as tip5_rc_precomp, tip5_lookup_air_width,
 };
 use serde::{Deserialize, Serialize};
 
@@ -257,6 +258,10 @@ pub struct TerminalBindingDigest(pub [u64; 5]);
 /// Tip5 digest of a backend commitment root in the terminal transcript.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalCommitmentDigest(pub [u64; 5]);
+
+/// Tip5 digest of verifier-fixed terminal table material.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalFixedTableDigest(pub [u64; 5]);
 
 /// Directional sibling in a terminal Merkle opening.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1106,6 +1111,7 @@ pub struct TerminalNpoTip5LookupTraceProfile {
     pub main_width: usize,
     pub preprocessed_width: usize,
     pub preprocessed_values: usize,
+    pub preprocessed_digest: TerminalFixedTableDigest,
     pub permutation_row_offset: usize,
     pub max_constraint_degree: usize,
     pub tip5_rounds: usize,
@@ -2001,6 +2007,11 @@ pub enum NativeTerminalVerifyError {
     BindingDigestMismatch {
         expected: TerminalBindingDigest,
         got: TerminalBindingDigest,
+    },
+    TerminalFixedTableDigestMismatch {
+        label: String,
+        expected: TerminalFixedTableDigest,
+        got: TerminalFixedTableDigest,
     },
     TerminalLocalProofSerialization {
         reason: String,
@@ -15166,10 +15177,46 @@ impl NativeTerminalCompiler {
             main_width: tip5_lookup_air_width(),
             preprocessed_width: PREPROCESSED_WIDTH,
             preprocessed_values: main_rows * PREPROCESSED_WIDTH,
+            preprocessed_digest: Self::terminal_npo_tip5_lookup_preprocessed_digest(main_rows),
             permutation_row_offset: TIP5_LOOKUP_TABLE_ROWS,
             max_constraint_degree: 4,
             tip5_rounds: TIP5_PERM_ROUNDS,
         }
+    }
+
+    fn terminal_npo_tip5_lookup_preprocessed_digest(main_rows: usize) -> TerminalFixedTableDigest {
+        let mut sponge = TerminalDigestSponge::new();
+        sponge.absorb_str("nock-terminal-tip5-lookup-preprocessed-v1");
+        sponge.absorb_u64(main_rows as u64);
+        sponge.absorb_u64(3);
+        for row in 0..main_rows {
+            if row < TIP5_LOOKUP_TABLE_ROWS {
+                sponge.absorb_u64(1);
+                sponge.absorb_u64(row as u64);
+                sponge.absorb_u64(TIP5_LOOKUP_TABLE[row] as u64);
+            } else {
+                sponge.absorb_u64(0);
+                sponge.absorb_u64(0);
+                sponge.absorb_u64(0);
+            }
+        }
+        TerminalFixedTableDigest(sponge.finalize())
+    }
+
+    fn verify_terminal_npo_tip5_lookup_trace_profile_digest(
+        profile: &TerminalNpoTip5LookupTraceProfile,
+    ) -> Result<(), NativeTerminalVerifyError> {
+        let expected = Self::terminal_npo_tip5_lookup_preprocessed_digest(profile.main_rows);
+        if profile.preprocessed_digest != expected {
+            return Err(
+                NativeTerminalVerifyError::TerminalFixedTableDigestMismatch {
+                    label: "tip5_lookup_preprocessed".into(),
+                    expected,
+                    got: profile.preprocessed_digest,
+                },
+            );
+        }
+        Ok(())
     }
 
     fn terminal_npo_polynomial_column_layout<F>(
@@ -15565,6 +15612,7 @@ impl NativeTerminalCompiler {
         trace_profile: &TerminalNpoTip5LookupTraceProfile,
         column_set: TerminalNpoTip5LookupFriColumnSet,
     ) -> Result<TerminalNpoTip5LookupFriProfile, NativeTerminalVerifyError> {
+        Self::verify_terminal_npo_tip5_lookup_trace_profile_digest(trace_profile)?;
         if trace_profile.main_rows == 0 {
             return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
         }
@@ -16082,6 +16130,7 @@ impl NativeTerminalCompiler {
         trace_profile: &TerminalNpoTip5LookupTraceProfile,
         layout: &TerminalNpoPolynomialColumnLayout,
     ) -> Result<TerminalNpoTip5LookupNpoRowsIoProfile, NativeTerminalVerifyError> {
+        Self::verify_terminal_npo_tip5_lookup_trace_profile_digest(trace_profile)?;
         if layout.rows == 0 {
             return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
         }
@@ -21007,6 +21056,9 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, profile.main_width as u64);
         Self::observe_terminal_fri_u64(challenger, profile.preprocessed_width as u64);
         Self::observe_terminal_fri_u64(challenger, profile.preprocessed_values as u64);
+        for limb in profile.preprocessed_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
         Self::observe_terminal_fri_u64(challenger, profile.permutation_row_offset as u64);
         Self::observe_terminal_fri_u64(challenger, profile.max_constraint_degree as u64);
         Self::observe_terminal_fri_u64(challenger, profile.tip5_rounds as u64);
@@ -25786,6 +25838,7 @@ impl NativeTerminalCompiler {
         sponge.absorb_u64(profile.main_width as u64);
         sponge.absorb_u64(profile.preprocessed_width as u64);
         sponge.absorb_u64(profile.preprocessed_values as u64);
+        sponge.absorb_digest(&profile.preprocessed_digest.0);
         sponge.absorb_u64(profile.permutation_row_offset as u64);
         sponge.absorb_u64(profile.max_constraint_degree as u64);
         sponge.absorb_u64(profile.tip5_rounds as u64);
@@ -28124,6 +28177,13 @@ mod tests {
         assert_eq!(lookup_profile.tip5_rows, air_inputs.len());
         assert_eq!(lookup_profile.lookup_table_rows, TABLE_ROWS);
         assert_eq!(lookup_profile.main_width, tip5_lookup_air_width());
+        assert_eq!(
+            lookup_profile.preprocessed_digest,
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_preprocessed_digest(
+                lookup_profile.main_rows
+            ),
+            "lookup trace profile must bind the verifier-fixed L-table contents"
+        );
         assert_eq!(lookup_trace.width(), lookup_profile.main_width);
         assert_eq!(lookup_trace.height(), lookup_profile.main_rows);
         assert_eq!(
@@ -29119,6 +29179,22 @@ mod tests {
                 &bad_trace_profile,
             )
             .expect_err("AIR algebra proof must recompute trace profile");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { label, .. }
+                if label == "tip5_lookup_air_algebra_trace_profile"
+        ));
+
+        let mut stale_table_digest = proof.clone();
+        stale_table_digest.trace_profile.trace.preprocessed_digest.0[0] ^= 1;
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &stale_table_digest,
+            )
+            .expect_err("AIR algebra proof must bind the fixed lookup table digest");
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { label, .. }
@@ -31868,6 +31944,25 @@ mod tests {
         assert_eq!(two_profile.tip5_rows, 2);
         assert_eq!(single_profile.lookup_table_rows, TABLE_ROWS);
         assert_eq!(single_profile.main_width, tip5_lookup_air_width());
+        assert_eq!(
+            single_profile.preprocessed_digest,
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_preprocessed_digest(
+                single_profile.main_rows
+            ),
+            "Tip5 lookup profile must commit to the fixed L-table contents"
+        );
+        let mut stale_table_profile = single_profile.clone();
+        stale_table_profile.preprocessed_digest.0[0] ^= 1;
+        let err = NativeTerminalCompiler::terminal_npo_tip5_lookup_fri_profile_for_column_set(
+            &stale_table_profile,
+            TerminalNpoTip5LookupFriColumnSet::FullMain,
+        )
+        .expect_err("stale fixed-table digest must not build a lookup FRI profile");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalFixedTableDigestMismatch { label, .. }
+                if label == "tip5_lookup_preprocessed"
+        ));
         assert_ne!(
             single_profile, two_profile,
             "Tip5 lookup profile must bind permutation row count"
