@@ -1509,7 +1509,6 @@ pub struct TerminalNpoTip5LookupAirLogupTraceIoSupportProof {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TerminalNpoTip5LookupAirLogupTraceIoSupportNpoIoLogupProof {
     pub trace_profile: TerminalNpoTip5LookupFriProfile,
-    pub trace_lookup_io_profile: TerminalNpoTip5LookupFriProfile,
     pub trace_npo_io_profile: TerminalNpoTip5LookupFriProfile,
     pub selected_profile: TerminalNpoPolynomialFriProfile,
     pub selected_lookup_io_profile: TerminalNpoTip5LookupNpoRowsIoProfile,
@@ -1526,7 +1525,6 @@ pub struct TerminalNpoTip5LookupAirLogupTraceIoSupportNpoIoLogupProof {
     pub trace_npo_io_logup_quotient_profile:
         TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile,
     pub trace_commitment: TerminalFriCommitment,
-    pub trace_lookup_io_commitment: TerminalFriCommitment,
     pub trace_npo_io_commitment: TerminalFriCommitment,
     pub selected_lookup_commitment: TerminalFriCommitment,
     pub air_quotient_commitment: TerminalFriCommitment,
@@ -1541,7 +1539,6 @@ pub struct TerminalNpoTip5LookupAirLogupTraceIoSupportNpoIoLogupProof {
     pub selected_npo_io_logup_final_cumulative_basis: Vec<Vec<u64>>,
     pub trace_npo_io_logup_final_cumulative_basis: Vec<Vec<u64>>,
     pub opened_trace_basis: Vec<Vec<u64>>,
-    pub opened_trace_lookup_io_basis: Vec<Vec<u64>>,
     pub opened_trace_npo_io_basis: Vec<Vec<u64>>,
     pub opened_selected_lookup_basis: Vec<Vec<u64>>,
     pub opened_air_quotient_basis: Vec<Vec<u64>>,
@@ -6555,16 +6552,16 @@ impl NativeTerminalCompiler {
                 trace,
                 TerminalNpoTip5LookupFriColumnSet::FullMain,
             )?;
+        let (trace_npo_io_profile, trace_npo_io_matrix) =
+            Self::terminal_npo_tip5_lookup_io_projection_matrix_from_columns_goldilocks(
+                trace_profile,
+                columns,
+            )?;
         let (trace_lookup_io_profile, trace_lookup_io_matrix) =
             Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(
                 trace_profile,
                 trace,
                 TerminalNpoTip5LookupFriColumnSet::TerminalIo,
-            )?;
-        let (trace_npo_io_profile, trace_npo_io_matrix) =
-            Self::terminal_npo_tip5_lookup_io_projection_matrix_from_columns_goldilocks(
-                trace_profile,
-                columns,
             )?;
         if trace_lookup_io_profile != trace_npo_io_profile {
             return Err(
@@ -6805,16 +6802,16 @@ impl NativeTerminalCompiler {
                 trace,
                 TerminalNpoTip5LookupFriColumnSet::FullMain,
             )?;
+        let (trace_npo_io_profile, trace_npo_io_matrix) =
+            Self::terminal_npo_tip5_lookup_io_projection_matrix_from_columns_goldilocks(
+                trace_profile,
+                columns,
+            )?;
         let (trace_lookup_io_profile, trace_lookup_io_matrix) =
             Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(
                 trace_profile,
                 trace,
                 TerminalNpoTip5LookupFriColumnSet::TerminalIo,
-            )?;
-        let (trace_npo_io_profile, trace_npo_io_matrix) =
-            Self::terminal_npo_tip5_lookup_io_projection_matrix_from_columns_goldilocks(
-                trace_profile,
-                columns,
             )?;
         if trace_lookup_io_profile != trace_npo_io_profile {
             return Err(
@@ -8269,17 +8266,15 @@ impl NativeTerminalCompiler {
                 trace,
                 TerminalNpoTip5LookupFriColumnSet::FullMain,
             )?;
-        let (trace_lookup_io_profile, trace_lookup_io_matrix) =
-            Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(
-                trace_profile,
-                trace,
-                TerminalNpoTip5LookupFriColumnSet::TerminalIo,
-            )?;
         let (trace_npo_io_profile, trace_npo_io_matrix) =
             Self::terminal_npo_tip5_lookup_io_projection_matrix_from_columns_goldilocks(
                 trace_profile,
                 columns,
             )?;
+        let trace_lookup_io_profile = Self::terminal_npo_tip5_lookup_fri_profile_for_column_set(
+            trace_profile,
+            TerminalNpoTip5LookupFriColumnSet::TerminalIo,
+        )?;
         if trace_lookup_io_profile != trace_npo_io_profile {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
@@ -8348,7 +8343,6 @@ impl NativeTerminalCompiler {
             )?;
         for profile in [
             trace_fri_profile.proximity,
-            trace_lookup_io_profile.proximity,
             trace_npo_io_profile.proximity,
             selected_profile.proximity,
             selected_lookup_io_profile.proximity,
@@ -8399,11 +8393,6 @@ impl NativeTerminalCompiler {
                 &pcs,
                 [(trace_domain, trace_matrix.clone())],
             );
-        let (trace_lookup_io_commitment, trace_lookup_io_data) =
-            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
-                &pcs,
-                [(trace_domain, trace_lookup_io_matrix.clone())],
-            );
         let (trace_npo_io_commitment, trace_npo_io_data) =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
                 &pcs,
@@ -8417,8 +8406,6 @@ impl NativeTerminalCompiler {
         let selected_lookup_commitment_digest =
             Self::terminal_fri_commitment_digest(&selected_lookup_commitment)?;
         let trace_commitment_digest = Self::terminal_fri_commitment_digest(&trace_commitment)?;
-        let trace_lookup_io_commitment_digest =
-            Self::terminal_fri_commitment_digest(&trace_lookup_io_commitment)?;
         let trace_npo_io_commitment_digest =
             Self::terminal_fri_commitment_digest(&trace_npo_io_commitment)?;
         Self::verify_terminal_fri_prelude_commitments(
@@ -8426,7 +8413,6 @@ impl NativeTerminalCompiler {
             &[
                 selected_lookup_commitment_digest,
                 trace_commitment_digest,
-                trace_lookup_io_commitment_digest,
                 trace_npo_io_commitment_digest,
             ],
         )?;
@@ -8435,7 +8421,6 @@ impl NativeTerminalCompiler {
             &mut challenger,
             prelude,
             &trace_fri_profile,
-            &trace_lookup_io_profile,
             &trace_npo_io_profile,
             &selected_profile,
             &selected_lookup_io_profile,
@@ -8450,7 +8435,6 @@ impl NativeTerminalCompiler {
         );
         challenger.observe(selected_lookup_commitment.clone());
         challenger.observe(trace_commitment.clone());
-        challenger.observe(trace_lookup_io_commitment.clone());
         challenger.observe(trace_npo_io_commitment.clone());
         let air_alpha: TerminalFriChallenge = challenger.sample_algebra_element();
         let air_beta: TerminalFriChallenge = challenger.sample_algebra_element();
@@ -8520,11 +8504,12 @@ impl NativeTerminalCompiler {
         let support_quotient_domain =
             trace_domain.create_disjoint_domain(support_quotient_profile.padded_rows);
         let support_quotient_matrix =
-            Self::terminal_npo_tip5_lookup_io_support_bridge_quotient_matrix_goldilocks(
+            Self::terminal_npo_tip5_lookup_trace_direct_io_support_bridge_quotient_matrix_goldilocks(
                 trace_domain,
                 support_quotient_domain,
-                &trace_lookup_io_profile,
-                &trace_lookup_io_matrix,
+                &trace_fri_profile,
+                &trace_matrix,
+                &trace_npo_io_profile,
                 &trace_npo_io_matrix,
                 support_alpha,
                 support_beta,
@@ -8669,7 +8654,6 @@ impl NativeTerminalCompiler {
                 &pcs,
                 vec![
                     (&trace_data, vec![vec![zeta]]),
-                    (&trace_lookup_io_data, vec![vec![zeta]]),
                     (&trace_npo_io_data, vec![vec![zeta]]),
                     (&selected_lookup_data, vec![vec![zeta]]),
                     (&air_quotient_data, vec![vec![zeta]]),
@@ -8690,35 +8674,32 @@ impl NativeTerminalCompiler {
                 &mut challenger,
             );
         let opened_trace_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
-        let opened_trace_lookup_io_basis =
-            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 1)?;
         let opened_trace_npo_io_basis =
-            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 2)?;
+            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 1)?;
         let opened_selected_lookup_basis =
-            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 3)?;
+            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 2)?;
         let opened_air_quotient_basis =
-            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 4)?;
+            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 3)?;
         let opened_logup_accumulator_points_basis =
-            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 5)?;
+            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 4)?;
         let opened_logup_quotient_basis =
-            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 6)?;
+            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 5)?;
         let opened_support_quotient_basis =
-            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 7)?;
+            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 6)?;
         let opened_selected_npo_io_logup_accumulator_points_basis =
-            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 8)?;
+            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 7)?;
         let opened_trace_npo_io_logup_accumulator_points_basis =
-            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 9)?;
+            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 8)?;
         let opened_selected_npo_io_logup_quotient_basis =
-            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 10)?;
+            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 9)?;
         let opened_trace_npo_io_logup_quotient_basis =
-            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 11)?;
+            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 10)?;
 
         let mut query_challenger = TerminalFriChallenger::new(Tip5Perm);
         Self::seed_terminal_npo_tip5_lookup_air_logup_trace_io_support_npo_io_logup_challenger(
             &mut query_challenger,
             prelude,
             &trace_fri_profile,
-            &trace_lookup_io_profile,
             &trace_npo_io_profile,
             &selected_profile,
             &selected_lookup_io_profile,
@@ -8733,7 +8714,6 @@ impl NativeTerminalCompiler {
         );
         query_challenger.observe(selected_lookup_commitment.clone());
         query_challenger.observe(trace_commitment.clone());
-        query_challenger.observe(trace_lookup_io_commitment.clone());
         query_challenger.observe(trace_npo_io_commitment.clone());
         for _ in 0..9 {
             let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
@@ -8768,7 +8748,6 @@ impl NativeTerminalCompiler {
 
         Ok(TerminalNpoTip5LookupAirLogupTraceIoSupportNpoIoLogupProof {
             trace_profile: trace_fri_profile,
-            trace_lookup_io_profile,
             trace_npo_io_profile,
             selected_profile,
             selected_lookup_io_profile,
@@ -8781,7 +8760,6 @@ impl NativeTerminalCompiler {
             selected_npo_io_logup_quotient_profile,
             trace_npo_io_logup_quotient_profile,
             trace_commitment,
-            trace_lookup_io_commitment,
             trace_npo_io_commitment,
             selected_lookup_commitment,
             air_quotient_commitment,
@@ -8805,7 +8783,6 @@ impl NativeTerminalCompiler {
                 .map(Self::goldilocks_basis_u64)
                 .collect(),
             opened_trace_basis,
-            opened_trace_lookup_io_basis,
             opened_trace_npo_io_basis,
             opened_selected_lookup_basis,
             opened_air_quotient_basis,
@@ -20209,6 +20186,92 @@ impl NativeTerminalCompiler {
         Ok(RowMajorMatrix::new_col(quotient_values).flatten_to_base())
     }
 
+    fn terminal_npo_tip5_lookup_trace_direct_io_support_bridge_quotient_matrix_goldilocks(
+        trace_domain: <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::Domain,
+        quotient_domain: <TerminalFriPcs as Pcs<
+            TerminalFriChallenge,
+            TerminalFriChallenger,
+        >>::Domain,
+        trace_profile: &TerminalNpoTip5LookupFriProfile,
+        trace_matrix: &RowMajorMatrix<Goldilocks>,
+        npo_io_profile: &TerminalNpoTip5LookupFriProfile,
+        npo_io_matrix: &RowMajorMatrix<Goldilocks>,
+        alpha: TerminalFriChallenge,
+        beta: TerminalFriChallenge,
+    ) -> Result<RowMajorMatrix<Goldilocks>, NativeTerminalVerifyError> {
+        if trace_matrix.width() != trace_profile.basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_direct_io_support_trace_width".into(),
+                    expected: trace_profile.basis_columns,
+                    got: trace_matrix.width(),
+                },
+            );
+        }
+        if trace_matrix.height() != trace_profile.padded_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_direct_io_support_trace_rows".into(),
+                    expected: trace_profile.padded_rows,
+                    got: trace_matrix.height(),
+                },
+            );
+        }
+        Self::validate_terminal_npo_tip5_lookup_io_matrix_shape(
+            "tip5_lookup_trace_direct_io_support_npo",
+            npo_io_profile,
+            npo_io_matrix,
+        )?;
+        let expected_io_profile = Self::terminal_npo_tip5_lookup_fri_profile_for_column_set(
+            &trace_profile.trace,
+            TerminalNpoTip5LookupFriColumnSet::TerminalIo,
+        )?;
+        if *npo_io_profile != expected_io_profile {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_trace_direct_io_support_profile".into(),
+                    expected: expected_io_profile.basis_columns,
+                    got: npo_io_profile.basis_columns,
+                },
+            );
+        }
+
+        let mut quotient_values = Vec::with_capacity(quotient_domain.size());
+        let mut point = TerminalFriChallenge::from(quotient_domain.first_point());
+        for _ in 0..quotient_domain.size() {
+            let opened_trace = trace_matrix.interpolate_coset(trace_domain.shift(), point);
+            let opened_npo_io = npo_io_matrix.interpolate_coset(trace_domain.shift(), point);
+            let folded_trace_io = Self::terminal_npo_tip5_lookup_air_terminal_io_folded_relation(
+                &opened_trace,
+                trace_profile,
+                alpha,
+            )?;
+            let mut folded_diff = folded_trace_io;
+            let mut coeff = TerminalFriChallenge::ONE;
+            for value in &opened_npo_io {
+                folded_diff -= coeff * *value;
+                coeff *= alpha;
+            }
+            let window_vanishing =
+                Self::terminal_npo_tip5_lookup_permutation_window_vanishing_at_point(
+                    trace_domain,
+                    trace_profile,
+                    point,
+                )?;
+            let relation = folded_diff + beta * window_vanishing * folded_trace_io;
+            let z_h = trace_domain.vanishing_poly_at_point(point);
+            quotient_values.push(relation / z_h);
+            point = quotient_domain.next_point(point).ok_or_else(|| {
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                    reason:
+                        "terminal Tip5 lookup direct IO support quotient domain has no successor"
+                            .into(),
+                }
+            })?;
+        }
+        Ok(RowMajorMatrix::new_col(quotient_values).flatten_to_base())
+    }
+
     fn terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_matrix_goldilocks<F>(
         value_domain: <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::Domain,
         quotient_domain: <TerminalFriPcs as Pcs<
@@ -20824,6 +20887,39 @@ impl NativeTerminalCompiler {
                 value_profile.proximity,
                 value_profile.padded_rows,
                 value_matrix,
+            )?,
+        ])
+    }
+
+    pub fn terminal_npo_tip5_lookup_trace_direct_io_support_prelude_commitments_goldilocks<F>(
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+        columns: &TerminalNpoPolynomialColumns<F>,
+        trace: &RowMajorMatrix<Goldilocks>,
+    ) -> Result<Vec<TerminalCommitmentDigest>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let (trace_fri_profile, trace_matrix) =
+            Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(
+                trace_profile,
+                trace,
+                TerminalNpoTip5LookupFriColumnSet::FullMain,
+            )?;
+        let (npo_io_profile, npo_io_matrix) =
+            Self::terminal_npo_tip5_lookup_io_projection_matrix_from_columns_goldilocks(
+                trace_profile,
+                columns,
+            )?;
+        Ok(vec![
+            Self::terminal_fri_matrix_commitment_digest(
+                trace_fri_profile.proximity,
+                trace_fri_profile.padded_rows,
+                trace_matrix,
+            )?,
+            Self::terminal_fri_matrix_commitment_digest(
+                npo_io_profile.proximity,
+                npo_io_profile.padded_rows,
+                npo_io_matrix,
             )?,
         ])
     }
@@ -25904,8 +26000,6 @@ impl NativeTerminalCompiler {
             Self::terminal_fri_commitment_digest(&proof.selected_lookup_commitment)?;
         let trace_commitment_digest =
             Self::terminal_fri_commitment_digest(&proof.trace_commitment)?;
-        let trace_lookup_io_commitment_digest =
-            Self::terminal_fri_commitment_digest(&proof.trace_lookup_io_commitment)?;
         let trace_npo_io_commitment_digest =
             Self::terminal_fri_commitment_digest(&proof.trace_npo_io_commitment)?;
         Self::verify_terminal_fri_prelude_commitments(
@@ -25913,7 +26007,6 @@ impl NativeTerminalCompiler {
             &[
                 selected_lookup_commitment_digest,
                 trace_commitment_digest,
-                trace_lookup_io_commitment_digest,
                 trace_npo_io_commitment_digest,
             ],
         )?;
@@ -25949,7 +26042,6 @@ impl NativeTerminalCompiler {
         let expected_selected_lookup_io_profile =
             Self::terminal_npo_tip5_lookup_npo_rows_io_profile(&trace_profile, &layout)?;
         if proof.trace_profile != expected_trace_profile
-            || proof.trace_lookup_io_profile != expected_trace_io_profile
             || proof.trace_npo_io_profile != expected_trace_io_profile
             || proof.selected_profile != expected_selected_profile
             || proof.selected_lookup_io_profile != expected_selected_lookup_io_profile
@@ -26020,8 +26112,6 @@ impl NativeTerminalCompiler {
         }
 
         let opened_trace = Self::terminal_field_values_from_basis_u64(&proof.opened_trace_basis)?;
-        let opened_trace_lookup_io =
-            Self::terminal_field_values_from_basis_u64(&proof.opened_trace_lookup_io_basis)?;
         let opened_trace_npo_io =
             Self::terminal_field_values_from_basis_u64(&proof.opened_trace_npo_io_basis)?;
         let opened_selected_lookup =
@@ -26108,7 +26198,6 @@ impl NativeTerminalCompiler {
             &mut challenger,
             prelude,
             &proof.trace_profile,
-            &proof.trace_lookup_io_profile,
             &proof.trace_npo_io_profile,
             &proof.selected_profile,
             &proof.selected_lookup_io_profile,
@@ -26134,7 +26223,6 @@ impl NativeTerminalCompiler {
         );
         challenger.observe(proof.selected_lookup_commitment.clone());
         challenger.observe(proof.trace_commitment.clone());
-        challenger.observe(proof.trace_lookup_io_commitment.clone());
         challenger.observe(proof.trace_npo_io_commitment.clone());
         let air_alpha: TerminalFriChallenge = challenger.sample_algebra_element();
         let air_beta: TerminalFriChallenge = challenger.sample_algebra_element();
@@ -26189,10 +26277,6 @@ impl NativeTerminalCompiler {
                 (
                     proof.trace_commitment.clone(),
                     vec![(trace_domain, vec![(zeta, opened_trace.clone())])],
-                ),
-                (
-                    proof.trace_lookup_io_commitment.clone(),
-                    vec![(trace_domain, vec![(zeta, opened_trace_lookup_io.clone())])],
                 ),
                 (
                     proof.trace_npo_io_commitment.clone(),
@@ -26426,17 +26510,14 @@ impl NativeTerminalCompiler {
             &proof.trace_profile,
             support_alpha,
         )?;
-        let mut folded_lookup = TerminalFriChallenge::ZERO;
-        let mut folded_diff = TerminalFriChallenge::ZERO;
+        let mut folded_diff = support_trace_io;
         let mut coeff = TerminalFriChallenge::ONE;
-        for (lookup, npo) in opened_trace_lookup_io.iter().zip(&opened_trace_npo_io) {
-            folded_lookup += coeff * *lookup;
-            folded_diff += coeff * (*lookup - *npo);
+        for npo in &opened_trace_npo_io {
+            folded_diff -= coeff * *npo;
             coeff *= support_alpha;
         }
-        if support_trace_io != folded_lookup
-            || folded_diff + support_beta * window_vanishing * folded_lookup
-                != support_quotient * trace_domain.vanishing_poly_at_point(zeta)
+        if folded_diff + support_beta * window_vanishing * support_trace_io
+            != support_quotient * trace_domain.vanishing_poly_at_point(zeta)
         {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
@@ -28090,7 +28171,6 @@ impl NativeTerminalCompiler {
         challenger: &mut TerminalFriChallenger,
         prelude: &TerminalProofPrelude,
         trace_profile: &TerminalNpoTip5LookupFriProfile,
-        trace_lookup_io_profile: &TerminalNpoTip5LookupFriProfile,
         trace_npo_io_profile: &TerminalNpoTip5LookupFriProfile,
         selected_profile: &TerminalNpoPolynomialFriProfile,
         selected_lookup_io_profile: &TerminalNpoTip5LookupNpoRowsIoProfile,
@@ -28109,7 +28189,7 @@ impl NativeTerminalCompiler {
     ) {
         Self::observe_terminal_fri_str(
             challenger,
-            "nock-terminal-npo-tip5-lookup-air-logup-trace-io-support-npo-io-logup-v1",
+            "nock-terminal-npo-tip5-lookup-air-logup-trace-direct-io-support-npo-io-logup-v1",
         );
         for limb in prelude.challenge_digest.0 {
             challenger.observe(Goldilocks::from_u64(limb));
@@ -28123,7 +28203,6 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_profile);
-        Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_lookup_io_profile);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_npo_io_profile);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, selected_profile);
         Self::observe_terminal_npo_tip5_lookup_npo_rows_io_profile(
@@ -37275,6 +37354,14 @@ mod tests {
             )
             .expect("trace-IO support bridge prelude roots must build");
         assert_eq!(trace_roots[0], trace_io_support_bridge_roots[0]);
+        let trace_direct_io_support_roots =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_direct_io_support_prelude_commitments_goldilocks(
+                &trace_profile,
+                &columns,
+                &trace,
+            )
+            .expect("trace-direct-IO support prelude roots must build");
+        assert_eq!(trace_roots[0], trace_direct_io_support_roots[0]);
         let mut combined_roots = merged_roots.clone();
         combined_roots.extend_from_slice(&trace_io_support_bridge_roots);
         let combined_prelude = compiler
@@ -37285,6 +37372,16 @@ mod tests {
                 combined_roots,
             )
             .expect("combined terminal backend prelude must build");
+        let mut integrated_roots = merged_roots.clone();
+        integrated_roots.extend_from_slice(&trace_direct_io_support_roots);
+        let integrated_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                integrated_roots,
+            )
+            .expect("integrated terminal backend prelude must build");
 
         let prove_start = std::time::Instant::now();
         let merged_proof = compiler
@@ -37421,14 +37518,22 @@ mod tests {
         );
 
         let integrated_logup_prove_start = std::time::Instant::now();
+        let integrated_merged_proof = compiler
+            .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &integrated_prelude,
+            )
+            .expect("merged value-bridge proof must build under integrated prelude");
         let integrated_logup_proof = compiler
             .prove_terminal_npo_tip5_lookup_air_logup_trace_io_support_npo_io_logup_goldilocks(
                 &vk,
                 &public_inputs,
                 &witness,
-                &combined_prelude,
+                &integrated_prelude,
             )
-            .expect("integrated NPO IO LogUp backend proof must build under combined prelude");
+            .expect("integrated NPO IO LogUp backend proof must build under integrated prelude");
         let integrated_logup_prove_elapsed = integrated_logup_prove_start.elapsed();
         let integrated_logup_verify_start = std::time::Instant::now();
         compiler
@@ -37437,22 +37542,22 @@ mod tests {
             >(
                 &vk,
                 &public_inputs,
-                &combined_prelude,
-                &merged_proof,
+                &integrated_prelude,
+                &integrated_merged_proof,
                 &integrated_logup_proof,
             )
             .expect("integrated NPO IO LogUp backend checkpoint must verify");
         let integrated_logup_verify_elapsed = integrated_logup_verify_start.elapsed();
         let integrated_logup_serialized = postcard::to_allocvec(&(
-            combined_prelude.clone(),
-            merged_proof.clone(),
+            integrated_prelude.clone(),
+            integrated_merged_proof.clone(),
             integrated_logup_proof.clone(),
         ))
         .expect("integrated NPO IO LogUp backend checkpoint must serialize");
         let integrated_logup_fri_bytes = postcard::to_allocvec(&integrated_logup_proof.proof)
             .expect("integrated NPO IO LogUp compact FRI must serialize");
         println!(
-            "terminal Tip5 lookup backend integrated-LogUp combined-prelude checkpoint: {} bytes ({:.1} KiB), integrated_logup_fri={} bytes ({:.1} KiB), prove={:?}, verify={:?}",
+            "terminal Tip5 lookup backend integrated-LogUp direct-IO checkpoint: {} bytes ({:.1} KiB), integrated_logup_fri={} bytes ({:.1} KiB), prove={:?}, verify={:?}",
             integrated_logup_serialized.len(),
             integrated_logup_serialized.len() as f64 / 1024.0,
             integrated_logup_fri_bytes.len(),
@@ -37469,8 +37574,8 @@ mod tests {
             >(
                 &vk,
                 &public_inputs,
-                &combined_prelude,
-                &merged_proof,
+                &integrated_prelude,
+                &integrated_merged_proof,
                 &tampered_integrated_logup_proof,
             )
             .expect_err("integrated NPO IO LogUp backend must reject tampered trace NPO IO opening");

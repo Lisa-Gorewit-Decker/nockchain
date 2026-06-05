@@ -545,25 +545,33 @@ for this route.
   exhaustive-linked `240,619` bytes / `235.0 KiB`. The new
   `TerminalNpoTip5LookupAirLogupTraceIoSupportNpoIoLogupProof` integrates the
   same row-domain/trace-domain LogUp accumulators and quotients into the shared
-  AIR+LogUp trace-IO/support FRI opening. It measures `240,160` bytes /
-  `234.5 KiB`, with compact FRI payload `208,782` bytes / `203.9 KiB`,
-  `prove=7.174s`, and `verify=44.4ms` in the three-test backend audit run.
-  This is a small win over the exhaustive-linked checkpoint and a large win
-  over the separate LogUp-linked checkpoint, and the tamper check rejects a
-  modified trace-domain NPO IO opening. A 2026-06-05 integrated group-size
-  sweep kept the 60-bit pure-query FRI tuple fixed and tested the accumulator
-  width versus quotient-degree tradeoff directly: 1-lane groups measured
-  `252,162` bytes / `246.3 KiB`, compact FRI `218,450` bytes / `213.3 KiB`,
-  `prove=6.350s`; 7-lane groups measured `256,485` bytes / `250.5 KiB`,
-  compact FRI `225,742` bytes / `220.5 KiB`, `prove=9.257s`; and 15-lane
-  groups measured `263,254` bytes / `257.1 KiB`, compact FRI `232,773` bytes /
-  `227.3 KiB`, `prove=13.499s`. A 26-lane single-group standalone sweep was
-  also worse: `86,187` bytes / `84.2 KiB`, compact FRI payload `84,355` bytes /
-  `82.4 KiB`, and `prove=17.634s`. The 3-lane grouping remains the measured
-  size winner for the integrated backend. The result is useful but still
-  negative for the ~100 KiB target: the bridge is now integrated, so the next
-  size reduction has to shrink the shared FRI oracle payload itself rather than
-  moving the same LogUp bridge between standalone and shared proofs.
+  AIR+LogUp trace-IO/support FRI opening. Its first integrated version measured
+  `240,160` bytes / `234.5 KiB`, with compact FRI payload `208,782` bytes /
+  `203.9 KiB`, `prove=7.174s`, and `verify=44.4ms` in the three-test backend
+  audit run. A follow-up direct-IO support pass removed the separate
+  trace-lookup-IO commitment and opening: the support quotient now evaluates
+  the terminal-IO projection directly from the committed full trace at the
+  quotient-domain points, while the verifier recomputes the same folded
+  terminal IO from the opened full trace at `zeta`. This keeps the public
+  relation identical but drops one committed oracle from the integrated
+  transcript and prelude. The focused native/Rayon measurement is now `230,089`
+  bytes / `224.7 KiB`, with compact FRI payload `202,238` bytes / `197.5 KiB`,
+  `prove=6.936s` for the integrated merged+LogUp path and `verify=43.1ms`.
+  The tamper check still rejects a modified trace-domain NPO IO opening. A
+  2026-06-05 integrated group-size sweep kept the 60-bit pure-query FRI tuple
+  fixed and tested the accumulator width versus quotient-degree tradeoff
+  directly: 1-lane groups measured `252,162` bytes / `246.3 KiB`, compact FRI
+  `218,450` bytes / `213.3 KiB`, `prove=6.350s`; 7-lane groups measured
+  `256,485` bytes / `250.5 KiB`, compact FRI `225,742` bytes / `220.5 KiB`,
+  `prove=9.257s`; and 15-lane groups measured `263,254` bytes / `257.1 KiB`,
+  compact FRI `232,773` bytes / `227.3 KiB`, `prove=13.499s`. A 26-lane
+  single-group standalone sweep was also worse: `86,187` bytes / `84.2 KiB`,
+  compact FRI payload `84,355` bytes / `82.4 KiB`, and `prove=17.634s`. The
+  3-lane grouping remains the measured size winner for the integrated backend.
+  The result is useful but still negative for the ~100 KiB target: the bridge
+  is now integrated, so the next size reduction has to shrink the shared FRI
+  oracle payload itself rather than moving the same LogUp bridge between
+  standalone and shared proofs.
 - `TerminalNpoTip5LookupFriOpeningProof`: a native terminal FRI opening
   checkpoint for the optimized Tip5 lookup AIR main trace. The prover commits
   the whole Goldilocks-valued lookup main matrix with recursive 5-round Tip5
