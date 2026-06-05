@@ -5965,7 +5965,7 @@ impl NativeTerminalCompiler {
             Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(
                 trace_profile,
                 trace,
-                TerminalNpoTip5LookupFriColumnSet::LogupMain,
+                TerminalNpoTip5LookupFriColumnSet::FullMain,
             )?;
         if trace_fri_profile.proximity != prelude.relation_profile.proximity {
             return Err(
@@ -20389,7 +20389,7 @@ impl NativeTerminalCompiler {
         let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
         let expected_trace_profile = Self::terminal_npo_tip5_lookup_fri_profile_for_column_set(
             &trace_profile,
-            TerminalNpoTip5LookupFriColumnSet::LogupMain,
+            TerminalNpoTip5LookupFriColumnSet::FullMain,
         )?;
         if proof.trace_profile != expected_trace_profile {
             return Err(
