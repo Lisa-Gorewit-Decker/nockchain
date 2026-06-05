@@ -11,8 +11,8 @@ stages after this is reviewed.
 
 > Superseded 2026-05-29 by
 > `docs/ai-pow-integration/2026-05-29_AI_ZKP_NOUN_WIRE_SPEC.md`.
-> In particular, the production proof artifact is the recursive L1
-> certificate, not the raw Layer-0 `BatchProof`; and BLAKE3-style
+> In particular, the intended production proof artifact is recursive, not the
+> raw Layer-0 `BatchProof`; and BLAKE3-style
 > 256-bit digests are encoded as single custom-aura atoms
 > (`@uxblake`), not as `[u32; 8]` tuples. The tuple design below is
 > retained only as historical context.
@@ -21,10 +21,12 @@ stages after this is reviewed.
 > allowing `[%ai-pow prf bc nonce]`, a single opaque STARK atom, or
 > a raw Layer-0 proof on the block wire. The current Hoon shape is
 > `[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]`, where
-> `cert` is a structured recursive certificate noun with custom
-> digest/field auras. The nonce is an opaque Rust-owned `[len data]`
-> envelope, not the legacy `@uxncmn` atom. `MatmulProof` and Layer-0
-> `BatchProof` remain prover internals.
+> `cert` is a structured recursive certificate noun with custom digest/field
+> auras. As of the 2026-06-05 re-audit, the batch-STARK certificate noun should
+> be read as a soundness-hardened checkpoint/fallback path; the production
+> recursive proof target is the native terminal certificate. The nonce is an
+> opaque Rust-owned `[len data]` envelope, not the legacy `@uxncmn` atom.
+> `MatmulProof` and Layer-0 `BatchProof` remain prover internals.
 >
 > Scope note, 2026-06-01: real Hoon verifier wiring is intentionally not part
 > of the current milestone. Treat the verifier sections below as historical
@@ -58,9 +60,10 @@ artifact shape is:
 
 where `ai-pow-nonce` is `[len=@ud data=@uxaipownonce]` and the data bytes are
 opaque to Hoon. Rust owns the Pearl-compatible `AIP1` envelope inside those
-bytes. The certificate is the structured recursive certificate noun; plain
-`MatmulProof`, raw Layer-0 STARKs, and single opaque proof atoms are not block
-artifacts.
+bytes. Plain `MatmulProof`, raw Layer-0 STARKs, and single opaque proof atoms
+are not block artifacts. The native terminal certificate is the production
+recursive target; the batch-STARK structured certificate noun is retained as a
+checkpoint/fallback path because it exceeds the production size budget.
 
 This document is retained as the historical path that motivated the current
 noun shape. The normative current spec is
@@ -88,17 +91,17 @@ The Rust side has two proof objects:
 |---|---|---|---|
 | `MatmulProof` (BLAKE3 Merkle openings, `found`+`spot` tiles) | `ai-pow/src/proof.rs` | Pearl §4.6 non-ZK opening proof; prover intermediate | **No** |
 | `BatchProof<AiPowStarkConfig>` + `CompositePublicInputs` | `ai-pow-zk` | Layer-0 ZK STARK; matrix binding (`HASH_A/HASH_B`) is in-circuit | **No** |
-| `AiPowRecursiveCertificate` + structured metadata | `ai-pow-zk` / `ai-pow-miner` | Canonical recursive certificate noun checked against verifier-derived statement metadata | **Yes, once consensus verifier wiring lands** |
+| `AiPowRecursiveCertificate` + structured metadata | `ai-pow-zk` / `ai-pow-miner` | Hardened batch-STARK recursive checkpoint checked against verifier-derived statement metadata | **No; checkpoint/fallback only, too large for production wire use** |
 
-In the production ZK path the recursive certificate **subsumes** the plain
-spot-check openings and the raw Layer-0 STARK. The matrix commitment is bound
-in-circuit (M52 `HASH_A`/`HASH_B` ↔ `h_a_chunk`/`h_b_chunk`), the
+In the intended production ZK path, a recursive certificate **subsumes** the
+plain spot-check openings and the raw Layer-0 STARK. The matrix commitment is
+bound in-circuit (M52 `HASH_A`/`HASH_B` ↔ `h_a_chunk`/`h_b_chunk`), the
 jackpot/target relation is bound in the Layer-0 public inputs, and the
-recursive certificate binds those public inputs as outer public values.
-Therefore the block/wire artifact is the structured recursive certificate
-plus the metadata needed to re-derive and check that statement. `MatmulProof`
-and raw Layer-0 `BatchProof` values stay prover-internal and are **not**
-serialized into the block.
+recursive certificate binds those public inputs as outer public values. The
+current production target for that recursive certificate is the native terminal
+backend; the batch-STARK recursive noun path is soundness-hardened but too
+large. `MatmulProof` and raw Layer-0 `BatchProof` values stay prover-internal
+and are **not** serialized into the block.
 
 ---
 

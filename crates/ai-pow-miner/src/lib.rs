@@ -3,8 +3,10 @@
 //! Wraps [`ai_pow`] with:
 //! * The production-oriented NockApp driver, [`run`], which performs
 //!   Pearl-format-compatible Nockchain `%ai-pow` submission. The miner searches
-//!   Pearl-style ticket attempts and constructs the canonical recursive
-//!   certificate only after the Nockchain target is hit.
+//!   Pearl-style ticket attempts and constructs the recursive certificate only
+//!   after the Nockchain target is hit. The current noun encoder is for the
+//!   batch-STARK checkpoint path; the native terminal certificate is the
+//!   production size target.
 //! * Pearl Gateway proof-submission plumbing for Pearl-side hits. This remains
 //!   Rust-only miner metadata; it is not part of the Hoon `%ai-pow` artifact.
 //! * A Rust-owned opaque nonce envelope for `%ai-pow` artifacts. Hoon sees the
@@ -75,7 +77,7 @@ pub(crate) mod pearl_plain_proof;
 #[cfg(feature = "node")]
 pub mod wire;
 
-/// Noun encoder for the canonical recursive AI-PoW certificate.
+/// Noun encoder for the batch-STARK recursive AI-PoW checkpoint certificate.
 #[cfg(feature = "node")]
 pub mod certificate_noun;
 

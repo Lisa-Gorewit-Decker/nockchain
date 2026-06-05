@@ -63,8 +63,8 @@ pub struct AiPowRecursiveCertificate {
 }
 
 impl AiPowRecursiveCertificate {
-    /// Construct the canonical recursive certificate from chain-verified
-    /// Layer-0 proof parts and the corresponding L1 outer proof.
+    /// Construct the batch-STARK recursive checkpoint certificate from
+    /// chain-verified Layer-0 proof parts and the corresponding L1 outer proof.
     fn new(
         l0_proof: BatchProof<AiPowStarkConfig>,
         l0_program: crate::AiPowProgram,
@@ -538,15 +538,17 @@ pub fn prove_composite_l1_outer_cert(
     Ok(batch_proof)
 }
 
-/// Verify the canonical recursive certificate against the verifier-derived
-/// Layer-0 AI-PoW public inputs and chain-pinned proving parameters.
+/// Verify the batch-STARK recursive checkpoint certificate against the
+/// verifier-derived Layer-0 AI-PoW public inputs and chain-pinned proving
+/// parameters.
 ///
-/// This is the production verification entrypoint. It rejects outer proofs
-/// whose circuit-prover metadata is merely self-consistent by rebuilding the
-/// canonical L1 verifier circuit from the certificate's Layer-0 proof/program,
-/// running that circuit against the verifier-derived public inputs, comparing
-/// stable rebuilt outer metadata to the submitted outer proof, and verifying
-/// the submitted outer proof with the production batch-STARK verifier.
+/// This is the hardened batch-STARK checkpoint verifier. It rejects outer
+/// proofs whose circuit-prover metadata is merely self-consistent by rebuilding
+/// the canonical L1 verifier circuit from the certificate's Layer-0
+/// proof/program, running that circuit against the verifier-derived public
+/// inputs, comparing stable rebuilt outer metadata to the submitted outer
+/// proof, and verifying the submitted outer proof with the production
+/// batch-STARK verifier. It is not the production terminal wire path.
 pub fn verify_recursive_certificate(
     cert: &AiPowRecursiveCertificate,
     zk_params: &crate::params::ZkParams,
@@ -659,8 +661,8 @@ fn verify_recursive_certificate_inner(
 
 /// Per-stage instrumentation of one end-to-end composite→L1 recursion run.
 ///
-/// `l1_cert` is the canonical recursive certificate. The Layer-0 proof and
-/// pinned program are intentionally owned by that certificate so production
+/// `l1_cert` is the batch-STARK recursive checkpoint certificate. The Layer-0
+/// proof and pinned program are intentionally owned by that certificate so
 /// verification can rebuild and bind the exact L1 verifier circuit.
 pub struct L1RecursionRun {
     /// Composite (Layer-0) STARK trace height — the dominant cost
@@ -683,7 +685,7 @@ pub struct L1RecursionRun {
     pub public_inputs: crate::composite_public::CompositePublicInputs,
     /// The L1 recursive certificate.
     ///
-    /// This is the canonical recursive proof artifact.
+    /// This is the batch-STARK recursive checkpoint artifact.
     pub l1_cert: AiPowRecursiveCertificate,
 }
 
@@ -701,11 +703,12 @@ pub struct L1CertificateRun {
     pub l1_in_circuit_verify_ms: u128,
     /// Wall-clock (ms) to outer-prove the L1 verifier circuit.
     pub l1_outer_cert_ms: u128,
-    /// The canonical recursive certificate.
+    /// The batch-STARK recursive checkpoint certificate.
     pub l1_cert: AiPowRecursiveCertificate,
 }
 
-/// **Canonical recursive caller** — the full ai-pow-zk → Plonky3-recursion
+/// **Batch-STARK recursive checkpoint caller** — the full ai-pow-zk →
+/// Plonky3-recursion
 /// pipeline for one composite proof, end to end:
 ///
 /// 1. prove the composite matmul-PoW batch-STARK (Layer 0);
@@ -853,14 +856,15 @@ pub fn prove_recursive_certificate_from_chain_verified_composite_proof(
     })
 }
 
-/// Produce Nockchain's canonical recursive AI-PoW certificate.
+/// Produce the hardened batch-STARK recursive AI-PoW checkpoint certificate.
 ///
-/// This is a name-level guardrail for consensus callers: the
-/// certificate is recursive. Callers that only need the canonical proof
-/// should use this function and persist/transmit `run.l1_cert`. Consensus
-/// callers must separately derive the exact public statement and reject
-/// selected-tile statements that do not prove the intended full-matmul work
-/// unit.
+/// This is a name-level guardrail against raw Layer-0 proof submission: the
+/// returned certificate is recursive and cryptographically verifies the L1
+/// verifier-circuit proof body. It is not the production terminal certificate
+/// target because the batch-STARK certificate is too large for the wire budget.
+/// Consensus callers must separately derive the exact public statement and
+/// reject selected-tile statements that do not prove the intended full-matmul
+/// work unit.
 pub fn prove_canonical_ai_pow_certificate(
     zk_params: &crate::params::ZkParams,
     profile: &crate::circuit::CircuitConfig,
@@ -869,13 +873,14 @@ pub fn prove_canonical_ai_pow_certificate(
     recurse_composite_to_l1(zk_params, profile, trace)
 }
 
-/// Serialize the canonical recursive AI-PoW certificate into compact bytes.
+/// Serialize the batch-STARK recursive AI-PoW checkpoint certificate into
+/// compact bytes.
 ///
-/// This serializes the structured recursive certificate, including the
-/// Layer-0 proof/program context needed to rebuild the L1 verifier circuit.
+/// This serializes the batch-STARK structured recursive checkpoint, including
+/// the Layer-0 proof/program context needed to rebuild the L1 verifier circuit.
 /// It does not accept or produce a standalone Layer-0 `AiPowBatchProof`,
-/// because raw Layer-0 proofs are not canonical block/wire certificates for
-/// Nockchain AI-PoW.
+/// because raw Layer-0 proofs are not block/wire certificates for Nockchain
+/// AI-PoW. This helper is not the native terminal production wire format.
 pub fn encode_recursive_certificate(
     cert: &AiPowRecursiveCertificate,
 ) -> Result<Vec<u8>, bincode::error::EncodeError> {

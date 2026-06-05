@@ -9,11 +9,12 @@ Update: this is a historical audit from before the grinding remediation. The
 before `kappa`, commitments, noise seeds, and matmul-derived tile states.
 Current code should be evaluated against
 `2026-05-31_AI_POW_ONE_MATMUL_ONE_ATTEMPT_AUDIT.md` for nonce-grinding status
-and against `2026-05-29_AI_ZKP_NOUN_WIRE_SPEC.md` for the canonical recursive
-certificate wire format. In particular, the canonical persisted commitment
-surface is now only `[h_a_chunk h_b_chunk]`; legacy row/column roots `h_a` /
-`h_b` are diagnostic/plain-proof opening roots and must not be reintroduced as
-block artifact commitment parameters.
+and against `2026-05-29_AI_ZKP_NOUN_WIRE_SPEC.md` plus
+`2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md` for the recursive certificate
+wire target. In particular, the canonical persisted commitment surface is now
+only `[h_a_chunk h_b_chunk]`; legacy row/column roots `h_a` / `h_b` are
+diagnostic/plain-proof opening roots and must not be reintroduced as block
+artifact commitment parameters.
 
 Update, 2026-06-01: references below to `nonce=ai-ncmn` / `@uxncmn` are
 historical. The current canonical Hoon block artifact is
@@ -197,10 +198,11 @@ Fix plan:
   and metadata failures before recursive proof reconstruction.
 - Done: lower-level selected-tile statement helpers are crate-private; dev
   `ai-pow-zk` verifier helpers are gated behind explicit `dev-unsafe`.
-- Current canonical artifact fields are `nonce`, `zk_params`, `found_idx`,
-  `trace_height`, `[h_a_chunk h_b_chunk]`, `CompositePublicInputs`, and the
-  structured recursive certificate. It must not persist legacy `h_a` / `h_b`
-  row/column roots.
+- Current batch-STARK checkpoint artifact fields are `nonce`, `zk_params`,
+  `found_idx`, `trace_height`, `[h_a_chunk h_b_chunk]`,
+  `CompositePublicInputs`, and the structured recursive certificate. It must
+  not persist legacy `h_a` / `h_b` row/column roots. The production recursive
+  proof target is the native terminal certificate.
 
 Tests:
 
@@ -353,8 +355,8 @@ Fix plan:
   opening shapes before expensive opening verification.
 - Done: full `BlockNoise::expand` was replaced with on-demand row/column
   derivation for opened rows/columns.
-- Keep hard resource-cap coverage in the canonical recursive noun decoder and
-  in `MatmulProof::decode_for_params` for legacy/plain diagnostics.
+- Keep hard resource-cap coverage in recursive-certificate decoders and in
+  `MatmulProof::decode_for_params` for legacy/plain diagnostics.
 
 Tests:
 
@@ -755,11 +757,14 @@ Current behavior:
 
 - Done: the Hoon wire type is now
   `[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]`.
-- Done: `ai-pow-certificate` is a structured recursive certificate noun using
-  custom compact auras for BLAKE3 digests, AI-PoW nonce bytes, and degree-2
-  field elements.
-- Done: the Rust miner emits `[%command %pow %ai-pow nonce cert]` only after it
-  has a canonical recursive certificate builder.
+- Done for the batch-STARK checkpoint path: `ai-pow-certificate` is a
+  structured recursive certificate noun using custom compact auras for BLAKE3
+  digests, AI-PoW nonce bytes, and degree-2 field elements. The production
+  recursive proof target is the native terminal certificate, not this oversized
+  checkpoint noun.
+- Done for checkpoint plumbing: the Rust miner emits
+  `[%command %pow %ai-pow nonce cert]` only after it has a recursive
+  certificate builder.
 - Done: `do-pow` still rejects `%ai-pow` before activation and still rejects it
   after activation with `do-pow: %ai-pow verifier not wired; rejected`.
 - Done: `do-mine` still emits only `%mine-zk`; it refuses to emit `%mine-ai`

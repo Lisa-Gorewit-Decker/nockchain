@@ -96,8 +96,10 @@ pub fn verify(
 /// This is a low-level verifier primitive. It structurally validates `params`,
 /// but it does not enforce the production consensus envelope; plain-proof
 /// callers that need those extra checks must use [`verify_prod_at_target`].
-/// Nockchain block acceptance must verify the structured recursive certificate
-/// noun instead of a plain proof.
+/// Nockchain block acceptance must verify a recursive certificate artifact
+/// instead of a plain proof. The current batch-STARK certificate noun is a
+/// hardened checkpoint path; the production recursive proof target is the
+/// native terminal certificate.
 pub fn verify_at_target(
     block_commitment: &[u8],
     nonce: &[u8],

@@ -56,10 +56,13 @@ and public-input fields are admissible only as typed statement data inside
 certificate. In particular, Hoon should not grow a `MatmulProof` type or
 an `AiPowBatchProof`/Layer-0 ZKP proof arm.
 
-The production proof artifact is the recursive certificate exposed by
-`ai_pow_zk::recursion::AiPowRecursiveCertificate`, produced through
-`prove_canonical_ai_pow_certificate`. The Hoon/wire type targets that
-recursive certificate only.
+The production proof artifact target is the native terminal recursive
+certificate described in
+`2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md`. The batch-STARK recursive
+certificate exposed by `ai_pow_zk::recursion::AiPowRecursiveCertificate` and
+produced through `prove_canonical_ai_pow_certificate` is a
+soundness-hardened recursive-verifier checkpoint/fallback path, not the final
+production wire object, because it exceeds the ~100 KiB size budget.
 
 ## 3. Encoding Principles
 
@@ -390,11 +393,11 @@ for a real recursive certificate:
 - recursive prove/build/verify timing;
 - proof-node reconstruction and recursive verification success after jam/cue.
 
-### Recursive Production Proof Benchmark
+### Hardened Batch-STARK Recursive Checkpoint Benchmark
 
-The production wire proof is the recursive L1 certificate, not the
-Layer-0 composite proof. The current repository has a dedicated
-measurement harness:
+The historical batch-STARK recursive checkpoint is the recursive L1
+certificate, not the Layer-0 composite proof. The current repository has a
+dedicated measurement harness:
 
 ```text
 RUSTFLAGS="-Ctarget-cpu=native" \
@@ -402,8 +405,8 @@ RUSTFLAGS="-Ctarget-cpu=native" \
   --example prod_recursion_measure -- 15
 ```
 
-This benchmark uses the production AI-PoW shape documented in the
-harness:
+This benchmark uses the production AI-PoW Layer-0 shape and the hardened
+batch-STARK recursive checkpoint profile documented in the harness:
 
 - model params: `m=4096 k=4096 n=14336 noise_rank=64 tile=8`;
 - L0 profile: `CircuitConfig::PROD` with `log_blowup=4`, `num_queries=15`, `pow_bits=1`;
@@ -418,7 +421,7 @@ Measured on 2026-06-03 after the position-keyed `noised_packed`
 constraint update, the `urange8` redundant-query reduction, L1 Horner
 packing, digest-binding the outer certificate's statement public
 values, and removing the low-soundness L1 `goldilocks_tip5()` testing
-profile. The active L1 outer certificate profile is now
+profile. The hardened L1 outer certificate profile is now
 `goldilocks_tip5_60bit()` only: `log_blowup=4`, `num_queries=9`,
 `query_pow_bits=24`, `cap_height=5`, for 60 Johnson bits.
 
@@ -436,10 +439,10 @@ Serialized sizes from the same run:
 | Artifact | Bytes | KiB |
 |---|---:|---:|
 | L0 composite proof | 303,896 | 296.8 KiB |
-| L1 recursive certificate (canonical fixed-int bincode helper) | 205,446 | 200.6 KiB |
-| L1 recursive certificate (legacy postcard comparison) | 231,235 | 225.8 KiB |
+| L1 batch-STARK checkpoint certificate (fixed-int bincode helper) | 205,446 | 200.6 KiB |
+| L1 batch-STARK checkpoint certificate (legacy postcard comparison) | 231,235 | 225.8 KiB |
 
-The L1 certificate breakdown from the same run was:
+The batch-STARK L1 certificate breakdown from the same run was:
 
 | Component | KiB |
 |---|---:|
@@ -558,9 +561,11 @@ Before accepting `%ai-pow`, consensus must require:
 17. `public-inputs.hash-a == commitments.h-a-chunk`.
 18. `public-inputs.hash-b == commitments.h-b-chunk`.
 19. `public-inputs.hash-jackpot <= target`.
-20. Rust verifies the structured recursive certificate with
-    `verify_recursive_certificate`, including the outer recursive STARK
-    envelope and submitted outer proof body.
+20. Rust verifies the structured recursive certificate with the production
+    terminal verifier once wired. The batch-STARK checkpoint verifier
+    `verify_recursive_certificate` remains soundness-hardened and verifies the
+    outer recursive STARK envelope plus submitted outer proof body, but is not
+    the final production size/time path.
 21. Rust verifies that the certificate's bound public values match the
     canonical statement. For native AI-PoW this means the full public-input
     vector rebuilt from config, commitments, `found-idx`, block commitment,

@@ -490,8 +490,9 @@ The recursive certificate has two distinct verification layers:
 `crates/ai-pow-zk/src/recursion.rs` now exposes the recursive verifier API:
 
 - `verify_recursive_certificate(cert, public_inputs)` accepts only the
-  canonical recursive certificate and a verifier-derived
-  `CompositePublicInputs`.
+  batch-STARK recursive checkpoint certificate and a verifier-derived
+  `CompositePublicInputs`. The production recursive proof target is the native
+  terminal certificate.
 - `verify_recursive_certificate_with_public_values(cert, public_values)` is the
   lower-level equivalent for callers that already hold the exact Layer-0 public
   input vector. It rejects empty statement vectors on the normal recursive path.
@@ -1052,11 +1053,11 @@ made the operator-facing miner look usable for a configuration that cannot
 produce the canonical block certificate.
 
 Code status after this re-audit: `ai_pow::zk_bridge` now exposes
-`validate_canonical_recursive_certificate_params`, the single production gate
-for whether the canonical recursive certificate is full-matmul-admissible for a
+`validate_canonical_recursive_certificate_params`, the single gate for whether
+the current recursive certificate artifact is full-matmul-admissible for a
 parameter set. The node miner calls this gate during startup preflight and
 refuses to connect or enable mining when no recursive certificate builder is
-configured, when the current selected-tile recursive statement is used with
+configured, or when the current selected-tile recursive statement is used with
 multi-tile parameters. The legacy NCMN miner path has since been removed; the
 remaining tests cover required Pearl submission config, parameter/config
 mismatches, unsupported recursive params and patterns, stale recursive-run

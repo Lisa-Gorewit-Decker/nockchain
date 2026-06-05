@@ -157,11 +157,12 @@ impl MatmulProof {
     /// prevents cross-version ambiguity and forces decoders to reject trailing
     /// bytes before attempting shape-specific verification.
     ///
-    /// This is not the canonical Nockchain AI-PoW production block/wire
-    /// artifact. Production callers must submit the structured recursive
-    /// certificate noun instead.
+    /// This is not a Nockchain AI-PoW production block/wire artifact. The
+    /// production recursive target is the native terminal certificate; the
+    /// existing structured batch-STARK certificate noun remains a checkpoint
+    /// path, not this legacy plain proof.
     #[deprecated(
-        note = "legacy plain MatmulProof envelope; production AI-PoW uses the structured recursive certificate noun"
+        note = "legacy plain MatmulProof envelope; production AI-PoW uses a recursive certificate, not this proof"
     )]
     pub fn encode_consensus(&self) -> Result<Vec<u8>, EncodeError> {
         let body = self.encode_checked()?;
@@ -278,11 +279,11 @@ impl MatmulProof {
     /// bytes at the envelope layer, then applies the exact parameter-derived
     /// shape limits from [`Self::decode_for_params`] to the inner proof body.
     ///
-    /// This is not the canonical Nockchain AI-PoW production block/wire
-    /// artifact decoder. Production callers must decode and verify the
-    /// structured recursive certificate noun instead.
+    /// This is not a Nockchain AI-PoW production block/wire artifact decoder.
+    /// Production callers must decode and verify a recursive certificate
+    /// artifact instead of this legacy plain proof.
     #[deprecated(
-        note = "legacy plain MatmulProof envelope; production AI-PoW uses the structured recursive certificate noun"
+        note = "legacy plain MatmulProof envelope; production AI-PoW uses a recursive certificate, not this proof"
     )]
     pub fn decode_consensus_for_params(
         bytes: &[u8],

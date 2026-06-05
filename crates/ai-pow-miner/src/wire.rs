@@ -8,7 +8,7 @@
 //! `mining-error`).
 //!
 //! Submission flow:
-//! 1. The run loop obtains the canonical recursive AI-PoW certificate noun.
+//! 1. The run loop obtains the recursive AI-PoW certificate noun.
 //! 2. It pokes the node over gRPC via
 //!    [`nockchain_mining_common::NodeClient::poke_wire`] with
 //!    `AiPowMinerWire::Mined.to_wire()`.
@@ -23,7 +23,7 @@ pub enum AiPowMinerWire {
     Enable,
     /// Kernel-internal: a new candidate puzzle.
     Candidate,
-    /// Driver → node: canonical recursive certificate. Payload (v1):
+    /// Driver → node: recursive certificate artifact. Payload (v1):
     /// `[%command %pow %ai-pow nonce=[len data] cert=ai-pow-certificate]`.
     Mined,
     /// Driver → node: set mining-payout pubkey(s).

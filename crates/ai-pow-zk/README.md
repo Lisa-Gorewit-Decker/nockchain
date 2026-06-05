@@ -1,10 +1,11 @@
 # `ai-pow-zk`
 
 EXPERIMENTAL — a Plonky3 STARK and recursive-certificate stack for the
-[`ai-pow`](../ai-pow/) tiling matmul puzzle. The production-facing role is to
-build the canonical recursive AI-PoW certificate for Nockchain block
-submission. The plain `MatmulProof` remains a miner diagnostic / pre-ZKP
-target-hit check; it is not the persisted block artifact.
+[`ai-pow`](../ai-pow/) tiling matmul puzzle. The native terminal backend is the
+production recursive proof target. The batch-STARK recursion path in this crate
+is a hardened checkpoint/fallback path and is too large for the production wire
+budget. The plain `MatmulProof` remains a miner diagnostic / pre-ZKP target-hit
+check; it is not the persisted block artifact.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 
@@ -460,16 +461,17 @@ anchor merge-mining compat.
 ## Where this fits in the `ai-pow` flow
 
 `ai-pow-zk` is downstream of `ai-pow`'s nonce-bound attempt context. The
-`ai-pow` bridge constructs a `CompositeTrace` and
-`CompositePublicInputs` from verifier-derived attempt data, proves the
-Layer-0 composite STARK, and wraps that proof with the canonical recursive
-certificate. The recursive certificate plus statement metadata is what the
-Hoon-compatible noun encoder serializes for block submission.
+`ai-pow` bridge constructs a `CompositeTrace` and `CompositePublicInputs` from
+verifier-derived attempt data, proves the Layer-0 composite STARK, and can wrap
+that proof with the batch-STARK recursive checkpoint certificate. The
+production recursive proof target is the native terminal certificate; the
+batch-STARK noun path is retained for soundness regression and fallback
+validation.
 
 The `composite_prove` / `composite_verify` APIs are Layer-0 primitives. They
 are useful for circuit tests and for the recursive-certificate builder, but the
 raw Layer-0 proof is not the production block artifact. Block, wire, and Hoon
-boundaries must consume the recursive certificate and run the full-matmul
+boundaries must consume a recursive certificate and run the full-matmul
 statement precheck. That precheck derives canonical seeds from the same
 nonce-keyed chunk commitments bound by the proof as `HASH_A` / `HASH_B`, and
 it intentionally fails closed for multi-tile shapes until the recursive proof

@@ -2,7 +2,7 @@
 name = "ai-pow-miner"
 version.workspace = true
 edition.workspace = true
-description = "NockApp-compatible AI-PoW miner for Pearl-compatible ticket search and canonical recursive %ai-pow submission."
+description = "NockApp-compatible AI-PoW miner for Pearl-compatible ticket search and recursive %ai-pow submission."
 publish = false
 
 [lib]

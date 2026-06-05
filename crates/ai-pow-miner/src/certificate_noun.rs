@@ -1,13 +1,15 @@
-//! Structured noun encoder for the canonical recursive AI-PoW certificate.
+//! Structured noun encoder for the batch-STARK recursive AI-PoW checkpoint
+//! certificate.
 //!
 //! This module intentionally accepts the recursive certificate object, not
 //! `MatmulProof` and not a standalone raw Layer-0 `AiPowBatchProof`. The
 //! recursive certificate embeds Layer-0 proof/program context so verification
 //! can rebuild the L1 circuit binding. Its verifier boundary also runs the
 //! full-matmul statement precheck before recursive proof reconstruction or
-//! verification. Those recursive verifier helpers are Rust boundaries only;
-//! Hoon consensus remains fail-closed and does not call them in the current
-//! milestone.
+//! verification. This batch-STARK noun path is a soundness-hardened checkpoint
+//! path, not the native terminal production target. Those recursive verifier
+//! helpers are Rust boundaries only; Hoon consensus remains fail-closed and
+//! does not call them in the current milestone.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -563,7 +565,7 @@ where
     Ok(certificate)
 }
 
-/// Reconstruct the canonical recursive certificate from a decoded
+/// Reconstruct the batch-STARK recursive checkpoint certificate from a decoded
 /// Hoon-compatible proof-node tree.
 pub fn ai_pow_recursive_certificate_from_node(
     node: &AiProofNode,

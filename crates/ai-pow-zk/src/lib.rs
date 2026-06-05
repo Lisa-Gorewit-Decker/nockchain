@@ -3,7 +3,10 @@
 //! Mirrors Pearl's `zk-pow` role at the proof-certificate layer: where Pearl
 //! uses a compact proof to certify the opened useful-work statement, this
 //! crate uses Plonky3 over Goldilocks + Tip5 + FRI plus recursion to build
-//! Nockchain's canonical recursive AI-PoW certificate. The plain
+//! Nockchain's AI-PoW proof stack. The production recursive certificate target
+//! is the native terminal backend; the batch-STARK recursion module is a
+//! hardened checkpoint/fallback path, not the size-bounded production wire
+//! artifact. The plain
 //! `MatmulProof` remains a miner-side diagnostic/pre-ZKP target-hit check,
 //! not the persisted block artifact.
 //!
@@ -17,15 +20,14 @@
 //!
 //! ## Public API
 //!
-//! - [`recursion::prove_canonical_ai_pow_certificate`] — the canonical
-//!   recursive wrapper for Nockchain's AI-PoW certificate. It proves
-//!   the Layer-0 composite STARK, recursively verifies that proof in
-//!   an L1 circuit, and returns the recursive certificate. The certificate
-//!   includes the Layer-0 proof/program context needed to rebuild and bind
-//!   the exact L1 verifier circuit during verification. It is the only proof
-//!   object intended for Nockchain consensus, block persistence, or wire
-//!   transmission; consensus code must still verify that the bound Layer-0
-//!   public statement is the intended full-matmul work unit.
+//! - [`recursion::prove_canonical_ai_pow_certificate`] — the hardened
+//!   batch-STARK recursive checkpoint wrapper. It proves the Layer-0 composite
+//!   STARK, recursively verifies that proof in an L1 circuit, and returns the
+//!   batch-STARK recursive certificate. The certificate includes the Layer-0
+//!   proof/program context needed to rebuild and bind the exact L1 verifier
+//!   circuit during verification. It is soundness-relevant, but it is too large
+//!   to be the production consensus, block-persistence, or wire-transmission
+//!   artifact.
 //! - [`composite_proof::composite_prove_pinned_logup`] /
 //!   [`composite_proof::composite_verify_pinned_logup`] — Layer-0
 //!   composite STARK primitives. These are intermediate inputs to the
@@ -62,10 +64,10 @@
 //! ## Status
 //!
 //! M10.1c is the Layer-0 composite pipeline. The production
-//! Nockchain certificate is the recursive L1 certificate produced by
-//! the `recursion` module, not the raw Layer-0 proof. Earlier M9.1 /
-//! M10.1b prototypes were retired once M10.1c had full LogUp + PI
-//! binding + bench data.
+//! Nockchain's production recursive target is the native terminal certificate,
+//! not the raw Layer-0 proof and not the oversized batch-STARK L1 checkpoint.
+//! Earlier M9.1 / M10.1b prototypes were retired once M10.1c had full LogUp +
+//! PI binding + bench data.
 //! See `2026-05-14_ENGINEERING_REPORT.md` for the architectural review and bench
 //! numbers; `2026-05-14_M10_1C_PROGRESS.md` for the phase-by-phase history.
 //!

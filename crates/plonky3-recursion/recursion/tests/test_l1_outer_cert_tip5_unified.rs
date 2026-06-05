@@ -418,40 +418,30 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
     let production_r1cs_size = postcard::to_allocvec(&production_proof.primitive_r1cs_proof)
         .expect("terminal production R1CS proof must serialize")
         .len();
-    let production_npo_exhaustive_size = production_proof
-        .npo_exhaustive_proof
+    let production_npo_polynomial_size = production_proof
+        .npo_polynomial_proof
         .as_ref()
         .map(|proof| {
             postcard::to_allocvec(proof)
-                .expect("terminal production exhaustive NPO proof must serialize")
+                .expect("terminal production polynomial NPO proof must serialize")
                 .len()
         })
         .unwrap_or(0);
-    let production_npo_witness_sparse_basis_coefficients = production_proof
-        .npo_exhaustive_proof
+    let production_npo_merged_value_bridge_size = production_proof
+        .npo_polynomial_proof
         .as_ref()
         .map(|proof| {
-            proof
-                .assignment_witness_multi_opening
-                .value_basis_flat
+            postcard::to_allocvec(&proof.merged_value_bridge_proof)
+                .expect("terminal production merged NPO value-bridge proof must serialize")
                 .len()
         })
         .unwrap_or(0);
-    let production_npo_witness_multi_opening_size = production_proof
-        .npo_exhaustive_proof
+    let production_npo_integrated_logup_size = production_proof
+        .npo_polynomial_proof
         .as_ref()
         .map(|proof| {
-            postcard::to_allocvec(&proof.assignment_witness_multi_opening)
-                .expect("terminal production NPO assignment-witness multiproof must serialize")
-                .len()
-        })
-        .unwrap_or(0);
-    let production_npo_hidden_inputs_size = production_proof
-        .npo_exhaustive_proof
-        .as_ref()
-        .map(|proof| {
-            postcard::to_allocvec(&proof.tip5_hidden_input_values_le)
-                .expect("terminal production NPO hidden inputs must serialize")
+            postcard::to_allocvec(&proof.integrated_logup_proof)
+                .expect("terminal production integrated NPO LogUp proof must serialize")
                 .len()
         })
         .unwrap_or(0);
@@ -1040,14 +1030,14 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         .expect("terminal R1CS row-product sumcheck must verify");
     let r1cs_row_product_verify_elapsed = r1cs_row_product_verify_start.elapsed();
 
-    if production_proof.npo_exhaustive_proof.is_some() {
+    if production_proof.npo_polynomial_proof.is_some() {
         let mut missing_npo_opening = production_proof.clone();
         missing_npo_opening
-            .npo_exhaustive_proof
+            .npo_polynomial_proof
             .as_mut()
-            .expect("real production proof must carry exhaustive NPO proof")
-            .assignment_witness_multi_opening
-            .value_basis_flat
+            .expect("real production proof must carry polynomial NPO proof")
+            .merged_value_bridge_proof
+            .opened_selected_basis
             .pop();
         let err = compiler
             .verify_terminal_production_goldilocks(
@@ -1058,10 +1048,8 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
             .unwrap_err();
         assert!(matches!(
             err,
-            p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleOpeningPathLengthMismatch { .. }
-                | p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
-                | p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
-                | p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleQueryLengthMismatch { .. }
+            p3_recursion::terminal::NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+                | p3_recursion::terminal::NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
         ));
     }
 
@@ -1075,14 +1063,13 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         production_verify_elapsed.as_secs_f64(),
     );
     eprintln!(
-        "terminal production compact components: r1cs_row_product={} npo_exhaustive={}",
-        production_r1cs_size, production_npo_exhaustive_size,
+        "terminal production compact components: r1cs_row_product={} npo_polynomial={}",
+        production_r1cs_size, production_npo_polynomial_size,
     );
     eprintln!(
-        "terminal production NPO breakdown: assignment_witness_multiproof={} assignment_witness_sparse_basis_coefficients={} hidden_inputs={}",
-        production_npo_witness_multi_opening_size,
-        production_npo_witness_sparse_basis_coefficients,
-        production_npo_hidden_inputs_size,
+        "terminal production NPO breakdown: merged_value_bridge={} integrated_logup={}",
+        production_npo_merged_value_bridge_size,
+        production_npo_integrated_logup_size,
     );
     eprintln!(
         "terminal NPO polynomial FRI candidate: rows={} field_columns={} proof={} bytes ({:.1} KiB) plain_inner={} compact_inner={} opened_values={} basis_columns={} prove={:.3}s verify={:.3}s",

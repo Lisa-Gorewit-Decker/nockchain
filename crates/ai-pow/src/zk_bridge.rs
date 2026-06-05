@@ -297,16 +297,17 @@ pub(crate) struct ZkProofArtifact {
 /// Prover-side result for a recursive AI-PoW certificate.
 ///
 /// This is the object production callers should hand to the Hoon noun encoder:
-/// it contains the canonical recursive certificate plus only the statement data
-/// needed to verify it later. The certificate embeds its Layer-0 proof/program
-/// as verifier context; callers cannot supply a raw Layer-0 proof as a
-/// standalone production artifact. It does not contain the plain
+/// it contains the hardened batch-STARK recursive checkpoint certificate plus
+/// only the statement data needed to verify it later. The certificate embeds
+/// its Layer-0 proof/program as verifier context; callers cannot supply a raw
+/// Layer-0 proof as a standalone artifact. It does not contain the plain
 /// `MatmulProof`. For multi-tile params the current recursive statement is
 /// selected-tile only, so
 /// [`prove_ai_pow_recursive_certificate`] rejects before producing this value.
 /// Fields are private so downstream crates cannot synthesize a fake prover-run
-/// handle and accidentally feed noncanonical proof material into production
-/// artifact builders.
+/// handle and accidentally feed noncanonical proof material into artifact
+/// builders. This batch-STARK run object is not the final production terminal
+/// certificate target.
 pub struct AiPowRecursiveCertificateRun {
     zk_params: ZkParams,
     found_idx: u32,
@@ -948,18 +949,20 @@ fn prove_ai_pow_block(
     Ok(artifact)
 }
 
-/// Build the recursive AI-PoW certificate for a solved block.
+/// Build the hardened batch-STARK recursive AI-PoW checkpoint for a solved
+/// block.
 ///
-/// This is the production prover handoff for Nockchain block submission:
-/// it constructs the Layer-0 composite proof internally, recursively
-/// verifies that proof in the L1 circuit, and returns the recursive
+/// It constructs the Layer-0 composite proof internally, recursively verifies
+/// that proof in the L1 circuit, and returns the batch-STARK recursive
 /// certificate plus typed statement data for the Hoon noun encoder. The
-/// returned value deliberately does not expose the plain `MatmulProof`.
+/// returned value deliberately does not expose the plain `MatmulProof`. The
+/// production recursive proof target remains the native terminal certificate
+/// because the batch-STARK certificate exceeds the wire-size budget.
 ///
 /// Current soundness boundary: the recursive Layer-0 statement proves one
 /// verifier-derived jackpot tile. For native AI-PoW, `params.num_tiles() > 1`
-/// is not a proof of one full-matmul attempt, so this production-facing builder
-/// fails before spending ZK proving work. Pearl merge-mining uses
+/// is not a proof of one full-matmul attempt, so this builder fails before
+/// spending ZK proving work. Pearl merge-mining uses
 /// [`prove_pearl_merge_recursive_certificate`] because Pearl's unit is an
 /// explicit tile ticket from a committed work instance.
 pub fn prove_ai_pow_recursive_certificate(
@@ -1029,14 +1032,16 @@ pub fn prove_ai_pow_recursive_certificate(
     })
 }
 
-/// Build the recursive AI-PoW certificate for a Pearl-compatible merge-mined
-/// ticket.
+/// Build the hardened batch-STARK recursive AI-PoW checkpoint for a
+/// Pearl-compatible merge-mined ticket.
 ///
-/// This is the production prover handoff for canonical `%ai-pow`. It rechecks
-/// the public `PMP1` statement against trusted matrices and the Nockchain
-/// target, proves the exact Pearl ticket row/column schedule, uses Pearl's
-/// `s_A` directly as the jackpot key, and returns a Nockchain-native recursive
-/// certificate. It intentionally does not serialize or reuse Pearl's own ZKP.
+/// It rechecks the public `PMP1` statement against trusted matrices and the
+/// Nockchain target, proves the exact Pearl ticket row/column schedule, uses
+/// Pearl's `s_A` directly as the jackpot key, and returns a Nockchain-native
+/// batch-STARK recursive certificate. It intentionally does not serialize or
+/// reuse Pearl's own ZKP. This checkpoint path remains useful for soundness
+/// regression, but the production recursive proof target is the native terminal
+/// certificate.
 pub fn prove_pearl_merge_recursive_certificate(
     attempt: &PearlMergeTicketAttempt,
     params: &MatmulParams,
@@ -1229,8 +1234,8 @@ pub fn prove_pearl_merge_recursive_certificate(
     })
 }
 
-/// Check whether the current canonical recursive certificate can serve as a
-/// production full-matmul certificate for `params`.
+/// Check whether the current recursive certificate artifact can serve as a
+/// full-matmul certificate for `params`.
 ///
 /// Today this fails closed for multi-tile production shapes because the
 /// recursive statement proves one selected tile, not a full multi-tile

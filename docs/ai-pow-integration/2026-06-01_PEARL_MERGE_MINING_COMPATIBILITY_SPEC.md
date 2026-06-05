@@ -215,8 +215,10 @@ so the branch component contributes no bytes. Any Gateway-returned branch and
 any nonce carrying `merkle_branch_len > 0` is rejected before mining or
 verification work.
 
-This is separate from the recursive proof node tree. Hoon sees only `[len data]`
-for the nonce and the structured recursive certificate.
+This is separate from recursive proof bytes. Hoon sees only `[len data]` for
+the nonce and a recursive certificate artifact. The batch-STARK structured
+certificate noun is now treated as a hardened checkpoint/fallback path; the
+production recursive proof target is the native terminal certificate.
 
 ## Work Unit Terminology
 
@@ -417,8 +419,8 @@ Implemented in this branch:
   Gateway failure is a skipped candidate, not an unbounded miner stall. The
   miner also polls Gateway while a Nockchain candidate is current and
   redispatches the ticket loop if the Pearl header changes. The miner derives
-  the Rust-only Pearl mining config from the canonical recursive AI-PoW params.
-  The Rust submission config carries a direct Pearl Gateway RPC config.
+  the Rust-only Pearl mining config from the recursive AI-PoW params. The Rust
+  submission config carries a direct Pearl Gateway RPC config.
   The CLI uses the default `ai-pow-prod-v1` local smoke-profile matrices; the
   remaining required local operator input is a v1 pubkey-hash reward
   configuration. v0 public-key mining configs are not accepted, are not
@@ -451,8 +453,10 @@ Implemented in this branch:
   current recursive statement proves one explicit ticket. Contiguous,
   non-contiguous, rectangular, and non-native-grid Pearl schedules are
   represented by an explicit strip schedule derived from the public ticket.
-- `ai_pow_miner::certificate_noun` emits canonical `%ai-pow` artifacts with an
-  opaque `[len data]` nonce and structured recursive certificate.
+- `ai_pow_miner::certificate_noun` emits batch-STARK checkpoint `%ai-pow`
+  artifacts with an opaque `[len data]` nonce and structured recursive
+  certificate. The production recursive proof target is the native terminal
+  certificate because the batch-STARK checkpoint exceeds the wire-size budget.
 - Public certificate-noun construction is typed around
   the opaque `AiPowRecursiveCertificateRun`; generic serde proof-node
   serializers and raw-node certificate builders are crate-internal
@@ -482,12 +486,11 @@ Implemented in this branch:
 - Size-budget tests pin the maximum `AIP1` nonce envelope at 101,424 bytes,
   reject nonce bytes above that cap, reject any nonempty aux merkle branch in
   the current production profile, and assert a worst-case nonce plus small
-  structured certificate jams below 110 KiB.
-- The opt-in real recursive certificate harness currently measures a
-  representative structured recursive certificate noun at 190,510 jammed bytes
-  (186.04 KiB) and the postcard-encoded L1 certificate at 125,089 bytes
-  (122.16 KiB) in release mode. It asserts budget caps of 256 KiB and 160 KiB,
-  respectively, while the final production proof shape is still settling.
+  structured checkpoint certificate jams below 110 KiB.
+- Historical batch-STARK recursive certificate harnesses measured
+  representative structured certificate nouns above the production target. They
+  remain useful checkpoint measurements, but the final production recursive
+  proof shape is the native terminal backend.
 - Hoon exports only `ai-pow-nonce`, `ai-pow-certificate`, and
   `ai-pow-artifact` concepts. No Pearl-specific molds are exported.
 - Dumbnet consensus recognizes only `%ai-pow` for AI proof version `%3` and

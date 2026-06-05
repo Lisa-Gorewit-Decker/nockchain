@@ -77,7 +77,7 @@ const DEFAULT_MATMUL_PARAMS: MatmulParams = MatmulParams {
 #[derive(Parser, Debug)]
 #[command(
     name = "ai-pow-mine",
-    about = "Standalone AI-PoW block miner. Mines Pearl-compatible tickets and submits canonical recursive %ai-pow commands to a nockchain node.",
+    about = "Standalone AI-PoW block miner. Mines Pearl-compatible tickets and submits recursive %ai-pow commands to a nockchain node.",
     version
 )]
 struct Args {

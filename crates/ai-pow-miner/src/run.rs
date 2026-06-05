@@ -20,14 +20,14 @@
 //!    - new candidate -> cancel any in-flight attempt, derive the
 //!      Pearl-compatible mining job, and spawn the worker.
 //!    - worker result:
-//!      - success → build the canonical recursive certificate only after a
-//!        target hit, then poke the node with a canonical `%ai-pow` command on
+//!      - success → build the recursive certificate artifact only after a
+//!        target hit, then poke the node with a `%ai-pow` command on
 //!        [`AiPowMinerWire::Mined`].
 //!      - error → log + idle.
 //! 5. Stream drop → outer loop reconnects.
 //!
 //! ## Note on submission
-//! The canonical payload shape is a `%ai-pow` noun carrying an opaque
+//! The payload shape is a `%ai-pow` noun carrying an opaque
 //! Rust-owned nonce and the recursive AI-PoW certificate noun. The plain
 //! `MatmulProof` and tile index are mining internals; they are not submitted
 //! to the kernel as the block proof. In Pearl-compatible mode the run loop
@@ -249,8 +249,8 @@ pub struct AiPuzzleInputs {
 
 impl AiPuzzleInputs {
     /// Production node-mining preflight: do not spend matmul work unless the
-    /// configured puzzle can be converted into the canonical recursive
-    /// certificate accepted at the block boundary.
+    /// configured puzzle can be converted into the recursive certificate
+    /// artifact expected at the block boundary.
     pub fn validate_canonical_submission_ready(&self) -> Result<(), MinerError> {
         let pearl = &self.pearl_merge;
         validate_pearl_merge_config_for_recursive_prover(
@@ -260,7 +260,7 @@ impl AiPuzzleInputs {
         )
         .map_err(|e| {
             MinerError::CanonicalCertificateUnavailable(format!(
-                "configured Pearl merge AI-PoW params/config cannot produce a canonical recursive certificate: {e}"
+                "configured Pearl merge AI-PoW params/config cannot produce a recursive certificate artifact: {e}"
             ))
         })?;
         pearl.aux_template.to_bytes().map_err(|e| {
@@ -4264,7 +4264,7 @@ mod tests {
             .expect("miner panicked");
         assert!(
             matches!(r, Err(MinerError::CanonicalCertificateUnavailable(_))),
-            "expected canonical recursive certificate to remain unavailable, got {r:?}"
+            "expected recursive certificate artifact to remain unavailable, got {r:?}"
         );
     }
 }
