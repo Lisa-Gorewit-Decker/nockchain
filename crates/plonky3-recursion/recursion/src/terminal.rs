@@ -25086,7 +25086,15 @@ impl NativeTerminalCompiler {
         prelude: &TerminalProofPrelude,
         expected: &[TerminalCommitmentDigest],
     ) -> Result<(), NativeTerminalVerifyError> {
-        if prelude.commitments.len() != expected.len() {
+        if expected.is_empty() {
+            return Err(
+                NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
+                    expected: 1,
+                    got: expected.len(),
+                },
+            );
+        }
+        if prelude.commitments.len() < expected.len() {
             return Err(
                 NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
                     expected: expected.len(),
@@ -25094,18 +25102,35 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        for (index, (got, expected)) in prelude.commitments.iter().zip(expected).enumerate() {
-            if got != expected {
-                return Err(
-                    NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch {
-                        index,
-                        expected: *expected,
-                        got: *got,
-                    },
-                );
+
+        if prelude
+            .commitments
+            .windows(expected.len())
+            .any(|candidate| candidate == expected)
+        {
+            return Ok(());
+        }
+
+        for (index, expected_root) in expected.iter().enumerate() {
+            if let Some(got) = prelude.commitments.get(index) {
+                if got != expected_root {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch {
+                            index,
+                            expected: *expected_root,
+                            got: *got,
+                        },
+                    );
+                }
             }
         }
-        Ok(())
+        Err(
+            NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch {
+                index: 0,
+                expected: expected[0],
+                got: prelude.commitments[0],
+            },
+        )
     }
 
     fn verify_production_prelude_commitments(
@@ -30625,21 +30650,22 @@ mod tests {
         extra_roots.push(prelude.commitments[0]);
         let extra_prelude =
             terminal_test_prelude_from_roots(&compiler, &vk, &public_inputs, extra_roots);
-        let err = compiler
+        let extra_proof = compiler
+            .prove_terminal_npo_tip5_lookup_fri_opening_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &extra_prelude,
+            )
+            .expect("terminal Tip5 lookup FRI proof must build with extra prelude root");
+        compiler
             .verify_terminal_npo_tip5_lookup_fri_opening_goldilocks::<Goldilocks>(
                 &vk,
                 &public_inputs,
                 &extra_prelude,
-                &proof,
+                &extra_proof,
             )
-            .expect_err("terminal Tip5 lookup FRI must reject extra prelude root");
-        assert!(matches!(
-            err,
-            NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
-                expected: 1,
-                got: 2
-            }
-        ));
+            .expect("terminal Tip5 lookup FRI must accept transcript-bound extra prelude root");
 
         let mut tampered_opening = proof.clone();
         tampered_opening.opened_values_basis[0][0] =
@@ -31863,6 +31889,144 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
                 | NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn goldilocks_npo_tip5_lookup_backend_checkpoints_share_prelude() {
+        let (circuit, public_inputs) = build_npo_only_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+        let columns = compiler
+            .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
+            .expect("terminal NPO polynomial columns must build");
+        let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
+        let (_, trace, _) = compiler
+            .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
+            .expect("terminal Tip5 lookup trace must build");
+
+        let merged_roots =
+            NativeTerminalCompiler::terminal_npo_fri_residual_zero_recompose_value_bridge_prelude_commitments_goldilocks(
+                &trace_profile,
+                &columns,
+                &trace,
+            )
+            .expect("merged value-bridge prelude roots must build");
+        let trace_roots =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_fri_prelude_commitments_goldilocks(
+                &trace_profile,
+                &trace,
+                TerminalNpoTip5LookupFriColumnSet::FullMain,
+            )
+            .expect("AIR+LogUp trace prelude roots must build");
+        let mut combined_roots = merged_roots.clone();
+        combined_roots.extend_from_slice(&trace_roots);
+        let combined_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                combined_roots,
+            )
+            .expect("combined terminal backend prelude must build");
+
+        let prove_start = std::time::Instant::now();
+        let merged_proof = compiler
+            .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &combined_prelude,
+            )
+            .expect("merged value-bridge proof must build under combined prelude");
+        let air_logup_proof = compiler
+            .prove_terminal_npo_tip5_lookup_air_logup_quotient_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &combined_prelude,
+            )
+            .expect("AIR+LogUp proof must build under combined prelude");
+        let prove_elapsed = prove_start.elapsed();
+
+        let verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks::<
+                Goldilocks,
+            >(&vk, &public_inputs, &combined_prelude, &merged_proof)
+            .expect("merged value-bridge proof must verify under combined prelude");
+        compiler
+            .verify_terminal_npo_tip5_lookup_air_logup_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &combined_prelude,
+                &air_logup_proof,
+            )
+            .expect("AIR+LogUp proof must verify under combined prelude");
+        let verify_elapsed = verify_start.elapsed();
+
+        let serialized = postcard::to_allocvec(&(
+            combined_prelude.clone(),
+            merged_proof.clone(),
+            air_logup_proof.clone(),
+        ))
+        .expect("combined terminal backend checkpoint must serialize");
+        let merged_fri_bytes = postcard::to_allocvec(&merged_proof.proof)
+            .expect("merged value-bridge compact FRI must serialize");
+        let air_logup_fri_bytes = postcard::to_allocvec(&air_logup_proof.proof)
+            .expect("AIR+LogUp compact FRI must serialize");
+        println!(
+            "terminal Tip5 lookup backend combined-prelude checkpoint: {} bytes ({:.1} KiB), merged_fri={} bytes ({:.1} KiB), air_logup_fri={} bytes ({:.1} KiB), prove={:?}, verify={:?}",
+            serialized.len(),
+            serialized.len() as f64 / 1024.0,
+            merged_fri_bytes.len(),
+            merged_fri_bytes.len() as f64 / 1024.0,
+            air_logup_fri_bytes.len(),
+            air_logup_fri_bytes.len() as f64 / 1024.0,
+            prove_elapsed,
+            verify_elapsed,
+        );
+
+        let missing_trace_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                merged_roots,
+            )
+            .expect("missing-trace prelude must build");
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_air_logup_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &missing_trace_prelude,
+                &air_logup_proof,
+            )
+            .expect_err("combined AIR+LogUp proof must reject a prelude without trace root");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch { .. }
+                | NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+        ));
+
+        let missing_value_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                trace_roots,
+            )
+            .expect("missing-value prelude must build");
+        let err = compiler
+            .verify_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks::<
+                Goldilocks,
+            >(&vk, &public_inputs, &missing_value_prelude, &merged_proof)
+            .expect_err("combined value-bridge proof must reject a prelude without value root");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch { .. }
+                | NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
         ));
     }
 
@@ -39117,8 +39281,8 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch { .. }
         ));
-        let mut extra_value_roots = value_fri_roots.clone();
-        extra_value_roots.push(full_fri_roots[0]);
+        let mut extra_value_roots = vec![full_fri_roots[0]];
+        extra_value_roots.extend_from_slice(&value_fri_roots);
         let extra_value_prelude = compiler
             .build_proof_prelude_goldilocks(
                 &vk,
@@ -39127,21 +39291,22 @@ mod tests {
                 extra_value_roots,
             )
             .expect("extra-root value FRI prelude must build");
-        let err = compiler
+        let extra_value_proof = compiler
+            .prove_terminal_npo_polynomial_value_fri_opening_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &extra_value_prelude,
+            )
+            .expect("typed terminal NPO value-column FRI proof must build with extra prelude root");
+        compiler
             .verify_terminal_npo_polynomial_value_fri_opening_goldilocks::<GoldilocksD2>(
                 &vk,
                 &public_inputs,
                 &extra_value_prelude,
-                &value_proof,
+                &extra_value_proof,
             )
-            .expect_err("value FRI verifier must reject extra prelude roots");
-        assert!(matches!(
-            err,
-            NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
-                expected: 1,
-                got: 2
-            }
-        ));
+            .expect("value FRI verifier must accept transcript-bound extra prelude roots");
         let restored_value_fri =
             NativeTerminalCompiler::decompress_terminal_fri_proof(&value_proof.proof)
                 .expect("typed terminal NPO value-column compact proof must decompress");

@@ -143,9 +143,13 @@ for this route.
   row checks instead of a smaller duplicate-collapsed set. The public
   standalone query-opening verifier treats its prelude commitment vector as the
   exact one-root shape `[oracle_root]`, rejecting both stale roots and extra
-  unused roots that could otherwise steer sampled rows. Internal aggregate
-  components still use multi-root preludes only at verifier entrypoints that
-  check their own exact commitment shape.
+  unused roots that could otherwise steer sampled rows. Terminal FRI component
+  verifiers instead require their expected root sequence to appear contiguously
+  inside the transcript-bound prelude commitment vector. This permits one
+  prelude to carry multiple FRI component roots while still forcing the proof
+  body to use the same prelude challenge digest; a proof built under the
+  one-root prelude does not verify under a larger prelude because the FRI
+  transcript changes.
 - `TerminalPrimitiveConstraintProof`: sampled local proof for primitive terminal
   constraints. It opens committed witness-oracle values for transcript-derived
   primitive constraint indices and checks constants, public bindings, and ALU
@@ -250,11 +254,13 @@ for this route.
   regression test commits D=2 recompose NPO columns through this native FRI
   PCS, verifies the typed proof, round-trips its serialized form, and rejects
   tampered opened values, stale profile metadata, stale prelude roots, and
-  extra prelude roots. The standalone NPO polynomial FRI prelude has an exact
-  transcript shape: its commitment vector is the single terminal FRI Merkle-cap
-  root for the committed column set. The proof now stores its inner FRI opening
-  directly in the terminal-compressed wrapper, so full-table and witness-value
-  NPO FRI checkpoints no longer serialize raw Merkle path material. This is the
+  preludes that omit the expected FRI root sequence. The standalone NPO
+  polynomial FRI prelude still uses the single terminal FRI Merkle-cap root for
+  the committed column set; when a larger shared FRI prelude is used, the proof
+  must be generated under that larger prelude because the challenge digest is
+  different. The proof now stores its inner FRI opening directly in the
+  terminal-compressed wrapper, so full-table and witness-value NPO FRI
+  checkpoints no longer serialize raw Merkle path material. This is the
   proximity substrate for the final backend; production still does not accept
   it as the full NPO relation proof until the row-polynomial constraints are
   connected to the FRI openings.
@@ -444,6 +450,20 @@ for this route.
   LogUp or drop internal AIR witness columns. The remaining size route is a
   composition-polynomial proof that avoids opening the full trace at every FRI
   query, not a narrower column projection of the same relation.
+  A follow-up shared-prelude checkpoint builds the merged
+  residual-zero+recompose+value-bridge proof and the full-main AIR+LogUp proof
+  under one transcript-bound prelude containing the selected+lookup root
+  sequence followed by the full-main trace root sequence. It serializes to
+  `168,799` bytes / `164.8 KiB`, with `12,356` bytes / `12.1 KiB` in the
+  merged value-bridge compact FRI and `140,151` bytes / `136.9 KiB` in the
+  AIR+LogUp compact FRI. The focused debug-profile measurement is
+  `prove=40.652s`, `verify=105.8ms`; the optimized release measurement is
+  `prove=4.138s`, `verify=29.0ms`. This proves the FRI components can share
+  one prelude and one transcript prefix, but it is not the final production
+  theorem: the current combined checkpoint still does not tie the full-main
+  trace commitment's terminal-IO projection to the selected+lookup commitment
+  consumed by the value bridge, and the AIR+LogUp FRI remains the dominant
+  serialized payload.
 - `TerminalNpoTip5LookupFriOpeningProof`: a native terminal FRI opening
   checkpoint for the optimized Tip5 lookup AIR main trace. The prover commits
   the whole Goldilocks-valued lookup main matrix with recursive 5-round Tip5
@@ -457,12 +477,14 @@ for this route.
   reconstructs canonical extension-field openings from serialized Goldilocks
   limbs, and returns verifier-derived column labels plus checked openings for
   future lookup-AIR quotient checks. Its standalone prelude commitment vector
-  is exactly the one FRI Merkle-cap root for the selected lookup column set; a
-  stale IO/full-main root or any extra root is rejected before verifier
-  challenges are sampled. A regression test round-trips the proof and rejects
-  tampered opened values, stale profile metadata, stale prelude roots, and
-  extra prelude roots. This is still a backend checkpoint; production does not
-  yet replace exhaustive NPO checking with this lookup trace commitment.
+  is the one FRI Merkle-cap root for the selected lookup column set; a stale
+  IO/full-main root or a prelude that omits that root sequence is rejected
+  before verifier challenges are sampled. A regression test round-trips the
+  proof, rejects tampered opened values, stale profile metadata, and stale
+  prelude roots, and verifies that a proof generated under a larger
+  transcript-bound prelude can share that prelude with other terminal FRI
+  components. This is still a backend checkpoint; production does not yet
+  replace exhaustive NPO checking with this lookup trace commitment.
 - `TerminalNpoTip5LookupFriColumnSet::TerminalIo`: a measured IO-projection
   variant for the same lookup trace. It commits only the terminal boundary
   columns, namely the 16 Tip5 input lanes and the first 10 final-round output
@@ -612,10 +634,10 @@ for this route.
   fixed, commits the folded residual-composition polynomial, then opens both
   commitments at one transcript-derived zeta point with one compressed
   terminal FRI proof. Verification reconstructs the selected labels from the
-  verifying key, requires the selected FRI root to be the exact prelude
-  commitment, checks the opened composition is zero, and checks that it equals
-  the folded opened residual columns at zeta. This removes the sampled
-  selected-column Merkle opening layer. The D2 focused fixture measures
+  verifying key, requires the selected FRI root sequence to be included in the
+  transcript-bound prelude, checks the opened composition is zero, and checks
+  that it equals the folded opened residual columns at zeta. This removes the
+  sampled selected-column Merkle opening layer. The D2 focused fixture measures
   `6,360` bytes / `6.2 KiB`, with raw inner FRI `11,156` bytes and compressed
   inner FRI `6,101` bytes, and rejects a FRI-valid proof over nonzero residual
   columns. On the real Tip5-L0 verifier circuit, the opt-in benchmark measures
@@ -631,9 +653,9 @@ for this route.
   FRI proof. The transcript samples the residual folding challenge and the
   recompose quotient challenge after the selected-column FRI root is fixed,
   then observes both derived commitments before sampling the shared opening
-  point. Verification requires the selected FRI root to match the exact prelude
-  commitment, checks that the folded residual opening is zero and matches the
-  opened residual-value columns, and checks the recompose
+  point. Verification requires the selected FRI root sequence to be included in
+  the transcript-bound prelude, checks that the folded residual opening is zero
+  and matches the opened residual-value columns, and checks the recompose
   value/residual/selector quotient identity against verifier-derived fixed
   columns. The D2 focused fixture measures `10,475` bytes / `10.2 KiB`, with
   raw inner FRI `19,326` bytes and compressed inner FRI `10,143` bytes, and
@@ -1078,12 +1100,17 @@ Every oracle-backed local verifier now also checks that the passed commitment
 root is absorbed into that prelude, and standalone oracle openings require the
 exact one-root prelude shape `[oracle_root]`. Primitive witness openings,
 supported-NPO witness openings, quadratic residual openings, and NPO validity
-openings bind their roots through the aggregate component prelude shape.
-Passing an unbound witness, residual, NPO validity, or other terminal oracle
-root is rejected before query plans are derived. Without this check, a prover
-could choose an oracle after the prelude challenge boundary and grind against
-already-known sampled rows; without exact standalone shapes, a prover could
-also add unused roots as a challenge-steering knob.
+openings bind their roots through the aggregate component prelude shape. FRI
+component verifiers use the related but composable rule: the expected root
+sequence must be present contiguously in the prelude commitment vector, and the
+proof must verify against the challenge digest of that whole prelude. Passing
+an unbound witness, residual, NPO validity, or other terminal oracle root is
+rejected before query plans are derived. Without this check, a prover could
+choose an oracle after the prelude challenge boundary and grind against
+already-known sampled rows; without exact standalone shapes for non-FRI oracle
+openings and contiguous-sequence checks for FRI components, a prover could add
+unused roots as a challenge-steering knob or omit a root required by a sibling
+component.
 
 The same verifier entrypoints also reject base-oracle identity drift. The
 witness oracle must use label `witness` and length equal to the compiled witness
@@ -1547,7 +1574,7 @@ Completion audit against the active terminal-compression requirements:
 | Public values, parameters, relation, proximity schedule, fixed terminal tables, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile, column layout, and fixed Tip5 lookup preprocessed-table digest, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
 | Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against the same prelude-bound assignment oracle used by primitive R1CS. | satisfied for supported NPO row validity |
-| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace with a fixed preprocessed-table digest bound into the relation profile, a transcript-bound terminal LogUp rational-sum accumulator checkpoint for fixed-table byte-pair semantics, a committed split LogUp running-sum/proximity checkpoint for the byte-table relation, a combined full-main AIR-algebra+LogUp quotient proof in one 181.1 KiB FRI opening, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 66.0 KiB proof, a random linear-combination MLE checkpoint, a sampled selected-column residual-zero checkpoint, a FRI-native residual-zero checkpoint, a FRI-native recompose residual-relation quotient, and a merged FRI-native residual-zero+recompose+value-bridge proof now exist. The merged value-bridge proof uses one selected+lookup commitment, binds all selected/value/lookup/composition/recompose/value-bridge profiles before challenge sampling, dimension-checks merged openings, rejects stale selected+lookup prelude roots, stale lookup/value columns, malformed compact FRI path material, and profile/opening-shape tampering, and measures `99,647` bytes / `97.3 KiB` at the pure 60-bit terminal tuple. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over every supported NPO/table constraint, and the lookup AIR+LogUp, boundary bridge, and value-column checkpoints are not yet merged into one complete ~100 KiB terminal theorem. | not complete |
+| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace with a fixed preprocessed-table digest bound into the relation profile, a transcript-bound terminal LogUp rational-sum accumulator checkpoint for fixed-table byte-pair semantics, a committed split LogUp running-sum/proximity checkpoint for the byte-table relation, a combined full-main AIR-algebra+LogUp quotient proof in one arity-8 `143.5 KiB` FRI opening, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 66.0 KiB proof, a random linear-combination MLE checkpoint, a sampled selected-column residual-zero checkpoint, a FRI-native residual-zero checkpoint, a FRI-native recompose residual-relation quotient, and a merged FRI-native residual-zero+recompose+value-bridge proof now exist. The merged value-bridge proof uses one selected+lookup commitment, binds all selected/value/lookup/composition/recompose/value-bridge profiles before challenge sampling, dimension-checks merged openings, rejects stale selected+lookup prelude roots, stale lookup/value columns, malformed compact FRI path material, and profile/opening-shape tampering, and measures `99,647` bytes / `97.3 KiB` at the pure 60-bit terminal tuple. A combined-prelude checkpoint verifies the merged value-bridge and AIR+LogUp proofs under one prelude and measures `168,799` bytes / `164.8 KiB`, but it still lacks the theorem tying the full-main trace commitment's terminal-IO projection to the selected+lookup commitment consumed by the value bridge. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over every supported NPO/table constraint, and the lookup AIR+LogUp, boundary bridge, and value-column checkpoints are not yet merged into one complete ~100 KiB terminal theorem. | not complete |
 | Full terminal proof has a source-backed soundness calculation | Current doc records 60 pure-query Johnson accounting for the terminal profile and tests verifier binding, but it does not yet derive a complete theorem for the row-product plus NPO-column plus PCS/proximity backend. | incomplete |
 | Zero-knowledge or witness hiding for recursive-verifier witness values | Current production opens 1,377 full-width verifier-circuit witness values plus packed MMCS direction bits for exhaustive NPO checking. That is smaller than full witness serialization, but it is not a zero-knowledge terminal backend. | incomplete if ZK is required |
 
@@ -1576,12 +1603,15 @@ Security-audit conclusions for the current implementation checkpoint:
   primitive R1CS and exhaustive NPO row checks.
 - Oracle roots passed to local proof verifiers must now be prelude-bound, and
   the public standalone terminal query-opening verifier requires the exact
-  one-root prelude shape. This closes the immediate post-challenge
-  oracle-substitution bug for witness, residual, NPO validity, and other
-  terminal oracle commitments, and prevents unused standalone roots from
-  steering sampled rows. The production proof's exhaustive NPO verifier binds
-  its assignment-witness multiproof to the same prelude-bound assignment root
-  as primitive R1CS.
+  one-root prelude shape. FRI component verifiers now allow a larger shared
+  prelude only when their expected root sequence appears contiguously and the
+  proof verifies under that larger prelude's challenge digest. This closes the
+  immediate post-challenge oracle-substitution bug for witness, residual, NPO
+  validity, and other terminal oracle commitments, prevents unused standalone
+  roots from steering sampled rows, and lets terminal FRI components share a
+  transcript prefix without accepting omitted roots. The production proof's
+  exhaustive NPO verifier binds its assignment-witness multiproof to the same
+  prelude-bound assignment root as primitive R1CS.
 - Local proof verifiers now also enforce canonical base-oracle labels and
   lengths for witness, primitive residual, and supported-NPO validity
   commitments. This closes the softer commitment-identity drift class where a
