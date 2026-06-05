@@ -1,11 +1,11 @@
 //! Trace generation for [`crate::Tip5PermLookupAir`].
 //!
-//! Builds the single main trace (`256` verifier-table rows ++ `P`
-//! permutation rows ++ inert padding) and the matching preprocessed
-//! L-table, witnessing the recursive 5-round Tip5 from
-//! [`crate::tip5_spec`]. `(IN, ROUT[NUM_ROUNDS-1])` of every perm row
-//! equals `nockchain_math::tip5::permute_5round` bit-for-bit (asserted by the
-//! `air_lookup::tests` native-equivalence gate).
+//! Builds the single main trace (`256` verifier-table rows ++ `5P`
+//! round rows ++ inert padding) and the matching preprocessed L-table
+//! plus round selectors, witnessing the recursive 5-round Tip5 from
+//! [`crate::tip5_spec`]. `(first-round IN, final-round OUT)` of every
+//! five-row permutation window equals `nockchain_math::tip5::permute_5round`
+//! bit-for-bit (asserted by the `air_lookup::tests` native-equivalence gate).
 //!
 //! **Parallelism (2026-05-21).** The `P` permutation rows are
 //! filled in parallel via `par_chunks_exact_mut + par_fold_reduce`
@@ -72,27 +72,23 @@ fn fadd(a: u64, b: u64) -> u64 {
 }
 
 // flat main-trace column indices (mirror air_lookup.rs)
-const C_KIND: usize = 0;
-const C_TMULT: usize = 1;
-const C_IN: usize = 2;
-const RB0: usize = C_IN + STATE_SIZE;
+const C_TMULT: usize = 0;
+const C_TIN: usize = 1;
+const C_IN: usize = C_TIN + STATE_SIZE;
 const SPLIT_BC: usize = NS * 2 * NBYTES;
-const ROUND_GROUP: usize = SPLIT_BC + NS + STATE_SIZE;
+const C_SPLIT: usize = C_IN + STATE_SIZE;
+const C_INV: usize = C_SPLIT + SPLIT_BC;
 #[inline]
-fn rb(r: usize) -> usize {
-    RB0 + r * ROUND_GROUP
+fn b_col(t: usize, k: usize) -> usize {
+    C_SPLIT + t * (2 * NBYTES) + k
 }
 #[inline]
-fn b_col(r: usize, t: usize, k: usize) -> usize {
-    rb(r) + t * (2 * NBYTES) + k
+fn c_col(t: usize, k: usize) -> usize {
+    C_SPLIT + t * (2 * NBYTES) + NBYTES + k
 }
 #[inline]
-fn c_col(r: usize, t: usize, k: usize) -> usize {
-    rb(r) + t * (2 * NBYTES) + NBYTES + k
-}
-#[inline]
-fn inv_col(r: usize, t: usize) -> usize {
-    rb(r) + SPLIT_BC + t
+fn inv_col(t: usize) -> usize {
+    C_INV + t
 }
 #[inline]
 fn set_row(row: &mut [Goldilocks], col: usize, v: u64) {
@@ -106,18 +102,19 @@ fn set_row(row: &mut [Goldilocks], col: usize, v: u64) {
 /// and increments `mult` only. Safe to call from any thread on any
 /// disjoint `(row, mult)` pair.
 #[inline]
-fn fill_perm_row(
-    row: &mut [Goldilocks],
+fn fill_perm_rows(
+    rows: &mut [Goldilocks],
     inp: &[u64; STATE_SIZE],
     mds: &[[u64; STATE_SIZE]; STATE_SIZE],
     mult: &mut [u64; TABLE_ROWS],
 ) {
-    set_row(row, C_KIND, 1);
-    for lane in 0..STATE_SIZE {
-        set_row(row, C_IN + lane, inp[lane]);
-    }
     let mut state = *inp;
     for r in 0..NUM_ROUNDS {
+        let row = &mut rows[r * tip5_lookup_air_width()..(r + 1) * tip5_lookup_air_width()];
+        for lane in 0..STATE_SIZE {
+            set_row(row, C_TIN + lane, inp[lane]);
+            set_row(row, C_IN + lane, state[lane]);
+        }
         let sbox_in = state;
         let mut a = [0u64; STATE_SIZE];
         for t in 0..NS {
@@ -128,13 +125,13 @@ fn fill_perm_row(
                 let c = LOOKUP_TABLE[b as usize];
                 mult[b as usize] += 1;
                 cb[k] = c;
-                set_row(row, b_col(r, t, k), b as u64);
-                set_row(row, c_col(r, t, k), c as u64);
+                set_row(row, b_col(t, k), b as u64);
+                set_row(row, c_col(t, k), c as u64);
             }
             a[t] = u64::from_le_bytes(cb);
             let high = (sbox_in[t] >> 32) & 0xffff_ffff;
             let g = ((high as u128) + P - ((1u128 << 32) - 1)) % P;
-            set_row(row, inv_col(r, t), finv(g) as u64);
+            set_row(row, inv_col(t), finv(g) as u64);
         }
         for j in NS..STATE_SIZE {
             let x = sbox_in[j];
@@ -148,7 +145,7 @@ fn fill_perm_row(
                 acc = fadd(acc, fmul(mds[i][j], aj));
             }
             let out = fadd(acc, rc_precomp(ROUND_CONSTANTS[r * STATE_SIZE + i]));
-            set_row(row, rout_col(r, i), out);
+            set_row(row, rout_col(i), out);
             state[i] = out;
         }
     }
@@ -169,7 +166,8 @@ pub fn generate_lookup_trace(
 ) -> (RowMajorMatrix<Goldilocks>, Vec<Goldilocks>) {
     let width = tip5_lookup_air_width();
     let p = inputs.len();
-    let height = (TABLE_ROWS + p).max(1).next_power_of_two();
+    let round_rows = p * NUM_ROUNDS;
+    let height = (TABLE_ROWS + round_rows).max(1).next_power_of_two();
 
     let mut main = vec![Goldilocks::new(0); height * width];
     let mut prep = vec![Goldilocks::new(0); height * PREP_WIDTH];
@@ -182,6 +180,14 @@ pub fn generate_lookup_trace(
         prep[i * PREP_WIDTH] = Goldilocks::new(1); // IS_TABLE
         prep[i * PREP_WIDTH + 1] = Goldilocks::new(i as u64); // TIN
         prep[i * PREP_WIDTH + 2] = Goldilocks::new(*tbl as u64); // TOUT
+    }
+    for pi in 0..p {
+        for round in 0..NUM_ROUNDS {
+            let row = TABLE_ROWS + pi * NUM_ROUNDS + round;
+            let base = row * PREP_WIDTH;
+            prep[base + 3] = Goldilocks::new(1); // IS_ROUND
+            prep[base + 4 + round] = Goldilocks::new(1);
+        }
     }
 
     // ---- permutation rows [TABLE_ROWS, TABLE_ROWS + p) — PARALLEL ----
@@ -202,15 +208,15 @@ pub fn generate_lookup_trace(
     // content is independent and `mult` is summed via an
     // associative+commutative operation.
     let perm_start = TABLE_ROWS * width;
-    let perm_end = (TABLE_ROWS + p) * width;
+    let perm_end = (TABLE_ROWS + round_rows) * width;
     let perm_slice = &mut main[perm_start..perm_end];
     let mult: [u64; TABLE_ROWS] = perm_slice
-        .par_chunks_exact_mut(width)
+        .par_chunks_exact_mut(NUM_ROUNDS * width)
         .zip(inputs.par_iter())
         .par_fold_reduce(
             || [0u64; TABLE_ROWS],
-            |mut local_mult, (row, inp)| {
-                fill_perm_row(row, inp, &mds, &mut local_mult);
+            |mut local_mult, (rows, inp)| {
+                fill_perm_rows(rows, inp, &mds, &mut local_mult);
                 local_mult
             },
             |mut a, b| {

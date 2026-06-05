@@ -1401,6 +1401,7 @@ pub struct TerminalNpoTip5LookupAirAlgebraQuotientProof {
     pub trace_commitment: TerminalFriCommitment,
     pub quotient_commitment: TerminalFriCommitment,
     pub opened_trace_basis: Vec<Vec<u64>>,
+    pub opened_next_trace_basis: Vec<Vec<u64>>,
     pub opened_quotient_basis: Vec<Vec<u64>>,
     pub proof: TerminalCompressedFriProof,
 }
@@ -1467,6 +1468,7 @@ pub struct TerminalNpoTip5LookupAirLogupQuotientProof {
     pub logup_quotient_commitment: TerminalFriCommitment,
     pub logup_final_cumulative_basis: Vec<Vec<u64>>,
     pub opened_trace_basis: Vec<Vec<u64>>,
+    pub opened_next_trace_basis: Vec<Vec<u64>>,
     pub opened_air_quotient_basis: Vec<Vec<u64>>,
     pub opened_logup_accumulator_points_basis: Vec<Vec<Vec<u64>>>,
     pub opened_logup_quotient_basis: Vec<Vec<u64>>,
@@ -1494,6 +1496,7 @@ pub struct TerminalNpoTip5LookupAirLogupTraceIoSupportProof {
     pub support_quotient_commitment: TerminalFriCommitment,
     pub logup_final_cumulative_basis: Vec<Vec<u64>>,
     pub opened_trace_basis: Vec<Vec<u64>>,
+    pub opened_next_trace_basis: Vec<Vec<u64>>,
     pub opened_lookup_io_basis: Vec<Vec<u64>>,
     pub opened_npo_io_basis: Vec<Vec<u64>>,
     pub opened_air_quotient_basis: Vec<Vec<u64>>,
@@ -1521,6 +1524,7 @@ pub struct TerminalNpoTip5LookupAirLogupTraceIoSupportNpoIoLogupProof {
     pub selected_npo_io_logup_final_cumulative_basis: Vec<Vec<u64>>,
     pub trace_npo_io_logup_final_cumulative_basis: Vec<Vec<u64>>,
     pub opened_trace_basis: Vec<Vec<u64>>,
+    pub opened_next_trace_basis: Vec<Vec<u64>>,
     pub opened_selected_lookup_basis: Vec<Vec<u64>>,
     pub opened_air_quotient_basis: Vec<Vec<u64>>,
     pub opened_logup_accumulator_points_basis: Vec<Vec<Vec<u64>>>,
@@ -5770,8 +5774,10 @@ impl NativeTerminalCompiler {
         let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
         query_challenger.observe(quotient_commitment.clone());
         let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
-        for point_values in &opened_values[0][0] {
-            query_challenger.observe_algebra_slice(point_values);
+        for round in &opened_values[0] {
+            for point_values in round {
+                query_challenger.observe_algebra_slice(point_values);
+            }
         }
         for point_values in &opened_values[1][0] {
             query_challenger.observe_algebra_slice(point_values);
@@ -6664,7 +6670,7 @@ impl NativeTerminalCompiler {
             .map(|tip5_rank| {
                 Self::terminal_fri_domain_row_point(
                     trace_domain,
-                    trace_profile.permutation_row_offset + tip5_rank,
+                    Self::terminal_npo_tip5_lookup_round_row(tip5_rank, TIP5_PERM_ROUNDS - 1),
                     trace_npo_io_profile.rows,
                     "tip5_lookup_trace_domain_npo_io_bridge_trace_row_point",
                 )
@@ -7235,16 +7241,34 @@ impl NativeTerminalCompiler {
             );
         challenger.observe(quotient_commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let next_zeta = trace_domain.next_point(zeta).ok_or_else(|| {
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: "terminal Tip5 lookup AIR algebra opening domain has no successor".into(),
+            }
+        })?;
         let (opened_values, plain_proof) =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
                 &pcs,
                 vec![
-                    (&trace_data, vec![vec![zeta]]),
+                    (&trace_data, vec![vec![zeta, next_zeta]]),
                     (&quotient_data, vec![vec![zeta]]),
                 ],
                 &mut challenger,
             );
-        let opened_trace_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
+        let opened_trace_points_basis =
+            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 0)?;
+        let opened_trace_basis = opened_trace_points_basis.first().cloned().ok_or(
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                expected: 2,
+                got: opened_trace_points_basis.len(),
+            },
+        )?;
+        let opened_next_trace_basis = opened_trace_points_basis.get(1).cloned().ok_or(
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                expected: 2,
+                got: opened_trace_points_basis.len(),
+            },
+        )?;
         let opened_quotient_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 1)?;
         let mut query_challenger = TerminalFriChallenger::new(Tip5Perm);
         Self::seed_terminal_npo_tip5_lookup_air_algebra_quotient_challenger(
@@ -7277,6 +7301,7 @@ impl NativeTerminalCompiler {
             trace_commitment,
             quotient_commitment,
             opened_trace_basis,
+            opened_next_trace_basis,
             opened_quotient_basis,
             proof,
         })
@@ -7826,14 +7851,27 @@ impl NativeTerminalCompiler {
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
                 &pcs,
                 vec![
-                    (&trace_data, vec![vec![zeta]]),
+                    (&trace_data, vec![vec![zeta, next_zeta]]),
                     (&air_quotient_data, vec![vec![zeta]]),
                     (&logup_accumulator_data, vec![vec![zeta, next_zeta]]),
                     (&logup_quotient_data, vec![vec![zeta]]),
                 ],
                 &mut challenger,
             );
-        let opened_trace_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
+        let opened_trace_points_basis =
+            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 0)?;
+        let opened_trace_basis = opened_trace_points_basis.first().cloned().ok_or(
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                expected: 2,
+                got: opened_trace_points_basis.len(),
+            },
+        )?;
+        let opened_next_trace_basis = opened_trace_points_basis.get(1).cloned().ok_or(
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                expected: 2,
+                got: opened_trace_points_basis.len(),
+            },
+        )?;
         let opened_air_quotient_basis =
             Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 1)?;
         let opened_logup_accumulator_points_basis =
@@ -7889,6 +7927,7 @@ impl NativeTerminalCompiler {
                 .map(Self::goldilocks_basis_u64)
                 .collect(),
             opened_trace_basis,
+            opened_next_trace_basis,
             opened_air_quotient_basis,
             opened_logup_accumulator_points_basis,
             opened_logup_quotient_basis,
@@ -8114,7 +8153,7 @@ impl NativeTerminalCompiler {
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
                 &pcs,
                 vec![
-                    (&trace_data, vec![vec![zeta]]),
+                    (&trace_data, vec![vec![zeta, next_zeta]]),
                     (&lookup_io_data, vec![vec![zeta]]),
                     (&npo_io_data, vec![vec![zeta]]),
                     (&air_quotient_data, vec![vec![zeta]]),
@@ -8124,7 +8163,20 @@ impl NativeTerminalCompiler {
                 ],
                 &mut challenger,
             );
-        let opened_trace_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
+        let opened_trace_points_basis =
+            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 0)?;
+        let opened_trace_basis = opened_trace_points_basis.first().cloned().ok_or(
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                expected: 2,
+                got: opened_trace_points_basis.len(),
+            },
+        )?;
+        let opened_next_trace_basis = opened_trace_points_basis.get(1).cloned().ok_or(
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                expected: 2,
+                got: opened_trace_points_basis.len(),
+            },
+        )?;
         let opened_lookup_io_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 1)?;
         let opened_npo_io_basis = Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 2)?;
         let opened_air_quotient_basis =
@@ -8195,6 +8247,7 @@ impl NativeTerminalCompiler {
                 .map(Self::goldilocks_basis_u64)
                 .collect(),
             opened_trace_basis,
+            opened_next_trace_basis,
             opened_lookup_io_basis,
             opened_npo_io_basis,
             opened_air_quotient_basis,
@@ -8569,7 +8622,7 @@ impl NativeTerminalCompiler {
                 &pcs,
                 vec![
                     (&selected_lookup_data, vec![vec![zeta]]),
-                    (&trace_data, vec![vec![zeta]]),
+                    (&trace_data, vec![vec![zeta, trace_next_zeta]]),
                     (
                         &air_logup_accumulator_data,
                         vec![vec![zeta], vec![zeta, trace_next_zeta]],
@@ -8588,8 +8641,20 @@ impl NativeTerminalCompiler {
             );
         let opened_selected_lookup_basis =
             Self::terminal_npo_opened_commitment_matrix_basis_u64(&opened_values, 0, 0)?;
-        let opened_trace_basis =
-            Self::terminal_npo_opened_commitment_matrix_basis_u64(&opened_values, 1, 0)?;
+        let opened_trace_points_basis =
+            Self::terminal_npo_opened_commitment_matrix_points_basis_u64(&opened_values, 1, 0)?;
+        let opened_trace_basis = opened_trace_points_basis.first().cloned().ok_or(
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                expected: 2,
+                got: opened_trace_points_basis.len(),
+            },
+        )?;
+        let opened_next_trace_basis = opened_trace_points_basis.get(1).cloned().ok_or(
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                expected: 2,
+                got: opened_trace_points_basis.len(),
+            },
+        )?;
         let opened_air_quotient_basis =
             Self::terminal_npo_opened_commitment_matrix_basis_u64(&opened_values, 2, 0)?;
         let opened_logup_accumulator_points_basis =
@@ -8676,6 +8741,7 @@ impl NativeTerminalCompiler {
                 .map(Self::goldilocks_basis_u64)
                 .collect(),
             opened_trace_basis,
+            opened_next_trace_basis,
             opened_selected_lookup_basis,
             opened_air_quotient_basis,
             opened_logup_accumulator_points_basis,
@@ -17595,9 +17661,8 @@ impl NativeTerminalCompiler {
     fn terminal_npo_tip5_lookup_trace_profile<F>(
         verifying_key: &NativeTerminalVerifyingKey<F>,
     ) -> TerminalNpoTip5LookupTraceProfile {
-        const PREPROCESSED_WIDTH: usize = 3;
         let tip5_rows = verifying_key.npo_relation().tip5_rows();
-        let main_rows = (TIP5_LOOKUP_TABLE_ROWS + tip5_rows)
+        let main_rows = (TIP5_LOOKUP_TABLE_ROWS + tip5_rows * TIP5_PERM_ROUNDS)
             .max(1)
             .next_power_of_two();
         TerminalNpoTip5LookupTraceProfile {
@@ -17606,29 +17671,112 @@ impl NativeTerminalCompiler {
             main_rows,
             main_log_rows: Self::terminal_mle_log_size(main_rows),
             main_width: tip5_lookup_air_width(),
-            preprocessed_width: PREPROCESSED_WIDTH,
-            preprocessed_values: main_rows * PREPROCESSED_WIDTH,
-            preprocessed_digest: Self::terminal_npo_tip5_lookup_preprocessed_digest(main_rows),
+            preprocessed_width: Self::TIP5_LOOKUP_PREPROCESSED_WIDTH,
+            preprocessed_values: main_rows * Self::TIP5_LOOKUP_PREPROCESSED_WIDTH,
+            preprocessed_digest: Self::terminal_npo_tip5_lookup_preprocessed_digest(
+                tip5_rows, main_rows,
+            ),
             permutation_row_offset: TIP5_LOOKUP_TABLE_ROWS,
             max_constraint_degree: 8,
             tip5_rounds: TIP5_PERM_ROUNDS,
         }
     }
 
-    fn terminal_npo_tip5_lookup_preprocessed_digest(main_rows: usize) -> TerminalFixedTableDigest {
+    const TIP5_LOOKUP_NS: usize = 4;
+    const TIP5_LOOKUP_NBYTES: usize = 8;
+    const TIP5_LOOKUP_SPLIT_BC: usize = Self::TIP5_LOOKUP_NS * 2 * Self::TIP5_LOOKUP_NBYTES;
+    const TIP5_LOOKUP_C_TMULT: usize = 0;
+    const TIP5_LOOKUP_C_TIN: usize = 1;
+    const TIP5_LOOKUP_C_IN: usize = Self::TIP5_LOOKUP_C_TIN + 16;
+    const TIP5_LOOKUP_C_SPLIT: usize = Self::TIP5_LOOKUP_C_IN + 16;
+    const TIP5_LOOKUP_C_INV: usize = Self::TIP5_LOOKUP_C_SPLIT + Self::TIP5_LOOKUP_SPLIT_BC;
+    const TIP5_LOOKUP_C_OUT: usize = Self::TIP5_LOOKUP_C_INV + Self::TIP5_LOOKUP_NS;
+    const TIP5_LOOKUP_P_IS_TABLE: usize = 0;
+    const TIP5_LOOKUP_P_TIN: usize = 1;
+    const TIP5_LOOKUP_P_TOUT: usize = 2;
+    const TIP5_LOOKUP_P_IS_ROUND: usize = 3;
+    const TIP5_LOOKUP_P_ROUND0: usize = 4;
+    const TIP5_LOOKUP_PREPROCESSED_WIDTH: usize = Self::TIP5_LOOKUP_P_ROUND0 + TIP5_PERM_ROUNDS;
+
+    #[inline]
+    const fn terminal_npo_tip5_lookup_b_col(lane: usize, byte: usize) -> usize {
+        Self::TIP5_LOOKUP_C_SPLIT + lane * (2 * Self::TIP5_LOOKUP_NBYTES) + byte
+    }
+
+    #[inline]
+    const fn terminal_npo_tip5_lookup_c_col(lane: usize, byte: usize) -> usize {
+        Self::TIP5_LOOKUP_C_SPLIT
+            + lane * (2 * Self::TIP5_LOOKUP_NBYTES)
+            + Self::TIP5_LOOKUP_NBYTES
+            + byte
+    }
+
+    #[inline]
+    const fn terminal_npo_tip5_lookup_inv_col(lane: usize) -> usize {
+        Self::TIP5_LOOKUP_C_INV + lane
+    }
+
+    #[inline]
+    const fn terminal_npo_tip5_lookup_out_col(lane: usize) -> usize {
+        Self::TIP5_LOOKUP_C_OUT + lane
+    }
+
+    #[inline]
+    const fn terminal_npo_tip5_lookup_round_row(tip5_rank: usize, round: usize) -> usize {
+        TIP5_LOOKUP_TABLE_ROWS + tip5_rank * TIP5_PERM_ROUNDS + round
+    }
+
+    #[inline]
+    const fn terminal_npo_tip5_lookup_round_row_count(tip5_rows: usize) -> usize {
+        tip5_rows * TIP5_PERM_ROUNDS
+    }
+
+    #[inline]
+    fn terminal_npo_tip5_lookup_row_round_index(
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+        row: usize,
+    ) -> Option<usize> {
+        let first = trace_profile.permutation_row_offset;
+        let round_rows = Self::terminal_npo_tip5_lookup_round_row_count(trace_profile.tip5_rows);
+        if row < first || row >= first + round_rows {
+            return None;
+        }
+        Some((row - first) % TIP5_PERM_ROUNDS)
+    }
+
+    fn terminal_npo_tip5_lookup_preprocessed_digest(
+        tip5_rows: usize,
+        main_rows: usize,
+    ) -> TerminalFixedTableDigest {
         let mut sponge = TerminalDigestSponge::new();
-        sponge.absorb_str("nock-terminal-tip5-lookup-preprocessed-v1");
+        sponge.absorb_str("nock-terminal-tip5-lookup-preprocessed-v2");
+        sponge.absorb_u64(tip5_rows as u64);
         sponge.absorb_u64(main_rows as u64);
-        sponge.absorb_u64(3);
+        sponge.absorb_u64(Self::TIP5_LOOKUP_PREPROCESSED_WIDTH as u64);
+        let first_round_row = TIP5_LOOKUP_TABLE_ROWS;
+        let round_row_count = Self::terminal_npo_tip5_lookup_round_row_count(tip5_rows);
         for row in 0..main_rows {
             if row < TIP5_LOOKUP_TABLE_ROWS {
                 sponge.absorb_u64(1);
                 sponge.absorb_u64(row as u64);
                 sponge.absorb_u64(TIP5_LOOKUP_TABLE[row] as u64);
+                sponge.absorb_u64(0);
+                for _ in 0..TIP5_PERM_ROUNDS {
+                    sponge.absorb_u64(0);
+                }
+            } else if row >= first_round_row && row < first_round_row + round_row_count {
+                let round = (row - first_round_row) % TIP5_PERM_ROUNDS;
+                sponge.absorb_u64(0);
+                sponge.absorb_u64(0);
+                sponge.absorb_u64(0);
+                sponge.absorb_u64(1);
+                for candidate in 0..TIP5_PERM_ROUNDS {
+                    sponge.absorb_u64((candidate == round) as u64);
+                }
             } else {
-                sponge.absorb_u64(0);
-                sponge.absorb_u64(0);
-                sponge.absorb_u64(0);
+                for _ in 0..Self::TIP5_LOOKUP_PREPROCESSED_WIDTH {
+                    sponge.absorb_u64(0);
+                }
             }
         }
         TerminalFixedTableDigest(sponge.finalize())
@@ -17640,29 +17788,6 @@ impl NativeTerminalCompiler {
         alpha: TerminalFriChallenge,
         beta: TerminalFriChallenge,
     ) -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
-        const STATE_SIZE: usize = 16;
-        const NS: usize = 4;
-        const NBYTES: usize = 8;
-        const SPLIT_BC: usize = NS * 2 * NBYTES;
-        const C_KIND: usize = 0;
-        const C_TMULT: usize = 1;
-        const C_IN: usize = 2;
-        const RB0: usize = C_IN + STATE_SIZE;
-        const ROUND_GROUP: usize = SPLIT_BC + NS + STATE_SIZE;
-
-        #[inline]
-        const fn rb(round: usize) -> usize {
-            RB0 + round * ROUND_GROUP
-        }
-        #[inline]
-        const fn b_col(round: usize, lane: usize, byte: usize) -> usize {
-            rb(round) + lane * (2 * NBYTES) + byte
-        }
-        #[inline]
-        const fn c_col(round: usize, lane: usize, byte: usize) -> usize {
-            rb(round) + lane * (2 * NBYTES) + NBYTES + byte
-        }
-
         Self::verify_terminal_npo_tip5_lookup_trace_profile_digest(trace_profile)?;
         if trace_profile.lookup_table_rows != TIP5_LOOKUP_TABLE_ROWS {
             return Err(
@@ -17706,24 +17831,24 @@ impl NativeTerminalCompiler {
         let mut accumulator = TerminalFriChallenge::ZERO;
         for row in 0..trace_profile.main_rows {
             let base = row * trace_profile.main_width;
-            let kind = TerminalFriChallenge::from(trace.values[base + C_KIND]);
-            if kind != TerminalFriChallenge::ZERO {
-                for round in 0..TIP5_PERM_ROUNDS {
-                    for lane in 0..NS {
-                        for byte in 0..NBYTES {
-                            let denominator = alpha
-                                - combine(
-                                    trace.values[base + b_col(round, lane, byte)],
-                                    trace.values[base + c_col(round, lane, byte)],
-                                );
-                            accumulator += kind * invert(denominator)?;
-                        }
+            if Self::terminal_npo_tip5_lookup_row_round_index(trace_profile, row).is_some() {
+                for lane in 0..Self::TIP5_LOOKUP_NS {
+                    for byte in 0..Self::TIP5_LOOKUP_NBYTES {
+                        let denominator = alpha
+                            - combine(
+                                trace.values
+                                    [base + Self::terminal_npo_tip5_lookup_b_col(lane, byte)],
+                                trace.values
+                                    [base + Self::terminal_npo_tip5_lookup_c_col(lane, byte)],
+                            );
+                        accumulator += invert(denominator)?;
                     }
                 }
             }
 
             if row < trace_profile.lookup_table_rows {
-                let tmult = TerminalFriChallenge::from(trace.values[base + C_TMULT]);
+                let tmult =
+                    TerminalFriChallenge::from(trace.values[base + Self::TIP5_LOOKUP_C_TMULT]);
                 if tmult != TerminalFriChallenge::ZERO {
                     let tin = Goldilocks::from_u64(row as u64);
                     let tout = Goldilocks::from_u64(TIP5_LOOKUP_TABLE[row] as u64);
@@ -17813,7 +17938,7 @@ impl NativeTerminalCompiler {
     }
 
     const fn terminal_npo_tip5_lookup_logup_query_interactions() -> usize {
-        TIP5_PERM_ROUNDS * 4 * 8
+        Self::TIP5_LOOKUP_NS * Self::TIP5_LOOKUP_NBYTES
     }
 
     const fn terminal_npo_tip5_lookup_logup_interactions() -> usize {
@@ -17837,28 +17962,6 @@ impl NativeTerminalCompiler {
         alpha: TerminalFriChallenge,
         beta: TerminalFriChallenge,
     ) -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
-        const NS: usize = 4;
-        const NBYTES: usize = 8;
-        const SPLIT_BC: usize = NS * 2 * NBYTES;
-        const C_KIND: usize = 0;
-        const C_TMULT: usize = 1;
-        const C_IN: usize = 2;
-        const RB0: usize = C_IN + 16;
-        const ROUND_GROUP: usize = SPLIT_BC + NS + 16;
-
-        #[inline]
-        const fn rb(round: usize) -> usize {
-            RB0 + round * ROUND_GROUP
-        }
-        #[inline]
-        const fn b_col(round: usize, lane: usize, byte: usize) -> usize {
-            rb(round) + lane * (2 * NBYTES) + byte
-        }
-        #[inline]
-        const fn c_col(round: usize, lane: usize, byte: usize) -> usize {
-            rb(round) + lane * (2 * NBYTES) + NBYTES + byte
-        }
-
         if interaction >= Self::terminal_npo_tip5_lookup_logup_interactions() {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
@@ -17880,18 +17983,19 @@ impl NativeTerminalCompiler {
             })
         };
         if interaction < Self::terminal_npo_tip5_lookup_logup_query_interactions() {
-            let byte = interaction % NBYTES;
-            let lane = (interaction / NBYTES) % NS;
-            let round = interaction / (NBYTES * NS);
-            let kind = TerminalFriChallenge::from(trace.values[base + C_KIND]);
+            if Self::terminal_npo_tip5_lookup_row_round_index(trace_profile, row).is_none() {
+                return Ok(TerminalFriChallenge::ZERO);
+            }
+            let byte = interaction % Self::TIP5_LOOKUP_NBYTES;
+            let lane = (interaction / Self::TIP5_LOOKUP_NBYTES) % Self::TIP5_LOOKUP_NS;
             let denominator = alpha
                 - combine(
-                    trace.values[base + b_col(round, lane, byte)],
-                    trace.values[base + c_col(round, lane, byte)],
+                    trace.values[base + Self::terminal_npo_tip5_lookup_b_col(lane, byte)],
+                    trace.values[base + Self::terminal_npo_tip5_lookup_c_col(lane, byte)],
                 );
-            Ok(kind * invert(denominator)?)
+            Ok(invert(denominator)?)
         } else if row < trace_profile.lookup_table_rows {
-            let tmult = TerminalFriChallenge::from(trace.values[base + C_TMULT]);
+            let tmult = TerminalFriChallenge::from(trace.values[base + Self::TIP5_LOOKUP_C_TMULT]);
             let tin = Goldilocks::from_u64(row as u64);
             let tout = Goldilocks::from_u64(TIP5_LOOKUP_TABLE[row] as u64);
             Ok(-tmult * invert(alpha - combine(tin, tout))?)
@@ -17990,6 +18094,24 @@ impl NativeTerminalCompiler {
                     0 => Goldilocks::ONE,
                     1 => Goldilocks::from_u64(row as u64),
                     2 => Goldilocks::from_u64(TIP5_LOOKUP_TABLE[row] as u64),
+                    3 => Goldilocks::ZERO,
+                    _ => Goldilocks::ZERO,
+                }
+            } else if let Some(round) =
+                Self::terminal_npo_tip5_lookup_row_round_index(trace_profile, row)
+            {
+                match column {
+                    Self::TIP5_LOOKUP_P_IS_ROUND => Goldilocks::ONE,
+                    column
+                        if column >= Self::TIP5_LOOKUP_P_ROUND0
+                            && column < Self::TIP5_LOOKUP_PREPROCESSED_WIDTH =>
+                    {
+                        if column - Self::TIP5_LOOKUP_P_ROUND0 == round {
+                            Goldilocks::ONE
+                        } else {
+                            Goldilocks::ZERO
+                        }
+                    }
                     _ => Goldilocks::ZERO,
                 }
             } else {
@@ -18003,32 +18125,10 @@ impl NativeTerminalCompiler {
     fn terminal_npo_tip5_lookup_logup_interaction_terms_at_point(
         trace: &[TerminalFriChallenge],
         trace_column_indices: &[usize],
-        preprocessed: [TerminalFriChallenge; 3],
+        preprocessed: &[TerminalFriChallenge],
         interaction: usize,
         beta: TerminalFriChallenge,
     ) -> Result<(TerminalFriChallenge, TerminalFriChallenge), NativeTerminalVerifyError> {
-        const NS: usize = 4;
-        const NBYTES: usize = 8;
-        const SPLIT_BC: usize = NS * 2 * NBYTES;
-        const C_KIND: usize = 0;
-        const C_TMULT: usize = 1;
-        const C_IN: usize = 2;
-        const RB0: usize = C_IN + 16;
-        const ROUND_GROUP: usize = SPLIT_BC + NS + 16;
-
-        #[inline]
-        const fn rb(round: usize) -> usize {
-            RB0 + round * ROUND_GROUP
-        }
-        #[inline]
-        const fn b_col(round: usize, lane: usize, byte: usize) -> usize {
-            rb(round) + lane * (2 * NBYTES) + byte
-        }
-        #[inline]
-        const fn c_col(round: usize, lane: usize, byte: usize) -> usize {
-            rb(round) + lane * (2 * NBYTES) + NBYTES + byte
-        }
-
         if interaction >= Self::terminal_npo_tip5_lookup_logup_interactions() {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
@@ -18059,20 +18159,49 @@ impl NativeTerminalCompiler {
         };
         let combine = |left: TerminalFriChallenge, right: TerminalFriChallenge| left * beta + right;
         if interaction < Self::terminal_npo_tip5_lookup_logup_query_interactions() {
-            let byte = interaction % NBYTES;
-            let lane = (interaction / NBYTES) % NS;
-            let round = interaction / (NBYTES * NS);
+            let byte = interaction % Self::TIP5_LOOKUP_NBYTES;
+            let lane = (interaction / Self::TIP5_LOOKUP_NBYTES) % Self::TIP5_LOOKUP_NS;
             Ok((
-                opened(C_KIND)?,
+                preprocessed
+                    .get(Self::TIP5_LOOKUP_P_IS_ROUND)
+                    .copied()
+                    .ok_or(
+                        NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                            expected: Self::TIP5_LOOKUP_PREPROCESSED_WIDTH,
+                            got: preprocessed.len(),
+                        },
+                    )?,
                 combine(
-                    opened(b_col(round, lane, byte))?,
-                    opened(c_col(round, lane, byte))?,
+                    opened(Self::terminal_npo_tip5_lookup_b_col(lane, byte))?,
+                    opened(Self::terminal_npo_tip5_lookup_c_col(lane, byte))?,
                 ),
             ))
         } else {
             Ok((
-                -opened(C_TMULT)? * preprocessed[0],
-                combine(preprocessed[1], preprocessed[2]),
+                -opened(Self::TIP5_LOOKUP_C_TMULT)?
+                    * preprocessed
+                        .get(Self::TIP5_LOOKUP_P_IS_TABLE)
+                        .copied()
+                        .ok_or(
+                        NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                            expected: Self::TIP5_LOOKUP_PREPROCESSED_WIDTH,
+                            got: preprocessed.len(),
+                        },
+                    )?,
+                combine(
+                    preprocessed.get(Self::TIP5_LOOKUP_P_TIN).copied().ok_or(
+                        NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                            expected: Self::TIP5_LOOKUP_PREPROCESSED_WIDTH,
+                            got: preprocessed.len(),
+                        },
+                    )?,
+                    preprocessed.get(Self::TIP5_LOOKUP_P_TOUT).copied().ok_or(
+                        NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                            expected: Self::TIP5_LOOKUP_PREPROCESSED_WIDTH,
+                            got: preprocessed.len(),
+                        },
+                    )?,
+                ),
             ))
         }
     }
@@ -18083,7 +18212,7 @@ impl NativeTerminalCompiler {
         accumulator: TerminalFriChallenge,
         next_accumulator: TerminalFriChallenge,
         final_cumulative: TerminalFriChallenge,
-        preprocessed: [TerminalFriChallenge; 3],
+        preprocessed: &[TerminalFriChallenge],
         challenges: &[(TerminalFriChallenge, TerminalFriChallenge)],
         group: usize,
         first_selector: TerminalFriChallenge,
@@ -18226,11 +18355,14 @@ impl NativeTerminalCompiler {
             );
         }
 
-        let preprocessed_evals = [
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(&trace_profile.trace, 0)?,
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(&trace_profile.trace, 1)?,
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(&trace_profile.trace, 2)?,
-        ];
+        let preprocessed_evals = (0..Self::TIP5_LOOKUP_PREPROCESSED_WIDTH)
+            .map(|column| {
+                Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
+                    &trace_profile.trace,
+                    column,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let trace_column_indices = Self::terminal_npo_tip5_lookup_fri_column_indices(
             trace_profile.trace.main_width,
             trace_profile.column_set,
@@ -18250,11 +18382,10 @@ impl NativeTerminalCompiler {
             })?;
             let opened_next_accumulator_basis =
                 accumulator_matrix.interpolate_coset(trace_domain.shift(), next_point);
-            let preprocessed = [
-                trace_domain.evaluate_polynomial_at(&preprocessed_evals[0], point),
-                trace_domain.evaluate_polynomial_at(&preprocessed_evals[1], point),
-                trace_domain.evaluate_polynomial_at(&preprocessed_evals[2], point),
-            ];
+            let preprocessed = preprocessed_evals
+                .iter()
+                .map(|evals| trace_domain.evaluate_polynomial_at(evals, point))
+                .collect::<Vec<_>>();
             let selectors = trace_domain.selectors_at_point(point);
             let mut relation = TerminalFriChallenge::ZERO;
             let mut coeff = TerminalFriChallenge::ONE;
@@ -18287,7 +18418,7 @@ impl NativeTerminalCompiler {
                         accumulator,
                         next_accumulator,
                         final_cumulatives[group],
-                        preprocessed,
+                        &preprocessed,
                         challenges,
                         group,
                         selectors.is_first_row,
@@ -18318,7 +18449,10 @@ impl NativeTerminalCompiler {
     fn verify_terminal_npo_tip5_lookup_trace_profile_digest(
         profile: &TerminalNpoTip5LookupTraceProfile,
     ) -> Result<(), NativeTerminalVerifyError> {
-        let expected = Self::terminal_npo_tip5_lookup_preprocessed_digest(profile.main_rows);
+        let expected = Self::terminal_npo_tip5_lookup_preprocessed_digest(
+            profile.tip5_rows,
+            profile.main_rows,
+        );
         if profile.preprocessed_digest != expected {
             return Err(
                 NativeTerminalVerifyError::TerminalFixedTableDigestMismatch {
@@ -18897,7 +19031,7 @@ impl NativeTerminalCompiler {
                     },
                 )?;
             let window_vanishing =
-                Self::terminal_npo_tip5_lookup_permutation_window_vanishing_at_point(
+                Self::terminal_npo_tip5_lookup_terminal_io_support_vanishing_at_point(
                     io_domain, io_profile, point,
                 )?;
             let relation = window_vanishing * folded;
@@ -19045,12 +19179,36 @@ impl NativeTerminalCompiler {
         }
         let quotient_basis_dimension =
             <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let preprocessed_evals = (0..Self::TIP5_LOOKUP_PREPROCESSED_WIDTH)
+            .map(|column| {
+                Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
+                    &trace_profile.trace,
+                    column,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut quotient_values = Vec::with_capacity(quotient_domain.size());
         let mut point = TerminalFriChallenge::from(quotient_domain.first_point());
         for _ in 0..quotient_domain.size() {
             let opened_trace = trace_matrix.interpolate_coset(trace_domain.shift(), point);
-            let relation =
-                Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(&opened_trace, alpha)?;
+            let next_point = trace_domain.next_point(point).ok_or_else(|| {
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                    reason: "terminal Tip5 lookup AIR algebra quotient domain has no successor"
+                        .into(),
+                }
+            })?;
+            let opened_next_trace =
+                trace_matrix.interpolate_coset(trace_domain.shift(), next_point);
+            let preprocessed = preprocessed_evals
+                .iter()
+                .map(|evals| trace_domain.evaluate_polynomial_at(evals, point))
+                .collect::<Vec<_>>();
+            let relation = Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(
+                &opened_trace,
+                &opened_next_trace,
+                &preprocessed,
+                alpha,
+            )?;
             let terminal_io = Self::terminal_npo_tip5_lookup_air_terminal_io_folded_relation(
                 &opened_trace,
                 trace_profile,
@@ -19086,54 +19244,36 @@ impl NativeTerminalCompiler {
 
     fn terminal_npo_tip5_lookup_air_algebra_folded_relation(
         trace: &[TerminalFriChallenge],
+        next_trace: &[TerminalFriChallenge],
+        preprocessed: &[TerminalFriChallenge],
         alpha: TerminalFriChallenge,
     ) -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
         const STATE_SIZE: usize = 16;
-        const NS: usize = 4;
-        const NBYTES: usize = 8;
-        const SPLIT_BC: usize = NS * 2 * NBYTES;
-        const C_KIND: usize = 0;
-        const C_IN: usize = 2;
-        const RB0: usize = C_IN + STATE_SIZE;
-        const ROUND_GROUP: usize = SPLIT_BC + NS + STATE_SIZE;
-        const ROUND_OUTPUT_OFFSET: usize = SPLIT_BC + NS;
 
-        #[inline]
-        const fn rb(round: usize) -> usize {
-            RB0 + round * ROUND_GROUP
-        }
-        #[inline]
-        const fn b_col(round: usize, lane: usize, byte: usize) -> usize {
-            rb(round) + lane * (2 * NBYTES) + byte
-        }
-        #[inline]
-        const fn c_col(round: usize, lane: usize, byte: usize) -> usize {
-            rb(round) + lane * (2 * NBYTES) + NBYTES + byte
-        }
-        #[inline]
-        const fn inv_col(round: usize, lane: usize) -> usize {
-            rb(round) + SPLIT_BC + lane
-        }
-        #[inline]
-        const fn rout_col(round: usize, lane: usize) -> usize {
-            rb(round) + ROUND_OUTPUT_OFFSET + lane
-        }
-        #[inline]
-        const fn sbox_in_col(round: usize, lane: usize) -> usize {
-            if round == 0 {
-                C_IN + lane
-            } else {
-                rout_col(round - 1, lane)
-            }
-        }
-
-        let required_width = RB0 + TIP5_PERM_ROUNDS * ROUND_GROUP;
+        let required_width = tip5_lookup_air_width();
         if trace.len() != required_width {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_lookup_air_algebra_opened_trace_width".into(),
                     expected: required_width,
                     got: trace.len(),
+                },
+            );
+        }
+        if next_trace.len() != required_width {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_air_algebra_opened_next_trace_width".into(),
+                    expected: required_width,
+                    got: next_trace.len(),
+                },
+            );
+        }
+        if preprocessed.len() != Self::TIP5_LOOKUP_PREPROCESSED_WIDTH {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: Self::TIP5_LOOKUP_PREPROCESSED_WIDTH,
+                    got: preprocessed.len(),
                 },
             );
         }
@@ -19149,54 +19289,76 @@ impl NativeTerminalCompiler {
             coeff *= alpha;
         };
 
-        let kind = trace[C_KIND];
-        absorb(kind * (kind - TerminalFriChallenge::ONE));
+        let is_table = preprocessed[Self::TIP5_LOOKUP_P_IS_TABLE];
+        let is_round = preprocessed[Self::TIP5_LOOKUP_P_IS_ROUND];
+        let link_next = (0..TIP5_PERM_ROUNDS - 1)
+            .map(|round| preprocessed[Self::TIP5_LOOKUP_P_ROUND0 + round])
+            .sum::<TerminalFriChallenge>();
+        absorb((TerminalFriChallenge::ONE - is_table) * trace[Self::TIP5_LOOKUP_C_TMULT]);
 
-        for round in 0..TIP5_PERM_ROUNDS {
-            let mut sbox_outputs = Vec::with_capacity(STATE_SIZE);
-            for lane in 0..NS {
-                let mut recompose_b = TerminalFriChallenge::ZERO;
-                let mut recompose_c = TerminalFriChallenge::ZERO;
-                let mut low = TerminalFriChallenge::ZERO;
-                let mut high = TerminalFriChallenge::ZERO;
-                for byte in 0..NBYTES {
-                    let b = trace[b_col(round, lane, byte)];
-                    let c = trace[c_col(round, lane, byte)];
-                    recompose_b += b * pow8(byte);
-                    recompose_c += c * pow8(byte);
-                    if byte < 4 {
-                        low += b * pow8(byte);
-                    } else {
-                        high += b * pow8(byte - 4);
-                    }
+        let mut sbox_outputs = Vec::with_capacity(STATE_SIZE);
+        for lane in 0..Self::TIP5_LOOKUP_NS {
+            let mut recompose_b = TerminalFriChallenge::ZERO;
+            let mut recompose_c = TerminalFriChallenge::ZERO;
+            let mut low = TerminalFriChallenge::ZERO;
+            let mut high = TerminalFriChallenge::ZERO;
+            for byte in 0..Self::TIP5_LOOKUP_NBYTES {
+                let b = trace[Self::terminal_npo_tip5_lookup_b_col(lane, byte)];
+                let c = trace[Self::terminal_npo_tip5_lookup_c_col(lane, byte)];
+                recompose_b += b * pow8(byte);
+                recompose_c += c * pow8(byte);
+                if byte < 4 {
+                    low += b * pow8(byte);
+                } else {
+                    high += b * pow8(byte - 4);
                 }
-                absorb(kind * (recompose_b - trace[sbox_in_col(round, lane)]));
-                sbox_outputs.push(recompose_c);
-
-                let g = high - two32_minus_one;
-                let inv = trace[inv_col(round, lane)];
-                let prod = g * inv;
-                absorb(kind * g * (prod - TerminalFriChallenge::ONE));
-                absorb(kind * (TerminalFriChallenge::ONE - prod) * low);
             }
+            absorb(is_round * (recompose_b - trace[Self::TIP5_LOOKUP_C_IN + lane]));
+            sbox_outputs.push(recompose_c);
 
-            for lane in NS..STATE_SIZE {
-                let x = trace[sbox_in_col(round, lane)];
-                let x2 = x * x;
-                let x3 = x2 * x;
-                sbox_outputs.push(x3 * x3 * x);
-            }
+            let g = high - two32_minus_one;
+            let inv = trace[Self::terminal_npo_tip5_lookup_inv_col(lane)];
+            let prod = g * inv;
+            absorb(is_round * g * (prod - TerminalFriChallenge::ONE));
+            absorb(is_round * (TerminalFriChallenge::ONE - prod) * low);
+        }
 
-            for lane in 0..STATE_SIZE {
-                let mut acc = TerminalFriChallenge::ZERO;
-                for column in 0..STATE_SIZE {
-                    acc += fe(mds[lane][column]) * sbox_outputs[column];
-                }
-                let rc = fe(tip5_rc_precomp(
-                    TIP5_ROUND_CONSTANTS[round * STATE_SIZE + lane],
-                ));
-                absorb(kind * (trace[rout_col(round, lane)] - acc - rc));
+        for lane in Self::TIP5_LOOKUP_NS..STATE_SIZE {
+            let x = trace[Self::TIP5_LOOKUP_C_IN + lane];
+            let x2 = x * x;
+            let x3 = x2 * x;
+            sbox_outputs.push(x3 * x3 * x);
+        }
+
+        for lane in 0..STATE_SIZE {
+            let mut acc = TerminalFriChallenge::ZERO;
+            for column in 0..STATE_SIZE {
+                acc += fe(mds[lane][column]) * sbox_outputs[column];
             }
+            let rc = (0..TIP5_PERM_ROUNDS)
+                .map(|round| {
+                    preprocessed[Self::TIP5_LOOKUP_P_ROUND0 + round]
+                        * fe(tip5_rc_precomp(
+                            TIP5_ROUND_CONSTANTS[round * STATE_SIZE + lane],
+                        ))
+                })
+                .sum::<TerminalFriChallenge>();
+            absorb(is_round * (trace[Self::terminal_npo_tip5_lookup_out_col(lane)] - acc - rc));
+            absorb(
+                preprocessed[Self::TIP5_LOOKUP_P_ROUND0]
+                    * (trace[Self::TIP5_LOOKUP_C_TIN + lane]
+                        - trace[Self::TIP5_LOOKUP_C_IN + lane]),
+            );
+            absorb(
+                link_next
+                    * (trace[Self::terminal_npo_tip5_lookup_out_col(lane)]
+                        - next_trace[Self::TIP5_LOOKUP_C_IN + lane]),
+            );
+            absorb(
+                link_next
+                    * (trace[Self::TIP5_LOOKUP_C_TIN + lane]
+                        - next_trace[Self::TIP5_LOOKUP_C_TIN + lane]),
+            );
         }
 
         Ok(folded)
@@ -19324,19 +19486,20 @@ impl NativeTerminalCompiler {
             if is_tip5 == Goldilocks::ZERO {
                 continue;
             }
-            let trace_row = profile.trace.permutation_row_offset + tip5_row;
-            if trace_row >= profile.trace.main_rows {
+            let final_trace_row =
+                Self::terminal_npo_tip5_lookup_round_row(tip5_row, TIP5_PERM_ROUNDS - 1);
+            if final_trace_row >= profile.trace.main_rows {
                 return Err(
                     NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                         label: "tip5_lookup_npo_rows_io_trace_row".into(),
                         expected: profile.trace.main_rows,
-                        got: trace_row,
+                        got: final_trace_row,
                     },
                 );
             }
             for limb in 0..16 {
                 values[row * profile.basis_columns + limb] =
-                    trace.values[trace_row * trace.width() + 2 + limb];
+                    trace.values[final_trace_row * trace.width() + Self::TIP5_LOOKUP_C_TIN + limb];
             }
             for limb in 0..10 {
                 let present_label = format!("output_present_{limb}");
@@ -19351,7 +19514,7 @@ impl NativeTerminalCompiler {
                 if present != Goldilocks::ZERO {
                     let output_offset = Self::terminal_npo_tip5_lookup_terminal_output_offset();
                     values[row * profile.basis_columns + 16 + limb] =
-                        trace.values[trace_row * trace.width() + output_offset + limb];
+                        trace.values[final_trace_row * trace.width() + output_offset + limb];
                 }
             }
             tip5_row += 1;
@@ -19487,7 +19650,7 @@ impl NativeTerminalCompiler {
         let mut selector = vec![Goldilocks::ZERO; padded_rows];
         let mut rank = vec![Goldilocks::ZERO; padded_rows];
         for tip5_rank in 0..trace_profile.tip5_rows {
-            let row = trace_profile.permutation_row_offset + tip5_rank;
+            let row = Self::terminal_npo_tip5_lookup_round_row(tip5_rank, TIP5_PERM_ROUNDS - 1);
             if row >= padded_rows {
                 return Err(
                     NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
@@ -20139,7 +20302,8 @@ impl NativeTerminalCompiler {
             if is_tip5 == Goldilocks::ZERO {
                 continue;
             }
-            let target_row = profile.trace.permutation_row_offset + tip5_row;
+            let target_row =
+                Self::terminal_npo_tip5_lookup_round_row(tip5_row, TIP5_PERM_ROUNDS - 1);
             if target_row >= profile.padded_rows {
                 return Err(
                     NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
@@ -20280,12 +20444,9 @@ impl NativeTerminalCompiler {
         )?;
         let quotient_basis_dimension =
             <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
-        let mut lookup_basis_evals =
-            vec![Vec::with_capacity(io_profile.padded_rows); quotient_basis_dimension];
         let mut diff_basis_evals =
             vec![Vec::with_capacity(io_profile.padded_rows); quotient_basis_dimension];
         for row in 0..io_profile.padded_rows {
-            let mut folded_lookup = TerminalFriChallenge::ZERO;
             let mut folded_diff = TerminalFriChallenge::ZERO;
             let mut coeff = TerminalFriChallenge::ONE;
             for column in 0..io_profile.basis_columns {
@@ -20295,19 +20456,11 @@ impl NativeTerminalCompiler {
                 let npo_value = TerminalFriChallenge::from(
                     npo_io_matrix.values[row * io_profile.basis_columns + column],
                 );
-                folded_lookup += coeff * lookup_value;
                 folded_diff += coeff * (lookup_value - npo_value);
                 coeff *= alpha;
             }
-            let lookup_basis = folded_lookup.as_basis_coefficients_slice();
             let diff_basis = folded_diff.as_basis_coefficients_slice();
             for basis_index in 0..quotient_basis_dimension {
-                lookup_basis_evals[basis_index].push(
-                    lookup_basis
-                        .get(basis_index)
-                        .copied()
-                        .unwrap_or(Goldilocks::ZERO),
-                );
                 diff_basis_evals[basis_index].push(
                     diff_basis
                         .get(basis_index)
@@ -20320,24 +20473,10 @@ impl NativeTerminalCompiler {
         let mut quotient_values = Vec::with_capacity(quotient_domain.size());
         let mut point = TerminalFriChallenge::from(quotient_domain.first_point());
         for _ in 0..quotient_domain.size() {
-            let lookup_basis = lookup_basis_evals
-                .iter()
-                .map(|basis_evals| io_domain.evaluate_polynomial_at(basis_evals, point))
-                .collect::<Vec<_>>();
             let diff_basis = diff_basis_evals
                 .iter()
                 .map(|basis_evals| io_domain.evaluate_polynomial_at(basis_evals, point))
                 .collect::<Vec<_>>();
-            let folded_lookup =
-                <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
-                    &lookup_basis,
-                )
-                .ok_or(
-                    NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                        expected: quotient_basis_dimension,
-                        got: lookup_basis.len(),
-                    },
-                )?;
             let folded_diff =
                 <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
                     &diff_basis,
@@ -20349,12 +20488,11 @@ impl NativeTerminalCompiler {
                     },
                 )?;
             let window_vanishing =
-                Self::terminal_npo_tip5_lookup_permutation_window_vanishing_at_point(
+                Self::terminal_npo_tip5_lookup_terminal_io_support_vanishing_at_point(
                     io_domain, io_profile, point,
                 )?;
-            let relation = folded_diff + beta * window_vanishing * folded_lookup;
-            let z_h = io_domain.vanishing_poly_at_point(point);
-            quotient_values.push(relation / z_h);
+            let _ = beta;
+            quotient_values.push(folded_diff / window_vanishing);
             point = quotient_domain.next_point(point).ok_or_else(|| {
                 NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
                     reason:
@@ -20632,7 +20770,7 @@ impl NativeTerminalCompiler {
         point: TerminalFriChallenge,
     ) -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
         let start = profile.trace.permutation_row_offset;
-        let end = start + profile.trace.tip5_rows;
+        let end = start + Self::terminal_npo_tip5_lookup_round_row_count(profile.trace.tip5_rows);
         if end > profile.trace.main_rows {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
@@ -20651,6 +20789,42 @@ impl NativeTerminalCompiler {
             row_point = domain.next_point(row_point).ok_or_else(|| {
                 NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
                     reason: "terminal Tip5 lookup domain has no successor".into(),
+                }
+            })?;
+        }
+        Ok(acc)
+    }
+
+    fn terminal_npo_tip5_lookup_terminal_io_support_vanishing_at_point(
+        domain: <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::Domain,
+        profile: &TerminalNpoTip5LookupFriProfile,
+        point: TerminalFriChallenge,
+    ) -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
+        let start = profile.trace.permutation_row_offset;
+        let round_rows = Self::terminal_npo_tip5_lookup_round_row_count(profile.trace.tip5_rows);
+        let end = start + round_rows;
+        if end > profile.trace.main_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_terminal_io_support_window".into(),
+                    expected: profile.trace.main_rows,
+                    got: end,
+                },
+            );
+        }
+        let mut acc = TerminalFriChallenge::ONE;
+        let mut row_point = TerminalFriChallenge::from(domain.first_point());
+        for row in 0..profile.trace.main_rows {
+            let is_final_round = row >= start
+                && row < end
+                && (row - start) % TIP5_PERM_ROUNDS == TIP5_PERM_ROUNDS - 1;
+            if is_final_round {
+                acc *= point - row_point;
+            }
+            row_point = domain.next_point(row_point).ok_or_else(|| {
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                    reason: "terminal Tip5 lookup terminal IO support domain has no successor"
+                        .into(),
                 }
             })?;
         }
@@ -23154,7 +23328,7 @@ impl NativeTerminalCompiler {
             coeff *= alpha;
         }
         let window_vanishing =
-            Self::terminal_npo_tip5_lookup_permutation_window_vanishing_at_point(
+            Self::terminal_npo_tip5_lookup_terminal_io_support_vanishing_at_point(
                 io_domain,
                 &proof.io_profile,
                 zeta,
@@ -23529,13 +23703,15 @@ impl NativeTerminalCompiler {
             coeff *= alpha;
         }
         let window_vanishing =
-            Self::terminal_npo_tip5_lookup_permutation_window_vanishing_at_point(
+            Self::terminal_npo_tip5_lookup_terminal_io_support_vanishing_at_point(
                 io_domain,
                 &proof.lookup_io_profile,
                 zeta,
             )?;
-        let expected = quotient * io_domain.vanishing_poly_at_point(zeta);
-        if folded_diff + beta * window_vanishing * folded_lookup != expected {
+        let _ = beta;
+        let _ = folded_lookup;
+        let expected = quotient * window_vanishing;
+        if folded_diff != expected {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
                     label: "tip5_lookup_io_support_bridge_quotient".into(),
@@ -23875,13 +24051,15 @@ impl NativeTerminalCompiler {
                 },
             )?;
         let window_vanishing =
-            Self::terminal_npo_tip5_lookup_permutation_window_vanishing_at_point(
+            Self::terminal_npo_tip5_lookup_terminal_io_support_vanishing_at_point(
                 trace_domain,
                 &proof.lookup_io_profile,
                 zeta,
             )?;
-        let expected = quotient * trace_domain.vanishing_poly_at_point(zeta);
-        if folded_diff + beta * window_vanishing * folded_lookup != expected {
+        let _ = beta;
+        let _ = folded_lookup;
+        let expected = quotient * window_vanishing;
+        if folded_diff != expected {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
                     label: "tip5_lookup_trace_io_support_bridge_quotient".into(),
@@ -24081,7 +24259,7 @@ impl NativeTerminalCompiler {
             .map(|(tip5_rank, values)| {
                 Self::terminal_fri_domain_row_point(
                     trace_domain,
-                    trace_profile.permutation_row_offset + tip5_rank,
+                    Self::terminal_npo_tip5_lookup_round_row(tip5_rank, TIP5_PERM_ROUNDS - 1),
                     proof.trace_npo_io_profile.rows,
                     "tip5_lookup_trace_domain_npo_io_bridge_verify_trace_row_point",
                 )
@@ -24849,6 +25027,14 @@ impl NativeTerminalCompiler {
                 },
             );
         }
+        if proof.opened_next_trace_basis.len() != proof.trace_profile.basis_columns {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: proof.trace_profile.basis_columns,
+                    got: proof.opened_next_trace_basis.len(),
+                },
+            );
+        }
         if proof.opened_quotient_basis.len() != proof.quotient_profile.basis_columns {
             return Err(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
@@ -24860,6 +25046,11 @@ impl NativeTerminalCompiler {
         let mut opened_trace = Vec::with_capacity(proof.opened_trace_basis.len());
         for basis in &proof.opened_trace_basis {
             opened_trace
+                .push(Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(basis)?);
+        }
+        let mut opened_next_trace = Vec::with_capacity(proof.opened_next_trace_basis.len());
+        for basis in &proof.opened_next_trace_basis {
+            opened_next_trace
                 .push(Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(basis)?);
         }
         let mut opened_quotient_flat = Vec::with_capacity(proof.opened_quotient_basis.len());
@@ -24888,13 +25079,24 @@ impl NativeTerminalCompiler {
         let beta: TerminalFriChallenge = challenger.sample_algebra_element();
         challenger.observe(proof.quotient_commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
+        let next_zeta = trace_domain.next_point(zeta).ok_or_else(|| {
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: "terminal Tip5 lookup AIR algebra opening domain has no successor".into(),
+            }
+        })?;
         let restored = Self::decompress_terminal_fri_proof(&proof.proof)?;
         <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::verify(
             &pcs,
             vec![
                 (
                     proof.trace_commitment.clone(),
-                    vec![(trace_domain, vec![(zeta, opened_trace.clone())])],
+                    vec![(
+                        trace_domain,
+                        vec![
+                            (zeta, opened_trace.clone()),
+                            (next_zeta, opened_next_trace.clone()),
+                        ],
+                    )],
                 ),
                 (
                     proof.quotient_commitment.clone(),
@@ -24922,8 +25124,24 @@ impl NativeTerminalCompiler {
                     got: opened_quotient_flat.len(),
                 },
             )?;
-        let folded =
-            Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(&opened_trace, alpha)?;
+        let preprocessed_evals = (0..Self::TIP5_LOOKUP_PREPROCESSED_WIDTH)
+            .map(|column| {
+                Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
+                    &proof.trace_profile.trace,
+                    column,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let preprocessed = preprocessed_evals
+            .iter()
+            .map(|evals| trace_domain.evaluate_polynomial_at(evals, zeta))
+            .collect::<Vec<_>>();
+        let folded = Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(
+            &opened_trace,
+            &opened_next_trace,
+            &preprocessed,
+            alpha,
+        )?;
         let terminal_io = Self::terminal_npo_tip5_lookup_air_terminal_io_folded_relation(
             &opened_trace,
             &proof.trace_profile,
@@ -25177,25 +25395,18 @@ impl NativeTerminalCompiler {
                     got: opened_quotient_flat.len(),
                 },
             )?;
-        let preprocessed_evals = [
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &proof.trace_profile.trace,
-                0,
-            )?,
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &proof.trace_profile.trace,
-                1,
-            )?,
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &proof.trace_profile.trace,
-                2,
-            )?,
-        ];
-        let preprocessed = [
-            trace_domain.evaluate_polynomial_at(&preprocessed_evals[0], zeta),
-            trace_domain.evaluate_polynomial_at(&preprocessed_evals[1], zeta),
-            trace_domain.evaluate_polynomial_at(&preprocessed_evals[2], zeta),
-        ];
+        let preprocessed_evals = (0..Self::TIP5_LOOKUP_PREPROCESSED_WIDTH)
+            .map(|column| {
+                Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
+                    &proof.trace_profile.trace,
+                    column,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let preprocessed = preprocessed_evals
+            .iter()
+            .map(|evals| trace_domain.evaluate_polynomial_at(evals, zeta))
+            .collect::<Vec<_>>();
         let trace_column_indices = Self::terminal_npo_tip5_lookup_fri_column_indices(
             proof.trace_profile.trace.main_width,
             proof.trace_profile.column_set,
@@ -25233,7 +25444,7 @@ impl NativeTerminalCompiler {
                     accumulator,
                     next_accumulator,
                     final_cumulatives[group],
-                    preprocessed,
+                    &preprocessed,
                     &challenges,
                     group,
                     selectors.is_first_row,
@@ -25369,6 +25580,11 @@ impl NativeTerminalCompiler {
             opened_trace
                 .push(Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(basis)?);
         }
+        let mut opened_next_trace = Vec::with_capacity(proof.opened_next_trace_basis.len());
+        for basis in &proof.opened_next_trace_basis {
+            opened_next_trace
+                .push(Self::field_from_goldilocks_basis_u64::<TerminalFriChallenge>(basis)?);
+        }
         let mut opened_air_quotient_flat =
             Vec::with_capacity(proof.opened_air_quotient_basis.len());
         for basis in &proof.opened_air_quotient_basis {
@@ -25452,7 +25668,13 @@ impl NativeTerminalCompiler {
             vec![
                 (
                     proof.trace_commitment.clone(),
-                    vec![(trace_domain, vec![(zeta, opened_trace.clone())])],
+                    vec![(
+                        trace_domain,
+                        vec![
+                            (zeta, opened_trace.clone()),
+                            (next_zeta, opened_next_trace.clone()),
+                        ],
+                    )],
                 ),
                 (
                     proof.air_quotient_commitment.clone(),
@@ -25500,8 +25722,24 @@ impl NativeTerminalCompiler {
                     got: opened_air_quotient_flat.len(),
                 },
             )?;
-        let air_folded =
-            Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(&opened_trace, air_alpha)?;
+        let preprocessed_evals = (0..Self::TIP5_LOOKUP_PREPROCESSED_WIDTH)
+            .map(|column| {
+                Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
+                    &proof.trace_profile.trace,
+                    column,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let preprocessed = preprocessed_evals
+            .iter()
+            .map(|evals| trace_domain.evaluate_polynomial_at(evals, zeta))
+            .collect::<Vec<_>>();
+        let air_folded = Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(
+            &opened_trace,
+            &opened_next_trace,
+            &preprocessed,
+            air_alpha,
+        )?;
         let terminal_io = Self::terminal_npo_tip5_lookup_air_terminal_io_folded_relation(
             &opened_trace,
             &proof.trace_profile,
@@ -25533,25 +25771,6 @@ impl NativeTerminalCompiler {
                     got: opened_logup_quotient_flat.len(),
                 },
             )?;
-        let preprocessed_evals = [
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &proof.trace_profile.trace,
-                0,
-            )?,
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &proof.trace_profile.trace,
-                1,
-            )?,
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &proof.trace_profile.trace,
-                2,
-            )?,
-        ];
-        let preprocessed = [
-            trace_domain.evaluate_polynomial_at(&preprocessed_evals[0], zeta),
-            trace_domain.evaluate_polynomial_at(&preprocessed_evals[1], zeta),
-            trace_domain.evaluate_polynomial_at(&preprocessed_evals[2], zeta),
-        ];
         let trace_column_indices = Self::terminal_npo_tip5_lookup_fri_column_indices(
             proof.trace_profile.trace.main_width,
             proof.trace_profile.column_set,
@@ -25589,7 +25808,7 @@ impl NativeTerminalCompiler {
                     accumulator,
                     next_accumulator,
                     logup_final_cumulatives[group],
-                    preprocessed,
+                    &preprocessed,
                     &logup_challenges,
                     group,
                     selectors.is_first_row,
@@ -25735,6 +25954,10 @@ impl NativeTerminalCompiler {
             proof.trace_profile.basis_columns,
         )?;
         Self::validate_terminal_opening_basis_len(
+            proof.opened_next_trace_basis.len(),
+            proof.trace_profile.basis_columns,
+        )?;
+        Self::validate_terminal_opening_basis_len(
             proof.opened_lookup_io_basis.len(),
             proof.lookup_io_profile.basis_columns,
         )?;
@@ -25779,6 +26002,8 @@ impl NativeTerminalCompiler {
         }
 
         let opened_trace = Self::terminal_field_values_from_basis_u64(&proof.opened_trace_basis)?;
+        let opened_next_trace =
+            Self::terminal_field_values_from_basis_u64(&proof.opened_next_trace_basis)?;
         let opened_lookup_io =
             Self::terminal_field_values_from_basis_u64(&proof.opened_lookup_io_basis)?;
         let opened_npo_io = Self::terminal_field_values_from_basis_u64(&proof.opened_npo_io_basis)?;
@@ -25866,7 +26091,13 @@ impl NativeTerminalCompiler {
             vec![
                 (
                     proof.trace_commitment.clone(),
-                    vec![(trace_domain, vec![(zeta, opened_trace.clone())])],
+                    vec![(
+                        trace_domain,
+                        vec![
+                            (zeta, opened_trace.clone()),
+                            (next_zeta, opened_next_trace.clone()),
+                        ],
+                    )],
                 ),
                 (
                     proof.lookup_io_commitment.clone(),
@@ -25929,8 +26160,24 @@ impl NativeTerminalCompiler {
                     got: opened_air_quotient_flat.len(),
                 },
             )?;
-        let air_folded =
-            Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(&opened_trace, air_alpha)?;
+        let preprocessed_evals = (0..Self::TIP5_LOOKUP_PREPROCESSED_WIDTH)
+            .map(|column| {
+                Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
+                    &expected_trace_profile.trace,
+                    column,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let preprocessed = preprocessed_evals
+            .iter()
+            .map(|evals| trace_domain.evaluate_polynomial_at(evals, zeta))
+            .collect::<Vec<_>>();
+        let air_folded = Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(
+            &opened_trace,
+            &opened_next_trace,
+            &preprocessed,
+            air_alpha,
+        )?;
         let air_terminal_io = Self::terminal_npo_tip5_lookup_air_terminal_io_folded_relation(
             &opened_trace,
             &expected_trace_profile,
@@ -25962,25 +26209,6 @@ impl NativeTerminalCompiler {
                     got: opened_logup_quotient_flat.len(),
                 },
             )?;
-        let preprocessed_evals = [
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &expected_trace_profile.trace,
-                0,
-            )?,
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &expected_trace_profile.trace,
-                1,
-            )?,
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &expected_trace_profile.trace,
-                2,
-            )?,
-        ];
-        let preprocessed = [
-            trace_domain.evaluate_polynomial_at(&preprocessed_evals[0], zeta),
-            trace_domain.evaluate_polynomial_at(&preprocessed_evals[1], zeta),
-            trace_domain.evaluate_polynomial_at(&preprocessed_evals[2], zeta),
-        ];
         let trace_column_indices = Self::terminal_npo_tip5_lookup_fri_column_indices(
             expected_trace_profile.trace.main_width,
             expected_trace_profile.column_set,
@@ -26018,7 +26246,7 @@ impl NativeTerminalCompiler {
                     accumulator,
                     next_accumulator,
                     logup_final_cumulatives[group],
-                    preprocessed,
+                    &preprocessed,
                     &logup_challenges,
                     group,
                     selectors.is_first_row,
@@ -26065,9 +26293,16 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if folded_diff + support_beta * window_vanishing * folded_lookup
-            != support_quotient * trace_domain.vanishing_poly_at_point(zeta)
-        {
+        let support_window_vanishing =
+            Self::terminal_npo_tip5_lookup_terminal_io_support_vanishing_at_point(
+                trace_domain,
+                &expected_trace_profile,
+                zeta,
+            )?;
+        let _ = support_beta;
+        let support_relation = folded_diff;
+        let support_expected = support_quotient * support_window_vanishing;
+        if support_relation != support_expected {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
                     label: "tip5_lookup_air_logup_trace_io_support_support_quotient".into(),
@@ -26193,6 +26428,8 @@ impl NativeTerminalCompiler {
                 expected_trace_io_profile.proximity,
             )?;
         let opened_trace = Self::terminal_field_values_from_basis_u64(&proof.opened_trace_basis)?;
+        let opened_next_trace =
+            Self::terminal_field_values_from_basis_u64(&proof.opened_next_trace_basis)?;
         let opened_selected_lookup =
             Self::terminal_field_values_from_basis_u64(&proof.opened_selected_lookup_basis)?;
         let opened_air_quotient_flat =
@@ -26353,7 +26590,13 @@ impl NativeTerminalCompiler {
                 ),
                 (
                     proof.trace_commitment.clone(),
-                    vec![(trace_domain, vec![(zeta, opened_trace.clone())])],
+                    vec![(
+                        trace_domain,
+                        vec![
+                            (zeta, opened_trace.clone()),
+                            (trace_next_zeta, opened_next_trace.clone()),
+                        ],
+                    )],
                 ),
                 (
                     proof.air_quotient_commitment.clone(),
@@ -26441,8 +26684,24 @@ impl NativeTerminalCompiler {
                     got: opened_air_quotient_flat.len(),
                 },
             )?;
-        let air_folded =
-            Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(&opened_trace, air_alpha)?;
+        let preprocessed_evals = (0..Self::TIP5_LOOKUP_PREPROCESSED_WIDTH)
+            .map(|column| {
+                Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
+                    &expected_trace_profile.trace,
+                    column,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let preprocessed = preprocessed_evals
+            .iter()
+            .map(|evals| trace_domain.evaluate_polynomial_at(evals, zeta))
+            .collect::<Vec<_>>();
+        let air_folded = Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(
+            &opened_trace,
+            &opened_next_trace,
+            &preprocessed,
+            air_alpha,
+        )?;
         let air_terminal_io = Self::terminal_npo_tip5_lookup_air_terminal_io_folded_relation(
             &opened_trace,
             &expected_trace_profile,
@@ -26474,25 +26733,6 @@ impl NativeTerminalCompiler {
                     got: opened_logup_quotient_flat.len(),
                 },
             )?;
-        let preprocessed_evals = [
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &expected_trace_profile.trace,
-                0,
-            )?,
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &expected_trace_profile.trace,
-                1,
-            )?,
-            Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &expected_trace_profile.trace,
-                2,
-            )?,
-        ];
-        let preprocessed = [
-            trace_domain.evaluate_polynomial_at(&preprocessed_evals[0], zeta),
-            trace_domain.evaluate_polynomial_at(&preprocessed_evals[1], zeta),
-            trace_domain.evaluate_polynomial_at(&preprocessed_evals[2], zeta),
-        ];
         let trace_column_indices = Self::terminal_npo_tip5_lookup_fri_column_indices(
             expected_trace_profile.trace.main_width,
             expected_trace_profile.column_set,
@@ -26531,7 +26771,7 @@ impl NativeTerminalCompiler {
                     accumulator,
                     next_accumulator,
                     logup_final_cumulatives[group],
-                    preprocessed,
+                    &preprocessed,
                     &logup_challenges,
                     group,
                     selectors.is_first_row,
@@ -30760,37 +31000,25 @@ impl NativeTerminalCompiler {
     }
 
     const fn terminal_npo_tip5_lookup_terminal_output_offset() -> usize {
-        const INPUT_OFFSET: usize = 2;
-        const INPUT_LANES: usize = 16;
-        const LOOKUP_ROUND_GROUP: usize = 84;
-        const LOOKUP_ROUND_OUTPUT_OFFSET: usize = 68;
-        const LOOKUP_ROUND_BASE_OFFSET: usize = INPUT_OFFSET + INPUT_LANES;
-        LOOKUP_ROUND_BASE_OFFSET
-            + (TIP5_PERM_ROUNDS - 1) * LOOKUP_ROUND_GROUP
-            + LOOKUP_ROUND_OUTPUT_OFFSET
+        Self::TIP5_LOOKUP_C_OUT
     }
 
     fn terminal_npo_tip5_lookup_fri_column_indices(
         main_width: usize,
         column_set: TerminalNpoTip5LookupFriColumnSet,
     ) -> Result<Vec<usize>, NativeTerminalVerifyError> {
-        const INPUT_OFFSET: usize = 2;
+        const INPUT_OFFSET: usize = NativeTerminalCompiler::TIP5_LOOKUP_C_TIN;
         const INPUT_LANES: usize = 16;
         const TERMINAL_OUTPUT_LANES: usize = 10;
-        const LOOKUP_ROUND_GROUP: usize = 84;
-        const LOOKUP_SPLIT_LANES: usize = 4;
-        const LOOKUP_SPLIT_BYTES: usize = 8;
-        const LOOKUP_ROUND_BASE_OFFSET: usize = INPUT_OFFSET + INPUT_LANES;
 
         let indices = match column_set {
             TerminalNpoTip5LookupFriColumnSet::FullMain => (0..main_width).collect::<Vec<_>>(),
             TerminalNpoTip5LookupFriColumnSet::LogupMain => {
-                let mut indices = vec![0, 1];
-                for round in 0..TIP5_PERM_ROUNDS {
-                    let round_base = LOOKUP_ROUND_BASE_OFFSET + round * LOOKUP_ROUND_GROUP;
-                    for lane in 0..LOOKUP_SPLIT_LANES {
-                        let lane_base = round_base + lane * (2 * LOOKUP_SPLIT_BYTES);
-                        indices.extend(lane_base..lane_base + 2 * LOOKUP_SPLIT_BYTES);
+                let mut indices = vec![Self::TIP5_LOOKUP_C_TMULT];
+                for lane in 0..Self::TIP5_LOOKUP_NS {
+                    for byte in 0..Self::TIP5_LOOKUP_NBYTES {
+                        indices.push(Self::terminal_npo_tip5_lookup_b_col(lane, byte));
+                        indices.push(Self::terminal_npo_tip5_lookup_c_col(lane, byte));
                     }
                 }
                 indices
@@ -36014,6 +36242,7 @@ mod tests {
         assert_eq!(
             lookup_profile.preprocessed_digest,
             NativeTerminalCompiler::terminal_npo_tip5_lookup_preprocessed_digest(
+                lookup_profile.tip5_rows,
                 lookup_profile.main_rows
             ),
             "lookup trace profile must bind the verifier-fixed L-table contents"
@@ -36851,34 +37080,38 @@ mod tests {
             NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
         ));
 
-        let (_, mut bad_table_trace, _) = compiler
+        let (_, mut bad_input_trace, _) = compiler
             .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
             .expect("terminal Tip5 lookup trace must build");
-        bad_table_trace.values[2] = Goldilocks::ONE;
-        let bad_table_prelude = terminal_test_tip5_lookup_io_bridge_prelude(
+        let bad_row =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_round_row(0, TIP5_PERM_ROUNDS - 1);
+        let bad_width = bad_input_trace.width();
+        bad_input_trace.values[bad_row * bad_width + NativeTerminalCompiler::TIP5_LOOKUP_C_TIN] +=
+            Goldilocks::ONE;
+        let bad_input_prelude = terminal_test_tip5_lookup_io_bridge_prelude(
             &compiler,
             &vk,
             &public_inputs,
             &columns,
             &trace_profile,
-            &bad_table_trace,
+            &bad_input_trace,
         );
-        let bad_table_proof =
+        let bad_input_proof =
             NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_io_support_bridge_quotient_from_columns_goldilocks(
-                &bad_table_prelude,
+                &bad_input_prelude,
                 &trace_profile,
                 &columns,
-                &bad_table_trace,
+                &bad_input_trace,
             )
             .expect("FRI-valid but support-invalid terminal IO quotient proof must build");
         let err = compiler
             .verify_terminal_npo_tip5_lookup_io_support_bridge_quotient_goldilocks::<Goldilocks>(
                 &vk,
                 &public_inputs,
-                &bad_table_prelude,
-                &bad_table_proof,
+                &bad_input_prelude,
+                &bad_input_proof,
             )
-            .expect_err("nonzero terminal IO table-row value must fail support bridge quotient");
+            .expect_err("stale final input terminal IO value must fail support bridge quotient");
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
@@ -36888,9 +37121,12 @@ mod tests {
         let (_, mut bad_perm_trace, _) = compiler
             .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
             .expect("terminal Tip5 lookup trace must rebuild");
-        let bad_row = trace_profile.permutation_row_offset;
+        let bad_row =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_round_row(0, TIP5_PERM_ROUNDS - 1);
         let bad_width = bad_perm_trace.width();
-        bad_perm_trace.values[bad_row * bad_width + 2] += Goldilocks::ONE;
+        bad_perm_trace.values
+            [bad_row * bad_width + NativeTerminalCompiler::terminal_npo_tip5_lookup_out_col(0)] +=
+            Goldilocks::ONE;
         let bad_perm_prelude = terminal_test_tip5_lookup_io_bridge_prelude(
             &compiler,
             &vk,
@@ -36914,7 +37150,7 @@ mod tests {
                 &bad_perm_prelude,
                 &bad_perm_proof,
             )
-            .expect_err("stale lookup IO permutation-row value must fail support bridge quotient");
+            .expect_err("stale final output terminal IO value must fail support bridge quotient");
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
@@ -36959,8 +37195,10 @@ mod tests {
 
         let bad_row = trace_profile.permutation_row_offset;
         let width = trace.width();
-        let first_b_col = bad_row * width + 18;
-        let first_c_col = bad_row * width + 26;
+        let first_b_col =
+            bad_row * width + NativeTerminalCompiler::terminal_npo_tip5_lookup_b_col(0, 0);
+        let first_c_col =
+            bad_row * width + NativeTerminalCompiler::terminal_npo_tip5_lookup_c_col(0, 0);
         let mut bad_c_trace = trace.clone();
         bad_c_trace.values[first_c_col] += Goldilocks::ONE;
         let bad_c = NativeTerminalCompiler::terminal_npo_tip5_lookup_logup_accumulator_goldilocks(
@@ -36978,7 +37216,8 @@ mod tests {
 
         let mut bad_mult_trace = trace.clone();
         let table_row = trace.values[first_b_col].as_canonical_u64() as usize;
-        bad_mult_trace.values[table_row * width + 1] += Goldilocks::ONE;
+        bad_mult_trace.values[table_row * width + NativeTerminalCompiler::TIP5_LOOKUP_C_TMULT] +=
+            Goldilocks::ONE;
         let bad_mult =
             NativeTerminalCompiler::terminal_npo_tip5_lookup_logup_accumulator_goldilocks(
                 &trace_profile,
@@ -37926,8 +38165,10 @@ mod tests {
         let (divergent_trace, _) = generate_lookup_trace(&raw_inputs);
         let first_permutation_row = trace_profile.permutation_row_offset;
         assert_ne!(
-            honest_trace.values[first_permutation_row * honest_trace.width() + 2],
-            divergent_trace.values[first_permutation_row * divergent_trace.width() + 2],
+            honest_trace.values[first_permutation_row * honest_trace.width()
+                + NativeTerminalCompiler::TIP5_LOOKUP_C_TIN],
+            divergent_trace.values[first_permutation_row * divergent_trace.width()
+                + NativeTerminalCompiler::TIP5_LOOKUP_C_TIN],
             "divergent trace must change the first terminal input lane"
         );
 
@@ -41161,6 +41402,7 @@ mod tests {
         assert_eq!(
             single_profile.preprocessed_digest,
             NativeTerminalCompiler::terminal_npo_tip5_lookup_preprocessed_digest(
+                single_profile.tip5_rows,
                 single_profile.main_rows
             ),
             "Tip5 lookup profile must commit to the fixed L-table contents"

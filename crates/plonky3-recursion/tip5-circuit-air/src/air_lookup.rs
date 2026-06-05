@@ -38,12 +38,13 @@
 //! `RangeCheckAir`): the LogUp soundness is the running-sum
 //! accumulator returning to zero.
 //!
-//! Layout — a single main trace of `H = next_pow2(256 + P)` rows:
+//! Layout — a single main trace of `H = next_pow2(256 + 5P)` rows:
 //! * rows `[0,256)`  = **table rows** (`KIND=0`); preprocessed
 //!   `(TIN,TOUT)=(i, LOOKUP_TABLE[i])`, main `TMULT = #queries of i`.
-//! * rows `[256,256+P)` = **permutation rows** (`KIND=1`): one full
-//!   5-round Tip5 evaluation each.
-//! * rows `[256+P,H)` = inert padding (`KIND=0, TMULT=0`).
+//! * rows `[256,256+5P)` = **round rows**: five consecutive rows per
+//!   Tip5 permutation, with verifier-fixed round selectors in the
+//!   preprocessed trace.
+//! * remaining rows are inert padding.
 //!
 //! Soundness: every per-byte `(b,c)` on a perm row is a LogUp query
 //! into the preprocessed table; the accumulator is zero iff every
@@ -68,82 +69,72 @@ pub(crate) const NBYTES: usize = 8; // bytes per split lane
 pub const TABLE_ROWS: usize = 256;
 
 // ---- main-trace flat layout ----
-// [ KIND | TMULT | IN[16] | round_0 .. round_(NUM_ROUNDS-1) ]
-// per round group:
-//   split:  NS*(2*NBYTES)  (b then c)  +  INV[NS]
-//   output: ROUT[STATE_SIZE]
+// [ TMULT | TIN[16] | IN[16] | split byte/image pairs | INV[NS] | OUT[16] ]
 //
-// The sbox-output `A[STATE_SIZE]` columns and the helper `X2/X3`
-// columns for power-of-7 lanes are substituted inline. This saves
-// `(STATE_SIZE + 2*(STATE_SIZE-NS)) * NUM_ROUNDS = 200` columns versus the earlier
-// layout, but raises the local algebraic degree for power lanes to 8
-// after `KIND` gating.
+// One row encodes one Tip5 round. The sbox-output `A[STATE_SIZE]`
+// columns and the helper `X2/X3` columns for power-of-7 lanes are
+// substituted inline. Consecutive rows inside one permutation are
+// linked by verifier-fixed round selectors. TIN carries the original
+// permutation input across the five rows so the final row contains the
+// full terminal IO tuple `(TIN, OUT)`.
 const SPLIT_BC: usize = NS * 2 * NBYTES; // 64
-pub(crate) const ROUND_GROUP: usize = SPLIT_BC + NS + STATE_SIZE; // 84
 
-const C_KIND: usize = 0;
-const C_TMULT: usize = 1;
-const C_IN: usize = 2; // IN[0..16]
-const RB0: usize = C_IN + STATE_SIZE; // first round group base = 18
+const C_TMULT: usize = 0;
+const C_TIN: usize = 1; // original permutation input, carried across rounds
+const C_IN: usize = C_TIN + STATE_SIZE; // current round input
+const C_SPLIT: usize = C_IN + STATE_SIZE;
+const C_INV: usize = C_SPLIT + SPLIT_BC;
+const C_OUT: usize = C_INV + NS;
 
 #[inline]
-const fn rb(r: usize) -> usize {
-    RB0 + r * ROUND_GROUP
+const fn b_col(t: usize, k: usize) -> usize {
+    C_SPLIT + t * (2 * NBYTES) + k
 }
 #[inline]
-const fn b_col(r: usize, t: usize, k: usize) -> usize {
-    rb(r) + t * (2 * NBYTES) + k
+const fn c_col(t: usize, k: usize) -> usize {
+    C_SPLIT + t * (2 * NBYTES) + NBYTES + k
 }
 #[inline]
-const fn c_col(r: usize, t: usize, k: usize) -> usize {
-    rb(r) + t * (2 * NBYTES) + NBYTES + k
+const fn inv_col(t: usize) -> usize {
+    C_INV + t
 }
 #[inline]
-const fn inv_col(r: usize, t: usize) -> usize {
-    rb(r) + SPLIT_BC + t
-}
-#[inline]
-pub(crate) const fn rout_col(r: usize, i: usize) -> usize {
-    rb(r) + SPLIT_BC + NS + i
-}
-#[inline]
-const fn sbox_in_col(r: usize, lane: usize) -> usize {
-    if r == 0 {
-        C_IN + lane
-    } else {
-        rout_col(r - 1, lane)
-    }
+pub(crate) const fn rout_col(i: usize) -> usize {
+    C_OUT + i
 }
 
 /// Total main-trace width (≈8× narrower than the lookup-free AIR).
 pub const fn tip5_lookup_air_width() -> usize {
-    RB0 + NUM_ROUNDS * ROUND_GROUP
+    C_OUT + STATE_SIZE
 }
 
-/// Main-trace column index of the row-kind selector (`1` ⇒ permutation
-/// row, `0` ⇒ L-table / pad row). Read-only accessor for the circuit
-/// wrapper (`air_circuit`); does **not** alter the validated layout.
+/// The lookup AIR no longer carries a prover-controlled row-kind column.
+/// Row kind is verifier-fixed in the preprocessed trace; this accessor is
+/// retained for circuit-wrapper compatibility and returns the table
+/// multiplicity column.
 pub(crate) const fn tip5_kind_col() -> usize {
-    C_KIND
+    C_TMULT
 }
 
 /// Main-trace column index of input lane `lane` (`IN[lane]`, the Tip5
 /// permutation input state read by the WitnessChecks CTL).
 pub(crate) const fn tip5_in_col(lane: usize) -> usize {
-    C_IN + lane
+    C_TIN + lane
 }
 
 /// Main-trace column index of the final-round output lane `lane`
 /// (`ROUT[NUM_ROUNDS-1][lane]`, the permuted state exposed via CTL).
 pub(crate) const fn tip5_out_col(lane: usize) -> usize {
-    rout_col(NUM_ROUNDS - 1, lane)
+    rout_col(lane)
 }
 
-// ---- preprocessed (verifier-fixed) L-table: [IS_TABLE | TIN | TOUT] ----
+// ---- preprocessed (verifier-fixed) L-table and round selectors ----
 const P_IS_TABLE: usize = 0;
 const P_TIN: usize = 1;
 const P_TOUT: usize = 2;
-pub const PREP_WIDTH: usize = 3;
+const P_IS_ROUND: usize = 3;
+const P_ROUND0: usize = 4;
+pub const PREP_WIDTH: usize = P_ROUND0 + NUM_ROUNDS;
 
 /// The lookup-table Tip5 permutation AIR. Carries the verifier-fixed
 /// preprocessed L-table (flat row-major, `PREP_WIDTH` cols, height =
@@ -191,16 +182,25 @@ where
         let main = builder.main();
         let prep = builder.preprocessed().clone();
         let local = main.current_slice();
+        let next = main.next_slice();
         let pre = prep.current_slice();
 
         let fe = |v: u64| -> AB::Expr { AB::Expr::from(AB::F::from_u64(v)) };
         let var = |c: usize| -> AB::Expr { local[c].into() };
+        let nvar = |c: usize| -> AB::Expr { next[c].into() };
         let pvar = |c: usize| -> AB::Expr { pre[c].into() };
         let pow8 = |k: usize| -> AB::Expr { fe(1u64 << (8 * k)) };
 
-        let kind = var(C_KIND);
-        // KIND is boolean.
-        builder.assert_zero(kind.clone() * (kind.clone() - AB::Expr::ONE));
+        let is_table = pvar(P_IS_TABLE);
+        let is_round = pvar(P_IS_ROUND);
+        let round_sel = (0..NUM_ROUNDS)
+            .map(|round| pvar(P_ROUND0 + round))
+            .collect::<alloc::vec::Vec<_>>();
+        let link_next = round_sel
+            .iter()
+            .take(NUM_ROUNDS - 1)
+            .cloned()
+            .fold(AB::Expr::ZERO, |acc, value| acc + value);
 
         let mds = mds_matrix();
         let two32_m1 = fe((1u64 << 32) - 1);
@@ -222,21 +222,15 @@ where
         // Lookup tables (the C2.3 batch-stark path — NOT the old
         // degree-≈226 single-interaction batching).
         let bus = p3_lookup::bus::LookupBus::new("tip5_l");
-        for r in 0..NUM_ROUNDS {
-            for t in 0..NS {
-                for k in 0..NBYTES {
-                    bus.lookup_key(
-                        builder,
-                        [var(b_col(r, t, k)), var(c_col(r, t, k))],
-                        kind.clone(),
-                    );
-                }
+        for t in 0..NS {
+            for k in 0..NBYTES {
+                bus.lookup_key(builder, [var(b_col(t, k)), var(c_col(t, k))], is_round.clone());
             }
         }
         bus.table_entry(
             builder,
             [pvar(P_TIN), pvar(P_TOUT)],
-            var(C_TMULT) * pvar(P_IS_TABLE),
+            var(C_TMULT) * is_table.clone(),
         );
 
         // ---- algebraic constraints, gated by KIND (perm rows only;
@@ -254,61 +248,57 @@ where
         // The earlier A, x2, and x3 columns were verifier-derivable from
         // existing columns; removing them shrinks the AIR width by
         // `STATE_SIZE + 2 * (STATE_SIZE - NS) = 40` columns per round, at the
-        // cost of raising the kind-gated MDS output relation to degree 8.
-        for r in 0..NUM_ROUNDS {
-            let mut a_expr: alloc::vec::Vec<AB::Expr> = alloc::vec::Vec::with_capacity(STATE_SIZE);
+        // cost of raising the round-gated MDS output relation to degree 8.
+        builder.assert_zero((AB::Expr::ONE - is_table.clone()) * var(C_TMULT));
 
-            for t in 0..NS {
-                let mut recompose_b = AB::Expr::ZERO;
-                let mut recompose_c = AB::Expr::ZERO;
-                let mut low = AB::Expr::ZERO;
-                let mut high = AB::Expr::ZERO;
-                for k in 0..NBYTES {
-                    let bk = var(b_col(r, t, k));
-                    let ck = var(c_col(r, t, k));
-                    recompose_b = recompose_b + bk.clone() * pow8(k);
-                    recompose_c = recompose_c + ck * pow8(k);
-                    if k < 4 {
-                        low = low + bk * pow8(k);
-                    } else {
-                        high = high + bk * pow8(k - 4);
-                    }
+        let mut a_expr: alloc::vec::Vec<AB::Expr> = alloc::vec::Vec::with_capacity(STATE_SIZE);
+        for t in 0..NS {
+            let mut recompose_b = AB::Expr::ZERO;
+            let mut recompose_c = AB::Expr::ZERO;
+            let mut low = AB::Expr::ZERO;
+            let mut high = AB::Expr::ZERO;
+            for k in 0..NBYTES {
+                let bk = var(b_col(t, k));
+                let ck = var(c_col(t, k));
+                recompose_b = recompose_b + bk.clone() * pow8(k);
+                recompose_c = recompose_c + ck * pow8(k);
+                if k < 4 {
+                    low = low + bk * pow8(k);
+                } else {
+                    high = high + bk * pow8(k - 4);
                 }
-                // canonical 8-byte decomposition of the S-box input
-                builder.assert_zero(kind.clone() * (recompose_b - var(sbox_in_col(r, t))));
-                // A[t] = recompose_c — SUBSTITUTED INLINE (no column,
-                // no separate constraint; the recompose_c expression is
-                // reused in the MDS sum below).
-                a_expr.push(recompose_c);
-                // §4.6 canonical (<p) guard: H = 2^32−1 ⇒ L = 0.
-                let g = high - two32_m1.clone();
-                let inv = var(inv_col(r, t));
-                let prod = g.clone() * inv;
-                builder.assert_zero(kind.clone() * g * (prod.clone() - AB::Expr::ONE));
-                builder.assert_zero(kind.clone() * (AB::Expr::ONE - prod) * low);
             }
+            builder.assert_zero(is_round.clone() * (recompose_b - var(C_IN + t)));
+            a_expr.push(recompose_c);
+            let g = high - two32_m1.clone();
+            let inv = var(inv_col(t));
+            let prod = g.clone() * inv;
+            builder.assert_zero(is_round.clone() * g * (prod.clone() - AB::Expr::ONE));
+            builder.assert_zero(is_round.clone() * (AB::Expr::ONE - prod) * low);
+        }
 
-            for j in NS..STATE_SIZE {
-                let x = var(sbox_in_col(r, j));
-                let x2 = x.clone() * x.clone();
-                let x3 = x2 * x.clone();
-                // A[j] = x³ · x³ · x = x⁷ — SUBSTITUTED INLINE (no column,
-                // no separate constraint). Degree-7 in the input lane; after
-                // KIND gating, the MDS output relation has degree 8.
-                a_expr.push(x3.clone() * x3 * x);
-            }
+        for j in NS..STATE_SIZE {
+            let x = var(C_IN + j);
+            let x2 = x.clone() * x.clone();
+            let x3 = x2 * x.clone();
+            a_expr.push(x3.clone() * x3 * x);
+        }
 
-            for i in 0..STATE_SIZE {
-                let mut acc = AB::Expr::ZERO;
-                for j in 0..STATE_SIZE {
-                    acc = acc + fe(mds[i][j]) * a_expr[j].clone();
-                }
-                let rc = fe(rc_precomp(ROUND_CONSTANTS[r * STATE_SIZE + i]));
-                // ROUT[i] = MDS·A + RC ; kind-gated. Degree analysis:
-                // kind (deg 1) × (rout (deg 1) − acc (deg ≤7) − rc (deg 0))
-                // ⇒ max degree-8 for power lanes.
-                builder.assert_zero(kind.clone() * (var(rout_col(r, i)) - acc - rc));
+        for i in 0..STATE_SIZE {
+            let mut acc = AB::Expr::ZERO;
+            for j in 0..STATE_SIZE {
+                acc = acc + fe(mds[i][j]) * a_expr[j].clone();
             }
+            let rc = round_sel
+                .iter()
+                .enumerate()
+                .fold(AB::Expr::ZERO, |sum, (round, selector)| {
+                    sum + selector.clone() * fe(rc_precomp(ROUND_CONSTANTS[round * STATE_SIZE + i]))
+                });
+            builder.assert_zero(is_round.clone() * (var(rout_col(i)) - acc - rc));
+            builder.assert_zero(link_next.clone() * (var(rout_col(i)) - nvar(C_IN + i)));
+            builder.assert_zero(round_sel[0].clone() * (var(C_TIN + i) - var(C_IN + i)));
+            builder.assert_zero(link_next.clone() * (var(C_TIN + i) - nvar(C_TIN + i)));
         }
         let _ = LOOKUP_TABLE; // table content lives in the preprocessed trace
     }
@@ -393,20 +383,18 @@ mod tests {
         let mut acc = Challenge::ZERO;
         for row in 0..h {
             let b = row * w;
-            let kind = g2u(main.values[b + C_KIND]);
-            if kind == 1 {
-                for r in 0..NUM_ROUNDS {
-                    for t in 0..NS {
-                        for k in 0..NBYTES {
-                            let bb = g2u(main.values[b + b_col(r, t, k)]);
-                            let cc = g2u(main.values[b + c_col(r, t, k)]);
-                            acc += (alpha - comb(bb, cc)).inverse();
-                        }
+            let pb = row * PREP_WIDTH;
+            let is_round = g2u(prep[pb + P_IS_ROUND]);
+            if is_round == 1 {
+                for t in 0..NS {
+                    for k in 0..NBYTES {
+                        let bb = g2u(main.values[b + b_col(t, k)]);
+                        let cc = g2u(main.values[b + c_col(t, k)]);
+                        acc += (alpha - comb(bb, cc)).inverse();
                     }
                 }
             }
             // table side: -(TMULT * IS_TABLE) / (α - combine(TIN,TOUT))
-            let pb = row * PREP_WIDTH;
             let is_t = g2u(prep[pb + P_IS_TABLE]);
             let tmult = g2u(main.values[b + C_TMULT]);
             if is_t == 1 && tmult != 0 {
@@ -439,8 +427,8 @@ mod tests {
         let interactions = sb.global_interactions();
         assert_eq!(
             interactions.len(),
-            NUM_ROUNDS * NS * NBYTES + 1,
-            "expected 224 byte-query + 1 table-provide global interactions"
+            NS * NBYTES + 1,
+            "expected 32 byte-query + 1 table-provide global interactions"
         );
 
         let gadget = LogUpGadget::new();
@@ -467,7 +455,7 @@ mod tests {
             );
             max_deg = max_deg.max(d);
         }
-        assert_eq!(n_query, NUM_ROUNDS * NS * NBYTES);
+        assert_eq!(n_query, NS * NBYTES);
         assert_eq!(n_provide, 1);
         std::eprintln!(
             "tip5_l global bus: {} interactions, max LogUp constraint_degree = {} \
@@ -509,17 +497,19 @@ mod tests {
         let w = main.width();
 
         for (pi, inp) in inputs.iter().enumerate() {
-            let row = TABLE_ROWS + pi;
-            let bse = row * w;
+            let first_row = TABLE_ROWS + pi * NUM_ROUNDS;
+            let last_row = first_row + NUM_ROUNDS - 1;
+            let first = first_row * w;
+            let last = last_row * w;
             let mut exp = *inp;
             permute(&mut exp);
             for lane in 0..STATE_SIZE {
                 assert_eq!(
-                    main.values[bse + C_IN + lane],
+                    main.values[first + C_IN + lane],
                     Goldilocks::from_u64(inp[lane])
                 );
                 assert_eq!(
-                    main.values[bse + rout_col(NUM_ROUNDS - 1, lane)],
+                    main.values[last + rout_col(lane)],
                     Goldilocks::from_u64(exp[lane]),
                     "lookup-AIR != nockchain-math permute, perm {pi} lane {lane}"
                 );
@@ -527,10 +517,10 @@ mod tests {
         }
         // fixture OUT must match too (== nockchain-math, by C2.0)
         for (pi, (_, out)) in fv.iter().enumerate() {
-            let bse = (TABLE_ROWS + pi) * w;
+            let bse = (TABLE_ROWS + pi * NUM_ROUNDS + NUM_ROUNDS - 1) * w;
             for lane in 0..STATE_SIZE {
                 assert_eq!(
-                    main.values[bse + rout_col(NUM_ROUNDS - 1, lane)],
+                    main.values[bse + rout_col(lane)],
                     Goldilocks::from_u64(out[lane])
                 );
             }
@@ -563,11 +553,12 @@ mod tests {
         check_constraints(&air_of(&gp), &good, &[]);
         assert_eq!(logup_accumulator(&good, &gp), Challenge::ZERO);
         let w = good.width();
-        let prow = TABLE_ROWS; // first perm row
+        let prow = TABLE_ROWS; // first perm round row
+        let final_row = TABLE_ROWS + NUM_ROUNDS - 1;
 
         // (a) tamper an S-box image byte c → LogUp accumulator ≠ 0
         let mut t = good.clone();
-        let cc = prow * w + c_col(0, 0, 0);
+        let cc = prow * w + c_col(0, 0);
         t.values[cc] += Goldilocks::ONE;
         assert_ne!(
             logup_accumulator(&t, &gp),
@@ -577,7 +568,7 @@ mod tests {
 
         // (b) tamper the permutation output final ROUT -> constraints fail
         let mut t2 = good.clone();
-        t2.values[prow * w + rout_col(NUM_ROUNDS - 1, 3)] += Goldilocks::ONE;
+        t2.values[final_row * w + rout_col(3)] += Goldilocks::ONE;
         assert!(
             panics(|| check_constraints(&air_of(&gp), &t2, &[])),
             "tampered ROUT accepted"
@@ -593,7 +584,7 @@ mod tests {
         if (alias as u128) < (1u128 << 64) {
             let ab = alias.to_le_bytes();
             for k in 0..NBYTES {
-                t3.values[prow * w + b_col(0, 0, k)] = Goldilocks::from_u64(ab[k] as u64);
+                t3.values[prow * w + b_col(0, k)] = Goldilocks::from_u64(ab[k] as u64);
             }
             assert!(
                 panics(|| check_constraints(&air_of(&gp), &t3, &[])),
