@@ -287,10 +287,14 @@ op-alloy-rpc-types = { git = "https://github.com/ethereum-optimism/optimism", re
 # restriction = { level = "warn", priority = -2 }
 
 [profile.dev]
-# Keep normal debug-target artifacts inspectable, but compile optimized code so
-# prover/miner debug runs do not behave like unoptimized builds.
+# Keep normal target/debug artifacts inspectable, but use release-like runtime
+# settings so prover/miner debug runs do not behave like unoptimized builds.
 opt-level = 3
 debug = 2
+lto = "thin"
+codegen-units = 1
+debug-assertions = false
+overflow-checks = false
 
 [profile.test]
 inherits = "dev"

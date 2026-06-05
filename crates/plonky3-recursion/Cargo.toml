@@ -103,6 +103,10 @@ debug = true
 [profile.dev]
 opt-level = 3
 debug = 2
+lto = "thin"
+codegen-units = 1
+debug-assertions = false
+overflow-checks = false
 
 [profile.test]
 inherits = "dev"
