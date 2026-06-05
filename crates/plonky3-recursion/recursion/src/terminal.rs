@@ -17821,7 +17821,7 @@ impl NativeTerminalCompiler {
     }
 
     const fn terminal_npo_tip5_lookup_logup_group_size() -> usize {
-        3
+        7
     }
 
     const fn terminal_npo_tip5_lookup_logup_groups() -> usize {
@@ -18113,9 +18113,8 @@ impl NativeTerminalCompiler {
         let group_size = Self::terminal_npo_tip5_lookup_logup_group_size();
         let start = group * group_size;
         let end = (start + group_size).min(interaction_count);
-        let mut denominators = [TerminalFriChallenge::ONE; 3];
-        let mut multiplicities = [TerminalFriChallenge::ZERO; 3];
-        let mut term_count = 0usize;
+        let mut denominators = Vec::with_capacity(end - start);
+        let mut multiplicities = Vec::with_capacity(end - start);
         for interaction in start..end {
             let (alpha, beta) = challenges[interaction];
             let (multiplicity, combined) =
@@ -18126,19 +18125,18 @@ impl NativeTerminalCompiler {
                     interaction,
                     beta,
                 )?;
-            denominators[term_count] = alpha - combined;
-            multiplicities[term_count] = multiplicity;
-            term_count += 1;
+            denominators.push(alpha - combined);
+            multiplicities.push(multiplicity);
         }
 
         let mut denominator_product = TerminalFriChallenge::ONE;
-        for denominator in denominators.iter().take(term_count) {
+        for denominator in &denominators {
             denominator_product *= *denominator;
         }
         let mut numerator = TerminalFriChallenge::ZERO;
-        for term in 0..term_count {
+        for term in 0..denominators.len() {
             let mut other_denominators = TerminalFriChallenge::ONE;
-            for (other, denominator) in denominators.iter().take(term_count).enumerate() {
+            for (other, denominator) in denominators.iter().enumerate() {
                 if other != term {
                     other_denominators *= *denominator;
                 }
