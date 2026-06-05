@@ -1508,22 +1508,6 @@ pub struct TerminalNpoTip5LookupAirLogupTraceIoSupportProof {
 /// row-domain-to-trace-domain NPO-IO LogUp equality bridge.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TerminalNpoTip5LookupAirLogupTraceIoSupportNpoIoLogupProof {
-    pub trace_profile: TerminalNpoTip5LookupFriProfile,
-    pub trace_npo_io_profile: TerminalNpoTip5LookupFriProfile,
-    pub selected_profile: TerminalNpoPolynomialFriProfile,
-    pub selected_lookup_io_profile: TerminalNpoTip5LookupNpoRowsIoProfile,
-    pub air_quotient_profile: TerminalNpoTip5LookupAirAlgebraQuotientProfile,
-    pub logup_accumulator_profile: TerminalNpoTip5LookupLogupAccumulatorProfile,
-    pub logup_quotient_profile: TerminalNpoTip5LookupLogupQuotientProfile,
-    pub support_quotient_profile: TerminalNpoTip5LookupIoSupportBridgeQuotientProfile,
-    pub selected_npo_io_logup_accumulator_profile:
-        TerminalNpoTip5LookupTraceDomainNpoIoLogupAccumulatorProfile,
-    pub trace_npo_io_logup_accumulator_profile:
-        TerminalNpoTip5LookupTraceDomainNpoIoLogupAccumulatorProfile,
-    pub selected_npo_io_logup_quotient_profile:
-        TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile,
-    pub trace_npo_io_logup_quotient_profile:
-        TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile,
     pub trace_commitment: TerminalFriCommitment,
     pub trace_npo_io_commitment: TerminalFriCommitment,
     pub selected_lookup_commitment: TerminalFriCommitment,
@@ -8747,18 +8731,6 @@ impl NativeTerminalCompiler {
         let proof = Self::compress_terminal_fri_proof(&plain_proof, &query_indices)?;
 
         Ok(TerminalNpoTip5LookupAirLogupTraceIoSupportNpoIoLogupProof {
-            trace_profile: trace_fri_profile,
-            trace_npo_io_profile,
-            selected_profile,
-            selected_lookup_io_profile,
-            air_quotient_profile,
-            logup_accumulator_profile,
-            logup_quotient_profile,
-            support_quotient_profile,
-            selected_npo_io_logup_accumulator_profile,
-            trace_npo_io_logup_accumulator_profile,
-            selected_npo_io_logup_quotient_profile,
-            trace_npo_io_logup_quotient_profile,
             trace_commitment,
             trace_npo_io_commitment,
             selected_lookup_commitment,
@@ -25398,7 +25370,7 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof.air_quotient_profile.field_basis_dimension,
+                    expected: expected_air_quotient_profile.field_basis_dimension,
                     got: opened_air_quotient_flat.len(),
                 },
             )?;
@@ -25827,7 +25799,7 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof.air_quotient_profile.field_basis_dimension,
+                    expected: expected_air_quotient_profile.field_basis_dimension,
                     got: opened_air_quotient_flat.len(),
                 },
             )?;
@@ -25835,13 +25807,13 @@ impl NativeTerminalCompiler {
             Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(&opened_trace, air_alpha)?;
         let air_terminal_io = Self::terminal_npo_tip5_lookup_air_terminal_io_folded_relation(
             &opened_trace,
-            &proof.trace_profile,
+            &expected_trace_profile,
             air_alpha,
         )?;
         let window_vanishing =
             Self::terminal_npo_tip5_lookup_permutation_window_vanishing_at_point(
                 trace_domain,
-                &proof.trace_profile,
+                &expected_trace_profile,
                 zeta,
             )?;
         if air_folded + air_beta * window_vanishing * air_terminal_io
@@ -25860,21 +25832,21 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof.logup_quotient_profile.field_basis_dimension,
+                    expected: expected_logup_quotient_profile.field_basis_dimension,
                     got: opened_logup_quotient_flat.len(),
                 },
             )?;
         let preprocessed_evals = [
             Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &proof.trace_profile.trace,
+                &expected_trace_profile.trace,
                 0,
             )?,
             Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &proof.trace_profile.trace,
+                &expected_trace_profile.trace,
                 1,
             )?,
             Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &proof.trace_profile.trace,
+                &expected_trace_profile.trace,
                 2,
             )?,
         ];
@@ -25884,8 +25856,8 @@ impl NativeTerminalCompiler {
             trace_domain.evaluate_polynomial_at(&preprocessed_evals[2], zeta),
         ];
         let trace_column_indices = Self::terminal_npo_tip5_lookup_fri_column_indices(
-            proof.trace_profile.trace.main_width,
-            proof.trace_profile.column_set,
+            expected_trace_profile.trace.main_width,
+            expected_trace_profile.column_set,
         )?;
         let selectors = trace_domain.selectors_at_point(zeta);
         let mut logup_relation = TerminalFriChallenge::ZERO;
@@ -25943,13 +25915,13 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof.support_quotient_profile.field_basis_dimension,
+                    expected: expected_support_quotient_profile.field_basis_dimension,
                     got: opened_support_quotient_flat.len(),
                 },
             )?;
         let support_trace_io = Self::terminal_npo_tip5_lookup_air_terminal_io_folded_relation(
             &opened_trace,
-            &proof.trace_profile,
+            &expected_trace_profile,
             support_alpha,
         )?;
         let mut folded_lookup = TerminalFriChallenge::ZERO;
@@ -26041,19 +26013,6 @@ impl NativeTerminalCompiler {
             )?;
         let expected_selected_lookup_io_profile =
             Self::terminal_npo_tip5_lookup_npo_rows_io_profile(&trace_profile, &layout)?;
-        if proof.trace_profile != expected_trace_profile
-            || proof.trace_npo_io_profile != expected_trace_io_profile
-            || proof.selected_profile != expected_selected_profile
-            || proof.selected_lookup_io_profile != expected_selected_lookup_io_profile
-        {
-            return Err(
-                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
-                    label: "tip5_lookup_air_logup_trace_io_support_npo_io_logup_profile".into(),
-                    expected: expected_trace_profile.basis_columns,
-                    got: proof.trace_profile.basis_columns,
-                },
-            );
-        }
         let expected_air_quotient_profile =
             Self::terminal_npo_tip5_lookup_air_algebra_quotient_profile(&expected_trace_profile)?;
         let expected_logup_accumulator_profile =
@@ -26088,29 +26047,6 @@ impl NativeTerminalCompiler {
                 expected_trace_io_profile.padded_rows,
                 expected_trace_io_profile.proximity,
             )?;
-        if proof.air_quotient_profile != expected_air_quotient_profile
-            || proof.logup_accumulator_profile != expected_logup_accumulator_profile
-            || proof.logup_quotient_profile != expected_logup_quotient_profile
-            || proof.support_quotient_profile != expected_support_quotient_profile
-            || proof.selected_npo_io_logup_accumulator_profile
-                != expected_selected_npo_io_logup_accumulator_profile
-            || proof.trace_npo_io_logup_accumulator_profile
-                != expected_trace_npo_io_logup_accumulator_profile
-            || proof.selected_npo_io_logup_quotient_profile
-                != expected_selected_npo_io_logup_quotient_profile
-            || proof.trace_npo_io_logup_quotient_profile
-                != expected_trace_npo_io_logup_quotient_profile
-        {
-            return Err(
-                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
-                    label: "tip5_lookup_air_logup_trace_io_support_npo_io_logup_quotient_profile"
-                        .into(),
-                    expected: expected_air_quotient_profile.basis_columns,
-                    got: proof.air_quotient_profile.basis_columns,
-                },
-            );
-        }
-
         let opened_trace = Self::terminal_field_values_from_basis_u64(&proof.opened_trace_basis)?;
         let opened_trace_npo_io =
             Self::terminal_field_values_from_basis_u64(&proof.opened_trace_npo_io_basis)?;
@@ -26193,33 +26129,33 @@ impl NativeTerminalCompiler {
         }
 
         let (pcs, mut challenger) =
-            Self::terminal_fri_pcs_and_challenger(proof.trace_profile.proximity)?;
+            Self::terminal_fri_pcs_and_challenger(expected_trace_profile.proximity)?;
         Self::seed_terminal_npo_tip5_lookup_air_logup_trace_io_support_npo_io_logup_challenger(
             &mut challenger,
             prelude,
-            &proof.trace_profile,
-            &proof.trace_npo_io_profile,
-            &proof.selected_profile,
-            &proof.selected_lookup_io_profile,
-            &proof.air_quotient_profile,
-            &proof.logup_accumulator_profile,
-            &proof.logup_quotient_profile,
-            &proof.support_quotient_profile,
-            &proof.selected_npo_io_logup_accumulator_profile,
-            &proof.trace_npo_io_logup_accumulator_profile,
-            &proof.selected_npo_io_logup_quotient_profile,
-            &proof.trace_npo_io_logup_quotient_profile,
+            &expected_trace_profile,
+            &expected_trace_io_profile,
+            &expected_selected_profile,
+            &expected_selected_lookup_io_profile,
+            &expected_air_quotient_profile,
+            &expected_logup_accumulator_profile,
+            &expected_logup_quotient_profile,
+            &expected_support_quotient_profile,
+            &expected_selected_npo_io_logup_accumulator_profile,
+            &expected_trace_npo_io_logup_accumulator_profile,
+            &expected_selected_npo_io_logup_quotient_profile,
+            &expected_trace_npo_io_logup_quotient_profile,
         );
         let trace_domain =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
                 &pcs,
-                proof.trace_profile.padded_rows,
+                expected_trace_profile.padded_rows,
             );
         let selected_domain = <TerminalFriPcs as Pcs<
             TerminalFriChallenge,
             TerminalFriChallenger,
         >>::natural_domain_for_degree(
-            &pcs, proof.selected_profile.padded_rows
+            &pcs, expected_selected_profile.padded_rows
         );
         challenger.observe(proof.selected_lookup_commitment.clone());
         challenger.observe(proof.trace_commitment.clone());
@@ -26236,15 +26172,15 @@ impl NativeTerminalCompiler {
         let logup_challenges =
             vec![(logup_alpha, logup_beta); Self::terminal_npo_tip5_lookup_logup_interactions()];
         let air_quotient_domain =
-            trace_domain.create_disjoint_domain(proof.air_quotient_profile.padded_rows);
+            trace_domain.create_disjoint_domain(expected_air_quotient_profile.padded_rows);
         let logup_quotient_domain =
-            trace_domain.create_disjoint_domain(proof.logup_quotient_profile.padded_rows);
+            trace_domain.create_disjoint_domain(expected_logup_quotient_profile.padded_rows);
         let support_quotient_domain =
-            trace_domain.create_disjoint_domain(proof.support_quotient_profile.padded_rows);
+            trace_domain.create_disjoint_domain(expected_support_quotient_profile.padded_rows);
         let selected_npo_io_logup_quotient_domain = selected_domain
-            .create_disjoint_domain(proof.selected_npo_io_logup_quotient_profile.padded_rows);
+            .create_disjoint_domain(expected_selected_npo_io_logup_quotient_profile.padded_rows);
         let trace_npo_io_logup_quotient_domain = trace_domain
-            .create_disjoint_domain(proof.trace_npo_io_logup_quotient_profile.padded_rows);
+            .create_disjoint_domain(expected_trace_npo_io_logup_quotient_profile.padded_rows);
         challenger.observe(proof.air_quotient_commitment.clone());
         challenger.observe(proof.logup_accumulator_commitment.clone());
         challenger.observe_algebra_slice(&logup_final_cumulatives);
@@ -26384,7 +26320,7 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof.air_quotient_profile.field_basis_dimension,
+                    expected: expected_air_quotient_profile.field_basis_dimension,
                     got: opened_air_quotient_flat.len(),
                 },
             )?;
@@ -26392,13 +26328,13 @@ impl NativeTerminalCompiler {
             Self::terminal_npo_tip5_lookup_air_algebra_folded_relation(&opened_trace, air_alpha)?;
         let air_terminal_io = Self::terminal_npo_tip5_lookup_air_terminal_io_folded_relation(
             &opened_trace,
-            &proof.trace_profile,
+            &expected_trace_profile,
             air_alpha,
         )?;
         let window_vanishing =
             Self::terminal_npo_tip5_lookup_permutation_window_vanishing_at_point(
                 trace_domain,
-                &proof.trace_profile,
+                &expected_trace_profile,
                 zeta,
             )?;
         if air_folded + air_beta * window_vanishing * air_terminal_io
@@ -26417,21 +26353,21 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof.logup_quotient_profile.field_basis_dimension,
+                    expected: expected_logup_quotient_profile.field_basis_dimension,
                     got: opened_logup_quotient_flat.len(),
                 },
             )?;
         let preprocessed_evals = [
             Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &proof.trace_profile.trace,
+                &expected_trace_profile.trace,
                 0,
             )?,
             Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &proof.trace_profile.trace,
+                &expected_trace_profile.trace,
                 1,
             )?,
             Self::terminal_npo_tip5_lookup_preprocessed_column_evals(
-                &proof.trace_profile.trace,
+                &expected_trace_profile.trace,
                 2,
             )?,
         ];
@@ -26441,8 +26377,8 @@ impl NativeTerminalCompiler {
             trace_domain.evaluate_polynomial_at(&preprocessed_evals[2], zeta),
         ];
         let trace_column_indices = Self::terminal_npo_tip5_lookup_fri_column_indices(
-            proof.trace_profile.trace.main_width,
-            proof.trace_profile.column_set,
+            expected_trace_profile.trace.main_width,
+            expected_trace_profile.column_set,
         )?;
         let selectors = trace_domain.selectors_at_point(zeta);
         let mut byte_logup_relation = TerminalFriChallenge::ZERO;
@@ -26501,13 +26437,13 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof.support_quotient_profile.field_basis_dimension,
+                    expected: expected_support_quotient_profile.field_basis_dimension,
                     got: opened_support_quotient_flat.len(),
                 },
             )?;
         let support_trace_io = Self::terminal_npo_tip5_lookup_air_terminal_io_folded_relation(
             &opened_trace,
-            &proof.trace_profile,
+            &expected_trace_profile,
             support_alpha,
         )?;
         let mut folded_diff = support_trace_io;
@@ -26532,9 +26468,7 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof
-                        .selected_npo_io_logup_quotient_profile
-                        .field_basis_dimension,
+                    expected: expected_selected_npo_io_logup_quotient_profile.field_basis_dimension,
                     got: opened_selected_npo_io_logup_quotient_flat.len(),
                 },
             )?;
@@ -26544,9 +26478,7 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof
-                        .trace_npo_io_logup_quotient_profile
-                        .field_basis_dimension,
+                    expected: expected_trace_npo_io_logup_quotient_profile.field_basis_dimension,
                     got: opened_trace_npo_io_logup_quotient_flat.len(),
                 },
             )?;
@@ -26614,7 +26546,7 @@ impl NativeTerminalCompiler {
             selected_relation += coeff
                 * Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_group_constraint_at_point(
                     &opened_selected_lookup,
-                    proof.selected_profile.basis_columns,
+                    expected_selected_profile.basis_columns,
                     selected_accumulator,
                     selected_next_accumulator,
                     selected_npo_io_logup_final_cumulatives[group],

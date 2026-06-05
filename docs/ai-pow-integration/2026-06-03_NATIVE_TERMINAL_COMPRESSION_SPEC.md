@@ -554,9 +554,14 @@ for this route.
   quotient-domain points, while the verifier recomputes the same folded
   terminal IO from the opened full trace at `zeta`. This keeps the public
   relation identical but drops one committed oracle from the integrated
-  transcript and prelude. The focused native/Rayon measurement is now `230,089`
-  bytes / `224.7 KiB`, with compact FRI payload `202,238` bytes / `197.5 KiB`,
-  `prove=6.979s` for the integrated merged+LogUp path and `verify=43.3ms`.
+  transcript and prelude. A metadata pass then stopped serializing
+  verifier-derived profiles in the integrated proof body; the verifier
+  recomputes those profiles from the verifying key and canonical production
+  proximity profile before seeding Fiat-Shamir, so transcript binding is
+  unchanged while the redundant public surface shrinks. The native/Rayon
+  measurement is now `229,478` bytes / `224.1 KiB`, with compact FRI payload
+  `202,238` bytes / `197.5 KiB`, `prove=6.840s` for the integrated merged+LogUp
+  path and `verify=43.7ms`.
   The tamper check still rejects a modified trace-domain NPO IO opening. A
   direct-integrated FRI arity sweep kept `log_blowup=4`, `num_queries=15`, and
   `query_pow_bits=0` fixed. `max_log_arity=4` reduced the integrated FRI
@@ -1684,7 +1689,7 @@ Completion audit against the active terminal-compression requirements:
 |---|---|---|
 | Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
-| Production certificate is about 100 KiB | Latest real Tip5-L0 verifier measurement: `86,527` bytes / `84.5 KiB`, debug-profile `prove=4.391s`, `verify=3.425s`. | satisfied on the measured production fixture |
+| Production certificate is about 100 KiB | Earlier sub-100 KiB fixtures did not cover the complete sound terminal backend. The current sound integrated Tip5 lookup/NPO-IO LogUp direct-IO checkpoint at the canonical 60 pure-query bits measures `229,478` bytes / `224.1 KiB`, compact FRI payload `202,238` bytes / `197.5 KiB`, `prove=6.840s`, `verify=43.7ms`. | not complete |
 | No confusing low-soundness testing production path | Production builds expose only `TerminalProofKind::Production`; local checkpoint proof-kind helpers are `cfg(test)`, and public production verification requires all 15 production queries. | satisfied for public production verifier dispatch |
 | Public values, parameters, relation, proximity schedule, fixed terminal tables, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile, column layout, and fixed Tip5 lookup preprocessed-table digest, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
