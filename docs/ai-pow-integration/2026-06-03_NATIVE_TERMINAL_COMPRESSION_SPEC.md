@@ -574,13 +574,26 @@ for this route.
   kind-gated MDS relation. This shrinks the lookup main trace from 558 to 438
   columns, raises the lookup AIR max constraint degree from 4 to 8, and leaves
   the production proximity tuple unchanged at `log_blowup=4`, `num_queries=15`,
-  `query_pow_bits=0`. The broader backend audit measured the integrated
+  `query_pow_bits=0`. The broader backend audit measured that integrated
   checkpoint at `186,319` bytes / `182.0 KiB`, compact FRI payload `159,145`
   bytes / `155.4 KiB`, `prove=10.882s`, and `verify=39.6ms`; the grouped
   full-trace/NPO-IO opening dropped to `62,644` bytes with 464 opened limbs per
-  queried row. This is a real size win but not the final ~100 KiB route because
-  the higher quotient degree shifts some savings into commit-round material.
-  The tamper check still rejects a modified trace-domain NPO IO opening. A
+  queried row. A follow-up direct trace-NPO-IO pass removed the redundant
+  committed trace-domain NPO-IO oracle and the integrated support quotient. The
+  trace side of the selected-vs-trace NPO-IO LogUp bridge now derives the 26
+  terminal-IO lanes directly from the committed full trace opening, and the AIR
+  quotient already enforces terminal IO zero off the permutation window via the
+  window-vanishing factor. The transcript domain separator moved to v2 and the
+  production FRI tuple remains `log_blowup=4`, `num_queries=15`,
+  `query_pow_bits=0`. The focused native/Rayon backend audit measures this
+  checkpoint at `174,258` bytes / `170.2 KiB`, compact FRI payload `148,213`
+  bytes / `144.7 KiB`, `prove=9.959s`, and `verify=44.3ms`; the largest input
+  batch is now the single full-trace opening at `60,828` bytes with 438 opened
+  limbs per queried row, and the shared LogUp accumulator batch dropped to 38
+  opened limbs. This is a real size win but still not the final ~100 KiB route
+  because opened full-trace values and FRI authentication paths dominate the
+  payload. The tamper check still rejects a modified trace-derived NPO IO
+  opening. A
   direct-integrated FRI arity sweep kept `log_blowup=4`, `num_queries=15`, and
   `query_pow_bits=0` fixed. `max_log_arity=4` reduced the integrated FRI
   payload slightly to `201,673` bytes / `196.9 KiB`, but the full checkpoint
@@ -1709,12 +1722,12 @@ Completion audit against the active terminal-compression requirements:
 |---|---|---|
 | Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
-| Production certificate is about 100 KiB | Earlier sub-100 KiB fixtures did not cover the complete sound terminal backend. The current sound integrated Tip5 lookup/NPO-IO LogUp grouped direct-IO checkpoint at the canonical 60 pure-query bits measures `186,319` bytes / `182.0 KiB`, compact FRI payload `159,145` bytes / `155.4 KiB`, `prove=10.882s`, `verify=39.6ms`. | not complete |
+| Production certificate is about 100 KiB | Earlier sub-100 KiB fixtures did not cover the complete sound terminal polynomial/proximity backend. The current sound integrated Tip5 lookup/NPO-IO LogUp direct trace-NPO-IO checkpoint at the canonical 60 pure-query bits measures `174,258` bytes / `170.2 KiB`, compact FRI payload `148,213` bytes / `144.7 KiB`, `prove=9.959s`, `verify=44.3ms`. | not complete |
 | No confusing low-soundness testing production path | Production builds expose only `TerminalProofKind::Production`; local checkpoint proof-kind helpers are `cfg(test)`, and public production verification requires all 15 production queries. | satisfied for public production verifier dispatch |
 | Public values, parameters, relation, proximity schedule, fixed terminal tables, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile, column layout, and fixed Tip5 lookup preprocessed-table digest, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
 | Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against the same prelude-bound assignment oracle used by primitive R1CS. | satisfied for supported NPO row validity |
-| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace with a fixed preprocessed-table digest bound into the relation profile, a transcript-bound terminal LogUp rational-sum accumulator checkpoint for fixed-table byte-pair semantics, a committed split LogUp running-sum/proximity checkpoint for the byte-table relation, a combined full-main AIR-algebra+LogUp quotient proof in one arity-8 `143.5 KiB` FRI opening, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 66.0 KiB proof, a random linear-combination MLE checkpoint, a sampled selected-column residual-zero checkpoint, a FRI-native residual-zero checkpoint, a FRI-native recompose residual-relation quotient, and a merged FRI-native residual-zero+recompose+value-bridge proof now exist. The merged value-bridge proof uses one selected+lookup commitment, binds all selected/value/lookup/composition/recompose/value-bridge profiles before challenge sampling, dimension-checks merged openings, rejects stale selected+lookup prelude roots, stale lookup/value columns, malformed compact FRI path material, and profile/opening-shape tampering, and measures `99,647` bytes / `97.3 KiB` at the pure 60-bit terminal tuple. A linked combined-prelude checkpoint adds a full-trace-to-terminal-IO projection proof, a support bridge, and an exhaustive selected+lookup-to-trace-domain-NPO-IO bridge; it rejects both the measured divergent trace/value pair and the forged trace-domain NPO IO projection that previously passed, but it measures `362,813` bytes / `354.3 KiB`. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over every supported NPO/table constraint, and the lookup AIR+LogUp, boundary bridge, and value-column checkpoints are not yet merged into one complete ~100 KiB terminal theorem. | not complete |
+| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace with a fixed preprocessed-table digest bound into the relation profile, a transcript-bound terminal LogUp rational-sum accumulator checkpoint for fixed-table byte-pair semantics, a committed split LogUp running-sum/proximity checkpoint for the byte-table relation, a combined full-main AIR-algebra+LogUp quotient proof, terminal-IO zero-support and bridge quotients, a random linear-combination MLE checkpoint, a sampled selected-column residual-zero checkpoint, a FRI-native residual-zero checkpoint, a FRI-native recompose residual-relation quotient, and a merged FRI-native residual-zero+recompose+value-bridge proof now exist. The merged value-bridge proof uses one selected+lookup commitment, binds all selected/value/lookup/composition/recompose/value-bridge profiles before challenge sampling, dimension-checks merged openings, rejects stale selected+lookup prelude roots, stale lookup/value columns, malformed compact FRI path material, and profile/opening-shape tampering, and measures `99,647` bytes / `97.3 KiB` at the pure 60-bit terminal tuple. The current integrated Tip5 lookup/NPO-IO LogUp checkpoint removes the redundant committed trace-domain NPO-IO oracle, derives trace-domain NPO IO from the full-trace opening, rejects the divergent/forged trace-domain NPO IO cases, and measures `174,258` bytes / `170.2 KiB`. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over every supported NPO/table constraint, and the lookup AIR+LogUp, boundary bridge, and value-column checkpoints are not yet merged into one complete ~100 KiB terminal theorem. | not complete |
 | Full terminal proof has a source-backed soundness calculation | Current doc records 60 pure-query Johnson accounting for the terminal profile and tests verifier binding, but it does not yet derive a complete theorem for the row-product plus NPO-column plus PCS/proximity backend. | incomplete |
 | Zero-knowledge or witness hiding for recursive-verifier witness values | Current production opens 1,377 full-width verifier-circuit witness values plus packed MMCS direction bits for exhaustive NPO checking. That is smaller than full witness serialization, but it is not a zero-knowledge terminal backend. | incomplete if ZK is required |
 
@@ -1875,9 +1888,10 @@ Security-audit conclusions for the current implementation checkpoint:
   bincode production codec would be relation-neutral, but current measurements
   show it increases the active terminal proof sizes, so postcard remains the
   production proof-body codec.
-- The terminal production checkpoint is now measured at 86,527 bytes, or 84.5 KiB, with 60
-  pure-query bits and exhaustive supported-NPO verification. It reached the
-  ~100 KiB size target through structural proof-body changes, especially
+- The typed exhaustive-Merkle terminal production checkpoint is measured at
+  86,527 bytes, or 84.5 KiB, with 60 pure-query bits and exhaustive
+  supported-NPO verification. It reached the ~100 KiB size target through
+  structural proof-body changes, especially
   omitting verifier-derived witness indices from the exhaustive NPO assignment
   multiproof, using verifier-derived known-index assignment fold round
   multiproofs, packing verifier-known boolean MMCS direction-bit openings, and
@@ -1891,12 +1905,13 @@ Security-audit conclusions for the current implementation checkpoint:
   Pearl/Plonky2-style Merkle path compression, or another batch-STARK layer. The
   remaining size work is a real polynomialized NPO/proximity backend that
   preserves the checks above without carrying exhaustive NPO witness openings.
-- Completion status: the measured production certificate now meets the user's
-  size and 60-bit pure-query constraints, but the broader goal remains open
-  until the terminal backend either implements the final polynomial/proximity
-  argument for supported NPO/table rows or the project explicitly accepts the
-  current exhaustive-Merkle NPO verifier as the production terminal backend with
-  a complete, written soundness theorem.
+- Completion status: the exhaustive-Merkle certificate meets the size and
+  60-bit pure-query constraints, but the active polynomial/proximity backend
+  checkpoint is still `174,258` bytes / `170.2 KiB`. The broader goal remains
+  open until the terminal backend either implements the final ~100 KiB
+  polynomial/proximity argument for supported NPO/table rows or the project
+  explicitly accepts the current exhaustive-Merkle NPO verifier as the
+  production terminal backend with a complete, written soundness theorem.
 
 ## Certificate Binding Requirements
 
