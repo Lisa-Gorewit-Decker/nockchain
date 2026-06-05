@@ -297,10 +297,12 @@ pub(crate) struct ZkProofArtifact {
 /// Prover-side result for a recursive AI-PoW certificate.
 ///
 /// This is the object production callers should hand to the Hoon noun encoder:
-/// it contains the recursive L1 certificate plus only the statement data
-/// needed to verify it later. It does not contain the plain `MatmulProof` or
-/// a serialized Layer-0 `AiPowBatchProof`. For multi-tile params the current
-/// recursive statement is selected-tile only, so
+/// it contains the canonical recursive certificate plus only the statement data
+/// needed to verify it later. The certificate embeds its Layer-0 proof/program
+/// as verifier context; callers cannot supply a raw Layer-0 proof as a
+/// standalone production artifact. It does not contain the plain
+/// `MatmulProof`. For multi-tile params the current recursive statement is
+/// selected-tile only, so
 /// [`prove_ai_pow_recursive_certificate`] rejects before producing this value.
 /// Fields are private so downstream crates cannot synthesize a fake prover-run
 /// handle and accidentally feed noncanonical proof material into production
@@ -370,9 +372,10 @@ impl AiPowRecursiveCertificateRun {
 /// Recursive-certificate byte envelope for bridge tests and diagnostics.
 ///
 /// This envelope carries the chain-verifier statement metadata plus the
-/// serialized recursive L1 certificate. It deliberately does not contain
-/// the plain `MatmulProof` or the raw Layer-0 `AiPowBatchProof`; those are
-/// prover internals and legacy bridge artifacts.
+/// serialized recursive certificate. The certificate itself embeds the
+/// Layer-0 proof/program context needed for L1 circuit binding, but no caller
+/// can supply a raw Layer-0 `AiPowBatchProof` as the production proof artifact.
+/// It deliberately does not contain the plain `MatmulProof`.
 ///
 /// This is not the canonical Hoon/block proof artifact. Nockchain block
 /// submission uses the structured recursive-certificate noun carried by
@@ -990,15 +993,20 @@ pub fn prove_ai_pow_recursive_certificate(
     )?;
     verify_ai_pow_tiled_with_statement(params, target, &verified, &artifact)?;
     let zk_params = zk_params_from(params);
+    let ZkProofArtifact {
+        proof,
+        pis,
+        trace_height,
+    } = artifact;
     let verified_l0 = unsafe {
         // SAFETY: `derive_ai_pow_statement` plus
         // `verify_ai_pow_tiled_with_statement` above checked the
         // canonical program, public inputs, target, selected work unit,
         // commitments, nonce, and production/full-work boundary.
         ai_pow_zk::recursion::ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
-            &prover_program,
-            &artifact.proof,
-            &artifact.pis,
+            prover_program,
+            proof,
+            &pis,
         )
     };
     let l1 = ai_pow_zk::recursion::prove_recursive_certificate_from_chain_verified_composite_proof(
@@ -1012,8 +1020,8 @@ pub fn prove_ai_pow_recursive_certificate(
         found_idx,
         strip_schedule: verified.strip_schedule,
         commitments,
-        pis: artifact.pis,
-        trace_height: artifact.trace_height,
+        pis,
+        trace_height,
         l1_circuit_build_ms: l1.l1_circuit_build_ms,
         l1_in_circuit_verify_ms: l1.l1_in_circuit_verify_ms,
         l1_outer_cert_ms: l1.l1_outer_cert_ms,
@@ -1181,15 +1189,20 @@ pub fn prove_pearl_merge_recursive_certificate(
         params, &precheck.work.nockchain_adjusted_target, &verified, &artifact,
     )?;
 
+    let ZkProofArtifact {
+        proof,
+        pis,
+        trace_height,
+    } = artifact;
     let verified_l0 = unsafe {
         // SAFETY: the Pearl merge path validates the Pearl statement,
         // commitments, target, explicit strip schedule, canonical
         // program, and public inputs before reaching this recursion
         // boundary.
         ai_pow_zk::recursion::ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
-            &prover_program,
-            &artifact.proof,
-            &artifact.pis,
+            prover_program,
+            proof,
+            &pis,
         )
     };
     let l1 = ai_pow_zk::recursion::prove_recursive_certificate_from_chain_verified_composite_proof(
@@ -1207,8 +1220,8 @@ pub fn prove_pearl_merge_recursive_certificate(
             h_a_chunk: precheck.work.commitments.h_a,
             h_b_chunk: precheck.work.commitments.h_b,
         },
-        pis: artifact.pis,
-        trace_height: artifact.trace_height,
+        pis,
+        trace_height,
         l1_circuit_build_ms: l1.l1_circuit_build_ms,
         l1_in_circuit_verify_ms: l1.l1_in_circuit_verify_ms,
         l1_outer_cert_ms: l1.l1_outer_cert_ms,
@@ -2090,6 +2103,16 @@ mod tests {
         }
     }
 
+    fn expected_trace_height_for_found_idx(params: &MatmulParams, found_idx: u32) -> usize {
+        let zk = zk_params_from(params);
+        let (tile_i, tile_j) = tile_ij(found_idx, params).expect("valid found_idx");
+        let schedule =
+            StripIndexSchedule::from_tile(&zk, tile_i, tile_j).expect("canonical strip schedule");
+        expected_layer0_rows_for_strip_schedule(params, &schedule)
+            .expect("scheduled row budget")
+            .required_trace_len()
+    }
+
     fn pearl_merge_prod_params() -> MatmulParams {
         MatmulParams {
             m: 8,
@@ -2895,8 +2918,13 @@ mod tests {
             run.pis.hash_jackpot,
             bytes_to_words_le(&attempt.ticket.jackpot_hash)
         );
-        ai_pow_zk::recursion::verify_recursive_certificate(&run.certificate, &run.pis)
-            .expect("recursive certificate verifies against Pearl public inputs");
+        ai_pow_zk::recursion::verify_recursive_certificate(
+            &run.certificate,
+            &run.zk_params,
+            &ai_pow_zk::CircuitConfig::PROD,
+            &run.pis,
+        )
+        .expect("recursive certificate verifies against Pearl public inputs");
     }
 
     /// Opt-in companion to the legacy-square real proof above. This proves a
@@ -2955,8 +2983,13 @@ mod tests {
             run.pis.hash_jackpot,
             bytes_to_words_le(&attempt.ticket.jackpot_hash)
         );
-        ai_pow_zk::recursion::verify_recursive_certificate(&run.certificate, &run.pis)
-            .expect("rectangular non-native recursive certificate verifies");
+        ai_pow_zk::recursion::verify_recursive_certificate(
+            &run.certificate,
+            &run.zk_params,
+            &ai_pow_zk::CircuitConfig::PROD,
+            &run.pis,
+        )
+        .expect("rectangular non-native recursive certificate verifies");
     }
 
     #[test]
@@ -2982,8 +3015,8 @@ mod tests {
         pis.hash_a = bytes_to_words_le(&commitments.h_a_chunk);
         pis.hash_b = bytes_to_words_le(&commitments.h_b_chunk);
         pis.hash_jackpot = [1, 0, 0, 0, 0, 0, 0, 0];
-        let trace_height = expected_layer0_rows(&params).required_trace_len();
         let found_idx = expected_attempt_found_idx(block, nonce, &params, &commitments).unwrap();
+        let trace_height = expected_trace_height_for_found_idx(&params, found_idx);
 
         verify_ai_pow_selected_tile_statement(
             block, nonce, &params, &target, found_idx, &commitments, &pis, trace_height,
@@ -3067,8 +3100,8 @@ mod tests {
         pis.hash_a = bytes_to_words_le(&commitments.h_a_chunk);
         pis.hash_b = bytes_to_words_le(&commitments.h_b_chunk);
         pis.hash_jackpot = [1, 0, 0, 0, 0, 0, 0, 0];
-        let trace_height = expected_layer0_rows(&params).required_trace_len();
         let found_idx = expected_attempt_found_idx(block, nonce, &params, &commitments).unwrap();
+        let trace_height = expected_trace_height_for_found_idx(&params, found_idx);
 
         assert!(matches!(
             verify_ai_pow_full_matmul_production_statement(
@@ -3127,8 +3160,8 @@ mod tests {
         pis.hash_a = bytes_to_words_le(&commitments.h_a_chunk);
         pis.hash_b = bytes_to_words_le(&commitments.h_b_chunk);
         pis.hash_jackpot = [1, 0, 0, 0, 0, 0, 0, 0];
-        let trace_height = expected_layer0_rows(&params).required_trace_len();
         let found_idx = expected_attempt_found_idx(block, nonce, &params, &commitments).unwrap();
+        let trace_height = expected_trace_height_for_found_idx(&params, found_idx);
 
         verify_ai_pow_full_matmul_production_statement(
             block, nonce, &params, &target, found_idx, &commitments, &pis, trace_height,

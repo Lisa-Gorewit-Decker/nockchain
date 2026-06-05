@@ -93,7 +93,7 @@ const fn default_npo_lanes() -> usize {
     1
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct NonPrimitiveTableEntry<SC>
 where
@@ -120,6 +120,40 @@ impl<SC: StarkGenericConfig> NonPrimitiveTableEntry<SC> {
             return Err(ProofMetadataError::ZeroNpoLanes(self.op_type.clone()));
         }
         Ok(())
+    }
+}
+
+/// Compare the verifier-relevant preprocessed binding inside two
+/// [`CommonData`] values.
+///
+/// `BatchStarkProof` serializes only this binding, and verifier code rebuilds
+/// lookups from the reconstructed AIRs. Production callers that pin a circuit
+/// identity should compare this binding against verifier-rebuilt common data
+/// before calling [`BatchStarkProver::verify_all_tables_with_public_values`].
+pub fn common_preprocessed_binding_eq<SC>(left: &CommonData<SC>, right: &CommonData<SC>) -> bool
+where
+    SC: StarkGenericConfig,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: PartialEq,
+{
+    match (&left.preprocessed, &right.preprocessed) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.commitment == right.commitment
+                && left.matrix_to_instance == right.matrix_to_instance
+                && left.instances.len() == right.instances.len()
+                && left.instances.iter().zip(&right.instances).all(|(left, right)| {
+                    match (left, right) {
+                        (None, None) => true,
+                        (Some(left), Some(right)) => {
+                            left.matrix_index == right.matrix_index
+                                && left.width == right.width
+                                && left.degree_bits == right.degree_bits
+                        }
+                        _ => false,
+                    }
+                })
+        }
+        _ => false,
     }
 }
 

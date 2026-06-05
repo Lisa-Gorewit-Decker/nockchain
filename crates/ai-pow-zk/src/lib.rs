@@ -20,11 +20,12 @@
 //! - [`recursion::prove_canonical_ai_pow_certificate`] — the canonical
 //!   recursive wrapper for Nockchain's AI-PoW certificate. It proves
 //!   the Layer-0 composite STARK, recursively verifies that proof in
-//!   an L1 circuit, and returns the recursive certificate. This is the
-//!   only proof object intended for Nockchain consensus, block
-//!   persistence, or wire transmission; consensus code must still
-//!   verify that the bound Layer-0 public statement is the intended
-//!   full-matmul work unit.
+//!   an L1 circuit, and returns the recursive certificate. The certificate
+//!   includes the Layer-0 proof/program context needed to rebuild and bind
+//!   the exact L1 verifier circuit during verification. It is the only proof
+//!   object intended for Nockchain consensus, block persistence, or wire
+//!   transmission; consensus code must still verify that the bound Layer-0
+//!   public statement is the intended full-matmul work unit.
 //! - [`composite_proof::composite_prove_pinned_logup`] /
 //!   [`composite_proof::composite_verify_pinned_logup`] — Layer-0
 //!   composite STARK primitives. These are intermediate inputs to the

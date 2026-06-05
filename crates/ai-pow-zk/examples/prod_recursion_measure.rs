@@ -95,23 +95,24 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let l0_proof = run.l1_cert.l0_proof();
+    let l1_outer = run.l1_cert.l1_outer_proof();
 
-    let composite_bytes = postcard::to_allocvec(&run.composite_proof)
+    let composite_bytes = postcard::to_allocvec(l0_proof)
         .expect("serialize composite proof")
         .len();
-    let composite_commitments_bytes = postcard::to_allocvec(&run.composite_proof.commitments)
+    let composite_commitments_bytes = postcard::to_allocvec(&l0_proof.commitments)
         .expect("serialize composite commitments")
         .len();
-    let composite_opened_values_bytes = postcard::to_allocvec(&run.composite_proof.opened_values)
+    let composite_opened_values_bytes = postcard::to_allocvec(&l0_proof.opened_values)
         .expect("serialize composite opened values")
         .len();
-    let composite_opening_proof_bytes = postcard::to_allocvec(&run.composite_proof.opening_proof)
+    let composite_opening_proof_bytes = postcard::to_allocvec(&l0_proof.opening_proof)
         .expect("serialize composite opening proof")
         .len();
-    let composite_lookup_data_bytes =
-        postcard::to_allocvec(&run.composite_proof.global_lookup_data)
-            .expect("serialize composite lookup data")
-            .len();
+    let composite_lookup_data_bytes = postcard::to_allocvec(&l0_proof.global_lookup_data)
+        .expect("serialize composite lookup data")
+        .len();
     let l1_cert_serialized =
         encode_recursive_certificate(&run.l1_cert).expect("serialize canonical L1 certificate");
     let l1_cert_bytes = l1_cert_serialized.len();
@@ -132,31 +133,31 @@ fn main() {
         bincode::config::standard().with_fixed_int_encoding(),
     )
     .expect("bincode fixed");
-    let l1_proof_bytes = postcard::to_allocvec(&run.l1_cert.proof)
+    let l1_proof_bytes = postcard::to_allocvec(&l1_outer.proof)
         .expect("serialize L1 proof")
         .len();
-    let l1_commitments_bytes = postcard::to_allocvec(&run.l1_cert.proof.commitments)
+    let l1_commitments_bytes = postcard::to_allocvec(&l1_outer.proof.commitments)
         .expect("serialize L1 commitments")
         .len();
-    let l1_opened_values_bytes = postcard::to_allocvec(&run.l1_cert.proof.opened_values)
+    let l1_opened_values_bytes = postcard::to_allocvec(&l1_outer.proof.opened_values)
         .expect("serialize L1 opened values")
         .len();
-    let l1_opening_proof_bytes = postcard::to_allocvec(&run.l1_cert.proof.opening_proof)
+    let l1_opening_proof_bytes = postcard::to_allocvec(&l1_outer.proof.opening_proof)
         .expect("serialize L1 opening proof")
         .len();
-    let l1_lookup_data_bytes = postcard::to_allocvec(&run.l1_cert.proof.global_lookup_data)
+    let l1_lookup_data_bytes = postcard::to_allocvec(&l1_outer.proof.global_lookup_data)
         .expect("serialize L1 lookup data")
         .len();
-    let l1_degree_bits_bytes = postcard::to_allocvec(&run.l1_cert.proof.degree_bits)
+    let l1_degree_bits_bytes = postcard::to_allocvec(&l1_outer.proof.degree_bits)
         .expect("serialize L1 degree bits")
         .len();
-    let l1_table_packing_bytes = postcard::to_allocvec(&run.l1_cert.table_packing)
+    let l1_table_packing_bytes = postcard::to_allocvec(&l1_outer.table_packing)
         .expect("serialize L1 table packing")
         .len();
-    let l1_rows_bytes = postcard::to_allocvec(&run.l1_cert.rows)
+    let l1_rows_bytes = postcard::to_allocvec(&l1_outer.rows)
         .expect("serialize L1 row counts")
         .len();
-    let l1_non_primitives_bytes = postcard::to_allocvec(&run.l1_cert.non_primitives)
+    let l1_non_primitives_bytes = postcard::to_allocvec(&l1_outer.non_primitives)
         .expect("serialize L1 non-primitive metadata")
         .len();
     let l1_structural_bytes = l1_cert_bytes.saturating_sub(
@@ -218,7 +219,7 @@ fn main() {
         "  global lookup data       : {:>9.1} KB",
         kb(composite_lookup_data_bytes)
     );
-    if let Some(inst) = run.composite_proof.opened_values.instances.first() {
+    if let Some(inst) = l0_proof.opened_values.instances.first() {
         let base = &inst.base_opened_values;
         let trace_next_len = base.trace_next.as_ref().map_or(0, Vec::len);
         let prep_local_len = base.preprocessed_local.as_ref().map_or(0, Vec::len);
@@ -263,12 +264,9 @@ fn main() {
         "  bincode fixed-int        : {:>9.1} KB",
         kb(l1_cert_bincode_fixed_bytes)
     );
-    eprintln!(
-        "  table packing            : {:?}",
-        run.l1_cert.table_packing
-    );
-    eprintln!("  rows                     : {:?}", run.l1_cert.rows);
-    for entry in &run.l1_cert.non_primitives {
+    eprintln!("  table packing            : {:?}", l1_outer.table_packing);
+    eprintln!("  rows                     : {:?}", l1_outer.rows);
+    for entry in &l1_outer.non_primitives {
         eprintln!(
             "  NPO {op_type} rows={rows} lanes={lanes} public_values={public_values}",
             op_type = entry.op_type,
@@ -370,7 +368,7 @@ fn main() {
         "  canonical/parts delta    : {:>9.1} KB",
         kb(l1_structural_bytes)
     );
-    for (i, inst) in run.l1_cert.proof.opened_values.instances.iter().enumerate() {
+    for (i, inst) in l1_outer.proof.opened_values.instances.iter().enumerate() {
         let base = &inst.base_opened_values;
         let table = match i {
             0 => "const",
@@ -378,6 +376,7 @@ fn main() {
             2 => "alu",
             _ => run
                 .l1_cert
+                .l1_outer_proof()
                 .non_primitives
                 .get(i.saturating_sub(3))
                 .map(|entry| entry.op_type.as_str())
@@ -439,8 +438,9 @@ struct MerkleDigestDictionaryStats {
 fn merkle_digest_dictionary_stats(cert: &AiPowRecursiveCertificate) -> MerkleDigestDictionaryStats {
     let mut unique = BTreeSet::<[u64; 5]>::new();
     let mut total = 0usize;
+    let proof = &cert.l1_outer_proof().proof;
 
-    for query in &cert.proof.opening_proof.query_proofs {
+    for query in &proof.opening_proof.query_proofs {
         for batch in &query.input_proof {
             record_digests(&batch.opening_proof, &mut unique, &mut total);
         }
@@ -516,12 +516,13 @@ fn merkle_path_compression_estimate(
     const TRIALS: usize = 256;
     const DIGEST_BYTES: usize = core::mem::size_of::<[u64; 5]>();
     const CAP_HEIGHT: usize = p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_CAP_HEIGHT;
+    let proof = &cert.l1_outer_proof().proof;
 
     let groups = auth_path_groups(cert, CAP_HEIGHT);
-    let raw_siblings: usize = groups.iter().map(|g| g.path_len).sum::<usize>()
-        * cert.proof.opening_proof.query_proofs.len();
+    let raw_siblings: usize =
+        groups.iter().map(|g| g.path_len).sum::<usize>() * proof.opening_proof.query_proofs.len();
 
-    if groups.is_empty() || cert.proof.opening_proof.query_proofs.is_empty() {
+    if groups.is_empty() || proof.opening_proof.query_proofs.is_empty() {
         return MerklePathCompressionEstimate {
             groups: groups.len(),
             raw_siblings,
@@ -535,7 +536,7 @@ fn merkle_path_compression_estimate(
         };
     }
 
-    let num_queries = cert.proof.opening_proof.query_proofs.len();
+    let num_queries = proof.opening_proof.query_proofs.len();
     let log_global_max_height = groups
         .iter()
         .map(|g| g.index_shift + g.index_bits)
@@ -608,7 +609,8 @@ fn merkle_path_compression_estimate(
 }
 
 fn auth_path_groups(cert: &AiPowRecursiveCertificate, cap_height: usize) -> Vec<AuthPathGroup> {
-    let Some(first_query) = cert.proof.opening_proof.query_proofs.first() else {
+    let proof = &cert.l1_outer_proof().proof;
+    let Some(first_query) = proof.opening_proof.query_proofs.first() else {
         return Vec::new();
     };
 

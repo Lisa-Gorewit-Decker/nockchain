@@ -1,11 +1,13 @@
 //! Structured noun encoder for the canonical recursive AI-PoW certificate.
 //!
 //! This module intentionally accepts the recursive certificate object, not
-//! `MatmulProof` and not the raw Layer-0 `AiPowBatchProof`. Its verifier
-//! boundary also runs the full-matmul statement precheck before recursive proof
-//! reconstruction or verification. Those recursive verifier helpers are Rust
-//! boundaries only; Hoon consensus remains fail-closed and does not call them
-//! in the current milestone.
+//! `MatmulProof` and not a standalone raw Layer-0 `AiPowBatchProof`. The
+//! recursive certificate embeds Layer-0 proof/program context so verification
+//! can rebuild the L1 circuit binding. Its verifier boundary also runs the
+//! full-matmul statement precheck before recursive proof reconstruction or
+//! verification. Those recursive verifier helpers are Rust boundaries only;
+//! Hoon consensus remains fail-closed and does not call them in the current
+//! milestone.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -1695,7 +1697,10 @@ pub fn verify_decoded_ai_pow_pearl_merge_artifact_with_context_and_limits(
         &artifact.certificate.certificate, limits,
     )?;
     ai_pow_zk::recursion::verify_recursive_certificate(
-        &certificate, &artifact.certificate.public_inputs,
+        &certificate,
+        &artifact.certificate.zk_params,
+        &ai_pow_zk::CircuitConfig::PROD,
+        &artifact.certificate.public_inputs,
     )
     .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))?;
     Ok(precheck)
@@ -1752,8 +1757,13 @@ pub fn verify_ai_pow_pearl_merge_artifact_slab_with_context<J>(
     )?;
     let certificate =
         ai_pow_recursive_certificate_from_node_with_limits(&certificate_shape.certificate, limits)?;
-    ai_pow_zk::recursion::verify_recursive_certificate(&certificate, &public_inputs)
-        .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))?;
+    ai_pow_zk::recursion::verify_recursive_certificate(
+        &certificate,
+        &metadata.certificate.zk_params,
+        &ai_pow_zk::CircuitConfig::PROD,
+        &public_inputs,
+    )
+    .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))?;
     Ok(precheck)
 }
 
@@ -2005,8 +2015,13 @@ pub fn verify_decoded_ai_pow_certificate(
 ) -> Result<(), CertificateNounError> {
     precheck_ai_pow_certificate_statement(shape, block_commitment, nonce, params, target)?;
     let certificate = ai_pow_recursive_certificate_from_node(&shape.certificate)?;
-    ai_pow_zk::recursion::verify_recursive_certificate(&certificate, &shape.public_inputs)
-        .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
+    ai_pow_zk::recursion::verify_recursive_certificate(
+        &certificate,
+        &shape.zk_params,
+        &ai_pow_zk::CircuitConfig::PROD,
+        &shape.public_inputs,
+    )
+    .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
 }
 
 /// Decode a jammed `%ai-pow` artifact and verify it against trusted block data.
@@ -2057,6 +2072,7 @@ pub fn verify_ai_pow_pearl_merge_artifact_jam_with_context(
     )?;
     let parsed_nonce = decode_pearl_merge_ai_pow_nonce(&nonce)?;
     let metadata = decode_ai_pow_certificate_metadata_noun(fields[2], &space, limits)?;
+    let zk_params = metadata.zk_params.clone();
     let public_inputs = metadata.public_inputs.clone();
 
     let precheck = precheck_ai_pow_pearl_merge_artifact_metadata_with_context(
@@ -2071,8 +2087,13 @@ pub fn verify_ai_pow_pearl_merge_artifact_jam_with_context(
     let certificate_shape = decode_ai_pow_certificate_noun(fields[2], &space, limits)?;
     let certificate =
         ai_pow_recursive_certificate_from_node_with_limits(&certificate_shape.certificate, limits)?;
-    ai_pow_zk::recursion::verify_recursive_certificate(&certificate, &public_inputs)
-        .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))?;
+    ai_pow_zk::recursion::verify_recursive_certificate(
+        &certificate,
+        &zk_params,
+        &ai_pow_zk::CircuitConfig::PROD,
+        &public_inputs,
+    )
+    .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))?;
     Ok(precheck)
 }
 
@@ -6363,8 +6384,10 @@ mod tests {
         eprintln!("real recursive certificate noun: reconstructing directly from proof-node");
         let direct_cert = ai_pow_recursive_certificate_from_node(&certificate_node)
             .expect("reconstruct direct recursive certificate from proof-node");
-        ai_pow_zk::recursion::verify_recursive_certificate(&direct_cert, &run.public_inputs)
-            .expect("direct reconstructed recursive certificate verifies");
+        ai_pow_zk::recursion::verify_recursive_certificate(
+            &direct_cert, &zk, &profile, &run.public_inputs,
+        )
+        .expect("direct reconstructed recursive certificate verifies");
         eprintln!("real recursive certificate noun: encoding structured noun");
 
         let commitments = sample_commitments();
@@ -6387,8 +6410,10 @@ mod tests {
         let decoded_cert = ai_pow_recursive_certificate_from_node(&decoded.certificate)
             .expect("reconstruct recursive certificate from proof-node");
         eprintln!("real recursive certificate noun: verifying reconstructed recursive certificate");
-        ai_pow_zk::recursion::verify_recursive_certificate(&decoded_cert, &run.public_inputs)
-            .expect("reconstructed recursive certificate verifies");
+        ai_pow_zk::recursion::verify_recursive_certificate(
+            &decoded_cert, &zk, &profile, &run.public_inputs,
+        )
+        .expect("reconstructed recursive certificate verifies");
 
         assert_eq!(decoded.version, AI_POW_CERT_VERSION);
         assert_eq!(decoded.zk_params, zk);

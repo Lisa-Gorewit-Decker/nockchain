@@ -30,22 +30,71 @@ use p3_recursion::public_inputs::BatchStarkVerifierInputsBuilder;
 use p3_recursion::{verify_batch_circuit, RecursiveAir, VerificationError};
 use p3_symmetric::Permutation;
 use p3_tip5_circuit_air::Tip5Perm as RecTip5Perm;
+use serde::{Deserialize, Serialize};
 
 use crate::circuit::{Challenge, Tip5Compress, Tip5Sponge};
 use crate::{AiPowStarkConfig, CompositeFullAirWithLookupsPinned, Val};
 
-/// Canonical recursive certificate wrapper for Nockchain's AI proof-of-work
-/// puzzle statement.
-///
-/// This recursive L1 certificate is the only ZK proof artifact intended
-/// for Nockchain consensus, block persistence, or wire transmission.
-/// Raw Layer-0 `AiPowBatchProof` values are intermediate prover inputs
-/// and are not production certificates by themselves. The certificate binds
-/// the Layer-0 public input vector supplied by the caller; consensus code must
-/// still derive and check that statement, including any full-matmul admission
-/// guard, before accepting it.
-pub type AiPowRecursiveCertificate =
+/// Outer circuit-prover proof produced after recursively verifying Layer 0.
+type AiPowL1OuterProof =
     p3_circuit_prover::BatchStarkProof<p3_circuit_prover::config::GoldilocksTipsConfig>;
+
+/// Canonical recursive certificate for Nockchain's AI proof-of-work puzzle
+/// statement.
+///
+/// The outer proof alone is not a production certificate: its verifier would
+/// otherwise trust proof-carried circuit metadata. The canonical certificate
+/// carries the Layer-0 proof and pinned program so verification can rebuild the
+/// exact L1 verifier circuit, run that verifier against the embedded Layer-0
+/// proof, and reject outer proof metadata that does not match the rebuilt
+/// canonical circuit shape.
+///
+/// Consensus code must still derive and check the statement metadata
+/// externally before accepting this certificate.
+#[derive(Serialize, Deserialize)]
+pub struct AiPowRecursiveCertificate {
+    /// Layer-0 pinned LogUp proof recursively verified by the L1 circuit.
+    l0_proof: BatchProof<AiPowStarkConfig>,
+    /// Canonical pinned Layer-0 program used to rebuild the L1 verifier
+    /// circuit and its expected outer proof binding.
+    l0_program: crate::AiPowProgram,
+    /// Outer D=2 circuit-prover proof of the L1 verifier circuit execution.
+    l1_outer_proof: AiPowL1OuterProof,
+}
+
+impl AiPowRecursiveCertificate {
+    /// Construct the canonical recursive certificate from chain-verified
+    /// Layer-0 proof parts and the corresponding L1 outer proof.
+    fn new(
+        l0_proof: BatchProof<AiPowStarkConfig>,
+        l0_program: crate::AiPowProgram,
+        l1_outer_proof: AiPowL1OuterProof,
+    ) -> Self {
+        Self {
+            l0_proof,
+            l0_program,
+            l1_outer_proof,
+        }
+    }
+
+    /// The outer proof, exposed for diagnostics and size accounting only.
+    ///
+    /// Production verification must call [`verify_recursive_certificate`], which
+    /// rebuilds and runs the canonical L1 verifier circuit and checks this
+    /// proof's stable circuit metadata.
+    pub fn l1_outer_proof(&self) -> &AiPowL1OuterProof {
+        &self.l1_outer_proof
+    }
+
+    /// The embedded Layer-0 proof, exposed for diagnostics and size accounting
+    /// only.
+    ///
+    /// Production verification must call [`verify_recursive_certificate`], which
+    /// verifies this proof inside the rebuilt L1 verifier circuit.
+    pub fn l0_proof(&self) -> &BatchProof<AiPowStarkConfig> {
+        &self.l0_proof
+    }
+}
 
 /// Tip5 digest width (`DIGEST_ELEMS`), sponge `WIDTH`, sponge `RATE` —
 /// the ai-pow-zk Layer-0 MMCS parameters (`circuit.rs`).
@@ -53,9 +102,9 @@ const DIGEST_ELEMS: usize = 5;
 const WIDTH: usize = 16;
 const RATE: usize = 10;
 
-fn production_l1_table_packing(public_value_count: usize) -> p3_circuit_prover::TablePacking {
-    p3_circuit_prover::TablePacking::new(public_value_count.max(1), 8)
-        .with_public_binding_lanes(public_value_count)
+fn production_l1_table_packing(_public_value_count: usize) -> p3_circuit_prover::TablePacking {
+    p3_circuit_prover::TablePacking::new(DIGEST_ELEMS, 8)
+        .with_public_binding_lanes(0)
         .with_horner_pack_k(5)
 }
 
@@ -74,13 +123,22 @@ fn statement_public_digest(public_values: &[Val]) -> Vec<Val> {
     state[..DIGEST_ELEMS].to_vec()
 }
 
-fn flatten_l1_statement_public_values(public_values: &[Val]) -> Vec<Val> {
-    let mut out = Vec::with_capacity(public_values.len() * 2);
-    for &value in public_values {
-        out.push(value);
-        out.push(Val::ZERO);
-    }
-    out
+fn non_primitive_metadata_eq(
+    left: &[p3_circuit_prover::NonPrimitiveTableEntry<
+        p3_circuit_prover::config::GoldilocksTipsConfig,
+    >],
+    right: &[p3_circuit_prover::NonPrimitiveTableEntry<
+        p3_circuit_prover::config::GoldilocksTipsConfig,
+    >],
+) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left.op_type == right.op_type
+                && left.rows == right.rows
+                && left.lanes == right.lanes
+                && left.public_values == right.public_values
+                && left.air_variant == right.air_variant
+        })
 }
 
 /// The recursion `OpeningProof` target type for ai-pow-zk's Layer-0
@@ -293,6 +351,14 @@ pub fn run_composite_l1_verifier(
     built: &BuiltCompositeL1,
     proof: &BatchProof<AiPowStarkConfig>,
 ) -> Result<(), VerificationError> {
+    run_composite_l1_verifier_traces(built, proof)?;
+    Ok(())
+}
+
+fn run_composite_l1_verifier_traces(
+    built: &BuiltCompositeL1,
+    proof: &BatchProof<AiPowStarkConfig>,
+) -> Result<p3_circuit::tables::Traces<Challenge>, VerificationError> {
     let mut runner = built.circuit.runner();
     runner
         .set_public_inputs(&built.public_inputs)
@@ -315,31 +381,79 @@ pub fn run_composite_l1_verifier(
         Tip5Config::GOLDILOCKS_W16,
     )
     .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
-    runner.run().map_err(VerificationError::Circuit)?;
-    Ok(())
+    runner.run().map_err(VerificationError::Circuit)
+}
+
+fn production_l1_circuit_prover_data(
+    built: &BuiltCompositeL1,
+) -> Result<
+    (
+        p3_circuit_prover::TablePacking,
+        p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksTipsConfig>,
+    ),
+    VerificationError,
+> {
+    use p3_batch_stark::ProverData;
+    use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
+    use p3_circuit_prover::{
+        config, recompose_air_builders, strip_public_binding_for_lookup_metadata,
+        tip5_air_builders, CircuitProverData, ConstraintProfile, RecomposePreprocessor,
+        Tip5Preprocessor,
+    };
+
+    type OuterConfig = config::GoldilocksTipsConfig;
+
+    let public_binding_lanes = built.public_inputs.len();
+    let table_packing = production_l1_table_packing(public_binding_lanes);
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
+        vec![Box::new(Tip5Preprocessor), Box::new(RecomposePreprocessor::new(true))];
+    let mut air_builders = tip5_air_builders::<OuterConfig, 2>();
+    air_builders.extend(recompose_air_builders::<OuterConfig, 2>(1, true));
+
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<OuterConfig, Challenge, 2>(
+            &built.circuit,
+            &table_packing,
+            &npo_prep,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "composite L1 outer cert — get_airs_and_degrees: {e:?}"
+            ))
+        })?;
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
+    let lookup_metadata_airs = airs
+        .iter()
+        .map(strip_public_binding_for_lookup_metadata)
+        .collect::<Vec<_>>();
+    let outer_config = production_l1_stark_config();
+    let prover_data =
+        ProverData::from_airs_and_degrees(&outer_config, &lookup_metadata_airs, &degrees);
+    Ok((
+        table_packing,
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns),
+    ))
 }
 
 /// S5 — produce the **L1 outer certificate** for a composite proof:
 /// prove the composite-L1 verifier circuit itself as a D=2 batch-STARK
-/// (`prove_all_tables`), then `verify_all_tables` — the live
-/// cross-table `WitnessChecks` LogUp soundness gate. This is the
-/// end-to-end recursive certificate: a small STARK whose statement is
-/// "I verified the composite proof".
+/// (`prove_all_tables`). This is the outer recursive proof object for the
+/// statement "I verified the composite proof".
 ///
 /// Mirrors the validated `outer_cert_layer0` machinery
 /// (`Plonky3-recursion` `test_tip5_layer0_recursion.rs`) — D=2,
 /// Tip5 NPO (D=1 perm) + recompose with split coeff tables — with the
 /// composite-L1 circuit in place of the Fibonacci-L0 one.
 ///
-/// Returns the L1 certificate (a `BatchStarkProof`) on accept; an
-/// `Err` if `runner.run()` or `verify_all_tables` rejects.
+/// Returns the L1 outer proof on accept; an `Err` if the L1 verifier circuit
+/// runner rejects before outer proving.
 pub fn prove_composite_l1_outer_cert(
     built: &BuiltCompositeL1,
     proof: &BatchProof<AiPowStarkConfig>,
-) -> Result<
-    p3_circuit_prover::BatchStarkProof<p3_circuit_prover::config::GoldilocksTipsConfig>,
-    VerificationError,
-> {
+) -> Result<AiPowL1OuterProof, VerificationError> {
     use p3_batch_stark::ProverData;
     use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
     use p3_circuit_prover::{
@@ -353,7 +467,7 @@ pub fn prove_composite_l1_outer_cert(
     // D=2 outer-cert table layout — Tip5 NPO (D=1 perm) + recompose
     // with split coeff tables (the verifier circuit set
     // `set_recompose_coeff_ctl_for_decompose_links(true)`).
-    let public_binding_lanes = built.statement_public_values.len();
+    let public_binding_lanes = built.public_inputs.len();
     let table_packing = production_l1_table_packing(public_binding_lanes);
     let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
         vec![Box::new(Tip5Preprocessor), Box::new(RecomposePreprocessor::new(true))];
@@ -421,132 +535,124 @@ pub fn prove_composite_l1_outer_cert(
                 "composite L1 outer cert — prove_all_tables: {e:?}"
             ))
         })?;
-    // The cross-table `WitnessChecks` soundness gate.
-    let bound_public_values = flatten_l1_statement_public_values(&built.statement_public_values);
-    prover
-        .verify_all_tables_with_public_values(&batch_proof, &bound_public_values)
-        .map_err(|e| {
-            VerificationError::InvalidProofShape(format!(
-                "composite L1 outer cert — verify_all_tables rejected: {e:?}"
-            ))
-        })?;
     Ok(batch_proof)
 }
 
-/// Verify only a legacy unbound outer recursive STARK envelope.
-///
-/// This checks that `cert` is a valid D=2 `BatchStarkProof` over the
-/// circuit-prover tables used by [`prove_composite_l1_outer_cert`], including
-/// the cross-table `WitnessChecks` LogUp argument. It deliberately enforces
-/// the production recursion envelope (D=2, Tip5 + split recompose, ALU lanes
-/// 8) instead of accepting arbitrary circuit-prover proof metadata as a
-/// recursive certificate.
-///
-/// Canonical recursive certificates bind the Layer-0 public-input vector as
-/// outer STARK public values. This helper rejects those bound certificates and
-/// exists only as a diagnostic for old unbound proof objects. Consensus callers
-/// must use [`verify_recursive_certificate`] with verifier-derived public
-/// inputs, after the outer protocol has checked that those inputs describe the
-/// intended full work unit.
-#[deprecated(
-    note = "outer-only verification is not a production AI-PoW verifier; use verify_recursive_certificate"
-)]
-pub fn verify_recursive_certificate_outer(
-    cert: &AiPowRecursiveCertificate,
-) -> Result<(), VerificationError> {
-    if cert.public_binding_lanes != 0 {
-        return Err(VerificationError::InvalidProofShape(
-            "AI-PoW recursive certificate binds public statement values; use \
-             verify_recursive_certificate with verifier-derived public inputs"
-                .to_string(),
-        ));
-    }
-
-    verify_recursive_certificate_with_public_values_inner(cert, &[], true)
-}
-
 /// Verify the canonical recursive certificate against the verifier-derived
-/// Layer-0 AI-PoW public inputs.
+/// Layer-0 AI-PoW public inputs and chain-pinned proving parameters.
+///
+/// This is the production verification entrypoint. It rejects outer proofs
+/// whose circuit-prover metadata is merely self-consistent by rebuilding the
+/// canonical L1 verifier circuit from the certificate's Layer-0 proof/program,
+/// running that circuit against the verifier-derived public inputs, and
+/// comparing stable rebuilt outer metadata to the submitted outer proof.
 pub fn verify_recursive_certificate(
     cert: &AiPowRecursiveCertificate,
+    zk_params: &crate::params::ZkParams,
+    profile: &crate::circuit::CircuitConfig,
     public_inputs: &crate::composite_public::CompositePublicInputs,
 ) -> Result<(), VerificationError> {
-    verify_recursive_certificate_with_public_values(cert, &public_inputs.to_vec())
+    verify_recursive_certificate_inner(cert, zk_params, profile, &public_inputs.to_vec())
 }
 
-/// Verify the canonical recursive certificate against the verifier-derived
-/// Layer-0 AI-PoW public-input vector.
-pub fn verify_recursive_certificate_with_public_values(
+fn verify_recursive_certificate_inner(
     cert: &AiPowRecursiveCertificate,
+    zk_params: &crate::params::ZkParams,
+    profile: &crate::circuit::CircuitConfig,
     public_values: &[Val],
-) -> Result<(), VerificationError> {
-    verify_recursive_certificate_with_public_values_inner(cert, public_values, false)
-}
-
-fn verify_recursive_certificate_with_public_values_inner(
-    cert: &AiPowRecursiveCertificate,
-    public_values: &[Val],
-    allow_empty_statement: bool,
 ) -> Result<(), VerificationError> {
     use p3_circuit_prover::BatchStarkProver;
 
-    if public_values.is_empty() && !allow_empty_statement {
+    if public_values.len() != crate::composite_public::NUM_PUBLIC_VALUES {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "AI-PoW recursive certificate verification requires exactly {} \
+                 verifier-derived public inputs; got {}",
+            crate::composite_public::NUM_PUBLIC_VALUES,
+            public_values.len()
+        )));
+    }
+
+    let cfg = crate::composite_proof::build_config(zk_params, profile);
+    let air = CompositeFullAirWithLookupsPinned::new_with(cert.l0_program.clone(), true);
+    let pd = crate::composite_proof::logup_common_for(&cfg, &cert.l0_program, true);
+    let built = build_composite_l1_verifier_circuit(
+        &cfg, &air, &cert.l0_proof, &pd.common, public_values, profile,
+    )?;
+
+    let traces = run_composite_l1_verifier_traces(&built, &cert.l0_proof)?;
+
+    let (expected_circuit_packing, expected_circuit_prover_data) =
+        production_l1_circuit_prover_data(&built)?;
+
+    let mut expected_outer_prover = BatchStarkProver::new(production_l1_stark_config())
+        .with_table_packing(expected_circuit_packing.clone());
+    expected_outer_prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+    expected_outer_prover.register_recompose_table::<2>(true);
+    let expected_outer_proof = expected_outer_prover
+        .prove_all_tables(&traces, &expected_circuit_prover_data)
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW recursive certificate verifier could not rebuild canonical \
+                 L1 outer proof metadata: {e:?}"
+            ))
+        })?;
+    let outer = &cert.l1_outer_proof;
+    if outer.rows != expected_outer_proof.rows
+        || outer.alu_variant != expected_outer_proof.alu_variant
+        || outer.ext_degree != expected_outer_proof.ext_degree
+        || outer.w_binomial != expected_outer_proof.w_binomial
+        || outer.alu_quintic_trinomial != expected_outer_proof.alu_quintic_trinomial
+        || !non_primitive_metadata_eq(&outer.non_primitives, &expected_outer_proof.non_primitives)
+    {
         return Err(VerificationError::InvalidProofShape(
-            "AI-PoW recursive certificate verification requires non-empty \
-             verifier-derived public inputs"
+            "AI-PoW recursive certificate outer proof metadata is not the \
+             canonical L1 verifier circuit shape for the supplied Layer-0 \
+             proof, program, parameters, and public inputs"
                 .to_string(),
         ));
     }
 
-    let statement_public_values = statement_public_digest(public_values);
-    let expected_packing = production_l1_table_packing(statement_public_values.len());
-    if cert.ext_degree != 2 {
+    let expected_public_binding_lanes = 0;
+    let expected_packing = production_l1_table_packing(expected_public_binding_lanes);
+    if outer.ext_degree != 2 {
         return Err(VerificationError::InvalidProofShape(format!(
             "AI-PoW recursive certificate uses extension degree {}; expected 2",
-            cert.ext_degree
+            outer.ext_degree
         )));
     }
-    if cert.table_packing != expected_packing {
+    if expected_circuit_packing != expected_packing {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "rebuilt AI-PoW recursive verifier circuit uses table packing {:?}; \
+             expected production packing {:?}",
+            expected_circuit_packing, expected_packing
+        )));
+    }
+    if outer.table_packing != expected_packing {
         return Err(VerificationError::InvalidProofShape(format!(
             "AI-PoW recursive certificate uses non-production table packing {:?}; \
              expected {:?}",
-            cert.table_packing, expected_packing
+            outer.table_packing, expected_packing
         )));
     }
-    if cert.public_binding_lanes != statement_public_values.len() {
+    if outer.public_binding_lanes != expected_public_binding_lanes {
         return Err(VerificationError::InvalidProofShape(format!(
-            "AI-PoW recursive certificate binds {} statement values; expected {}",
-            cert.public_binding_lanes,
-            statement_public_values.len()
+            "AI-PoW recursive certificate binds {} L1 public values; expected {}",
+            outer.public_binding_lanes, expected_public_binding_lanes
         )));
     }
-    if cert.alu_quintic_trinomial {
+    if outer.alu_quintic_trinomial {
         return Err(VerificationError::InvalidProofShape(
             "AI-PoW recursive certificate unexpectedly selected quintic ALU".to_string(),
         ));
     }
-
-    let mut verifier =
-        BatchStarkProver::new(production_l1_stark_config()).with_table_packing(expected_packing);
-    verifier.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
-    verifier.register_recompose_table::<2>(true);
-    let bound_public_values = flatten_l1_statement_public_values(&statement_public_values);
-    verifier
-        .verify_all_tables_with_public_values(cert, &bound_public_values)
-        .map_err(|e| {
-            VerificationError::InvalidProofShape(format!(
-                "AI-PoW recursive certificate verification rejected: {e:?}"
-            ))
-        })
+    Ok(())
 }
 
-/// Per-stage instrumentation of one end-to-end composite→L1
-/// recursion run — the production caller's measurement output.
+/// Per-stage instrumentation of one end-to-end composite→L1 recursion run.
 ///
-/// `l1_cert` is the canonical recursive certificate. The included
-/// `composite_proof` is exposed only for benchmarking, diagnostics,
-/// and recursive-prover internals; it must not be used as the
-/// Nockchain consensus proof artifact.
+/// `l1_cert` is the canonical recursive certificate. The Layer-0 proof and
+/// pinned program are intentionally owned by that certificate so production
+/// verification can rebuild and bind the exact L1 verifier circuit.
 pub struct L1RecursionRun {
     /// Composite (Layer-0) STARK trace height — the dominant cost
     /// and memory driver.
@@ -566,11 +672,6 @@ pub struct L1RecursionRun {
     /// Public inputs bound by the composite proof that the L1 certificate
     /// recursively verifies.
     pub public_inputs: crate::composite_public::CompositePublicInputs,
-    /// The composite (L0) proof.
-    ///
-    /// Intermediate only. Do not persist or transmit this as the
-    /// Nockchain AI-PoW certificate.
-    pub composite_proof: BatchProof<AiPowStarkConfig>,
     /// The L1 recursive certificate.
     ///
     /// This is the canonical recursive proof artifact.
@@ -605,9 +706,9 @@ pub struct L1CertificateRun {
 ///    `verify_all_tables` — the L1 recursive certificate (S5).
 ///
 /// Returns per-stage timings and the canonical L1 certificate. The
-/// returned Layer-0 proof is for diagnostics/measurement only. The L1
-/// recursive certificate is the only artifact that production
-/// Nockchain consensus should persist or transmit.
+/// certificate owns the Layer-0 proof/program context required for
+/// verifier-side L1 circuit binding; callers must not persist or transmit
+/// any separate Layer-0 proof artifact.
 ///
 /// This is the single public entrypoint a production consumer (or a
 /// measurement harness) drives; it hides the crate-internal program-pin
@@ -649,7 +750,8 @@ pub fn recurse_composite_to_l1(
     let l1_in_circuit_verify_ms = t.elapsed().as_millis();
 
     let t = Instant::now();
-    let l1_cert = prove_composite_l1_outer_cert(&built, &composite_proof)?;
+    let l1_outer_proof = prove_composite_l1_outer_cert(&built, &composite_proof)?;
+    let l1_cert = AiPowRecursiveCertificate::new(composite_proof, program, l1_outer_proof);
     let l1_outer_cert_ms = t.elapsed().as_millis();
 
     Ok(L1RecursionRun {
@@ -660,7 +762,6 @@ pub fn recurse_composite_to_l1(
         l1_in_circuit_verify_ms,
         l1_outer_cert_ms,
         public_inputs: pis,
-        composite_proof,
         l1_cert,
     })
 }
@@ -668,8 +769,8 @@ pub fn recurse_composite_to_l1(
 /// Layer-0 proof parts that a caller has already checked against the
 /// chain-derived AI-PoW statement.
 pub struct ChainVerifiedCompositeProof<'a> {
-    program: &'a crate::AiPowProgram,
-    proof: &'a BatchProof<AiPowStarkConfig>,
+    program: crate::AiPowProgram,
+    proof: BatchProof<AiPowStarkConfig>,
     public_inputs: &'a crate::composite_public::CompositePublicInputs,
 }
 
@@ -687,8 +788,8 @@ impl<'a> ChainVerifiedCompositeProof<'a> {
     /// for a valid STARK statement that is not a valid Nockchain AI-PoW
     /// work unit.
     pub unsafe fn from_parts_after_chain_statement_verification(
-        program: &'a crate::AiPowProgram,
-        proof: &'a BatchProof<AiPowStarkConfig>,
+        program: crate::AiPowProgram,
+        proof: BatchProof<AiPowStarkConfig>,
         public_inputs: &'a crate::composite_public::CompositePublicInputs,
     ) -> Self {
         Self {
@@ -715,11 +816,11 @@ pub fn prove_recursive_certificate_from_chain_verified_composite_proof(
     let cfg = crate::composite_proof::build_config(zk_params, profile);
     let t = Instant::now();
     let air = CompositeFullAirWithLookupsPinned::new_with(verified.program.clone(), true);
-    let pd = crate::composite_proof::logup_common_for(&cfg, verified.program, true);
+    let pd = crate::composite_proof::logup_common_for(&cfg, &verified.program, true);
     let built = build_composite_l1_verifier_circuit(
         &cfg,
         &air,
-        verified.proof,
+        &verified.proof,
         &pd.common,
         &verified.public_inputs.to_vec(),
         profile,
@@ -727,11 +828,12 @@ pub fn prove_recursive_certificate_from_chain_verified_composite_proof(
     let l1_circuit_build_ms = t.elapsed().as_millis();
 
     let t = Instant::now();
-    run_composite_l1_verifier(&built, verified.proof)?;
+    run_composite_l1_verifier(&built, &verified.proof)?;
     let l1_in_circuit_verify_ms = t.elapsed().as_millis();
 
     let t = Instant::now();
-    let l1_cert = prove_composite_l1_outer_cert(&built, verified.proof)?;
+    let l1_outer_proof = prove_composite_l1_outer_cert(&built, &verified.proof)?;
+    let l1_cert = AiPowRecursiveCertificate::new(verified.proof, verified.program, l1_outer_proof);
     let l1_outer_cert_ms = t.elapsed().as_millis();
 
     Ok(L1CertificateRun {
@@ -746,10 +848,10 @@ pub fn prove_recursive_certificate_from_chain_verified_composite_proof(
 ///
 /// This is a name-level guardrail for consensus callers: the
 /// certificate is recursive. Callers that only need the canonical proof
-/// should use this function and persist/transmit `run.l1_cert`, never
-/// `run.composite_proof`. Consensus callers must separately derive the exact
-/// public statement and reject selected-tile statements that do not prove the
-/// intended full-matmul work unit.
+/// should use this function and persist/transmit `run.l1_cert`. Consensus
+/// callers must separately derive the exact public statement and reject
+/// selected-tile statements that do not prove the intended full-matmul work
+/// unit.
 pub fn prove_canonical_ai_pow_certificate(
     zk_params: &crate::params::ZkParams,
     profile: &crate::circuit::CircuitConfig,
@@ -760,9 +862,11 @@ pub fn prove_canonical_ai_pow_certificate(
 
 /// Serialize the canonical recursive AI-PoW certificate into compact bytes.
 ///
-/// This serializes only the recursive L1 certificate. It intentionally does
-/// not accept or produce a Layer-0 `AiPowBatchProof`, because Layer-0 proofs
-/// are not canonical block/wire certificates for Nockchain AI-PoW.
+/// This serializes the structured recursive certificate, including the
+/// Layer-0 proof/program context needed to rebuild the L1 verifier circuit.
+/// It does not accept or produce a standalone Layer-0 `AiPowBatchProof`,
+/// because raw Layer-0 proofs are not canonical block/wire certificates for
+/// Nockchain AI-PoW.
 pub fn encode_recursive_certificate(
     cert: &AiPowRecursiveCertificate,
 ) -> Result<Vec<u8>, bincode::error::EncodeError> {
@@ -922,8 +1026,9 @@ mod tests {
 
     #[test]
     fn recursive_certificate_outer_verifier_accepts_honest_certificate() {
+        let zk = test_zk_params();
         let profile = CircuitConfig::TEST_PEARL;
-        let cfg = build_config(&test_zk_params(), &profile);
+        let cfg = build_config(&zk, &profile);
 
         let trace = CompositeTrace::baseline_min();
         let pis = CompositePublicInputs::derive_from_trace(&trace);
@@ -939,19 +1044,21 @@ mod tests {
             &profile,
         )
         .expect("build composite L1 verifier circuit");
-        let cert =
+        let outer =
             prove_composite_l1_outer_cert(&built, &proof).expect("honest recursive certificate");
+        let cert = AiPowRecursiveCertificate::new(proof, program, outer);
 
-        verify_recursive_certificate(&cert, &pis)
+        verify_recursive_certificate(&cert, &zk, &profile, &pis)
             .expect("recursive certificate verifier must accept honest cert");
-        verify_recursive_certificate_with_public_values(&cert, &[])
+        verify_recursive_certificate_inner(&cert, &zk, &profile, &[])
             .expect_err("recursive verifier must reject empty statement public inputs");
     }
 
     #[test]
     fn recursive_certificate_fixed_bincode_round_trip_verifies() {
+        let zk = test_zk_params();
         let profile = CircuitConfig::TEST_PEARL;
-        let cfg = build_config(&test_zk_params(), &profile);
+        let cfg = build_config(&zk, &profile);
 
         let trace = CompositeTrace::baseline_min();
         let pis = CompositePublicInputs::derive_from_trace(&trace);
@@ -967,24 +1074,28 @@ mod tests {
             &profile,
         )
         .expect("build composite L1 verifier circuit");
-        let cert =
+        let outer =
             prove_composite_l1_outer_cert(&built, &proof).expect("honest recursive certificate");
+        let cert = AiPowRecursiveCertificate::new(proof, program, outer);
 
         let bytes = encode_recursive_certificate(&cert).expect("encode recursive certificate");
         let decoded = decode_recursive_certificate(&bytes).expect("decode recursive certificate");
-        verify_recursive_certificate(&decoded, &pis)
+        verify_recursive_certificate(&decoded, &zk, &profile, &pis)
             .expect("decoded recursive certificate must verify");
 
         let mut trailing = bytes;
         trailing.push(0);
-        decode_recursive_certificate(&trailing)
-            .expect_err("decoder must reject trailing bytes after certificate");
+        assert!(
+            decode_recursive_certificate(&trailing).is_err(),
+            "decoder must reject trailing bytes after certificate"
+        );
     }
 
     #[test]
     fn recursive_certificate_outer_verifier_rejects_non_production_envelope() {
+        let zk = test_zk_params();
         let profile = CircuitConfig::TEST_PEARL;
-        let cfg = build_config(&test_zk_params(), &profile);
+        let cfg = build_config(&zk, &profile);
 
         let trace = CompositeTrace::baseline_min();
         let pis = CompositePublicInputs::derive_from_trace(&trace);
@@ -1000,18 +1111,20 @@ mod tests {
             &profile,
         )
         .expect("build composite L1 verifier circuit");
-        let mut cert =
+        let outer =
             prove_composite_l1_outer_cert(&built, &proof).expect("honest recursive certificate");
+        let mut cert = AiPowRecursiveCertificate::new(proof, program, outer);
 
-        cert.ext_degree = 1;
-        verify_recursive_certificate(&cert, &pis)
+        cert.l1_outer_proof.ext_degree = 1;
+        verify_recursive_certificate(&cert, &zk, &profile, &pis)
             .expect_err("recursive verifier must reject non-D=2 recursion envelope");
     }
 
     #[test]
-    fn recursive_certificate_rejects_wrong_statement_public_inputs() {
+    fn recursive_certificate_rejects_outer_circuit_metadata_tamper() {
+        let zk = test_zk_params();
         let profile = CircuitConfig::TEST_PEARL;
-        let cfg = build_config(&test_zk_params(), &profile);
+        let cfg = build_config(&zk, &profile);
 
         let trace = CompositeTrace::baseline_min();
         let pis = CompositePublicInputs::derive_from_trace(&trace);
@@ -1027,12 +1140,42 @@ mod tests {
             &profile,
         )
         .expect("build composite L1 verifier circuit");
-        let cert =
+        let outer =
             prove_composite_l1_outer_cert(&built, &proof).expect("honest recursive certificate");
+        let mut cert = AiPowRecursiveCertificate::new(proof, program, outer);
+
+        cert.l1_outer_proof.non_primitives.clear();
+        verify_recursive_certificate(&cert, &zk, &profile, &pis)
+            .expect_err("recursive verifier must reject non-canonical L1 circuit metadata");
+    }
+
+    #[test]
+    fn recursive_certificate_rejects_wrong_statement_public_inputs() {
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+        let outer =
+            prove_composite_l1_outer_cert(&built, &proof).expect("honest recursive certificate");
+        let cert = AiPowRecursiveCertificate::new(proof, program, outer);
 
         let mut wrong = pis.clone();
         wrong.job_key[0] ^= 1;
-        verify_recursive_certificate(&cert, &wrong)
+        verify_recursive_certificate(&cert, &zk, &profile, &wrong)
             .expect_err("recursive certificate must reject metadata-swapped public inputs");
     }
 
