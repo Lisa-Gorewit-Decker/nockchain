@@ -771,7 +771,6 @@ struct TerminalLocalProof {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalProductionProof {
     pub prelude: TerminalProofPrelude,
-    pub assignment_commitment: TerminalOracleCommitment,
     pub primitive_r1cs_proof: TerminalR1csRowProductSumcheckProof,
     pub npo_exhaustive_proof: Option<TerminalNpoExhaustiveProof>,
 }
@@ -13364,7 +13363,6 @@ impl NativeTerminalCompiler {
 
         Ok(TerminalProductionProof {
             prelude,
-            assignment_commitment,
             primitive_r1cs_proof,
             npo_exhaustive_proof,
         })
@@ -14180,18 +14178,16 @@ impl NativeTerminalCompiler {
         Self::validate_terminal_production_parameters(proof.prelude.parameters)?;
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, &proof.prelude)?;
         self.validate_goldilocks_production_query_domains(verifying_key, proof.prelude.parameters)?;
-        Self::verify_terminal_assignment_commitment_identity(
-            verifying_key,
-            &proof.assignment_commitment,
-        )?;
-        Self::verify_production_prelude_commitments(&proof.prelude, &proof.assignment_commitment)?;
-        Self::verify_prelude_binds_commitment(&proof.prelude, &proof.assignment_commitment)?;
+        let assignment_commitment =
+            Self::production_assignment_commitment_from_prelude(verifying_key, &proof.prelude)?;
+        Self::verify_production_prelude_commitments(&proof.prelude, &assignment_commitment)?;
+        Self::verify_prelude_binds_commitment(&proof.prelude, &assignment_commitment)?;
 
         self.verify_terminal_r1cs_row_product_sumcheck_goldilocks(
             verifying_key,
             public_inputs,
             &proof.prelude,
-            &proof.assignment_commitment,
+            &assignment_commitment,
             &proof.primitive_r1cs_proof,
         )?;
 
@@ -14215,7 +14211,7 @@ impl NativeTerminalCompiler {
                     verifying_key,
                     public_inputs,
                     &proof.prelude,
-                    &proof.assignment_commitment,
+                    &assignment_commitment,
                     npo_proof,
                 )?;
             }
@@ -24394,6 +24390,28 @@ impl NativeTerminalCompiler {
         Ok(())
     }
 
+    fn production_assignment_commitment_from_prelude<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        prelude: &TerminalProofPrelude,
+    ) -> Result<TerminalOracleCommitment, NativeTerminalVerifyError> {
+        if prelude.commitments.len() != 1 {
+            return Err(
+                NativeTerminalVerifyError::TerminalPreludeCommitmentCountMismatch {
+                    expected: 1,
+                    got: prelude.commitments.len(),
+                },
+            );
+        }
+        let variables = 1
+            + verifying_key.header.fingerprint.public_flat_len
+            + verifying_key.header.fingerprint.witness_count as usize;
+        Ok(TerminalOracleCommitment {
+            label: Self::assignment_oracle_label().into(),
+            values_len: variables,
+            root: prelude.commitments[0],
+        })
+    }
+
     fn verify_terminal_oracle_commitment_identity(
         commitment: &TerminalOracleCommitment,
         expected_label: &str,
@@ -33855,13 +33873,14 @@ mod tests {
         let err = compiler
             .verify_terminal_production_goldilocks(&vk, &public_inputs, &wrong_commitment)
             .unwrap_err();
-        assert_eq!(
-            err,
-            NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch {
-                index: 0,
-                expected: proof.assignment_commitment.root,
-                got: TerminalCommitmentDigest([5, 4, 3, 2, 1]),
-            }
+        assert!(
+            matches!(
+                err,
+                NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
+                    | NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch { .. }
+                    | NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical { .. }
+            ),
+            "wrong derived assignment root must fail downstream opening checks, got {err:?}"
         );
     }
 
