@@ -160,6 +160,10 @@ heuristic is **not** adopted).
     The actual `ai-pow-zk` composite-verifier terminal path now exists as the
     opt-in `terminal_recursive_certificate_round_trip_verifies` diagnostic, but
     its first release/native run exceeded two minutes before completing. The
+    non-proving production-profile relation diagnostic reports **125,991**
+    terminal operations, **222,017** witnesses, **43,443** terminal private
+    inputs, **14,049** supported-NPO rows, **242,798** NPO residual components,
+    and **20.908 s** terminal compile time before proving begins. The
     polynomial/FIOP NPO backend remains a diagnostic and future hardening track.
     The full stack therefore does not yet clear the ≤100 KiB / <30s production
     target without terminal query-PoW grinding.

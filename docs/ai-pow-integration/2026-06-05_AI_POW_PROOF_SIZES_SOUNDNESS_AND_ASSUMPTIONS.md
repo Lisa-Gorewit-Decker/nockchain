@@ -31,6 +31,7 @@ must not be treated as the production block/wire artifact.
 | Hardened L1 batch-STARK recursive certificate | Soundness-hardened recursive verifier checkpoint/fallback path; not acceptable as the production wire artifact because it exceeds the size budget | `205,446` bytes / `200.6 KiB` fixed-int bincode (`231,235` bytes / `225.8 KiB` legacy postcard) | `prod_recursion_measure 15` |
 | Native terminal certificate fixture | Recursion-crate terminal proof over the real Tip5 verifier-circuit fixture; proves the terminal backend can be small, but is not yet the full `ai-pow-zk` composite verifier path | `85,948` bytes / `83.9 KiB`; release prove `1.492s`, verify `1.181s` | `RUSTFLAGS="-C target-cpu=native" cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --release --test test_l1_outer_cert_tip5_unified terminal_production_certificate_measures_real_tip5_l0_verifier_circuit -- --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier native terminal path | Newly wired opt-in diagnostic path; not yet production-qualified | Release/native run of `terminal_recursive_certificate_round_trip_verifies` was stopped after more than two minutes without completing the proof, so no production size/time claim is valid yet | 2026-06-05 follow-up integration run |
+| Full `ai-pow-zk` composite-verifier terminal relation metrics | Non-proving diagnostic for the same path | PROD baseline: `125,991` ops, `222,017` witnesses, `43,443` terminal private inputs, `14,049` NPO rows, `242,798` NPO residual components, `5,354` bytes of terminal public inputs, terminal compile `20.908s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_for_prod_baseline_composite_are_available -- --ignored --nocapture`, 2026-06-05 |
 
 The active production target is therefore:
 
@@ -138,6 +139,32 @@ backend is small on the recursion fixture, but the full composite verifier path
 is not yet proven under the `<30s` production gate. The higher-level miner noun
 path also still serializes the batch-STARK checkpoint object.
 
+The non-proving terminal-relation metrics explain why this full path is slow:
+
+| Metric | TEST_PEARL baseline | PROD baseline |
+|---|---:|---:|
+| Terminal compile time | `21.889s` | `20.908s` |
+| Terminal public input values | `459` | `459` |
+| Terminal public input bytes | `5,381` | `5,354` |
+| Terminal private input values | `46,002` | `43,443` |
+| Terminal operations | `131,242` | `125,991` |
+| Primitive operations | `111,656` | `106,365` |
+| Hint operations | `5,577` | `5,577` |
+| Supported NPO operations / rows | `14,009` | `14,049` |
+| Tip5 rows | `8,002` | `8,081` |
+| Recompose rows | `238` | `225` |
+| Recompose/coeff rows | `5,769` | `5,743` |
+| NPO callsite input slots | `140,046` | `141,232` |
+| NPO callsite output slots | `86,027` | `86,778` |
+| NPO residual components | `253,882` | `242,798` |
+| Circuit fingerprint | `witness=232,554 public=459 private=46,002 ops=131,242` | `witness=222,017 public=459 private=43,443 ops=125,991` |
+
+The terminal public input vector is about `5.3 KiB`, so including it with the
+terminal certificate is not the size blocker. The blockers are the generic L1
+verifier relation itself: more than `100k` primitive operations, about `14k`
+supported NPO rows, and a terminal compile step that already consumes most of
+the `<30s` budget before terminal proving begins.
+
 ## Current Native Terminal Size And Runtime Breakdown
 
 The current native terminal fixture certificate uses exhaustive supported-NPO
@@ -194,9 +221,10 @@ diagnostic measurements explain why it was removed from production:
 Engineering conclusion: exhaustive supported-NPO checking made the terminal
 fixture small enough. It has not yet made the full `ai-pow-zk` composite
 recursive path fast enough. The remaining work is to reduce the actual
-composite L1 terminal relation, make verifier-key reconstruction canonical
-without carrying the Layer-0 proof, and then re-run the opt-in terminal
-measurement to obtain complete wire bytes and release timing.
+composite L1 terminal relation, especially the generic FRI/MMCS verifier
+circuit and supported-NPO callsite count, make verifier-key reconstruction
+canonical without carrying the Layer-0 proof, and then re-run the opt-in
+terminal measurement to obtain complete wire bytes and release timing.
 
 ## Soundness Summary
 

@@ -34,6 +34,29 @@ fixture measurement is evidence that the backend can be small, not proof that
 the full AI-PoW production recursive artifact already satisfies the `<30s`
 gate.
 
+A non-proving production-profile relation diagnostic now measures the actual
+composite L1 terminal relation:
+
+| Metric | PROD baseline |
+|---|---:|
+| Terminal compile time | `20.908s` |
+| Terminal public input bytes | `5,354` |
+| Terminal private input values | `43,443` |
+| Terminal operations | `125,991` |
+| Primitive operations | `106,365` |
+| Supported NPO rows | `14,049` |
+| Tip5 rows | `8,081` |
+| Recompose/coeff rows | `5,743` |
+| NPO input/output callsite slots | `141,232` / `86,778` |
+| NPO residual components | `242,798` |
+| Circuit fingerprint | `witness=222,017 public=459 private=43,443 ops=125,991` |
+
+This shifts the immediate reduction target. The terminal public input vector is
+not the blocker at about `5.3 KiB`; the generic composite verifier relation is.
+Any production candidate has to reduce more than `100k` primitive operations,
+about `14k` supported NPO rows, and a terminal compile step that already
+consumes most of the `<30s` budget before proving starts.
+
 The retired polynomial NPO production candidate remains useful diagnostic
 evidence. Its size blocker was precise:
 
@@ -223,6 +246,9 @@ Implementation result:
    frontier material, and recompose-row witness tampering.
 5. The `ai-pow-zk` composite L1 terminal path is wired as an opt-in diagnostic,
    but its first release/native run exceeded two minutes without completing.
+6. A production-profile non-proving relation metric shows the full path has
+   `125,991` terminal operations, `14,049` supported NPO rows, and `242,798`
+   NPO residual components before terminal proving begins.
 
 Assessment: this is still the preferred production direction, but not yet the
 active stack-level production path. Its trade-off is witness exposure: it
@@ -353,9 +379,13 @@ I would pursue three tracks in this order:
    fully production-integrated yet.** It is the only current native terminal
    fixture measured below 100 KiB and below 30s, but the actual composite L1
    verifier path still exceeds the time gate.
-2. **Continue the unified NPO proof only as hardening/future work.** It would
+2. **Reduce the full composite L1 terminal relation before spending more effort
+   on terminal proof-body compression.** The current blocker is relation size:
+   `106,365` primitive operations and `14,049` supported NPO rows in the PROD
+   baseline.
+3. **Continue the unified NPO proof only as hardening/future work.** It would
    reduce witness leakage if it can share one FRI payload and stay under target.
-3. **Keep batch-STARK hardened as checkpoint only.** It is soundness-relevant
+4. **Keep batch-STARK hardened as checkpoint only.** It is soundness-relevant
    but too large for the production recursive certificate.
 
 I would not spend milestone effort on terminal query-PoW parameter changes

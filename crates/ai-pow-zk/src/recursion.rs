@@ -772,6 +772,36 @@ pub struct TerminalCertificateRun {
     pub terminal_cert: AiPowTerminalRecursiveCertificate,
 }
 
+/// Cheap relation-shape metrics for the native terminal composite-verifier
+/// path.
+///
+/// This intentionally does not run the terminal prover. It is the first
+/// diagnostic to check when the full terminal path misses the release-time
+/// gate, because the terminal proof size/runtime is driven by these relation
+/// counts and by the terminal public-input vector length.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompositeTerminalRelationMetrics {
+    pub l1_circuit_build_ms: u128,
+    pub terminal_compile_ms: u128,
+    pub circuit_fingerprint: TerminalCircuitFingerprint,
+    pub terminal_public_input_values: usize,
+    pub terminal_public_input_bytes: usize,
+    pub terminal_private_input_values: usize,
+    pub terminal_operation_count: usize,
+    pub primitive_operation_count: usize,
+    pub hint_operation_count: usize,
+    pub non_primitive_operation_count: usize,
+    pub non_primitive_types: Vec<String>,
+    pub terminal_constraint_count: usize,
+    pub tip5_rows: usize,
+    pub recompose_rows: usize,
+    pub recompose_coeff_rows: usize,
+    pub npo_rows: usize,
+    pub npo_callsite_input_slots: usize,
+    pub npo_callsite_output_slots: usize,
+    pub external_npo_validity_components: usize,
+}
+
 /// **Batch-STARK recursive checkpoint caller** — the full ai-pow-zk →
 /// Plonky3-recursion
 /// pipeline for one composite proof, end to end:
@@ -1044,6 +1074,83 @@ pub fn prove_terminal_certificate_from_chain_verified_composite_proof(
         terminal_prove_ms,
         terminal_verify_ms,
         terminal_cert,
+    })
+}
+
+/// Measure the native terminal relation generated for the actual composite L1
+/// verifier circuit without running terminal proving.
+pub fn measure_composite_l1_terminal_relation(
+    zk_params: &crate::params::ZkParams,
+    profile: &crate::circuit::CircuitConfig,
+    verified: &ChainVerifiedCompositeProof<'_>,
+) -> Result<CompositeTerminalRelationMetrics, VerificationError> {
+    use std::time::Instant;
+
+    let cfg = crate::composite_proof::build_config(zk_params, profile);
+    let t = Instant::now();
+    let air = CompositeFullAirWithLookupsPinned::new_with(verified.program.clone(), true);
+    let pd = crate::composite_proof::logup_common_for(&cfg, &verified.program, true);
+    let built = build_composite_l1_verifier_circuit(
+        &cfg,
+        &air,
+        &verified.proof,
+        &pd.common,
+        &verified.public_inputs.to_vec(),
+        profile,
+    )?;
+    let l1_circuit_build_ms = t.elapsed().as_millis();
+
+    let compiler = terminal_compiler();
+    let t = Instant::now();
+    let (_pk, vk) = compiler
+        .compile_goldilocks_terminal(&built.circuit)
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW terminal relation compile failed: {e:?}"
+            ))
+        })?;
+    let prelude = compiler
+        .build_proof_prelude_goldilocks(
+            &vk,
+            &built.public_inputs,
+            TerminalProofParameters::production_60bit(),
+            vec![p3_recursion::TerminalCommitmentDigest([0; 5])],
+        )
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW terminal relation profile derivation failed: {e:?}"
+            ))
+        })?;
+    let terminal_compile_ms = t.elapsed().as_millis();
+
+    let terminal_public_input_bytes = postcard::to_allocvec(&built.public_inputs)
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW terminal public input measurement failed: {e:?}"
+            ))
+        })?
+        .len();
+    let relation_profile = prelude.relation_profile;
+    Ok(CompositeTerminalRelationMetrics {
+        l1_circuit_build_ms,
+        terminal_compile_ms,
+        circuit_fingerprint: TerminalCircuitFingerprint::from_circuit(&built.circuit),
+        terminal_public_input_values: built.public_inputs.len(),
+        terminal_public_input_bytes,
+        terminal_private_input_values: built.private_inputs.len(),
+        terminal_operation_count: vk.inventory.total_ops(),
+        primitive_operation_count: vk.inventory.total_primitive_ops(),
+        hint_operation_count: vk.inventory.hint_ops,
+        non_primitive_operation_count: vk.inventory.non_primitive_ops,
+        non_primitive_types: vk.inventory.non_primitive_types,
+        terminal_constraint_count: relation_profile.terminal_constraints,
+        tip5_rows: relation_profile.tip5_rows,
+        recompose_rows: relation_profile.recompose_rows,
+        recompose_coeff_rows: relation_profile.recompose_coeff_rows,
+        npo_rows: relation_profile.non_primitive_rows(),
+        npo_callsite_input_slots: relation_profile.npo_callsite_input_slots,
+        npo_callsite_output_slots: relation_profile.npo_callsite_output_slots,
+        external_npo_validity_components: relation_profile.external_npo_validity_components,
     })
 }
 
@@ -1383,6 +1490,77 @@ mod tests {
             decode_recursive_certificate(&trailing).is_err(),
             "decoder must reject trailing bytes after certificate"
         );
+    }
+
+    fn measure_baseline_composite_terminal_relation(
+        profile: CircuitConfig,
+    ) -> CompositeTerminalRelationMetrics {
+        let zk = test_zk_params();
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program, proof, &pis,
+            )
+        };
+        measure_composite_l1_terminal_relation(&zk, &profile, &verified)
+            .expect("terminal relation metrics must build without terminal proving")
+    }
+
+    fn print_terminal_relation_metrics(label: &str, metrics: &CompositeTerminalRelationMetrics) {
+        eprintln!(
+            "ai-pow composite terminal relation metrics [{label}]: build_ms={} compile_ms={} public_values={} public_bytes={} private_values={} ops={} primitive_ops={} hints={} npos={} constraints={} tip5_rows={} recompose_rows={} recompose_coeff_rows={} npo_rows={} npo_in_slots={} npo_out_slots={} npo_residuals={} fingerprint={:?} npo_types={:?}",
+            metrics.l1_circuit_build_ms,
+            metrics.terminal_compile_ms,
+            metrics.terminal_public_input_values,
+            metrics.terminal_public_input_bytes,
+            metrics.terminal_private_input_values,
+            metrics.terminal_operation_count,
+            metrics.primitive_operation_count,
+            metrics.hint_operation_count,
+            metrics.non_primitive_operation_count,
+            metrics.terminal_constraint_count,
+            metrics.tip5_rows,
+            metrics.recompose_rows,
+            metrics.recompose_coeff_rows,
+            metrics.npo_rows,
+            metrics.npo_callsite_input_slots,
+            metrics.npo_callsite_output_slots,
+            metrics.external_npo_validity_components,
+            metrics.circuit_fingerprint,
+            metrics.non_primitive_types,
+        );
+    }
+
+    #[test]
+    fn terminal_relation_metrics_for_baseline_composite_are_available() {
+        let metrics = measure_baseline_composite_terminal_relation(CircuitConfig::TEST_PEARL);
+        print_terminal_relation_metrics("TEST_PEARL", &metrics);
+
+        assert!(metrics.terminal_public_input_values > 0);
+        assert!(metrics.terminal_private_input_values > 0);
+        assert!(metrics.primitive_operation_count > 0);
+        assert!(metrics.tip5_rows > 0);
+        assert_eq!(
+            metrics.npo_rows,
+            metrics.tip5_rows + metrics.recompose_rows + metrics.recompose_coeff_rows
+        );
+        assert!(metrics.external_npo_validity_components >= metrics.npo_rows);
+    }
+
+    #[test]
+    #[ignore = "production-profile terminal relation metrics are opt-in"]
+    fn terminal_relation_metrics_for_prod_baseline_composite_are_available() {
+        let metrics = measure_baseline_composite_terminal_relation(CircuitConfig::PROD);
+        print_terminal_relation_metrics("PROD", &metrics);
+
+        assert!(metrics.terminal_public_input_values > 0);
+        assert!(metrics.terminal_private_input_values > 0);
+        assert!(metrics.primitive_operation_count > 0);
+        assert!(metrics.tip5_rows > 0);
     }
 
     fn prove_test_terminal_certificate() -> (
