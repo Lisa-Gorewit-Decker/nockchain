@@ -367,6 +367,15 @@ for this route.
   transcript using the lookup trace profile, so a profile-compatible
   substitution of the fixed L-table cannot share a terminal statement or
   transcript.
+  A terminal LogUp accumulator checkpoint now mirrors the Plonky3 LogUp
+  rational-sum equation with transcript-derived `(alpha, beta)` after the
+  committed full-main lookup trace root. It computes query byte-pair terms from
+  committed main-trace columns and subtracts verifier-fixed table
+  multiplicities derived from the bound L-table constants; focused tests show
+  the honest accumulator is zero and that tampered S-box image bytes, stale
+  table multiplicities, stale fixed-table digests, and stale table-row counts
+  fail. This pins the terminal lookup-table semantics for the final proof, but
+  it is not yet the committed low-degree running-sum/proximity argument.
 - `TerminalNpoTip5LookupFriOpeningProof`: a native terminal FRI opening
   checkpoint for the optimized Tip5 lookup AIR main trace. The prover commits
   the whole Goldilocks-valued lookup main matrix with recursive 5-round Tip5
@@ -468,15 +477,15 @@ for this route.
   after decompression restores a `161,226` byte / `157.4 KiB` Plonky3 FRI proof.
   This closes a real internal-AIR algebra/support checkpoint, but it is too
   large to combine naively with the current terminal backend and still excludes
-  the global LogUp byte-table argument. Component accounting shows why: zeta openings are
+  a committed low-degree global LogUp byte-table proof. Component accounting shows why: zeta openings are
   `9,447` bytes, transcript-query input row values are `66,613` bytes, input
   Merkle paths are `19,985` bytes, commit-phase sibling values are `3,480`
   bytes, commit-phase Merkle paths are `70,611` bytes, and the remaining
   commitments/final data are the balance. A measurement-only PCS floor for one
   extension-valued composition/quotient polynomial over the same 2048-row
-  domain is `82,867` bytes / `80.9 KiB` at the same 60-bit FRI tuple; this is
-  not a sound proof by itself, but its terminal compact-FRI form is `59,446`
-  bytes / `58.1 KiB` before reusable-profile overhead, and the decompressed
+  domain is `55,816` bytes / `54.5 KiB` at the same 60-bit FRI tuple; this is
+  not a sound proof by itself, but it measures the terminal compact-FRI floor
+  before reusable-profile overhead, and the decompressed
   floor proof verifies. This shows a composition-polynomial terminal backend is
   plausible only if it replaces the full-trace query openings rather than being
   appended as another component.
@@ -1330,15 +1339,17 @@ bound NPO-column compact residual-zero checkpoint is similarly small at
 15.1 KiB on the 2-row fixture and ties the compact FRI commitment to sampled
 residual-column openings, but it is still a component proof; appending it next
 to the value bridge and Tip5 AIR components is not the final 100 KiB route. The
-LogUp/global-bus byte lookup relation remains a separate soundness obligation.
+LogUp/global-bus byte lookup relation now has a transcript-bound rational-sum
+semantic checkpoint, but its committed low-degree running-sum/proximity proof
+remains a separate soundness obligation.
 The NPO-row value-bridge quotient closes the projection-to-value-column binding
 checkpoint in isolation at 9.4 KiB after storing the compressed terminal FRI
 payload directly; the FRI payload itself shrinks from 15.6 KiB to 8.8 KiB by
 pruning shared binary Merkle authentication paths across the 15
 transcript-derived queries.
-Shared commitment binding across these components, LogUp byte-table soundness,
-prior-output chain transitions, and residual-zero constraints over those
-openings are still pending.
+Shared commitment binding across these components, committed LogUp byte-table
+soundness, prior-output chain transitions, and residual-zero constraints over
+those openings are still pending.
 
 Recursive proving uses 5-round Tip5 only. This terminal path must not be read as
 a change to Nockchain's canonical non-recursive 7-round Tip5 hash path.
@@ -1457,7 +1468,7 @@ Completion audit against the active terminal-compression requirements:
 | Public values, parameters, relation, proximity schedule, fixed terminal tables, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile, column layout, and fixed Tip5 lookup preprocessed-table digest, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |
 | Supported NPO rows cannot hide invalid sampled rows | Production no longer samples NPO validity; it exhaustively checks every supported Tip5/recompose NPO row against the same prelude-bound assignment oracle used by primitive R1CS. | satisfied for supported NPO row validity |
-| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace with a fixed preprocessed-table digest bound into the relation profile, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 66.0 KiB proof, a random linear-combination MLE checkpoint, a sampled selected-column residual-zero checkpoint, a FRI-native residual-zero checkpoint, a FRI-native recompose residual-relation quotient, and a merged FRI-native residual-zero+recompose+value-bridge proof now exist. The merged proof uses one selected+lookup commitment, binds all selected/value/lookup/composition/recompose/value-bridge profiles before challenge sampling, dimension-checks merged openings, rejects stale selected+lookup prelude roots, stale lookup/value columns, malformed compact FRI path material, and profile/opening-shape tampering, and measures `99,647` bytes / `97.3 KiB` at the pure 60-bit terminal tuple. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over every supported NPO/table constraint, and the Tip5 lookup AIR/LogUp table argument is not yet merged into one complete terminal theorem. | not complete |
+| Supported NPO/table rows are polynomialized into a final proximity backend | Fixed NPO table columns, verifier-side row residual evaluation, native 5-round-Tip5 FRI opening checkpoints for basis-expanded NPO columns, the optimized Tip5 lookup main trace with a fixed preprocessed-table digest bound into the relation profile, a transcript-bound terminal LogUp rational-sum accumulator checkpoint for fixed-table byte-pair semantics, a 26-column terminal-IO lookup projection, terminal-IO zero-support and bridge quotients, and a combined support+bridge quotient tying lookup IO to NPO-derived IO while rejecting off-window table-row IO in one 66.0 KiB proof, a random linear-combination MLE checkpoint, a sampled selected-column residual-zero checkpoint, a FRI-native residual-zero checkpoint, a FRI-native recompose residual-relation quotient, and a merged FRI-native residual-zero+recompose+value-bridge proof now exist. The merged proof uses one selected+lookup commitment, binds all selected/value/lookup/composition/recompose/value-bridge profiles before challenge sampling, dimension-checks merged openings, rejects stale selected+lookup prelude roots, stale lookup/value columns, malformed compact FRI path material, and profile/opening-shape tampering, and measures `99,647` bytes / `97.3 KiB` at the pure 60-bit terminal tuple. Current production still uses exhaustive Merkle openings rather than a complete low-degree/proximity proof over every supported NPO/table constraint, and the Tip5 lookup AIR/LogUp table argument still lacks a committed running-sum/proximity proof merged into one complete terminal theorem. | not complete |
 | Full terminal proof has a source-backed soundness calculation | Current doc records 60 pure-query Johnson accounting for the terminal profile and tests verifier binding, but it does not yet derive a complete theorem for the row-product plus NPO-column plus PCS/proximity backend. | incomplete |
 | Zero-knowledge or witness hiding for recursive-verifier witness values | Current production opens 1,377 full-width verifier-circuit witness values plus packed MMCS direction bits for exhaustive NPO checking. That is smaller than full witness serialization, but it is not a zero-knowledge terminal backend. | incomplete if ZK is required |
 
@@ -1475,7 +1486,7 @@ Security-audit conclusions for the current implementation checkpoint:
   residual-zero+recompose+value-bridge checkpoint now clears the 100 KiB target
   by itself at the pure 60-bit terminal tuple. This is production-relevant
   backend progress, but it must not be described as the final terminal theorem
-  until the remaining Tip5 lookup AIR/LogUp table relation and full
+  until the remaining committed Tip5 lookup AIR/LogUp table proof and full
   polynomial/proximity soundness calculation are integrated.
 - The terminal proof prelude is now an implemented transcript-binding prefix,
   not a standalone argument. It prevents challenge grinding across relation,

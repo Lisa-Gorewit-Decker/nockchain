@@ -15203,6 +15203,108 @@ impl NativeTerminalCompiler {
         TerminalFixedTableDigest(sponge.finalize())
     }
 
+    fn terminal_npo_tip5_lookup_logup_accumulator_goldilocks(
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+        trace: &RowMajorMatrix<Goldilocks>,
+        alpha: TerminalFriChallenge,
+        beta: TerminalFriChallenge,
+    ) -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
+        const STATE_SIZE: usize = 16;
+        const NS: usize = 4;
+        const NBYTES: usize = 8;
+        const SPLIT_BC: usize = NS * 2 * NBYTES;
+        const PWR: usize = STATE_SIZE - NS;
+        const C_KIND: usize = 0;
+        const C_TMULT: usize = 1;
+        const C_IN: usize = 2;
+        const RB0: usize = C_IN + STATE_SIZE;
+        const ROUND_GROUP: usize = SPLIT_BC + NS + PWR + PWR + STATE_SIZE;
+
+        #[inline]
+        const fn rb(round: usize) -> usize {
+            RB0 + round * ROUND_GROUP
+        }
+        #[inline]
+        const fn b_col(round: usize, lane: usize, byte: usize) -> usize {
+            rb(round) + lane * (2 * NBYTES) + byte
+        }
+        #[inline]
+        const fn c_col(round: usize, lane: usize, byte: usize) -> usize {
+            rb(round) + lane * (2 * NBYTES) + NBYTES + byte
+        }
+
+        Self::verify_terminal_npo_tip5_lookup_trace_profile_digest(trace_profile)?;
+        if trace_profile.lookup_table_rows != TIP5_LOOKUP_TABLE_ROWS {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_logup_table_rows".into(),
+                    expected: TIP5_LOOKUP_TABLE_ROWS,
+                    got: trace_profile.lookup_table_rows,
+                },
+            );
+        }
+        if trace.width() != trace_profile.main_width {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_logup_trace_width".into(),
+                    expected: trace_profile.main_width,
+                    got: trace.width(),
+                },
+            );
+        }
+        if trace.height() != trace_profile.main_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_logup_trace_rows".into(),
+                    expected: trace_profile.main_rows,
+                    got: trace.height(),
+                },
+            );
+        }
+
+        let combine = |left: Goldilocks, right: Goldilocks| {
+            TerminalFriChallenge::from(left) * beta + TerminalFriChallenge::from(right)
+        };
+        let invert = |denominator: TerminalFriChallenge| {
+            denominator.try_inverse().ok_or_else(|| {
+                NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                    reason: "terminal Tip5 lookup LogUp challenge hit a denominator pole".into(),
+                }
+            })
+        };
+
+        let mut accumulator = TerminalFriChallenge::ZERO;
+        for row in 0..trace_profile.main_rows {
+            let base = row * trace_profile.main_width;
+            let kind = TerminalFriChallenge::from(trace.values[base + C_KIND]);
+            if kind != TerminalFriChallenge::ZERO {
+                for round in 0..TIP5_PERM_ROUNDS {
+                    for lane in 0..NS {
+                        for byte in 0..NBYTES {
+                            let denominator = alpha
+                                - combine(
+                                    trace.values[base + b_col(round, lane, byte)],
+                                    trace.values[base + c_col(round, lane, byte)],
+                                );
+                            accumulator += kind * invert(denominator)?;
+                        }
+                    }
+                }
+            }
+
+            if row < trace_profile.lookup_table_rows {
+                let tmult = TerminalFriChallenge::from(trace.values[base + C_TMULT]);
+                if tmult != TerminalFriChallenge::ZERO {
+                    let tin = Goldilocks::from_u64(row as u64);
+                    let tout = Goldilocks::from_u64(TIP5_LOOKUP_TABLE[row] as u64);
+                    accumulator -= tmult * invert(alpha - combine(tin, tout))?;
+                }
+            }
+        }
+
+        Ok(accumulator)
+    }
+
     fn verify_terminal_npo_tip5_lookup_trace_profile_digest(
         profile: &TerminalNpoTip5LookupTraceProfile,
     ) -> Result<(), NativeTerminalVerifyError> {
@@ -20873,6 +20975,26 @@ impl NativeTerminalCompiler {
             challenger,
             quotient_profile,
         );
+    }
+
+    fn seed_terminal_npo_tip5_lookup_logup_challenger(
+        challenger: &mut TerminalFriChallenger,
+        prelude: &TerminalProofPrelude,
+        trace_profile: &TerminalNpoTip5LookupFriProfile,
+    ) {
+        Self::observe_terminal_fri_str(challenger, "nock-terminal-npo-tip5-lookup-logup-v1");
+        for limb in prelude.challenge_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
+        for limb in prelude.public_values_digest.0 {
+            challenger.observe(Goldilocks::from_u64(limb));
+        }
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.security_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
+        Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_profile);
     }
 
     fn seed_terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_challenger(
@@ -29080,6 +29202,108 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
                 if label == "tip5_lookup_io_support_bridge_quotient"
+        ));
+    }
+
+    #[test]
+    fn goldilocks_npo_tip5_lookup_logup_accumulator_binds_table_multiset() {
+        let (circuit, public_inputs) = build_npo_only_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+        let (trace_profile, trace) = terminal_test_tip5_lookup_trace(&compiler, &vk, &witness);
+        let prelude = terminal_test_tip5_lookup_fri_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &witness,
+            TerminalNpoTip5LookupFriColumnSet::FullMain,
+        );
+        let (trace_fri_profile, _trace_commitment, alpha, beta) =
+            terminal_test_tip5_lookup_logup_challenges(&prelude, &trace_profile, &trace);
+        assert_eq!(
+            trace_fri_profile.proximity,
+            TerminalProximityProfile::production_60bit()
+        );
+        assert_eq!(trace_fri_profile.proximity.pure_query_bits, 60);
+
+        let honest = NativeTerminalCompiler::terminal_npo_tip5_lookup_logup_accumulator_goldilocks(
+            &trace_profile,
+            &trace,
+            alpha,
+            beta,
+        )
+        .expect("honest terminal Tip5 lookup LogUp accumulator must compute");
+        assert_eq!(
+            honest,
+            TerminalFriChallenge::ZERO,
+            "honest terminal Tip5 lookup LogUp accumulator must vanish"
+        );
+
+        let bad_row = trace_profile.permutation_row_offset;
+        let width = trace.width();
+        let first_b_col = bad_row * width + 18;
+        let first_c_col = bad_row * width + 26;
+        let mut bad_c_trace = trace.clone();
+        bad_c_trace.values[first_c_col] += Goldilocks::ONE;
+        let bad_c = NativeTerminalCompiler::terminal_npo_tip5_lookup_logup_accumulator_goldilocks(
+            &trace_profile,
+            &bad_c_trace,
+            alpha,
+            beta,
+        )
+        .expect("tampered terminal Tip5 lookup LogUp accumulator must compute");
+        assert_ne!(
+            bad_c,
+            TerminalFriChallenge::ZERO,
+            "tampered S-box image byte must break the terminal LogUp multiset"
+        );
+
+        let mut bad_mult_trace = trace.clone();
+        let table_row = trace.values[first_b_col].as_canonical_u64() as usize;
+        bad_mult_trace.values[table_row * width + 1] += Goldilocks::ONE;
+        let bad_mult =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_logup_accumulator_goldilocks(
+                &trace_profile,
+                &bad_mult_trace,
+                alpha,
+                beta,
+            )
+            .expect("tampered terminal Tip5 lookup multiplicity accumulator must compute");
+        assert_ne!(
+            bad_mult,
+            TerminalFriChallenge::ZERO,
+            "tampered fixed-table multiplicity must break the terminal LogUp multiset"
+        );
+
+        let mut stale_table_digest = trace_profile.clone();
+        stale_table_digest.preprocessed_digest.0[0] ^= 1;
+        let err = NativeTerminalCompiler::terminal_npo_tip5_lookup_logup_accumulator_goldilocks(
+            &stale_table_digest,
+            &trace,
+            alpha,
+            beta,
+        )
+        .expect_err("terminal Tip5 lookup LogUp helper must reject stale fixed-table digest");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalFixedTableDigestMismatch { label, .. }
+                if label == "tip5_lookup_preprocessed"
+        ));
+
+        let mut stale_table_rows = trace_profile;
+        stale_table_rows.lookup_table_rows += 1;
+        let err = NativeTerminalCompiler::terminal_npo_tip5_lookup_logup_accumulator_goldilocks(
+            &stale_table_rows,
+            &trace,
+            alpha,
+            beta,
+        )
+        .expect_err("terminal Tip5 lookup LogUp helper must reject stale table row count");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { label, .. }
+                if label == "tip5_lookup_logup_table_rows"
         ));
     }
 
@@ -38396,6 +38620,54 @@ mod tests {
             )
             .expect("terminal Tip5 lookup FRI prelude roots must build");
         terminal_test_prelude_from_roots(compiler, vk, public_inputs, roots)
+    }
+
+    fn terminal_test_tip5_lookup_logup_challenges(
+        prelude: &TerminalProofPrelude,
+        trace_profile: &TerminalNpoTip5LookupTraceProfile,
+        trace: &RowMajorMatrix<Goldilocks>,
+    ) -> (
+        TerminalNpoTip5LookupFriProfile,
+        TerminalFriCommitment,
+        TerminalFriChallenge,
+        TerminalFriChallenge,
+    ) {
+        let (trace_fri_profile, trace_matrix) =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_fri_matrix_goldilocks(
+                trace_profile,
+                trace,
+                TerminalNpoTip5LookupFriColumnSet::FullMain,
+            )
+            .expect("terminal Tip5 lookup LogUp trace matrix must build");
+        let (pcs, mut challenger) =
+            NativeTerminalCompiler::terminal_fri_pcs_and_challenger(trace_fri_profile.proximity)
+                .expect("terminal Tip5 lookup LogUp PCS must build");
+        let trace_domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                trace_fri_profile.padded_rows,
+            );
+        let (trace_commitment, _) = <TerminalFriPcs as Pcs<
+            TerminalFriChallenge,
+            TerminalFriChallenger,
+        >>::commit(&pcs, [(trace_domain, trace_matrix)]);
+        let trace_commitment_digest =
+            NativeTerminalCompiler::terminal_fri_commitment_digest(&trace_commitment)
+                .expect("terminal Tip5 lookup LogUp trace commitment must digest");
+        NativeTerminalCompiler::verify_terminal_fri_prelude_commitments(
+            prelude,
+            &[trace_commitment_digest],
+        )
+        .expect("terminal Tip5 lookup LogUp prelude must bind trace root");
+        NativeTerminalCompiler::seed_terminal_npo_tip5_lookup_logup_challenger(
+            &mut challenger,
+            prelude,
+            &trace_fri_profile,
+        );
+        challenger.observe(trace_commitment.clone());
+        let alpha = challenger.sample_algebra_element();
+        let beta = challenger.sample_algebra_element();
+        (trace_fri_profile, trace_commitment, alpha, beta)
     }
 
     fn terminal_test_tip5_lookup_io_bridge_prelude<F>(
