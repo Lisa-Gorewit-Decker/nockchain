@@ -1303,8 +1303,8 @@ pub struct TerminalNpoTip5LookupLogupQuotientProfile {
 }
 
 /// Accumulator profile for the optimized Tip5 lookup AIR's split LogUp
-/// argument. Each byte query interaction and the fixed-table provide
-/// interaction gets one extension-valued running-sum column.
+/// argument. Several byte-table interactions are grouped into each
+/// extension-valued running-sum column.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalNpoTip5LookupLogupAccumulatorProfile {
     pub trace: TerminalNpoTip5LookupTraceProfile,
@@ -15552,6 +15552,7 @@ impl NativeTerminalCompiler {
             );
         }
         let interaction_count = Self::terminal_npo_tip5_lookup_logup_interactions();
+        let group_count = Self::terminal_npo_tip5_lookup_logup_groups();
         if challenges.len() != interaction_count {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
@@ -15564,22 +15565,28 @@ impl NativeTerminalCompiler {
 
         let basis_dimension = <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
         let mut values =
-            Vec::with_capacity(trace_profile.main_rows * interaction_count * basis_dimension);
-        let mut running = vec![TerminalFriChallenge::ZERO; interaction_count];
+            Vec::with_capacity(trace_profile.main_rows * group_count * basis_dimension);
+        let mut running = vec![TerminalFriChallenge::ZERO; group_count];
         for row in 0..trace_profile.main_rows {
             for value in &running {
                 values.extend_from_slice(value.as_basis_coefficients_slice());
             }
-            for (interaction, (alpha, beta)) in challenges.iter().copied().enumerate() {
-                running[interaction] +=
-                    Self::terminal_npo_tip5_lookup_logup_interaction_contribution_goldilocks(
-                        trace_profile,
-                        trace,
-                        row,
-                        interaction,
-                        alpha,
-                        beta,
-                    )?;
+            for (group, running_group) in running.iter_mut().enumerate() {
+                let start = group * Self::terminal_npo_tip5_lookup_logup_group_size();
+                let end = (start + Self::terminal_npo_tip5_lookup_logup_group_size())
+                    .min(interaction_count);
+                for interaction in start..end {
+                    let (alpha, beta) = challenges[interaction];
+                    *running_group +=
+                        Self::terminal_npo_tip5_lookup_logup_interaction_contribution_goldilocks(
+                            trace_profile,
+                            trace,
+                            row,
+                            interaction,
+                            alpha,
+                            beta,
+                        )?;
+                }
             }
         }
         let final_sum = running.iter().copied().sum::<TerminalFriChallenge>();
@@ -15591,7 +15598,7 @@ impl NativeTerminalCompiler {
             );
         }
         Ok((
-            RowMajorMatrix::new(values, interaction_count * basis_dimension),
+            RowMajorMatrix::new(values, group_count * basis_dimension),
             running,
         ))
     }
@@ -15602,6 +15609,15 @@ impl NativeTerminalCompiler {
 
     const fn terminal_npo_tip5_lookup_logup_interactions() -> usize {
         Self::terminal_npo_tip5_lookup_logup_query_interactions() + 1
+    }
+
+    const fn terminal_npo_tip5_lookup_logup_group_size() -> usize {
+        3
+    }
+
+    const fn terminal_npo_tip5_lookup_logup_groups() -> usize {
+        let group_size = Self::terminal_npo_tip5_lookup_logup_group_size();
+        (Self::terminal_npo_tip5_lookup_logup_interactions() + group_size - 1) / group_size
     }
 
     fn terminal_npo_tip5_lookup_logup_interaction_contribution_goldilocks(
@@ -15690,7 +15706,7 @@ impl NativeTerminalCompiler {
         }
         let field_basis_dimension =
             <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
-        let field_columns = Self::terminal_npo_tip5_lookup_logup_interactions();
+        let field_columns = Self::terminal_npo_tip5_lookup_logup_groups();
         Ok(TerminalNpoTip5LookupLogupAccumulatorProfile {
             trace: trace_profile.trace.clone(),
             rows: trace_profile.rows,
@@ -15718,7 +15734,13 @@ impl NativeTerminalCompiler {
         if trace_profile.padded_rows == 0 {
             return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
         }
-        let padded_rows = trace_profile.padded_rows * 2;
+        let degree = (Self::terminal_npo_tip5_lookup_logup_group_size() + 1)
+            .max(trace_profile.trace.max_constraint_degree);
+        let padded_rows = trace_profile.padded_rows.checked_mul(degree).ok_or(
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: "terminal Tip5 lookup LogUp quotient domain overflow".into(),
+            },
+        )?;
         Ok(TerminalNpoTip5LookupLogupQuotientProfile {
             trace: trace_profile.trace.clone(),
             rows: trace_profile.rows,
@@ -15762,20 +15784,13 @@ impl NativeTerminalCompiler {
         Ok(values)
     }
 
-    fn terminal_npo_tip5_lookup_logup_interaction_constraint_at_point(
+    fn terminal_npo_tip5_lookup_logup_interaction_terms_at_point(
         trace: &[TerminalFriChallenge],
         trace_column_indices: &[usize],
-        accumulator: TerminalFriChallenge,
-        next_accumulator: TerminalFriChallenge,
-        final_cumulative: TerminalFriChallenge,
         preprocessed: [TerminalFriChallenge; 3],
         interaction: usize,
-        alpha: TerminalFriChallenge,
         beta: TerminalFriChallenge,
-        first_selector: TerminalFriChallenge,
-        last_selector: TerminalFriChallenge,
-        transition_selector: TerminalFriChallenge,
-    ) -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
+    ) -> Result<(TerminalFriChallenge, TerminalFriChallenge), NativeTerminalVerifyError> {
         const NS: usize = 4;
         const NBYTES: usize = 8;
         const SPLIT_BC: usize = NS * 2 * NBYTES;
@@ -15828,27 +15843,96 @@ impl NativeTerminalCompiler {
             })
         };
         let combine = |left: TerminalFriChallenge, right: TerminalFriChallenge| left * beta + right;
-        let (multiplicity, combined) =
-            if interaction < Self::terminal_npo_tip5_lookup_logup_query_interactions() {
-                let byte = interaction % NBYTES;
-                let lane = (interaction / NBYTES) % NS;
-                let round = interaction / (NBYTES * NS);
-                (
-                    opened(C_KIND)?,
-                    combine(
-                        opened(b_col(round, lane, byte))?,
-                        opened(c_col(round, lane, byte))?,
-                    ),
-                )
-            } else {
-                (
-                    -opened(C_TMULT)? * preprocessed[0],
-                    combine(preprocessed[1], preprocessed[2]),
-                )
-            };
-        let denominator = alpha - combined;
-        let transition = (next_accumulator - accumulator) * denominator - multiplicity;
-        let final_row = (final_cumulative - accumulator) * denominator - multiplicity;
+        if interaction < Self::terminal_npo_tip5_lookup_logup_query_interactions() {
+            let byte = interaction % NBYTES;
+            let lane = (interaction / NBYTES) % NS;
+            let round = interaction / (NBYTES * NS);
+            Ok((
+                opened(C_KIND)?,
+                combine(
+                    opened(b_col(round, lane, byte))?,
+                    opened(c_col(round, lane, byte))?,
+                ),
+            ))
+        } else {
+            Ok((
+                -opened(C_TMULT)? * preprocessed[0],
+                combine(preprocessed[1], preprocessed[2]),
+            ))
+        }
+    }
+
+    fn terminal_npo_tip5_lookup_logup_group_constraint_at_point(
+        trace: &[TerminalFriChallenge],
+        trace_column_indices: &[usize],
+        accumulator: TerminalFriChallenge,
+        next_accumulator: TerminalFriChallenge,
+        final_cumulative: TerminalFriChallenge,
+        preprocessed: [TerminalFriChallenge; 3],
+        challenges: &[(TerminalFriChallenge, TerminalFriChallenge)],
+        group: usize,
+        first_selector: TerminalFriChallenge,
+        last_selector: TerminalFriChallenge,
+        transition_selector: TerminalFriChallenge,
+    ) -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
+        let interaction_count = Self::terminal_npo_tip5_lookup_logup_interactions();
+        if challenges.len() != interaction_count {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_logup_group_challenges".into(),
+                    expected: interaction_count,
+                    got: challenges.len(),
+                },
+            );
+        }
+        if group >= Self::terminal_npo_tip5_lookup_logup_groups() {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_logup_group".into(),
+                    expected: Self::terminal_npo_tip5_lookup_logup_groups(),
+                    got: group + 1,
+                },
+            );
+        }
+
+        let group_size = Self::terminal_npo_tip5_lookup_logup_group_size();
+        let start = group * group_size;
+        let end = (start + group_size).min(interaction_count);
+        let mut denominators = [TerminalFriChallenge::ONE; 3];
+        let mut multiplicities = [TerminalFriChallenge::ZERO; 3];
+        let mut term_count = 0usize;
+        for interaction in start..end {
+            let (alpha, beta) = challenges[interaction];
+            let (multiplicity, combined) =
+                Self::terminal_npo_tip5_lookup_logup_interaction_terms_at_point(
+                    trace,
+                    trace_column_indices,
+                    preprocessed,
+                    interaction,
+                    beta,
+                )?;
+            denominators[term_count] = alpha - combined;
+            multiplicities[term_count] = multiplicity;
+            term_count += 1;
+        }
+
+        let mut denominator_product = TerminalFriChallenge::ONE;
+        for denominator in denominators.iter().take(term_count) {
+            denominator_product *= *denominator;
+        }
+        let mut numerator = TerminalFriChallenge::ZERO;
+        for term in 0..term_count {
+            let mut other_denominators = TerminalFriChallenge::ONE;
+            for (other, denominator) in denominators.iter().take(term_count).enumerate() {
+                if other != term {
+                    other_denominators *= *denominator;
+                }
+            }
+            numerator += multiplicities[term] * other_denominators;
+        }
+
+        let transition = (next_accumulator - accumulator) * denominator_product - numerator;
+        let final_row = (final_cumulative - accumulator) * denominator_product - numerator;
         Ok(first_selector * accumulator
             + transition_selector * transition
             + last_selector * final_row)
@@ -15886,21 +15970,22 @@ impl NativeTerminalCompiler {
             );
         }
         let interaction_count = Self::terminal_npo_tip5_lookup_logup_interactions();
+        let group_count = Self::terminal_npo_tip5_lookup_logup_groups();
         let basis_dimension = <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
-        if accumulator_matrix.width() != interaction_count * basis_dimension {
+        if accumulator_matrix.width() != group_count * basis_dimension {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_lookup_logup_quotient_accumulator_width".into(),
-                    expected: interaction_count * basis_dimension,
+                    expected: group_count * basis_dimension,
                     got: accumulator_matrix.width(),
                 },
             );
         }
-        if final_cumulatives.len() != interaction_count {
+        if final_cumulatives.len() != group_count {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_lookup_logup_final_cumulatives".into(),
-                    expected: interaction_count,
+                    expected: group_count,
                     got: final_cumulatives.len(),
                 },
             );
@@ -15956,8 +16041,8 @@ impl NativeTerminalCompiler {
             let selectors = trace_domain.selectors_at_point(point);
             let mut relation = TerminalFriChallenge::ZERO;
             let mut coeff = TerminalFriChallenge::ONE;
-            for interaction in 0..interaction_count {
-                let offset = interaction * basis_dimension;
+            for group in 0..group_count {
+                let offset = group * basis_dimension;
                 let accumulator =
                     <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
                         &opened_accumulator_basis[offset..offset + basis_dimension],
@@ -15978,18 +16063,16 @@ impl NativeTerminalCompiler {
                             got: opened_next_accumulator_basis.len(),
                         },
                     )?;
-                let (alpha, beta) = challenges[interaction];
                 relation += coeff
-                    * Self::terminal_npo_tip5_lookup_logup_interaction_constraint_at_point(
+                    * Self::terminal_npo_tip5_lookup_logup_group_constraint_at_point(
                         &opened_trace,
                         &trace_column_indices,
                         accumulator,
                         next_accumulator,
-                        final_cumulatives[interaction],
+                        final_cumulatives[group],
                         preprocessed,
-                        interaction,
-                        alpha,
-                        beta,
+                        challenges,
+                        group,
                         selectors.is_first_row,
                         selectors.is_last_row,
                         selectors.is_transition,
@@ -20533,10 +20616,11 @@ impl NativeTerminalCompiler {
             );
         }
         let interaction_count = Self::terminal_npo_tip5_lookup_logup_interactions();
-        if proof.final_cumulative_basis.len() != interaction_count {
+        let group_count = Self::terminal_npo_tip5_lookup_logup_groups();
+        if proof.final_cumulative_basis.len() != group_count {
             return Err(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: interaction_count,
+                    expected: group_count,
                     got: proof.final_cumulative_basis.len(),
                 },
             );
@@ -20688,8 +20772,8 @@ impl NativeTerminalCompiler {
         let mut relation = TerminalFriChallenge::ZERO;
         let mut coeff = TerminalFriChallenge::ONE;
         let basis_dimension = <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
-        for interaction in 0..interaction_count {
-            let offset = interaction * basis_dimension;
+        for group in 0..group_count {
+            let offset = group * basis_dimension;
             let accumulator =
                 <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
                     &opened_accumulator_points_flat[0][offset..offset + basis_dimension],
@@ -20710,18 +20794,16 @@ impl NativeTerminalCompiler {
                         got: opened_accumulator_points_flat[1].len(),
                     },
                 )?;
-            let (alpha, beta) = challenges[interaction];
             relation += coeff
-                * Self::terminal_npo_tip5_lookup_logup_interaction_constraint_at_point(
+                * Self::terminal_npo_tip5_lookup_logup_group_constraint_at_point(
                     &opened_trace,
                     &trace_column_indices,
                     accumulator,
                     next_accumulator,
-                    final_cumulatives[interaction],
+                    final_cumulatives[group],
                     preprocessed,
-                    interaction,
-                    alpha,
-                    beta,
+                    &challenges,
+                    group,
                     selectors.is_first_row,
                     selectors.is_last_row,
                     selectors.is_transition,
@@ -30426,9 +30508,13 @@ mod tests {
         assert_eq!(proof.trace_profile.proximity.pure_query_bits, 60);
         assert_eq!(
             proof.accumulator_profile.field_columns,
-            NativeTerminalCompiler::terminal_npo_tip5_lookup_logup_interactions()
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_logup_groups()
         );
         assert_eq!(proof.quotient_profile.field_columns, 1);
+        assert_eq!(
+            proof.quotient_profile.padded_rows,
+            proof.trace_profile.padded_rows * proof.trace_profile.trace.max_constraint_degree
+        );
         assert_eq!(proof.opened_accumulator_points_basis.len(), 2);
 
         let verify_start = std::time::Instant::now();
