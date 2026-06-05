@@ -378,26 +378,30 @@ for this route.
   it is not itself the committed low-degree running-sum/proximity argument.
 - `TerminalNpoTip5LookupLogupQuotientProof`: a committed low-degree split
   LogUp checkpoint for the same byte-table relation. The prover commits the
-  full lookup main trace, samples one shared LogUp `(alpha, beta)` from that
-  trace root, commits 161 extension-valued running-sum accumulator columns
-  (160 byte-query interactions plus one fixed-table provide interaction),
-  absorbs their final cumulatives, samples `gamma` to fold the per-interaction
-  first-row, transition-row, and final-row constraints, then commits one
-  extension-valued quotient over a doubled disjoint domain. Verification
-  recomputes the trace, accumulator, and quotient profiles from the verifying
-  key, rejects stale full-main trace roots, checks the final cumulatives sum to
-  zero, opens the accumulator at both `zeta` and the domain successor
-  `g*zeta`, evaluates the verifier-fixed `(is_table,tin,tout)` polynomials at
-  `zeta`, and checks the folded quotient relation under the production 60-bit
-  FRI tuple. The focused regression test round-trips the proof and rejects
-  stale trace roots, stale accumulator/quotient profiles, missing accumulator
-  point openings, and tampered accumulator or quotient openings. Measured as a
-  standalone component, it is `203,603` bytes / `198.8 KiB` with debug-profile
-  `prove=20.629s`, `verify=104.3ms`; the compact FRI payload is `177,666`
-  bytes / `173.5 KiB`, down from a restored raw FRI payload of `205,517` bytes
-  / `200.7 KiB`. This closes the committed LogUp soundness checkpoint in
-  isolation, but appending it to the AIR algebra and boundary proofs is not the
-  final ~100 KiB route.
+  LogUp-relevant lookup trace projection (`KIND`, `TMULT`, and every split
+  `(b,c)` byte column; 322 columns instead of the full 558-column main trace),
+  samples one shared LogUp `(alpha, beta)` from that trace root, commits 161
+  extension-valued running-sum accumulator columns (160 byte-query interactions
+  plus one fixed-table provide interaction), absorbs their final cumulatives,
+  samples `gamma` to fold the per-interaction first-row, transition-row, and
+  final-row constraints, then commits one extension-valued quotient over a
+  doubled disjoint domain. Verification recomputes the trace, accumulator, and
+  quotient profiles from the verifying key, rejects stale LogUp-projection
+  trace roots, checks the final cumulatives sum to zero, opens the accumulator
+  at both `zeta` and the domain successor `g*zeta`, evaluates the
+  verifier-fixed `(is_table,tin,tout)` polynomials at `zeta`, maps projected
+  trace openings back to the full AIR column indices required by each
+  interaction, and checks the folded quotient relation under the production
+  60-bit FRI tuple. The focused regression test round-trips the proof and
+  rejects stale trace roots, stale accumulator/quotient profiles, missing
+  accumulator point openings, and tampered accumulator or quotient openings.
+  Measured as a standalone component, it is `173,580` bytes / `169.5 KiB` with
+  debug-profile `prove=18.421s`, `verify=94.3ms`; the compact FRI payload is
+  `151,726` bytes / `148.2 KiB`, down from a restored raw FRI payload of
+  `176,705` bytes / `172.6 KiB`. This closes the committed LogUp soundness
+  checkpoint in isolation, and the LogUp projection saves about 29.7 KiB
+  relative to the full-main split LogUp checkpoint, but appending it to the AIR
+  algebra and boundary proofs is still not the final ~100 KiB route.
 - `TerminalNpoTip5LookupFriOpeningProof`: a native terminal FRI opening
   checkpoint for the optimized Tip5 lookup AIR main trace. The prover commits
   the whole Goldilocks-valued lookup main matrix with recursive 5-round Tip5
@@ -1362,7 +1366,7 @@ residual-column openings, but it is still a component proof; appending it next
 to the value bridge and Tip5 AIR components is not the final 100 KiB route. The
 LogUp/global-bus byte lookup relation now has a transcript-bound rational-sum
 semantic checkpoint and a committed split running-sum/proximity checkpoint.
-The latter is still a standalone 198.8 KiB component, so merging and
+The latter is still a standalone 169.5 KiB component, so merging and
 optimizing it into the final theorem remains a separate size/performance
 obligation.
 The NPO-row value-bridge quotient closes the projection-to-value-column binding

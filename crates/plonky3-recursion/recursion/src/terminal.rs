@@ -1123,6 +1123,9 @@ pub enum TerminalNpoTip5LookupFriColumnSet {
     /// Commit the full optimized lookup AIR main trace.
     #[default]
     FullMain,
+    /// Commit only the columns needed by the global LogUp byte-table
+    /// argument: KIND, TMULT, and every split `(b,c)` byte column.
+    LogupMain,
     /// Commit only the terminal boundary columns: the 16 input lanes and the
     /// 10 terminal output lanes consumed by supported NPO rows. This is a size
     /// checkpoint for future quotient/batching designs, not a standalone Tip5
@@ -5964,7 +5967,7 @@ impl NativeTerminalCompiler {
             Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(
                 trace_profile,
                 trace,
-                TerminalNpoTip5LookupFriColumnSet::FullMain,
+                TerminalNpoTip5LookupFriColumnSet::LogupMain,
             )?;
         if trace_fri_profile.proximity != prelude.relation_profile.proximity {
             return Err(
@@ -6094,7 +6097,7 @@ impl NativeTerminalCompiler {
             Self::terminal_npo_tip5_lookup_fri_matrix_goldilocks(
                 trace_profile,
                 trace,
-                TerminalNpoTip5LookupFriColumnSet::FullMain,
+                TerminalNpoTip5LookupFriColumnSet::LogupMain,
             )?;
         if trace_fri_profile.proximity != prelude.relation_profile.proximity {
             return Err(
@@ -15676,11 +15679,11 @@ impl NativeTerminalCompiler {
     fn terminal_npo_tip5_lookup_logup_accumulator_profile(
         trace_profile: &TerminalNpoTip5LookupFriProfile,
     ) -> Result<TerminalNpoTip5LookupLogupAccumulatorProfile, NativeTerminalVerifyError> {
-        if trace_profile.column_set != TerminalNpoTip5LookupFriColumnSet::FullMain {
+        if trace_profile.column_set != TerminalNpoTip5LookupFriColumnSet::LogupMain {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_lookup_logup_accumulator_trace_column_set".into(),
-                    expected: TerminalNpoTip5LookupFriColumnSet::FullMain as usize,
+                    expected: TerminalNpoTip5LookupFriColumnSet::LogupMain as usize,
                     got: trace_profile.column_set as usize,
                 },
             );
@@ -15703,11 +15706,11 @@ impl NativeTerminalCompiler {
     fn terminal_npo_tip5_lookup_logup_quotient_profile(
         trace_profile: &TerminalNpoTip5LookupFriProfile,
     ) -> Result<TerminalNpoTip5LookupLogupQuotientProfile, NativeTerminalVerifyError> {
-        if trace_profile.column_set != TerminalNpoTip5LookupFriColumnSet::FullMain {
+        if trace_profile.column_set != TerminalNpoTip5LookupFriColumnSet::LogupMain {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_lookup_logup_trace_column_set".into(),
-                    expected: TerminalNpoTip5LookupFriColumnSet::FullMain as usize,
+                    expected: TerminalNpoTip5LookupFriColumnSet::LogupMain as usize,
                     got: trace_profile.column_set as usize,
                 },
             );
@@ -15761,6 +15764,7 @@ impl NativeTerminalCompiler {
 
     fn terminal_npo_tip5_lookup_logup_interaction_constraint_at_point(
         trace: &[TerminalFriChallenge],
+        trace_column_indices: &[usize],
         accumulator: TerminalFriChallenge,
         next_accumulator: TerminalFriChallenge,
         final_cumulative: TerminalFriChallenge,
@@ -15804,6 +15808,25 @@ impl NativeTerminalCompiler {
                 },
             );
         }
+        let opened = |full_column: usize| {
+            let index = trace_column_indices
+                .iter()
+                .position(|column| *column == full_column)
+                .ok_or_else(|| {
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                        label: "tip5_lookup_logup_opened_column".into(),
+                        expected: full_column + 1,
+                        got: trace_column_indices.len(),
+                    }
+                })?;
+            trace.get(index).copied().ok_or_else(|| {
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_logup_opened_trace_width".into(),
+                    expected: trace_column_indices.len(),
+                    got: trace.len(),
+                }
+            })
+        };
         let combine = |left: TerminalFriChallenge, right: TerminalFriChallenge| left * beta + right;
         let (multiplicity, combined) =
             if interaction < Self::terminal_npo_tip5_lookup_logup_query_interactions() {
@@ -15811,15 +15834,15 @@ impl NativeTerminalCompiler {
                 let lane = (interaction / NBYTES) % NS;
                 let round = interaction / (NBYTES * NS);
                 (
-                    trace[C_KIND],
+                    opened(C_KIND)?,
                     combine(
-                        trace[b_col(round, lane, byte)],
-                        trace[c_col(round, lane, byte)],
+                        opened(b_col(round, lane, byte))?,
+                        opened(c_col(round, lane, byte))?,
                     ),
                 )
             } else {
                 (
-                    -trace[C_TMULT] * preprocessed[0],
+                    -opened(C_TMULT)? * preprocessed[0],
                     combine(preprocessed[1], preprocessed[2]),
                 )
             };
@@ -15844,11 +15867,11 @@ impl NativeTerminalCompiler {
         challenges: &[(TerminalFriChallenge, TerminalFriChallenge)],
         gamma: TerminalFriChallenge,
     ) -> Result<RowMajorMatrix<Goldilocks>, NativeTerminalVerifyError> {
-        if trace_profile.column_set != TerminalNpoTip5LookupFriColumnSet::FullMain {
+        if trace_profile.column_set != TerminalNpoTip5LookupFriColumnSet::LogupMain {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_lookup_logup_quotient_trace_column_set".into(),
-                    expected: TerminalNpoTip5LookupFriColumnSet::FullMain as usize,
+                    expected: TerminalNpoTip5LookupFriColumnSet::LogupMain as usize,
                     got: trace_profile.column_set as usize,
                 },
             );
@@ -15906,6 +15929,10 @@ impl NativeTerminalCompiler {
             Self::terminal_npo_tip5_lookup_preprocessed_column_evals(&trace_profile.trace, 1)?,
             Self::terminal_npo_tip5_lookup_preprocessed_column_evals(&trace_profile.trace, 2)?,
         ];
+        let trace_column_indices = Self::terminal_npo_tip5_lookup_fri_column_indices(
+            trace_profile.trace.main_width,
+            trace_profile.column_set,
+        )?;
         let quotient_basis_dimension =
             <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
         let mut quotient_values = Vec::with_capacity(quotient_domain.size());
@@ -15955,6 +15982,7 @@ impl NativeTerminalCompiler {
                 relation += coeff
                     * Self::terminal_npo_tip5_lookup_logup_interaction_constraint_at_point(
                         &opened_trace,
+                        &trace_column_indices,
                         accumulator,
                         next_accumulator,
                         final_cumulatives[interaction],
@@ -20281,7 +20309,7 @@ impl NativeTerminalCompiler {
         let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
         let expected_trace_profile = Self::terminal_npo_tip5_lookup_fri_profile_for_column_set(
             &trace_profile,
-            TerminalNpoTip5LookupFriColumnSet::FullMain,
+            TerminalNpoTip5LookupFriColumnSet::LogupMain,
         )?;
         if proof.trace_profile != expected_trace_profile {
             return Err(
@@ -20439,7 +20467,7 @@ impl NativeTerminalCompiler {
         let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
         let expected_trace_profile = Self::terminal_npo_tip5_lookup_fri_profile_for_column_set(
             &trace_profile,
-            TerminalNpoTip5LookupFriColumnSet::FullMain,
+            TerminalNpoTip5LookupFriColumnSet::LogupMain,
         )?;
         if proof.trace_profile != expected_trace_profile {
             return Err(
@@ -20652,6 +20680,10 @@ impl NativeTerminalCompiler {
             trace_domain.evaluate_polynomial_at(&preprocessed_evals[1], zeta),
             trace_domain.evaluate_polynomial_at(&preprocessed_evals[2], zeta),
         ];
+        let trace_column_indices = Self::terminal_npo_tip5_lookup_fri_column_indices(
+            proof.trace_profile.trace.main_width,
+            proof.trace_profile.column_set,
+        )?;
         let selectors = trace_domain.selectors_at_point(zeta);
         let mut relation = TerminalFriChallenge::ZERO;
         let mut coeff = TerminalFriChallenge::ONE;
@@ -20682,6 +20714,7 @@ impl NativeTerminalCompiler {
             relation += coeff
                 * Self::terminal_npo_tip5_lookup_logup_interaction_constraint_at_point(
                     &opened_trace,
+                    &trace_column_indices,
                     accumulator,
                     next_accumulator,
                     final_cumulatives[interaction],
@@ -24425,11 +24458,24 @@ impl NativeTerminalCompiler {
         const INPUT_LANES: usize = 16;
         const TERMINAL_OUTPUT_LANES: usize = 10;
         const LOOKUP_ROUND_GROUP: usize = 108;
+        const LOOKUP_SPLIT_LANES: usize = 4;
+        const LOOKUP_SPLIT_BYTES: usize = 8;
         const LOOKUP_ROUND_OUTPUT_OFFSET: usize = 92;
         const LOOKUP_ROUND_BASE_OFFSET: usize = INPUT_OFFSET + INPUT_LANES;
 
         let indices = match column_set {
             TerminalNpoTip5LookupFriColumnSet::FullMain => (0..main_width).collect::<Vec<_>>(),
+            TerminalNpoTip5LookupFriColumnSet::LogupMain => {
+                let mut indices = vec![0, 1];
+                for round in 0..TIP5_PERM_ROUNDS {
+                    let round_base = LOOKUP_ROUND_BASE_OFFSET + round * LOOKUP_ROUND_GROUP;
+                    for lane in 0..LOOKUP_SPLIT_LANES {
+                        let lane_base = round_base + lane * (2 * LOOKUP_SPLIT_BYTES);
+                        indices.extend(lane_base..lane_base + 2 * LOOKUP_SPLIT_BYTES);
+                    }
+                }
+                indices
+            }
             TerminalNpoTip5LookupFriColumnSet::TerminalIo => {
                 let final_round = TIP5_PERM_ROUNDS.checked_sub(1).ok_or(
                     NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
@@ -30360,7 +30406,7 @@ mod tests {
             &vk,
             &public_inputs,
             &witness,
-            TerminalNpoTip5LookupFriColumnSet::FullMain,
+            TerminalNpoTip5LookupFriColumnSet::LogupMain,
         );
 
         let prove_start = std::time::Instant::now();
@@ -30375,7 +30421,7 @@ mod tests {
         let prove_elapsed = prove_start.elapsed();
         assert_eq!(
             proof.trace_profile.column_set,
-            TerminalNpoTip5LookupFriColumnSet::FullMain
+            TerminalNpoTip5LookupFriColumnSet::LogupMain
         );
         assert_eq!(proof.trace_profile.proximity.pure_query_bits, 60);
         assert_eq!(
