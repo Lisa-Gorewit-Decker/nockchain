@@ -51,6 +51,82 @@ the batch-STARK L1 certificate the production wire artifact. The Hoon/kernel
 path remains fail-closed for `%ai-pow` until verifier wiring is explicitly
 added.
 
+## Recursive Pipeline Bottleneck Audit
+
+There are currently two recursive proof pipelines in the tree, and they must
+not be conflated:
+
+1. `crates/ai-pow-zk/src/recursion.rs::AiPowRecursiveCertificate` is the
+   hardened batch-STARK checkpoint certificate. It is the object still encoded
+   by `crates/ai-pow-miner/src/certificate_noun.rs`.
+2. `crates/plonky3-recursion/recursion/src/terminal.rs::TerminalCertificate`
+   is the native terminal certificate target that currently meets the
+   production size and release-time gates in the real Tip5 L0 verifier-circuit
+   measurement.
+
+The batch-STARK checkpoint pipeline is large because it proves the verifier
+circuit execution as another full STARK:
+
+```text
+Layer-0 composite trace
+  -> composite_prove_pinned_logup
+  -> build_composite_l1_verifier_circuit
+  -> run_composite_l1_verifier
+  -> prove_all_tables over the verifier-circuit traces
+  -> AiPowRecursiveCertificate { l0_proof, l0_program, l1_outer_proof }
+```
+
+The production-faithful `prod_recursion_measure 15` run measured the following
+for this batch-STARK checkpoint path:
+
+| Stage | Time | Why it costs |
+|---|---:|---|
+| L0 composite prove | `32.29s` | Proves a `2^15` row, `1917` column composite AIR with `log_blowup=4`; the main-trace LDE alone is about `7.5 GiB` before permutation, quotient, and Merkle-tree allocations |
+| L1 verifier-circuit build | `0.50s` | Builds the recursive verifier circuit and allocates targets; not the bottleneck |
+| L1 in-circuit verify | `0.07s` | Runs the verifier circuit once to produce traces; not the bottleneck |
+| L1 outer certificate prove + verify | `28.69s` | Proves the verifier-circuit traces with `BatchStarkProver::prove_all_tables` using the production Tip5/recompose NPO tables and FRI profile |
+| End-to-end trace-to-recursive-proof time | `61.55s` | Mostly L0 proving plus the L1 batch-STARK outer proof |
+| Recursive-only time after L0 proof exists | `29.26s` | Almost entirely the L1 outer batch-STARK proof |
+
+The size bottleneck in that same batch-STARK checkpoint is not top-level noun
+or serde framing. It is FRI opening material in the L1 outer proof:
+
+| Component | Measured size |
+|---|---:|
+| Fixed-int batch-STARK checkpoint certificate | `205,446` bytes / `200.6 KiB` |
+| Legacy postcard checkpoint certificate | `231,235` bytes / `225.8 KiB` |
+| L1 proof commitments | `4.5 KiB` |
+| L1 opened values | `49.5 KiB` |
+| L1 opening proof | `163.5 KiB` |
+| L1 global lookup data | `6.8 KiB` |
+
+The opening proof dominates because the outer proof is a conventional
+multi-table batch-STARK over the executed verifier circuit. The active
+`q=9`, `cap_height=5` shape still carries 10 independent Merkle auth-path tree
+groups and 819 raw authentication siblings. A direct path-compression model
+saved only `1.2 KiB` on average and `6.8 KiB` in the best sampled case, leaving
+an estimated fixed-int floor around `199.4 KiB`. Reducing queries to `q=8` with
+more query PoW got the checkpoint to `185.6 KiB`, but the L1 outer stage rose
+to `61.90s`; it also violates the production terminal policy of not counting
+query PoW toward the 60-bit floor.
+
+The native terminal certificate is smaller and faster because it does not wrap
+the verifier execution in another batch-STARK proof format. It compiles the
+terminal relation directly and proves:
+
+- a primitive sparse-R1CS row-product component, currently `22,631` bytes;
+- an exhaustive supported-NPO component, currently `62,909` bytes;
+- a single production prelude binding exactly the assignment root.
+
+That is why the current terminal measurement is `85,948` bytes with release
+prove `1.492s` and verify `1.181s`. The remaining stack-level integration gap
+is that `ai-pow-zk` and `ai-pow-miner` public recursive-certificate wrappers
+still name and serialize the batch-STARK checkpoint object, not the native
+terminal production certificate. Until that wrapper/wire path is changed, the
+small terminal proof is a proven recursion-crate production target and
+measurement, while the higher-level noun path remains a soundness-hardened but
+too-large checkpoint path.
+
 ## Current Native Terminal Size And Runtime Breakdown
 
 The current native terminal production certificate uses exhaustive supported-NPO
@@ -116,7 +192,7 @@ certificate without weakening the soundness story.
 |---|---|---:|---|
 | Layer-0 composite STARK | `log_blowup=4`, `num_queries=15`, `pow_bits=1` in `CircuitConfig::PROD` | 60 pure FRI-query bits, 62 bits under the code's Johnson accounting including the two one-bit PoW hooks | No PoW is needed to reach 60 bits; the two bits are extra margin |
 | Hardened L1 batch-STARK checkpoint | `log_blowup=4`, `num_queries=9`, `query_pow_bits=24`, `cap_height=5` | 60 bits under mixed query/PoW Johnson accounting | Yes; acceptable for the checkpoint, not for the terminal production target |
-| Production native terminal backend | `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`, `max_log_arity=3`, `log_final_poly_len=0` | Intended 60 pure FRI-query bits for the terminal backend, conditionally on the selected Plonky3 FRI theorem/assumption and terminal theorem; current real proof-size gate fails | No |
+| Production native terminal backend | `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`, `max_log_arity=3`, `log_final_poly_len=0` | Intended 60 pure FRI-query bits for the terminal backend, conditionally on the selected Plonky3 FRI theorem/assumption and terminal theorem; current real proof-size gate passes at `85,948` bytes / `83.9 KiB` | No |
 | End-to-end production recursive certificate target | L0 proof accepted by the native terminal recursive-verifier certificate | At most the minimum of the L0 and terminal layers: **60 bits** | No terminal query PoW counted |
 
 The recursive certificate does not make the underlying Layer-0 statement more
@@ -157,8 +233,8 @@ Production native terminal certificate target
       schedule, fixed terminal tables, and commitments are bound before
       terminal challenges;
     - primitive recursive-circuit rows and supported Tip5/recompose NPO rows
-      are covered by the terminal primitive sparse-R1CS and polynomial/NPO
-      proximity backend.
+      are covered by the terminal primitive sparse-R1CS row-product proof and
+      exhaustive supported-NPO row openings against the assignment oracle.
   |
   v
 Nockchain block/wire artifact target: structured native terminal certificate
@@ -383,8 +459,9 @@ The end-to-end soundness floor is **60 bits**, with the following reduction:
    exploiting a bug in the AIR/public-input binding.
 2. If the Layer-0 verifier would reject, a valid production terminal
    certificate requires breaking the terminal primitive sparse-R1CS,
-   polynomial/NPO, FRI/PCS, Tip5 commitment, or transcript-binding assumptions,
-   or exploiting a bug in the recursive-verifier relation.
+   exhaustive supported-NPO assignment-oracle openings, FRI/PCS, Tip5
+   commitment, or transcript-binding assumptions, or exploiting a bug in the
+   recursive-verifier relation.
 3. The certificate binds public values, relation/profile metadata, commitments,
    and production parameters before challenge derivation, so there is no
    intended grinding surface over public values, profiles, roots, or query
