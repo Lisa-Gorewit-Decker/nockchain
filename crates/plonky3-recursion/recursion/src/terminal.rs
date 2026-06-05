@@ -32617,6 +32617,209 @@ mod tests {
     }
 
     #[test]
+    fn goldilocks_npo_tip5_lookup_backend_still_needs_trace_domain_npo_io_value_binding() {
+        let (circuit, public_inputs) = build_npo_only_tip5_test_circuit();
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+        let columns = compiler
+            .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
+            .expect("terminal NPO polynomial columns must build");
+        let verifier_columns = compiler
+            .terminal_npo_polynomial_verifier_derived_columns_goldilocks(&vk)
+            .expect("terminal verifier-derived NPO columns must build");
+        let trace_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
+        let (_, honest_trace, _) = compiler
+            .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
+            .expect("honest terminal Tip5 lookup trace must build");
+
+        let table = compiler
+            .terminal_npo_polynomial_table_goldilocks(&vk, &witness)
+            .expect("terminal NPO polynomial table must build");
+        let mut raw_inputs =
+            NativeTerminalCompiler::terminal_npo_tip5_air_inputs_from_table(&table)
+                .expect("terminal Tip5 AIR inputs must derive from table")
+                .iter()
+                .map(|state| core::array::from_fn(|i| PrimeField64::as_canonical_u64(&state[i])))
+                .collect::<Vec<[u64; 16]>>();
+        assert!(
+            !raw_inputs.is_empty(),
+            "test circuit must contain at least one Tip5 row"
+        );
+        raw_inputs[0][0] = (raw_inputs[0][0] + 1) % Goldilocks::ORDER_U64;
+        let (divergent_trace, _) = generate_lookup_trace(&raw_inputs);
+
+        let mut forged_columns = columns.clone();
+        let is_tip5_index = NativeTerminalCompiler::terminal_npo_polynomial_column_index(
+            &forged_columns,
+            "is_tip5",
+        )
+        .expect("test columns must include is_tip5");
+        let first_tip5_row = (0..forged_columns.layout.rows)
+            .find(|row| {
+                NativeTerminalCompiler::terminal_npo_polynomial_column_base_value(
+                    &forged_columns,
+                    is_tip5_index,
+                    *row,
+                    "is_tip5",
+                )
+                .expect("is_tip5 value must be readable")
+                    != Goldilocks::ZERO
+            })
+            .expect("test circuit must contain a Tip5 row");
+        for limb in 0..16 {
+            let input_present_label = format!("input_present_{limb}");
+            let input_present = NativeTerminalCompiler::terminal_npo_polynomial_column_index(
+                &forged_columns,
+                &input_present_label,
+            )
+            .ok()
+            .and_then(|index| {
+                NativeTerminalCompiler::terminal_npo_polynomial_column_base_value(
+                    &forged_columns,
+                    index,
+                    first_tip5_row,
+                    &input_present_label,
+                )
+                .ok()
+            })
+            .unwrap_or(Goldilocks::ZERO);
+            let target_label = if input_present != Goldilocks::ZERO {
+                format!("input_value_{limb}")
+            } else {
+                format!("hidden_tip5_value_{limb}")
+            };
+            if let Ok(target_index) = NativeTerminalCompiler::terminal_npo_polynomial_column_index(
+                &forged_columns,
+                &target_label,
+            ) {
+                forged_columns.columns[target_index][first_tip5_row] =
+                    Goldilocks::from_u64(raw_inputs[0][limb]);
+            }
+        }
+        let first_permutation_row = trace_profile.permutation_row_offset;
+        for limb in 0..10 {
+            let output_label = format!("output_value_{limb}");
+            let output_index = NativeTerminalCompiler::terminal_npo_polynomial_column_index(
+                &forged_columns,
+                &output_label,
+            )
+            .expect("test columns must include output value columns");
+            forged_columns.columns[output_index][first_tip5_row] = divergent_trace.values
+                [first_permutation_row * divergent_trace.width() + 542 + limb];
+        }
+        assert_ne!(
+            NativeTerminalCompiler::terminal_npo_polynomial_tip5_input_lane_base_value(
+                &columns,
+                first_tip5_row,
+                0,
+            )
+            .expect("honest Tip5 input lane must read"),
+            NativeTerminalCompiler::terminal_npo_polynomial_tip5_input_lane_base_value(
+                &forged_columns,
+                first_tip5_row,
+                0,
+            )
+            .expect("forged Tip5 input lane must read"),
+            "forged columns must change the first Tip5 input lane"
+        );
+
+        let merged_roots =
+            NativeTerminalCompiler::terminal_npo_fri_residual_zero_recompose_value_bridge_prelude_commitments_goldilocks(
+                &trace_profile,
+                &columns,
+                &honest_trace,
+            )
+            .expect("honest merged value-bridge prelude roots must build");
+        let divergent_projection_roots =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_io_projection_prelude_commitments_goldilocks(
+                &trace_profile,
+                &divergent_trace,
+            )
+            .expect("divergent trace-IO projection prelude roots must build");
+        let forged_support_bridge_roots =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_io_bridge_prelude_commitments_goldilocks(
+                &trace_profile,
+                &forged_columns,
+                &divergent_trace,
+            )
+            .expect("forged support bridge prelude roots must build");
+        assert_eq!(
+            divergent_projection_roots[1],
+            forged_support_bridge_roots[0]
+        );
+        let mut combined_roots = merged_roots;
+        combined_roots.extend_from_slice(&divergent_projection_roots);
+        combined_roots.push(forged_support_bridge_roots[1]);
+        let combined_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                combined_roots,
+            )
+            .expect("forged combined terminal backend prelude must build");
+
+        let merged_proof =
+            NativeTerminalCompiler::prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_from_columns_goldilocks(
+                &combined_prelude,
+                &trace_profile,
+                &columns,
+                &verifier_columns,
+                &honest_trace,
+            )
+            .expect("honest merged value-bridge proof must build under forged combined prelude");
+        let divergent_air_logup_proof =
+            NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_air_logup_quotient_from_trace_goldilocks(
+                &combined_prelude,
+                &trace_profile,
+                &divergent_trace,
+            )
+            .expect("divergent AIR+LogUp proof must build under forged combined prelude");
+        let divergent_projection_proof =
+            NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_trace_io_projection_from_trace_goldilocks(
+                &combined_prelude,
+                &trace_profile,
+                &divergent_trace,
+            )
+            .expect("divergent trace-IO projection proof must build under forged combined prelude");
+        let forged_support_bridge_proof =
+            NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_io_support_bridge_quotient_from_columns_goldilocks(
+                &combined_prelude,
+                &trace_profile,
+                &forged_columns,
+                &divergent_trace,
+            )
+            .expect("forged support bridge proof must build under forged combined prelude");
+
+        compiler
+            .verify_terminal_npo_tip5_lookup_backend_trace_value_bridge_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &combined_prelude,
+                &merged_proof,
+                &divergent_air_logup_proof,
+                &divergent_projection_proof,
+                &forged_support_bridge_proof,
+            )
+            .expect("current linked backend still accepts forged trace-domain NPO IO projection");
+
+        let serialized = postcard::to_allocvec(&(
+            combined_prelude,
+            merged_proof,
+            divergent_air_logup_proof,
+            divergent_projection_proof,
+            forged_support_bridge_proof,
+        ))
+        .expect("forged trace-domain NPO IO audit checkpoint must serialize");
+        println!(
+            "terminal Tip5 lookup backend forged trace-domain NPO IO audit checkpoint: {} bytes ({:.1} KiB)",
+            serialized.len(),
+            serialized.len() as f64 / 1024.0,
+        );
+    }
+
+    #[test]
     fn goldilocks_npo_tip5_lookup_air_algebra_quotient_rejects_bad_trace_internals() {
         let (circuit, public_inputs) = build_npo_only_tip5_test_circuit();
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
