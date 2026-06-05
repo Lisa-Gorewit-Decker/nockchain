@@ -1848,6 +1848,14 @@ Completion evidence required before this section can be marked satisfied:
 - production measurement proving the final recursive certificate remains near
   100 KiB and recursive proof generation remains near 30 s.
 
+For the optimized Tip5 lookup backend specifically, the next implementation
+must be a bound composition/quotient theorem, not a bare composition-FRI floor.
+The composition route is only sound if the verifier still binds the committed
+trace/root and checks the composition opening against transcript-derived
+quotient commitments or verifier-recomputable openings. A standalone low-degree
+proof over a prover-supplied zero composition polynomial would be only a size
+measurement and must not replace the current exhaustive production NPO path.
+
 ## Implementation Plan
 
 1. Keep the typed compact production certificate as the active terminal
