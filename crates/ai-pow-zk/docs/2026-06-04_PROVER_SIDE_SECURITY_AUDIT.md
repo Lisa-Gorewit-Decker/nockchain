@@ -120,7 +120,7 @@ terminal proof's soundness floor.
 The current terminal-backend candidate clears the size target in the
 latest measured production profile:
 
-- production compact recursive certificate: `87,059` bytes (`85.0 KiB`)
+- production compact recursive certificate: `86,527` bytes (`84.5 KiB`)
 - FRI-native residual-zero+recompose+value-bridge candidate:
   `99,647` bytes (`97.3 KiB`)
 
