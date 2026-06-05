@@ -41164,6 +41164,25 @@ mod tests {
             .verify_goldilocks_production_certificate(&vk, &certificate, &public_inputs)
             .expect("production certificate must verify typed body");
 
+        let mut trailing_body =
+            postcard::to_allocvec(&proof).expect("production proof must serialize");
+        trailing_body.push(0);
+        let trailing_certificate = compiler
+            .assemble_goldilocks_certificate(
+                &vk,
+                TerminalProofKind::Production,
+                &public_inputs,
+                trailing_body,
+            )
+            .expect("raw production envelope can assemble around malformed typed body");
+        let err = compiler
+            .verify_goldilocks_production_certificate(&vk, &trailing_certificate, &public_inputs)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            NativeTerminalVerifyError::TerminalProductionProofTrailingBytes { trailing_len: 1 }
+        );
+
         let mut tampered = proof.clone();
         tampered.primitive_r1cs_proof.rounds[0].eval_0_basis[0] ^= 1;
         let err = compiler

@@ -61,6 +61,12 @@ Rejected size routes measured on 2026-06-03:
   savings. The fixed-int certificate floor would remain about 199.4 KiB on
   average and 193.8 KiB even in the best sampled case. This route is rejected
   as a route to ~100 KiB.
+- fixed-int bincode for the current integrated terminal backend was re-tested
+  on 2026-06-05 and rejected. The heavy integrated-LogUp checkpoint grew from
+  `240,160` bytes / `234.5 KiB` under postcard to `259,618` bytes /
+  `253.5 KiB` under fixed-int bincode. The small typed production checkpoint
+  also grew from `904` bytes to `1,510` bytes. The active production proof-body
+  codec therefore stays postcard with explicit no-trailing-bytes decoding.
 
 The path-compression result is security-relevant: the only safe version would
 rederive query indices from the Fiat-Shamir transcript after all commitments,
@@ -544,11 +550,19 @@ for this route.
   `prove=7.174s`, and `verify=44.4ms` in the three-test backend audit run.
   This is a small win over the exhaustive-linked checkpoint and a large win
   over the separate LogUp-linked checkpoint, and the tamper check rejects a
-  modified trace-domain NPO IO opening. A 26-lane single-group sweep was also
-  worse: `86,187` bytes / `84.2 KiB`, compact FRI payload `84,355` bytes /
-  `82.4 KiB`, and `prove=17.634s`. The result is useful but still negative
-  for the ~100 KiB target: the bridge is now integrated, so the next size
-  reduction has to shrink the shared FRI oracle payload itself rather than
+  modified trace-domain NPO IO opening. A 2026-06-05 integrated group-size
+  sweep kept the 60-bit pure-query FRI tuple fixed and tested the accumulator
+  width versus quotient-degree tradeoff directly: 1-lane groups measured
+  `252,162` bytes / `246.3 KiB`, compact FRI `218,450` bytes / `213.3 KiB`,
+  `prove=6.350s`; 7-lane groups measured `256,485` bytes / `250.5 KiB`,
+  compact FRI `225,742` bytes / `220.5 KiB`, `prove=9.257s`; and 15-lane
+  groups measured `263,254` bytes / `257.1 KiB`, compact FRI `232,773` bytes /
+  `227.3 KiB`, `prove=13.499s`. A 26-lane single-group standalone sweep was
+  also worse: `86,187` bytes / `84.2 KiB`, compact FRI payload `84,355` bytes /
+  `82.4 KiB`, and `prove=17.634s`. The 3-lane grouping remains the measured
+  size winner for the integrated backend. The result is useful but still
+  negative for the ~100 KiB target: the bridge is now integrated, so the next
+  size reduction has to shrink the shared FRI oracle payload itself rather than
   moving the same LogUp bridge between standalone and shared proofs.
 - `TerminalNpoTip5LookupFriOpeningProof`: a native terminal FRI opening
   checkpoint for the optimized Tip5 lookup AIR main trace. The prover commits
@@ -1817,9 +1831,10 @@ Security-audit conclusions for the current implementation checkpoint:
   query_pow_bits=0`, for exactly 60 pure-query Johnson bits. Nonzero terminal
   `query_pow_bits` are rejected rather than maintained as a lower-query or
   mixed-accounting path.
-- Fixed-int bincode serialization is size-only: it changes the Rust helper's
-  byte encoding and rejects trailing bytes on decode, but does not alter the
-  proof relation, Fiat-Shamir transcript, FRI parameters, or public inputs.
+- Production typed proof-body decoding rejects trailing bytes. A fixed-int
+  bincode production codec would be relation-neutral, but current measurements
+  show it increases the active terminal proof sizes, so postcard remains the
+  production proof-body codec.
 - The terminal production checkpoint is now measured at 86,527 bytes, or 84.5 KiB, with 60
   pure-query bits and exhaustive supported-NPO verification. It reached the
   ~100 KiB size target through structural proof-body changes, especially
