@@ -37781,6 +37781,10 @@ mod tests {
             )
             .expect("trace-direct-IO support prelude roots must build");
         assert_eq!(trace_direct_io_support_roots.len(), 1);
+        let assignment_oracle = compiler
+            .commit_terminal_assignment_goldilocks(&vk, &public_inputs, &witness)
+            .expect("terminal assignment oracle must commit");
+        let assignment_commitment = assignment_oracle.commitment();
         let mut combined_roots = merged_roots.clone();
         combined_roots.extend_from_slice(&trace_io_support_bridge_roots);
         let combined_prelude = compiler
@@ -37791,7 +37795,8 @@ mod tests {
                 combined_roots,
             )
             .expect("combined terminal backend prelude must build");
-        let mut integrated_roots = merged_roots.clone();
+        let mut integrated_roots = vec![assignment_commitment.root];
+        integrated_roots.extend_from_slice(&merged_roots);
         integrated_roots.extend_from_slice(&trace_direct_io_support_roots);
         let integrated_prelude = compiler
             .build_proof_prelude_goldilocks(
@@ -37936,6 +37941,17 @@ mod tests {
             logup_verify_elapsed,
         );
 
+        let primitive_prove_start = std::time::Instant::now();
+        let primitive_r1cs_proof = compiler
+            .prove_terminal_r1cs_row_product_sumcheck_goldilocks(
+                &vk,
+                &public_inputs,
+                &integrated_prelude,
+                &assignment_oracle,
+                &witness,
+            )
+            .expect("primitive R1CS production proof must build under integrated prelude");
+        let primitive_prove_elapsed = primitive_prove_start.elapsed();
         let integrated_logup_prove_start = std::time::Instant::now();
         let integrated_merged_proof = compiler
             .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks(
@@ -37954,6 +37970,18 @@ mod tests {
             )
             .expect("integrated NPO IO LogUp backend proof must build under integrated prelude");
         let integrated_logup_prove_elapsed = integrated_logup_prove_start.elapsed();
+        let candidate_prove_elapsed = primitive_prove_elapsed + integrated_logup_prove_elapsed;
+        let primitive_verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_r1cs_row_product_sumcheck_goldilocks(
+                &vk,
+                &public_inputs,
+                &integrated_prelude,
+                &assignment_commitment,
+                &primitive_r1cs_proof,
+            )
+            .expect("primitive R1CS production proof must verify under integrated prelude");
+        let primitive_verify_elapsed = primitive_verify_start.elapsed();
         let integrated_logup_verify_start = std::time::Instant::now();
         compiler
             .verify_terminal_npo_tip5_lookup_backend_trace_value_integrated_logup_bridge_goldilocks::<
@@ -37967,12 +37995,20 @@ mod tests {
             )
             .expect("integrated NPO IO LogUp backend checkpoint must verify");
         let integrated_logup_verify_elapsed = integrated_logup_verify_start.elapsed();
+        let candidate_verify_elapsed = primitive_verify_elapsed + integrated_logup_verify_elapsed;
         let integrated_logup_serialized = postcard::to_allocvec(&(
             integrated_prelude.clone(),
             integrated_merged_proof.clone(),
             integrated_logup_proof.clone(),
         ))
         .expect("integrated NPO IO LogUp backend checkpoint must serialize");
+        let candidate_serialized = postcard::to_allocvec(&(
+            integrated_prelude.clone(),
+            primitive_r1cs_proof.clone(),
+            integrated_merged_proof.clone(),
+            integrated_logup_proof.clone(),
+        ))
+        .expect("integrated production-candidate checkpoint must serialize");
         let integrated_logup_fri_bytes = postcard::to_allocvec(&integrated_logup_proof.proof)
             .expect("integrated NPO IO LogUp compact FRI must serialize");
         let integrated_logup_fri_breakdown =
@@ -37985,6 +38021,17 @@ mod tests {
             integrated_logup_fri_bytes.len() as f64 / 1024.0,
             integrated_logup_prove_elapsed,
             integrated_logup_verify_elapsed,
+        );
+        println!(
+            "terminal Tip5 lookup backend production-candidate integrated-LogUp checkpoint: {} bytes ({:.1} KiB), primitive_prove={:?}, npo_prove={:?}, total_prove={:?}, primitive_verify={:?}, npo_verify={:?}, total_verify={:?}",
+            candidate_serialized.len(),
+            candidate_serialized.len() as f64 / 1024.0,
+            primitive_prove_elapsed,
+            integrated_logup_prove_elapsed,
+            candidate_prove_elapsed,
+            primitive_verify_elapsed,
+            integrated_logup_verify_elapsed,
+            candidate_verify_elapsed,
         );
         println!(
             "terminal Tip5 lookup backend integrated-LogUp FRI breakdown: compact={} plain={} compact_input_batches={} compact_commit_rounds={} compact_commits_final={} plain_input_values={} plain_input_paths={} plain_commit_values={} plain_commit_paths={} plain_commits_final={}",
