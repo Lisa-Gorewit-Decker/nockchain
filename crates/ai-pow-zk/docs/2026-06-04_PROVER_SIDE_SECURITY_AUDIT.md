@@ -164,6 +164,16 @@ the smaller `LogupMain` route; the full-main path exists to prepare a future
 shared AIR-algebra+LogUp FRI opening. Its focused measurement is `176,429`
 bytes (`172.3 KiB`), so it is not a standalone production-size improvement.
 
+2026-06-05 follow-up: the shared full-main AIR-algebra+LogUp quotient proof now
+commits one full-main trace, derives separate AIR and LogUp folding challenges
+from one transcript, commits the AIR quotient, LogUp accumulator, and LogUp
+quotient, and verifies all four openings with one compressed terminal FRI proof.
+Focused tamper coverage checks trace-root binding, profile recomputation,
+accumulator opening shape, and AIR/LogUp quotient opening tampering. The
+measurement is `185,396` bytes (`181.1 KiB`), with compact FRI payload
+`170,003` bytes (`166.0 KiB`), so this is a useful merge checkpoint but still
+too large to be the final production NPO theorem.
+
 ## Commands Run For This Checkpoint
 
 ```text
