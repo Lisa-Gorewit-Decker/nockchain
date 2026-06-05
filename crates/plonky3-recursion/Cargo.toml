@@ -100,6 +100,13 @@ p3-tip5-circuit-air = { path = "tip5-circuit-air", version = "0.1.0" }
 inherits = "release"
 debug = true
 
+[profile.dev]
+opt-level = 3
+debug = 2
+
+[profile.test]
+inherits = "dev"
+
 [profile.optimized]
 inherits = "release"
 lto = "thin"
