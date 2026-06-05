@@ -31,7 +31,7 @@ must not be treated as the production block/wire artifact.
 | Hardened L1 batch-STARK recursive certificate | Soundness-hardened recursive verifier checkpoint/fallback path; not acceptable as the production wire artifact because it exceeds the size budget | `205,446` bytes / `200.6 KiB` fixed-int bincode (`231,235` bytes / `225.8 KiB` legacy postcard) | `prod_recursion_measure 15` |
 | Native terminal certificate fixture | Recursion-crate terminal proof over the real Tip5 verifier-circuit fixture; proves the terminal backend can be small, but is not yet the full `ai-pow-zk` composite verifier path | `85,948` bytes / `83.9 KiB`; release prove `1.492s`, verify `1.181s` | `RUSTFLAGS="-C target-cpu=native" cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --release --test test_l1_outer_cert_tip5_unified terminal_production_certificate_measures_real_tip5_l0_verifier_circuit -- --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier native terminal path | Newly wired opt-in diagnostic path; not yet production-qualified | Release/native run of `terminal_recursive_certificate_round_trip_verifies` was stopped after more than two minutes without completing the proof, so no production size/time claim is valid yet | 2026-06-05 follow-up integration run |
-| Full `ai-pow-zk` composite-verifier terminal relation metrics | Non-proving diagnostic for the same path | PROD baseline: `125,991` ops, `222,017` witnesses, `43,443` terminal private inputs, `14,049` NPO rows, `242,798` NPO residual components, `5,354` bytes of terminal public inputs, terminal compile `20.908s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_for_prod_baseline_composite_are_available -- --ignored --nocapture`, 2026-06-05 |
+| Full `ai-pow-zk` composite-verifier terminal relation metrics | Non-proving diagnostic for the same path | PROD baseline: `125,991` ops, `222,017` witnesses, `43,443` terminal private inputs, `14,049` NPO rows, `242,798` NPO residual components, `5,340` bytes of terminal public inputs, terminal compile `21.022s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_for_prod_baseline_composite_are_available -- --ignored --nocapture`, 2026-06-05 |
 
 The active production target is therefore:
 
@@ -143,12 +143,19 @@ The non-proving terminal-relation metrics explain why this full path is slow:
 
 | Metric | TEST_PEARL baseline | PROD baseline |
 |---|---:|---:|
-| Terminal compile time | `21.889s` | `20.908s` |
+| Terminal compile time | `21.947s` | `21.022s` |
 | Terminal public input values | `459` | `459` |
-| Terminal public input bytes | `5,381` | `5,354` |
+| Terminal public input bytes | `5,381` | `5,340` |
 | Terminal private input values | `46,002` | `43,443` |
 | Terminal operations | `131,242` | `125,991` |
 | Primitive operations | `111,656` | `106,365` |
+| Const operations | `578` | `582` |
+| Public operations | `459` | `459` |
+| ALU add operations | `8,939` | `8,832` |
+| ALU multiplication operations | `10,317` | `10,234` |
+| ALU boolean-check operations | `240` | `256` |
+| ALU fused multiply-add operations | `10,195` | `10,132` |
+| ALU Horner-accumulator operations | `80,928` | `75,870` |
 | Hint operations | `5,577` | `5,577` |
 | Supported NPO operations / rows | `14,009` | `14,049` |
 | Tip5 rows | `8,002` | `8,081` |
@@ -163,7 +170,17 @@ The terminal public input vector is about `5.3 KiB`, so including it with the
 terminal certificate is not the size blocker. The blockers are the generic L1
 verifier relation itself: more than `100k` primitive operations, about `14k`
 supported NPO rows, and a terminal compile step that already consumes most of
-the `<30s` budget before terminal proving begins.
+the `<30s` budget before terminal proving begins. Within the primitive side,
+the single biggest class is Horner accumulation: `75,870` PROD operations,
+about 71% of all primitive operations. Those steps are emitted by the generic
+FRI/PCS verifier arithmetic for polynomial opening, quotient, and batch
+consistency checks (`crates/plonky3-recursion/recursion/src/pcs/fri/verifier.rs`
+uses `horner_acc_step` in the FRI verifier). On the NPO side, the rows are
+almost entirely in-circuit Tip5 permutation checks (`8,081` rows) and
+coefficient recompose links (`5,743` rows). The recompose/coeff table is
+currently part of the D=2 recursive-verifier construction and is enabled at
+`build_composite_l1_verifier_circuit`; removing it would be a new soundness
+change, not a serialization or performance tweak.
 
 ## Current Native Terminal Size And Runtime Breakdown
 

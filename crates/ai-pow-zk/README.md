@@ -163,8 +163,11 @@ heuristic is **not** adopted).
     non-proving production-profile relation diagnostic reports **125,991**
     terminal operations, **222,017** witnesses, **43,443** terminal private
     inputs, **14,049** supported-NPO rows, **242,798** NPO residual components,
-    and **20.908 s** terminal compile time before proving begins. The
-    polynomial/FIOP NPO backend remains a diagnostic and future hardening track.
+    and **21.022 s** terminal compile time before proving begins. The largest
+    primitive class is generic FRI/PCS Horner arithmetic (**75,870** ops), while
+    the NPO side is mostly Tip5 rows (**8,081**) and `recompose/coeff` rows
+    (**5,743**). The polynomial/FIOP NPO backend remains a diagnostic and
+    future hardening track.
     The full stack therefore does not yet clear the ≤100 KiB / <30s production
     target without terminal query-PoW grinding.
     Trade-off: `lb=4` ⇒ 16× LDE (vs pre-2026-05-20 4×) ⇒ ~4×

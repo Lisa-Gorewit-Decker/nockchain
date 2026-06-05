@@ -39,11 +39,18 @@ composite L1 terminal relation:
 
 | Metric | PROD baseline |
 |---|---:|
-| Terminal compile time | `20.908s` |
-| Terminal public input bytes | `5,354` |
+| Terminal compile time | `21.022s` |
+| Terminal public input bytes | `5,340` |
 | Terminal private input values | `43,443` |
 | Terminal operations | `125,991` |
 | Primitive operations | `106,365` |
+| Const operations | `582` |
+| Public operations | `459` |
+| ALU add operations | `8,832` |
+| ALU multiplication operations | `10,234` |
+| ALU boolean-check operations | `256` |
+| ALU fused multiply-add operations | `10,132` |
+| ALU Horner-accumulator operations | `75,870` |
 | Supported NPO rows | `14,049` |
 | Tip5 rows | `8,081` |
 | Recompose/coeff rows | `5,743` |
@@ -56,6 +63,20 @@ not the blocker at about `5.3 KiB`; the generic composite verifier relation is.
 Any production candidate has to reduce more than `100k` primitive operations,
 about `14k` supported NPO rows, and a terminal compile step that already
 consumes most of the `<30s` budget before proving starts.
+
+The operation-class breakdown makes the cause more specific. In the production
+profile, Horner accumulation accounts for `75,870` of `106,365` primitive
+operations. These are verifier-arithmetic steps from the generic FRI/PCS
+opening, quotient, and batch-consistency checks, not matrix-multiplication work
+or terminal public-input framing. The NPO rows are also concentrated:
+`8,081` Tip5 permutation rows and `5,743` `recompose/coeff` rows. The
+`recompose/coeff` rows are emitted because
+`build_composite_l1_verifier_circuit` enables
+`set_recompose_coeff_ctl_for_decompose_links(true)` for the D=2 recursive
+verifier. Disabling that table may make a diagnostic smaller, but it is not a
+production reduction unless there is a replacement proof that every hinted
+extension-field decomposition remains connected to a creator and every affected
+WitnessChecks bus entry is sound.
 
 The retired polynomial NPO production candidate remains useful diagnostic
 evidence. Its size blocker was precise:
@@ -304,8 +325,10 @@ backend if the unified two-subproof merge still lands above the target.
 ## Direction 4: Runtime Instrumentation And Prover Work Reuse
 
 This direction was useful for diagnosing the old polynomial production path,
-but the promoted exhaustive path already satisfies the `<30s` release target.
-Keep this work for future polynomial/proximity hardening measurements.
+and it remains necessary for the full composite terminal path. The promoted
+exhaustive path satisfies the `<30s` release target only for the
+recursion-crate Tip5 verifier fixture; the actual `ai-pow-zk` composite
+terminal path did not finish a release proof within two minutes.
 
 The current production measurement prints total production prove time.
 The first runtime-instrumentation pass landed after this analysis. The
@@ -325,9 +348,13 @@ Immediate work:
 1. Run the real measurement in release mode with `RUSTFLAGS="-C
    target-cpu=native"` and `NOCK_TERMINAL_PROFILE_PROVER=1` to capture
    per-stage close-event timings.
-2. Cache selected+lookup matrix, trace bundle matrix, and prelude commitment
+2. Keep the non-proving relation metric in the hot loop. The current PROD
+   relation has `75,870` Horner operations before proof construction, so
+   optimizing terminal proof serialization alone cannot satisfy the `<30s`
+   full-stack target.
+3. Cache selected+lookup matrix, trace bundle matrix, and prelude commitment
    digests across the prelude builder and subproof builders.
-3. Avoid recomputing verifier-derived columns/layout/profile in the hot path
+4. Avoid recomputing verifier-derived columns/layout/profile in the hot path
    when the verifier key is unchanged.
 
 Assessment: low soundness risk and likely important for time. It is not enough
@@ -382,7 +409,9 @@ I would pursue three tracks in this order:
 2. **Reduce the full composite L1 terminal relation before spending more effort
    on terminal proof-body compression.** The current blocker is relation size:
    `106,365` primitive operations and `14,049` supported NPO rows in the PROD
-   baseline.
+   baseline. The primitive reduction should focus first on generic FRI/PCS
+   verifier Horner work; the NPO reduction should focus on Tip5 and
+   recompose/coeff callsite count without removing their bindings.
 3. **Continue the unified NPO proof only as hardening/future work.** It would
    reduce witness leakage if it can share one FRI payload and stay under target.
 4. **Keep batch-STARK hardened as checkpoint only.** It is soundness-relevant
