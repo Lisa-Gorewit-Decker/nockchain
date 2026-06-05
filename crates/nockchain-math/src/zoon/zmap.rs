@@ -6,7 +6,8 @@ use nockvm::site::{site_slam, Site};
 use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 
 use super::common::*;
-use crate::noun_ext::NounMathExt;
+use crate::noun_ext::{NounMathExt, NounMathExtHandle};
+use crate::structs::HoonMapIter;
 
 pub trait ZMapHasher<K, V> {
     type Output: Clone;
@@ -60,6 +61,47 @@ pub fn z_map_put<A: NounAllocator, H: TipHasher>(
             }
         }
     }
+}
+
+pub fn encode_entries<A, K, V, H>(
+    stack: &mut A,
+    entries: &[(K, V)],
+    hasher: &H,
+) -> Result<Noun, JetErr>
+where
+    A: NounAllocator,
+    K: NounEncode,
+    V: NounEncode,
+    H: TipHasher,
+{
+    entries.iter().try_fold(D(0), |acc, (key, value)| {
+        let mut key = key.to_noun(stack);
+        let mut value = value.to_noun(stack);
+        z_map_put(stack, &acc, &mut key, &mut value, hasher)
+    })
+}
+
+pub fn decode_entries<K, V>(
+    noun: &Noun,
+    space: &NounSpace,
+    context: &str,
+) -> Result<Vec<(K, V)>, NounDecodeError>
+where
+    K: NounDecode,
+    V: NounDecode,
+{
+    HoonMapIter::new(&noun.in_space(space))
+        .filter(|entry| entry.is_cell())
+        .map(|entry| {
+            let [key_raw, value_raw] = entry.uncell().map_err(|_| {
+                NounDecodeError::Custom(format!("{context} entry must be a key/value pair"))
+            })?;
+            Ok((
+                K::from_noun(&key_raw.noun(), space)?,
+                V::from_noun(&value_raw.noun(), space)?,
+            ))
+        })
+        .collect()
 }
 
 /// Reduce a z-map using the gate's cached `Site`, mirroring Hoon `++rep`.
@@ -194,6 +236,21 @@ impl<K, V> ZMap<K, V> {
         self.tree.fold(&empty, &|payload, left, right| {
             node(&payload.key, &payload.value, left, right)
         })
+    }
+
+    pub fn try_fold_tree<R, E, FEmpty, FNode>(
+        &self,
+        mut empty: FEmpty,
+        mut node: FNode,
+    ) -> Result<R, E>
+    where
+        FEmpty: FnMut() -> Result<R, E>,
+        FNode: FnMut(&K, &V, R, R) -> Result<R, E>,
+    {
+        let mut visit = |payload: &ZMapEntry<K, V>, left, right| {
+            node(&payload.key, &payload.value, left, right)
+        };
+        self.tree.try_fold(&mut empty, &mut visit)
     }
 
     pub fn hash_with<H>(&self, hasher: &H) -> H::Output
@@ -434,6 +491,46 @@ mod tests {
             with_duplicates.hash_with(&DebugMapHasher),
             canonical.hash_with(&DebugMapHasher)
         );
+    }
+
+    #[test]
+    fn zmap_try_fold_tree_matches_hash_with() {
+        let map = ZMap::try_from_entries(vec![
+            (BoundedTreeValue::Atom(1), BoundedTreeValue::Atom(10)),
+            (BoundedTreeValue::Atom(7), BoundedTreeValue::Atom(70)),
+            (BoundedTreeValue::Atom(3), BoundedTreeValue::Atom(30)),
+        ])
+        .expect("z-map should build");
+
+        let folded = map
+            .try_fold_tree(
+                || Ok::<_, &'static str>("~".to_string()),
+                |key, value, left, right| Ok(format!("{key:?}=>{value:?}<{left}|{right}>")),
+            )
+            .expect("try_fold_tree should succeed");
+
+        assert_eq!(folded, map.hash_with(&DebugMapHasher));
+    }
+
+    #[test]
+    fn zmap_try_fold_tree_propagates_errors() {
+        let map =
+            ZMap::try_from_entries(vec![(1u64, 10u64), (7u64, 70u64)]).expect("z-map should build");
+
+        let err = map
+            .try_fold_tree(
+                || Ok::<_, &'static str>(()),
+                |key, _value, _left, _right| {
+                    if *key == 7 {
+                        Err("boom")
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .expect_err("try_fold_tree should propagate node errors");
+
+        assert_eq!(err, "boom");
     }
 
     #[test]

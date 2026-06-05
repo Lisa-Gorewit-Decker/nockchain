@@ -294,6 +294,29 @@ impl<P> ZTree<P> {
             }
         }
     }
+
+    pub(crate) fn try_fold<R, E, FEmpty, FNode>(
+        &self,
+        empty: &mut FEmpty,
+        node: &mut FNode,
+    ) -> Result<R, E>
+    where
+        FEmpty: FnMut() -> Result<R, E>,
+        FNode: FnMut(&P, R, R) -> Result<R, E>,
+    {
+        match self {
+            Self::Empty => empty(),
+            Self::Node {
+                payload,
+                left,
+                right,
+            } => {
+                let left = left.try_fold(empty, node)?;
+                let right = right.try_fold(empty, node)?;
+                node(payload, left, right)
+            }
+        }
+    }
 }
 
 pub(crate) struct ZTreeIter<'a, P> {

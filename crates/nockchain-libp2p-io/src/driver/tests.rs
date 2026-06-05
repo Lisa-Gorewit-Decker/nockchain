@@ -1714,11 +1714,14 @@ async fn test_route_response_fact_tracks_tx_source_hints_from_heard_block() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn route_response_fact_duplicate_current_heard_block_gates_while_processing_then_seen_releases(
-) {
+async fn route_response_fact_heard_block_ack_without_seen_releases_processing_for_replay() {
     let transcript = DriverTranscript::default();
-    let scripted_traffic =
-        build_scripted_traffic_cop(transcript, Vec::new(), vec![PokeResult::Ack]).await;
+    let scripted_traffic = build_scripted_traffic_cop(
+        transcript,
+        Vec::new(),
+        vec![PokeResult::Ack, PokeResult::Ack],
+    )
+    .await;
     let metrics = isolated_test_metrics();
     let state_arc = Arc::new(Mutex::new(P2PState::new(
         metrics.clone(),
@@ -1731,7 +1734,6 @@ async fn route_response_fact_duplicate_current_heard_block_gates_while_processin
     }
     let peer = PeerId::random();
     let height = 42u64;
-    let block_seed = 10_000 + height;
     let (response, _) = heard_block_fact_with_tx_ids(height, &[]);
     let block_id = match &response {
         NockchainFact::HeardBlock(block_id, _) => block_id.clone(),
@@ -1748,53 +1750,183 @@ async fn route_response_fact_duplicate_current_heard_block_gates_while_processin
     )
     .await
     .expect("first heard-block should route");
+    {
+        let state_guard = state_arc.lock().await;
+        assert!(
+            !state_guard.is_processing_block(&block_id),
+            "acked heard-block should release its processing claim"
+        );
+        assert!(
+            !state_guard.seen_blocks.contains(&block_id),
+            "ack without %seen must leave seen-block dedupe untouched"
+        );
+    }
+
     route_response_fact(
         peer, response, &scripted_traffic.traffic, &metrics, &state_arc, &swarm_tx,
     )
     .await
-    .expect("duplicate heard-block should gate cleanly");
+    .expect("replay after ack without %seen should route");
 
     assert_eq!(
         scripted_traffic.poke_count.load(Ordering::SeqCst),
-        1,
-        "duplicate current heard-block should not repoke before %seen arrives"
+        2,
+        "ack without %seen should not permanently gate a replay"
     );
     assert_eq!(
         metrics.block_seen_cache_hits.fetch_add(0),
-        1,
-        "duplicate current heard-block should be counted as a gate hit"
+        0,
+        "ack-released replay should not count as a cache gate hit"
+    );
+    assert_eq!(
+        metrics.block_seen_cache_misses.fetch_add(0),
+        2,
+        "both heard-block responses should reach the kernel gate"
     );
     {
         let state_guard = state_arc.lock().await;
         assert!(
-            state_guard.is_processing_block(&block_id),
-            "successful first poke should retain an in-flight processing claim until %seen"
+            !state_guard.is_processing_block(&block_id),
+            "second ack should also release the processing claim"
         );
         assert!(
             !state_guard.seen_blocks.contains(&block_id),
-            "driver must not treat an acked poke as seen before the kernel emits %seen"
+            "driver must not mark a block seen without the kernel %seen effect"
         );
     }
+}
 
-    handle_effect(
-        seen_block_payload_only_effect_slab(block_seed),
-        swarm_tx,
-        vec![],
-        false,
-        state_arc.clone(),
-        metrics,
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn route_response_fact_seen_block_without_kernel_request_stays_gated() {
+    let transcript = DriverTranscript::default();
+    let scripted_traffic =
+        build_scripted_traffic_cop(transcript, Vec::new(), vec![PokeResult::Ack]).await;
+    let metrics = isolated_test_metrics();
+    let state_arc = Arc::new(Mutex::new(P2PState::new(
+        metrics.clone(),
+        LIBP2P_CONFIG.seen_tx_clear_interval,
+    )));
+    let (swarm_tx, _swarm_rx) = tokio::sync::mpsc::channel(8);
+    let peer = PeerId::random();
+    let height = 42u64;
+    let (response, _) = heard_block_fact_with_tx_ids(height, &[]);
+    let block_id = match &response {
+        NockchainFact::HeardBlock(block_id, _) => block_id.clone(),
+        other => panic!("expected heard-block fact, got {other:?}"),
+    };
+    {
+        let mut state_guard = state_arc.lock().await;
+        state_guard.first_negative = height;
+        state_guard.finish_processing_block_seen(&block_id);
+    }
+
+    route_response_fact(
+        peer, response, &scripted_traffic.traffic, &metrics, &state_arc, &swarm_tx,
     )
     .await
-    .expect("payload-only seen effect should release block processing");
+    .expect("seen heard-block duplicate should gate cleanly");
 
+    assert_eq!(
+        scripted_traffic.poke_count.load(Ordering::SeqCst),
+        0,
+        "seen block without kernel demand should not reach the kernel"
+    );
+    assert_eq!(
+        metrics.block_seen_cache_hits.fetch_add(0),
+        1,
+        "seen block duplicate should be counted as a gate hit"
+    );
     let state_guard = state_arc.lock().await;
     assert!(
         !state_guard.is_processing_block(&block_id),
-        "%seen should release the block processing claim"
+        "gated seen block should not acquire a processing claim"
     );
     assert!(
         state_guard.seen_blocks.contains(&block_id),
-        "%seen should still mark the block as seen"
+        "gated seen block should remain in seen-block dedupe"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn route_response_fact_kernel_requested_seen_block_ack_releases_for_next_replay() {
+    let transcript = DriverTranscript::default();
+    let scripted_traffic = build_scripted_traffic_cop(
+        transcript,
+        Vec::new(),
+        vec![PokeResult::Ack, PokeResult::Ack],
+    )
+    .await;
+    let metrics = isolated_test_metrics();
+    let state_arc = Arc::new(Mutex::new(P2PState::new(
+        metrics.clone(),
+        LIBP2P_CONFIG.seen_tx_clear_interval,
+    )));
+    let (swarm_tx, _swarm_rx) = tokio::sync::mpsc::channel(8);
+    let peer = PeerId::random();
+    let height = 42u64;
+    let (response, _) = heard_block_fact_with_tx_ids(height, &[]);
+    let block_id = match &response {
+        NockchainFact::HeardBlock(block_id, _) => block_id.clone(),
+        other => panic!("expected heard-block fact, got {other:?}"),
+    };
+    {
+        let mut state_guard = state_arc.lock().await;
+        state_guard.first_negative = height;
+        state_guard.finish_processing_block_seen(&block_id);
+        state_guard.note_kernel_block_height_requested(height);
+    }
+
+    route_response_fact(
+        peer,
+        response.clone(),
+        &scripted_traffic.traffic,
+        &metrics,
+        &state_arc,
+        &swarm_tx,
+    )
+    .await
+    .expect("kernel-requested seen block should replay");
+    {
+        let state_guard = state_arc.lock().await;
+        assert!(
+            !state_guard.is_processing_block(&block_id),
+            "acked seen-block replay should release its processing claim"
+        );
+        assert!(
+            state_guard.seen_blocks.contains(&block_id),
+            "acked replay must keep seen-block dedupe intact"
+        );
+    }
+
+    route_response_fact(
+        peer, response, &scripted_traffic.traffic, &metrics, &state_arc, &swarm_tx,
+    )
+    .await
+    .expect("second kernel-requested seen block replay should also route");
+
+    assert_eq!(
+        scripted_traffic.poke_count.load(Ordering::SeqCst),
+        2,
+        "acked seen-block replay should not leave a stale processing claim"
+    );
+    assert_eq!(
+        metrics.block_seen_cache_hits.fetch_add(0),
+        0,
+        "kernel-requested seen-block replay should bypass the seen gate"
+    );
+    assert_eq!(
+        metrics.block_seen_cache_misses.fetch_add(0),
+        2,
+        "both kernel-requested replays should reach the kernel gate"
+    );
+    let state_guard = state_arc.lock().await;
+    assert!(
+        !state_guard.is_processing_block(&block_id),
+        "second ack should release the seen-block replay claim"
+    );
+    assert!(
+        state_guard.seen_blocks.contains(&block_id),
+        "seen-block replay should not clear seen-block dedupe"
     );
 }
 

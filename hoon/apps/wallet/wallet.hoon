@@ -370,6 +370,7 @@
         %show-seed-phrase       (do-show-seed-phrase cause)
         %show-master-zpub    (do-show-master-zpub cause)
         %show-master-zprv  (do-show-master-zprv cause)
+        %show-master-prv  (do-show-master-prv cause)
         %list-master-addresses  (do-list-master-addresses cause)
         %set-active-master-address  (do-set-active-master-address cause)
         %fakenet               [[%exit 0]~ state(bc constants.cause)]
@@ -854,7 +855,7 @@
     =/  =transaction:wt  dat.cause
     =/  transaction-name=@t  name.transaction
     =/  =spends:transact  spends.transaction
-    =/  display=transaction-display:wt  display.transaction
+    =/  metadata=metadata:wt  metadata.transaction
     =/  =witness-data:wt  witness-data.transaction
     =/  signed-spends=spends:v1:transact
       (apply:witness-data:wt witness-data spends)
@@ -866,7 +867,7 @@
           transaction-name
           outputs.tx
           fees
-          display.transaction
+          metadata
           get-note:v
           `witness-data
       ==
@@ -924,7 +925,7 @@
     =/  =transaction:wt  dat.cause
     =/  transaction-name=@t  name.transaction
     =/  =spends:transact  spends.transaction
-    =/  display=transaction-display:wt  display.transaction
+    =/  metadata=metadata:wt  metadata.transaction
     =/  fees=@  (roll-fees:spends:v1:transact spends)
     =/  =raw-tx:v1:transact  (new:raw-tx:v1:transact spends)
     =/  =tx:v1:transact  (new:tx:v1:transact raw-tx height.balance.state)
@@ -933,7 +934,7 @@
           transaction-name
           outputs.tx
           fees
-          display.transaction
+          metadata
           get-note:v
           `witness-data.transaction
       ==
@@ -1243,6 +1244,34 @@
         [%exit 0]
     ==
   ::
+  ++  do-show-master-prv
+    |=  =cause:wt
+    ?>  ?=(%show-master-prv -.cause)
+    %-  (debug "show-master-prv")
+    ?~  active-master.state
+      :_  state
+      :~  :-  %markdown
+          %-  crip
+          """
+          Cannot show master private key without active master address set. Please import a master key / seed phrase or generate a new one.
+          """
+          [%exit 0]
+      ==
+    =/  =coil:wt  ~(master get:v %prv)
+    =/  version=@  -.coil
+    =/  private-key-b58=@t  (crip (en:base58:wrap p.key.coil))
+    :_  state
+    :~  :-  %markdown
+        %-  crip
+        """
+        ## Master Private Key (base58)
+
+        - Private Key: {(trip private-key-b58)}
+        - Version: {<version>}
+        """
+        [%exit 0]
+    ==
+  ::
   ++  do-list-notes
     |=  =cause:wt
     ?>  ?=(%list-notes -.cause)
@@ -1460,7 +1489,7 @@
       %+  turn  u.sign-keys.cause
       |=  key-info=[child-index=@ud hardened=?]
       (sign-key:get:v [~ key-info])
-    =/  [=spends:v1:transact =witness-data:wt display=transaction-display:wt]
+    =/  =transaction:wt
       %:  ~(build tx-builder bc.state)
         names
         orders
@@ -1469,22 +1498,13 @@
         sign-keys
         refund-pkh.cause
         get-note:v
+        ~
         include-data.cause
         selection-strategy.cause
         height.balance.state
       ==
     =/  lock-roots-to-watch=(z-set:zo [hash:transact (unit lock:transact)])
       (gather-watch-roots orders)
-    =/  transaction-name=@t
-      %-  to-b58:hash:transact
-      id:(new:raw-tx:v1:transact spends)
-    =/  =transaction:wt
-      %*  .  *transaction:wt
-        name     transaction-name
-        spends   spends
-        display  display
-        witness-data  witness-data
-      ==
     [transaction lock-roots-to-watch]
   ::
   ++  parse-create-tx-names
@@ -1531,7 +1551,7 @@
           name.tx-ser
           outputs.tx
           fees
-          display.tx-ser
+          metadata.tx-ser
           get-note:v
           `witness-data
       ==
@@ -1582,7 +1602,10 @@
       `[root.ord ~]
     ::
         %bridge-deposit
-      `[bridge-lock-root-default:bridge ~]
+      `[root.ord ~]
+    ::
+        %bridge-withdrawal
+      `[root.ord ~]
     ==
   ::
   ++  watch-root-locks
@@ -1888,7 +1911,7 @@
     =/  =transaction:wt  dat.cause
     =/  =witness-data:wt  witness-data.transaction
     ?>  ?&  ?=(%1 -.witness-data)
-            ?=(%1 -.inputs.display.transaction)
+            ?=(%1 -.inputs.metadata.transaction)
         ==
     =/  =spends:v1:transact  spends.transaction
     ::  get sign-keys from wallet
@@ -1910,7 +1933,7 @@
     ::
     ::  we assume that there is at most one pkh in a single-spend condition
     =/  pkh-lps=(z-map:zo nname:transact pkh:v1:transact)
-      %-  ~(rep z-by:zo p.inputs.display.transaction)
+      %-  ~(rep z-by:zo p.inputs.metadata.transaction)
       |=  $:  [k=nname:transact v=spend-condition:transact]
               acc=(z-map:zo nname:transact pkh:v1:transact)
           ==
@@ -2031,7 +2054,7 @@
   ::  %-  (debug "show-multisig-tx: {<name.dat.cause>}")
   ::  =/  =transaction:wt  dat.cause
   ::  =/  =spends:transact  spends.transaction
-  ::  =/  display=transaction-display:wt  display.transaction
+  ::  =/  metadata=metadata:wt  metadata.transaction
   ::  =/  fees=@  (roll-fees:spends:v1:transact spends)
   ::  =/  =raw-tx:v1:transact  (new:raw-tx:v1:transact spends)
   ::  =/  =tx:v1:transact  (new:tx:v1:transact raw-tx height.balance.state)
@@ -2075,7 +2098,7 @@
 
   ::    ## Outputs
 
-  ::    {(trip (transaction:v1:display:utils name.transaction outputs.tx fees display.transaction))}
+  ::    {(trip (transaction:v1:display:utils name.transaction outputs.tx fees metadata.transaction))}
   ::    """
   ::  :_  state
   ::  :~  [%markdown markdown-text]

@@ -3,19 +3,20 @@ set -e
 
 # Spawn 5 bridge nodes in zellij panes for proposal signing tests
 # Usage: ./multi-bridge.sh [--new] [--start] [--base-start-height N] [--nockchain-start-height N]
-#                         [--nonce-epoch-base N] [--nonce-epoch-start-height N]
-#                         [--nonce-epoch-start-tx-id BASE58]
+#                         [--deposit-nonce-epoch-base N] [--deposit-nonce-epoch-start-height N]
+#                         [--deposit-nonce-epoch-start-tx-id BASE58]
 #
 # Options:
 #   --new                      Start with fresh bridge state for all nodes
 #   --start                    Send a %start poke to clear kernel stop state
 #   --base-start-height N      Override Base chain start height (default: 33387036)
 #   --nockchain-start-height N Override Nockchain start height (default: 1)
-#   --nonce-epoch-base N      Override nonce epoch base (optional)
-#   --nonce-epoch-start-height N
-#                             Override nonce epoch start height (optional)
-#   --nonce-epoch-start-tx-id BASE58
-#                             Override nonce epoch start tx id (base58, optional)
+#   --deposit-nonce-epoch-base N
+#                             Override deposit nonce epoch base (optional)
+#   --deposit-nonce-epoch-start-height N
+#                             Override deposit nonce epoch start height (optional)
+#   --deposit-nonce-epoch-start-tx-id BASE58
+#                             Override deposit nonce epoch start tx id (base58, optional)
 #
 # Prerequisites:
 #   - zellij installed
@@ -142,9 +143,9 @@ NOCKCHAIN_START_HEIGHT="${NOCKCHAIN_START_HEIGHT:-1}"
 # Driver-side finality configuration (confirmation depths)
 BASE_CONFIRMATION_DEPTH="${BASE_CONFIRMATION_DEPTH:-1}"
 NOCKCHAIN_CONFIRMATION_DEPTH="${NOCKCHAIN_CONFIRMATION_DEPTH:-1}"
-NONCE_EPOCH_BASE="${NONCE_EPOCH_BASE:-}"
-NONCE_EPOCH_START_HEIGHT="${NONCE_EPOCH_START_HEIGHT:-}"
-NONCE_EPOCH_START_TX_ID_BASE58="${NONCE_EPOCH_START_TX_ID_BASE58:-}"
+DEPOSIT_NONCE_EPOCH_BASE="${DEPOSIT_NONCE_EPOCH_BASE:-}"
+DEPOSIT_NONCE_EPOCH_START_HEIGHT="${DEPOSIT_NONCE_EPOCH_START_HEIGHT:-}"
+DEPOSIT_NONCE_EPOCH_START_TX_ID_BASE58="${DEPOSIT_NONCE_EPOCH_START_TX_ID_BASE58:-}"
 
 NEW_FLAG=""
 START_FLAG=""
@@ -170,21 +171,21 @@ while [[ $# -gt 0 ]]; do
             NOCKCHAIN_START_HEIGHT="$2"
             shift 2
             ;;
-        --nonce-epoch-base)
-            NONCE_EPOCH_BASE="$2"
+        --deposit-nonce-epoch-base)
+            DEPOSIT_NONCE_EPOCH_BASE="$2"
             shift 2
             ;;
-        --nonce-epoch-start-height)
-            NONCE_EPOCH_START_HEIGHT="$2"
+        --deposit-nonce-epoch-start-height)
+            DEPOSIT_NONCE_EPOCH_START_HEIGHT="$2"
             shift 2
             ;;
-        --nonce-epoch-start-tx-id)
-            NONCE_EPOCH_START_TX_ID_BASE58="$2"
+        --deposit-nonce-epoch-start-tx-id)
+            DEPOSIT_NONCE_EPOCH_START_TX_ID_BASE58="$2"
             shift 2
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: ./multi-bridge.sh [--new] [--start] [--base-start-height N] [--nockchain-start-height N] [--nonce-epoch-base N] [--nonce-epoch-start-height N] [--nonce-epoch-start-tx-id BASE58]"
+            echo "Usage: ./multi-bridge.sh [--new] [--start] [--base-start-height N] [--nockchain-start-height N] [--deposit-nonce-epoch-base N] [--deposit-nonce-epoch-start-height N] [--deposit-nonce-epoch-start-tx-id BASE58]"
             exit 1
             ;;
     esac
@@ -212,14 +213,14 @@ echo "Inbox:       $INBOX_CONTRACT_ADDRESS"
 echo "Nock:        $NOCK_CONTRACT_ADDRESS"
 echo "Base Start:  $BASE_START_HEIGHT"
 echo "Nock Start:  $NOCKCHAIN_START_HEIGHT"
-if [ -n "$NONCE_EPOCH_BASE" ]; then
-    echo "Epoch Base:  $NONCE_EPOCH_BASE"
+if [ -n "$DEPOSIT_NONCE_EPOCH_BASE" ]; then
+    echo "Deposit Epoch Base:  $DEPOSIT_NONCE_EPOCH_BASE"
 fi
-if [ -n "$NONCE_EPOCH_START_HEIGHT" ]; then
-    echo "Epoch Start: $NONCE_EPOCH_START_HEIGHT"
+if [ -n "$DEPOSIT_NONCE_EPOCH_START_HEIGHT" ]; then
+    echo "Deposit Epoch Start: $DEPOSIT_NONCE_EPOCH_START_HEIGHT"
 fi
-if [ -n "$NONCE_EPOCH_START_TX_ID_BASE58" ]; then
-    echo "Epoch TxId:  $NONCE_EPOCH_START_TX_ID_BASE58"
+if [ -n "$DEPOSIT_NONCE_EPOCH_START_TX_ID_BASE58" ]; then
+    echo "Deposit Epoch TxId:  $DEPOSIT_NONCE_EPOCH_START_TX_ID_BASE58"
 fi
 echo "============================================"
 echo ""
@@ -277,6 +278,26 @@ grpc_address = "http://127.0.0.1:${NODE_PRIVATE_GRPC_PORT}"
 base_confirmation_depth = ${BASE_CONFIRMATION_DEPTH}
 nockchain_confirmation_depth = ${NOCKCHAIN_CONFIRMATION_DEPTH}
 ingress_listen_address = "127.0.0.1:${ingress_port}"
+withdrawal_activation_nock_next_height = ${NOCKCHAIN_START_HEIGHT}
+EOF
+
+    if [ -n "$DEPOSIT_NONCE_EPOCH_BASE" ]; then
+        cat >> "$config_file" << EOF
+deposit_nonce_epoch_base = ${DEPOSIT_NONCE_EPOCH_BASE}
+EOF
+    fi
+    if [ -n "$DEPOSIT_NONCE_EPOCH_START_HEIGHT" ]; then
+        cat >> "$config_file" << EOF
+deposit_nonce_epoch_start_height = ${DEPOSIT_NONCE_EPOCH_START_HEIGHT}
+EOF
+    fi
+    if [ -n "$DEPOSIT_NONCE_EPOCH_START_TX_ID_BASE58" ]; then
+        cat >> "$config_file" << EOF
+deposit_nonce_epoch_start_tx_id_base58 = "${DEPOSIT_NONCE_EPOCH_START_TX_ID_BASE58}"
+EOF
+    fi
+
+    cat >> "$config_file" << EOF
 
 [[nodes]]
 ip = "127.0.0.1:8002"
@@ -313,22 +334,6 @@ base_blocks_chunk = 1
 base_start_height = ${BASE_START_HEIGHT}
 nockchain_start_height = ${NOCKCHAIN_START_HEIGHT}
 EOF
-
-    if [ -n "$NONCE_EPOCH_BASE" ]; then
-        cat >> "$config_file" << EOF
-nonce_epoch_base = ${NONCE_EPOCH_BASE}
-EOF
-    fi
-    if [ -n "$NONCE_EPOCH_START_HEIGHT" ]; then
-        cat >> "$config_file" << EOF
-nonce_epoch_start_height = ${NONCE_EPOCH_START_HEIGHT}
-EOF
-    fi
-    if [ -n "$NONCE_EPOCH_START_TX_ID_BASE58" ]; then
-        cat >> "$config_file" << EOF
-nonce_epoch_start_tx_id_base58 = "${NONCE_EPOCH_START_TX_ID_BASE58}"
-EOF
-    fi
 
     echo "$config_file"
 }

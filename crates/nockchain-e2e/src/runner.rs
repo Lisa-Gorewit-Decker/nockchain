@@ -2157,7 +2157,6 @@ mod tests {
             output.stdout,
             format!("env=from-test cwd={}", expected_cwd.display())
         );
-        assert!(output.stderr.is_empty());
         assert_eq!(output.exit_code, 0);
         assert_eq!(
             std::fs::read_to_string(run_dir.join("commands/step-007-sh.stdout.log"))

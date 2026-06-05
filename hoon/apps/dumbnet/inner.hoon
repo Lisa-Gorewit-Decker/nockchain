@@ -400,6 +400,10 @@
         [%constants ~]
       ``constants.k
     ::
+        [%blockchain-constants ~]
+      ^-  (unit (unit blockchain-constants:t))
+      ``constants.k
+    ::
         [%blocks ~]
       ^-  (unit (unit (z-map block-id:t page:t)))
       ``(hz-molt (~(run h-by blocks.c.k) to-page:local-page:t))

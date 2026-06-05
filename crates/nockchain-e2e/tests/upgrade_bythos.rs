@@ -17,7 +17,7 @@ use nockchain_e2e::runner::RunOptions;
 use nockchain_e2e::upgrade::{NockchainCluster, UpgradeTestConfig, WalletClient};
 use nockchain_math::structs::HoonMapIter;
 use nockchain_types::tx_engine::common::{Hash, Name, Signature};
-use nockchain_types::tx_engine::v1::note::{NoteData, NoteDataEntry};
+use nockchain_types::tx_engine::v1::note::{NoteData, NoteDataEntry, NoteDataValue};
 use nockchain_types::tx_engine::v1::{LockMerkleProof, Spend, Spends, Witness};
 use nockvm::noun::{NounAllocator, NounHandle};
 use noun_serde::{NounDecode, NounEncode};
@@ -1253,7 +1253,7 @@ fn count_words_from_spends(spends: &Spends) -> Result<(u64, u64)> {
 }
 
 fn count_seed_words_from_spends(spends: &Spends) -> Result<u64> {
-    let mut note_data_by_root: HashMap<Hash, HashMap<String, Bytes>> = HashMap::new();
+    let mut note_data_by_root: HashMap<Hash, HashMap<String, NoteDataValue>> = HashMap::new();
     for (_name, spend) in &spends.0 {
         let seeds = match spend {
             Spend::Legacy(spend0) => &spend0.seeds.0,
@@ -1262,7 +1262,7 @@ fn count_seed_words_from_spends(spends: &Spends) -> Result<u64> {
         for seed in seeds {
             let entry = note_data_by_root.entry(seed.lock_root.clone()).or_default();
             for note_entry in seed.note_data.iter() {
-                entry.insert(note_entry.key.clone(), note_entry.blob.clone());
+                entry.insert(note_entry.key.clone(), note_entry.value.clone());
             }
         }
     }

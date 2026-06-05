@@ -6,7 +6,8 @@ use nockchain_math::zoon::zset::ZSetHasher;
 use crate::tx_engine::common::Hash;
 
 mod noun;
-pub use noun::{bpoly_to_list, hash_hashable};
+pub use noun::{bpoly_to_list, hash_hashable, noun_hashable};
+pub(crate) use noun::{hash_leaf_digest, hashable_hash_noun, hashable_leaf_noun};
 
 /// Errors raised by the tip5 hash-hashable jet wrapper.
 #[derive(Debug, thiserror::Error)]
@@ -26,7 +27,7 @@ pub enum HashableEncodingError {
 
 /// Computes the consensus hashable digest directly, without materializing an
 /// allocator-backed noun tree first.
-pub trait Hashable {
+pub trait HashHashable {
     type Error;
 
     fn hash_digest(&self) -> Result<Hash, Self::Error>;
@@ -35,7 +36,7 @@ pub trait Hashable {
 /// Generic digest entrypoint for all handwritten `Hashable` values.
 pub fn hash_hashable_value<T>(value: &T) -> Result<[u64; 5], T::Error>
 where
-    T: Hashable,
+    T: HashHashable,
 {
     Ok(value.hash_digest()?.to_array())
 }
@@ -97,6 +98,11 @@ pub fn hash_list(items: &[Hash]) -> Hash {
     Hash::from_limbs(&hash_owned_based_noun_varlen(&noun))
 }
 
+/// Hashes an allocator-free owned based noun using tip5 noun-hash semantics.
+pub fn hash_owned_based_noun(noun: &OwnedBasedNoun) -> Hash {
+    Hash::from_limbs(&hash_owned_based_noun_varlen(noun))
+}
+
 /// Hashes a `%mary` payload from its step, original array length, and
 /// step-normalized belt payload.
 pub fn hash_mary(
@@ -145,7 +151,7 @@ mod tests {
 
     use super::{
         bpoly_to_list, hash_hashable, hash_hashable_value, hash_leaf_atom, hash_list, hash_mary,
-        hash_pair, Hashable, HashableEncodingError, HashableTreeHasher,
+        hash_pair, HashHashable, HashableEncodingError, HashableTreeHasher,
     };
     use crate::tx_engine::common::Hash;
 
@@ -225,7 +231,7 @@ mod tests {
 
     struct TestLeafHashable(u64);
 
-    impl Hashable for TestLeafHashable {
+    impl HashHashable for TestLeafHashable {
         type Error = HashableEncodingError;
 
         fn hash_digest(&self) -> Result<Hash, Self::Error> {

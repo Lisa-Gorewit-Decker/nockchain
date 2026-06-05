@@ -533,6 +533,7 @@ fn make_fact_from_payload(tag: &str, payload: &NounSlab) -> NounSlab {
     fact
 }
 
+#[allow(clippy::result_large_err)]
 fn tx_ids_from_map(txs_map: &mut NounSlab) -> Result<Vec<String>, NockAppError> {
     let noun = unsafe { txs_map.root() };
     let space = txs_map.noun_space();
@@ -553,6 +554,7 @@ fn tx_ids_from_map(txs_map: &mut NounSlab) -> Result<Vec<String>, NockAppError> 
     Ok(tx_ids)
 }
 
+#[allow(clippy::result_large_err)]
 fn page_block_id(page: &mut NounSlab) -> Result<String, NockAppError> {
     let noun = unsafe { page.root() };
     let space = page.noun_space();
@@ -560,6 +562,7 @@ fn page_block_id(page: &mut NounSlab) -> Result<String, NockAppError> {
     tip5_hash_to_base58_stack(page, block_id, &space)
 }
 
+#[allow(clippy::result_large_err)]
 fn block_id_from_page(page: Noun, space: &NounSpace) -> Result<Noun, NockAppError> {
     let page_cell = page.in_space(space).as_cell()?;
     match page_cell.head().as_atom() {

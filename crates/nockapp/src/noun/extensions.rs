@@ -5,8 +5,9 @@ use either::Either;
 use nockvm::ext::AtomExt as CoreAtomExt;
 pub use nockvm::ext::{IndirectAtomExt, JammedNoun, NounExt};
 use nockvm::noun::{Atom, Cell, IndirectAtom, NounAllocator, NounSpace, D};
+use noun_serde::NounEncode;
 
-use crate::noun::slab::NounSlab;
+use crate::noun::slab::{NockJammer, NounSlab};
 use crate::{Noun, Result, ToBytes, ToBytesExt};
 
 // TODO: This exists largely because nockapp doesn't own the [`Atom`] type from [`nockvm`].
@@ -29,8 +30,6 @@ impl AtomExt for Atom {
         let data: Bytes = value.as_bytes()?;
         Ok(<Self as CoreAtomExt>::from_bytes(allocator, data.as_ref()))
     }
-
-    // NounSpace-dependent helpers moved to NounHandle/AtomHandle.
 }
 
 #[diagnostic::on_unimplemented(
@@ -163,6 +162,29 @@ impl<A: NounAllocator> NounAllocatorExt for A {
         res
     }
 }
+
+pub trait NounJamExt {
+    fn jam_bytes(self, space: &NounSpace) -> Bytes;
+}
+
+impl NounJamExt for Noun {
+    fn jam_bytes(self, space: &NounSpace) -> Bytes {
+        let mut slab: NounSlab<NockJammer> = NounSlab::new();
+        slab.copy_into(self, space);
+        slab.jam()
+    }
+}
+
+pub trait NounEncodeJamExt: NounEncode {
+    fn jam_bytes(&self) -> Bytes {
+        let mut slab: NounSlab<NockJammer> = NounSlab::new();
+        let noun = self.to_noun(&mut slab);
+        slab.set_root(noun);
+        slab.jam()
+    }
+}
+
+impl<T: NounEncode> NounEncodeJamExt for T {}
 
 #[cfg(test)]
 mod tests {

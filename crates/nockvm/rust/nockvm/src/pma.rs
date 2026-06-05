@@ -3636,18 +3636,21 @@ mod tests {
                 .tail()
                 .noun()
                 .as_direct()
-                .expect("outer tail should be direct")
+                .expect("outer tail should be a direct atom")
                 .data(),
             3,
             "Outer tail should be 3"
         );
-        let inner_cell = outer.head().as_cell().expect("outer head should be a cell");
+        let inner_cell = outer
+            .head()
+            .as_cell()
+            .expect("outer head should decode as inner cell");
         assert_eq!(
             inner_cell
                 .head()
                 .noun()
                 .as_direct()
-                .expect("inner head should be direct")
+                .expect("inner head should be a direct atom")
                 .data(),
             1,
             "Inner head should be 1"
@@ -3657,7 +3660,7 @@ mod tests {
                 .tail()
                 .noun()
                 .as_direct()
-                .expect("inner tail should be direct")
+                .expect("inner tail should be a direct atom")
                 .data(),
             2,
             "Inner tail should be 2"

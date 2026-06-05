@@ -515,6 +515,10 @@ pub enum Commands {
     #[command(name = "show-master-zprv")]
     ShowMasterZPrv,
 
+    /// Show the raw master private key as base58
+    #[command(name = "show-master-prv")]
+    ShowMasterPrv,
+
     /// Show the key tree structure
     #[command(name = "show-key-tree")]
     ShowKeyTree {
@@ -645,6 +649,7 @@ impl Commands {
             Commands::ShowSeedphrase => "show-seed-phrase",
             Commands::ShowMasterZPub => "show-master-zpub",
             Commands::ShowMasterZPrv => "show-master-zprv",
+            Commands::ShowMasterPrv => "show-master-prv",
             Commands::ShowKeyTree { .. } => "show-key-tree",
             Commands::SignMessage { .. } => "sign-message",
             Commands::VerifyMessage { .. } => "verify-message",

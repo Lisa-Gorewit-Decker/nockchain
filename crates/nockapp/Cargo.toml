@@ -23,7 +23,7 @@ async-trait = { workspace = true }
 axum = { workspace = true }
 axum-server = { workspace = true }
 bincode = { workspace = true, features = ["serde"] }
-bitvec = { workspace = true, default-features = false, features = ["alloc"] }
+bitvec = { workspace = true, features = ["alloc"] }
 blake3 = { workspace = true }
 byteorder = { workspace = true }
 bytes = { workspace = true, features = ["serde"] }

@@ -49,7 +49,7 @@ fn merged_seed_word_count(raw_tx: &v1::RawTx) -> u64 {
                 .entry(seed.lock_root.to_array())
                 .or_default();
             for note_data_entry in seed.note_data.iter() {
-                merged.insert(note_data_entry.key.clone(), note_data_entry.blob.clone());
+                merged.insert(note_data_entry.key.clone(), note_data_entry.raw_blob());
             }
         }
     }
@@ -59,7 +59,10 @@ fn merged_seed_word_count(raw_tx: &v1::RawTx) -> u64 {
         .map(|merged| {
             let entries = merged
                 .into_iter()
-                .map(|(key, blob)| v1::note::NoteDataEntry::new(key, blob))
+                .map(|(key, blob)| {
+                    v1::note::NoteDataEntry::from_raw_blob(key, blob)
+                        .expect("fixture raw note-data should decode")
+                })
                 .collect::<Vec<_>>();
             word_count_from_noun_encode(&v1::note::NoteData::new(entries))
         })
@@ -114,6 +117,21 @@ fn decode_raw_tx_from_jam_v1() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn raw_tx_id_from_jam_v1_matches_recomputed_id() -> Result<(), Box<dyn std::error::Error>> {
+    const RAW_TX_JAM: &[u8] = include_bytes!("../jams/v1/raw-tx.jam");
+
+    let mut slab: NounSlab = NounSlab::new();
+    let noun = slab.cue_into(Bytes::from_static(RAW_TX_JAM))?;
+    let space = slab.noun_space();
+    let raw_tx = v1::RawTx::from_noun(&noun, &space)?;
+
+    assert_eq!(raw_tx.compute_id()?, raw_tx.id);
+    assert_eq!(raw_tx.compute_id_base58()?, raw_tx.id.to_base58());
+
+    Ok(())
+}
+
+#[test]
 fn decode_raw_tx_word_count_oracle_v1() -> Result<(), Box<dyn std::error::Error>> {
     const RAW_TX_JAM: &[u8] = include_bytes!("../jams/v1/raw-tx.jam");
 
@@ -145,57 +163,40 @@ fn decode_raw_tx_word_count_oracle_v1() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[test]
-fn decode_note_from_jam_v1() -> Result<(), Box<dyn std::error::Error>> {
+fn decode_notes_from_jam_v1() -> Result<(), Box<dyn std::error::Error>> {
     const NOTE_JAM: &[u8] = include_bytes!("../jams/v1/note.jam");
 
     let mut slab: NounSlab = NounSlab::new();
     let noun = slab.cue_into(Bytes::from_static(NOTE_JAM))?;
     let space = slab.noun_space();
 
-    let note = v1::Note::from_noun(&noun, &space)?;
+    let notes = <Vec<v1::Note>>::from_noun(&noun, &space)?;
+    assert_eq!(notes.len(), 2, "V1 note fixture should include two notes");
 
-    // basic structural checks
-    match note {
+    let complex_note = notes
+        .iter()
+        .find(|note| match note {
+            v1::Note::V1(n) => n.origin_page == BlockHeight(Belt(24)),
+            _ => false,
+        })
+        .expect("V1 note fixture should include the complex note at origin page 24");
+
+    match complex_note {
         v1::Note::V1(ref n) => {
             assert_eq!(n.origin_page, BlockHeight(Belt(24)));
+            assert!(
+                n.note_data.iter().any(|entry| entry.key == "memo"),
+                "complex V1 note should include memo metadata"
+            );
         }
-        _ => panic!("note not V1: {:?}", note),
+        _ => panic!("note not V1: {:?}", complex_note),
     }
 
-    // noun roundtrip
     let mut encode_slab: NounSlab = NounSlab::new();
-    let encoded = v1::Note::to_noun(&note, &mut encode_slab);
+    let encoded = notes.to_noun(&mut encode_slab);
     let encode_space = encode_slab.noun_space();
-    let round_trip = v1::Note::from_noun(&encoded, &encode_space)?;
-    assert_eq!(round_trip, note);
-
-    Ok(())
-}
-
-#[test]
-fn decode_name_from_jam_v1() -> Result<(), Box<dyn std::error::Error>> {
-    const NOTE_JAM: &[u8] = include_bytes!("../jams/v1/note.jam");
-
-    let mut slab: NounSlab = NounSlab::new();
-    let noun = slab.cue_into(Bytes::from_static(NOTE_JAM))?;
-    let space = slab.noun_space();
-
-    let note = v1::Note::from_noun(&noun, &space)?;
-
-    // basic structural checks
-    match note {
-        v1::Note::V1(ref n) => {
-            assert_eq!(n.origin_page, BlockHeight(Belt(24)));
-        }
-        _ => panic!("note not V1: {:?}", note),
-    }
-
-    // noun roundtrip
-    let mut encode_slab: NounSlab = NounSlab::new();
-    let encoded = v1::Note::to_noun(&note, &mut encode_slab);
-    let encode_space = encode_slab.noun_space();
-    let round_trip = v1::Note::from_noun(&encoded, &encode_space)?;
-    assert_eq!(round_trip, note);
+    let round_trip = <Vec<v1::Note>>::from_noun(&encoded, &encode_space)?;
+    assert_eq!(round_trip, notes);
 
     Ok(())
 }
