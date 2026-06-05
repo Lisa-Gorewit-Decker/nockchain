@@ -28818,6 +28818,140 @@ mod tests {
                 "round-tripped terminal Tip5 lookup IO support bridge quotient proof must verify",
             );
 
+        let mut bad_lookup_commitment = proof.clone();
+        let mut roots = bad_lookup_commitment.lookup_io_commitment.roots().to_vec();
+        roots[0][0] += Goldilocks::ONE;
+        bad_lookup_commitment.lookup_io_commitment = TerminalFriCommitment::new(roots);
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_io_support_bridge_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_lookup_commitment,
+            )
+            .expect_err("support bridge proof must bind lookup IO commitment to prelude");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch { .. }
+        ));
+
+        let mut bad_lookup_profile = proof.clone();
+        bad_lookup_profile.lookup_io_profile.padded_rows += 1;
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_io_support_bridge_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_lookup_profile,
+            )
+            .expect_err("support bridge proof must recompute lookup IO profile");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { label, .. }
+                if label == "tip5_lookup_io_support_bridge_lookup_profile"
+        ));
+
+        let mut bad_npo_profile = proof.clone();
+        bad_npo_profile.npo_io_profile.padded_rows += 1;
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_io_support_bridge_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_npo_profile,
+            )
+            .expect_err("support bridge proof must recompute NPO IO profile");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { label, .. }
+                if label == "tip5_lookup_io_support_bridge_npo_profile"
+        ));
+
+        let mut bad_quotient_profile = proof.clone();
+        bad_quotient_profile.quotient_profile.padded_rows += 1;
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_io_support_bridge_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_quotient_profile,
+            )
+            .expect_err("support bridge proof must recompute quotient profile");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { label, .. }
+                if label == "tip5_lookup_io_support_bridge_quotient_profile"
+        ));
+
+        let mut shortened_lookup_opening = proof.clone();
+        shortened_lookup_opening
+            .opened_lookup_io_basis
+            .pop()
+            .expect("support bridge proof must carry lookup IO opening limbs");
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_io_support_bridge_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &shortened_lookup_opening,
+            )
+            .expect_err("support bridge proof must dimension-check lookup IO openings");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
+
+        let mut shortened_npo_opening = proof.clone();
+        shortened_npo_opening
+            .opened_npo_io_basis
+            .pop()
+            .expect("support bridge proof must carry NPO IO opening limbs");
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_io_support_bridge_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &shortened_npo_opening,
+            )
+            .expect_err("support bridge proof must dimension-check NPO IO openings");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
+
+        let mut shortened_quotient_opening = proof.clone();
+        shortened_quotient_opening
+            .opened_quotient_basis
+            .pop()
+            .expect("support bridge proof must carry quotient opening limbs");
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_io_support_bridge_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &shortened_quotient_opening,
+            )
+            .expect_err("support bridge proof must dimension-check quotient openings");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
+
+        let mut malformed_lookup_opening = proof.clone();
+        malformed_lookup_opening.opened_lookup_io_basis[0].push(0);
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_io_support_bridge_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &malformed_lookup_opening,
+            )
+            .expect_err("support bridge proof must dimension-check lookup IO basis limbs");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
+
         let (_, mut bad_table_trace, _) = compiler
             .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
             .expect("terminal Tip5 lookup trace must build");
@@ -28957,6 +29091,106 @@ mod tests {
                 &roundtrip,
             )
             .expect("round-tripped terminal Tip5 lookup AIR algebra proof must verify");
+
+        let mut bad_trace_commitment = proof.clone();
+        let mut roots = bad_trace_commitment.trace_commitment.roots().to_vec();
+        roots[0][0] += Goldilocks::ONE;
+        bad_trace_commitment.trace_commitment = TerminalFriCommitment::new(roots);
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_trace_commitment,
+            )
+            .expect_err("AIR algebra proof must bind trace commitment to prelude");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeCommitmentMismatch { .. }
+        ));
+
+        let mut bad_trace_profile = proof.clone();
+        bad_trace_profile.trace_profile.padded_rows += 1;
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_trace_profile,
+            )
+            .expect_err("AIR algebra proof must recompute trace profile");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { label, .. }
+                if label == "tip5_lookup_air_algebra_trace_profile"
+        ));
+
+        let mut bad_quotient_profile = proof.clone();
+        bad_quotient_profile.quotient_profile.padded_rows += 1;
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &bad_quotient_profile,
+            )
+            .expect_err("AIR algebra proof must recompute quotient profile");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { label, .. }
+                if label == "tip5_lookup_air_algebra_quotient_profile"
+        ));
+
+        let mut shortened_trace_opening = proof.clone();
+        shortened_trace_opening
+            .opened_trace_basis
+            .pop()
+            .expect("AIR algebra proof must carry trace opening limbs");
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &shortened_trace_opening,
+            )
+            .expect_err("AIR algebra proof must dimension-check trace openings");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
+
+        let mut shortened_quotient_opening = proof.clone();
+        shortened_quotient_opening
+            .opened_quotient_basis
+            .pop()
+            .expect("AIR algebra proof must carry quotient opening limbs");
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &shortened_quotient_opening,
+            )
+            .expect_err("AIR algebra proof must dimension-check quotient openings");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
+
+        let mut malformed_trace_opening = proof.clone();
+        malformed_trace_opening.opened_trace_basis[0].push(0);
+        let err = compiler
+            .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &malformed_trace_opening,
+            )
+            .expect_err("AIR algebra proof must dimension-check trace basis limbs");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
 
         let restored_fri = NativeTerminalCompiler::decompress_terminal_fri_proof(&proof.proof)
             .expect("compressed terminal FRI proof must decompress");
