@@ -353,7 +353,9 @@ pub(crate) async fn route_response_fact_with_source_with_dispatcher(
 
     match poke_result {
         Ok(PokeResult::Ack) => {
-            if allow_seen_block_replay && processing_started.load(Ordering::Relaxed) {
+            if matches!(response_gate, ResponseProcessingGate::HeardBlock(_))
+                && processing_started.load(Ordering::Relaxed)
+            {
                 cancel_response_processing_gate(driver_state, &response_gate).await;
             }
             trace!(

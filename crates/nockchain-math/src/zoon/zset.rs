@@ -237,6 +237,19 @@ impl<T> ZSet<T> {
         })
     }
 
+    pub fn try_fold_tree<R, E, FEmpty, FNode>(
+        &self,
+        mut empty: FEmpty,
+        mut node: FNode,
+    ) -> Result<R, E>
+    where
+        FEmpty: FnMut() -> Result<R, E>,
+        FNode: FnMut(&T, R, R) -> Result<R, E>,
+    {
+        let mut visit = |payload: &ZSetValue<T>, left, right| node(&payload.value, left, right);
+        self.tree.try_fold(&mut empty, &mut visit)
+    }
+
     pub fn hash_with<H>(&self, hasher: &H) -> H::Output
     where
         H: ZSetHasher<T>,
@@ -457,6 +470,39 @@ mod tests {
             left.hash_with(&DebugSetHasher),
             right.hash_with(&DebugSetHasher)
         );
+    }
+
+    #[test]
+    fn zset_try_fold_tree_matches_hash_with() {
+        let set = ZSet::try_from_items(vec![
+            BoundedTreeValue::Atom(1),
+            BoundedTreeValue::Atom(7),
+            BoundedTreeValue::Atom(3),
+        ])
+        .expect("z-set should build");
+
+        let folded = set
+            .try_fold_tree(
+                || Ok::<_, &'static str>("~".to_string()),
+                |value, left, right| Ok(format!("{value:?}<{left}|{right}>")),
+            )
+            .expect("try_fold_tree should succeed");
+
+        assert_eq!(folded, set.hash_with(&DebugSetHasher));
+    }
+
+    #[test]
+    fn zset_try_fold_tree_propagates_errors() {
+        let set = ZSet::try_from_items(vec![1u64, 7u64]).expect("z-set should build");
+
+        let err = set
+            .try_fold_tree(
+                || Ok::<_, &'static str>(()),
+                |value, _left, _right| if *value == 7 { Err("boom") } else { Ok(()) },
+            )
+            .expect_err("try_fold_tree should propagate node errors");
+
+        assert_eq!(err, "boom");
     }
 
     #[test]

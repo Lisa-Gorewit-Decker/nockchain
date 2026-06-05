@@ -165,6 +165,19 @@ impl NockchainAPIConfig {
     }
 }
 
+/// Boots and runs the Nockchain node with the supplied public API config.
+pub async fn run_nockchain_app(
+    cli: config::NockchainCli,
+    hot_state: &[HotEntry],
+    server_config: NockchainAPIConfig,
+) -> Result<(), Box<dyn Error>> {
+    let mut nockchain =
+        init_with_kernel::<chaff::Chaff>(cli, kernels_open_dumb::KERNEL, hot_state, server_config)
+            .await?;
+    nockchain.run().await?;
+    Ok(())
+}
+
 /// # Load a keypair from a file or create a new one if the file doesn't exist
 ///
 /// This function attempts to read a keypair from a specified file. If the file exists, it reads the keypair from the file.

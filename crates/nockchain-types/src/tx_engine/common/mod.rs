@@ -2,7 +2,7 @@ pub mod page;
 
 use anyhow::Result;
 use nockchain_math::belt::{Belt, PRIME};
-use nockchain_math::crypto::cheetah::{CheetahError, CheetahPoint};
+use nockchain_math::crypto::cheetah::{ch_scal_big, CheetahError, CheetahPoint, A_GEN};
 use nockchain_math::noun_ext::NounMathExtHandle;
 use nockchain_math::zoon::zmap::ZMap;
 use nockvm::noun::{Noun, NounAllocator, NounSpace, D};
@@ -23,6 +23,11 @@ impl SchnorrPubkey {
 
     pub fn from_base58(b58: &str) -> Result<Self, CheetahError> {
         Ok(SchnorrPubkey(CheetahPoint::from_base58(b58)?))
+    }
+
+    pub fn from_secret_scalar_biguint(scalar: &BigUint) -> anyhow::Result<Self> {
+        let scalar = ibig::UBig::from_be_bytes(&scalar.to_bytes_be());
+        Ok(SchnorrPubkey(ch_scal_big(&scalar, &A_GEN)?))
     }
 }
 

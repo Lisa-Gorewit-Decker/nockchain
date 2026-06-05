@@ -18,6 +18,23 @@ pub fn hash_hashable<A: NounAllocator>(stack: &mut A, h: Noun) -> Result<Noun, J
     Ok(hash_hashable_digest(stack, h)?.to_noun(stack))
 }
 
+/// Converts an arbitrary noun into the canonical recursive `hashable` noun
+/// shape used by `note-data.hashable-noun` in tx-engine Hoon.
+pub fn noun_hashable<A: NounAllocator>(stack: &mut A, noun: Noun) -> Noun {
+    if !noun.is_cell() {
+        return hashable_leaf_noun(stack, noun);
+    }
+
+    let space = stack.noun_space();
+    let cell = noun
+        .in_space(&space)
+        .as_cell()
+        .expect("cell-checked noun must decode as a cell");
+    let left = noun_hashable(stack, cell.head().noun());
+    let right = noun_hashable(stack, cell.tail().noun());
+    nockvm::noun::T(stack, &[left, right])
+}
+
 fn hash_hashable_digest<A: NounAllocator>(stack: &mut A, h: Noun) -> Result<Hash, JetErr> {
     let space = stack.noun_space();
     let h_cell = h.in_space(&space).as_cell().map_err(|_| BAIL_FAIL)?;
@@ -29,7 +46,7 @@ fn hash_hashable_digest<A: NounAllocator>(stack: &mut A, h: Noun) -> Result<Hash
 
         match tag.data() {
             tas!(b"hash") => decode_hash_digest_noun(h_tail.noun(), &space),
-            tas!(b"leaf") => hash_leaf_noun(stack, h_tail.noun()),
+            tas!(b"leaf") => hash_leaf_digest(stack, h_tail.noun()),
             tas!(b"list") => hash_hashable_list_digest(stack, h_tail.noun()),
             tas!(b"mary") => hash_hashable_mary_digest(stack, h_tail.noun()),
             _ => hash_hashable_other_digest(stack, h_head.noun(), h_tail.noun()),
@@ -43,10 +60,22 @@ fn decode_hash_digest_noun(noun: Noun, space: &NounSpace) -> Result<Hash, JetErr
     Hash::from_noun(&noun, space).map_err(|_| BAIL_FAIL)
 }
 
-fn hash_leaf_noun<A: NounAllocator>(stack: &mut A, noun: Noun) -> Result<Hash, JetErr> {
+pub(crate) fn hash_leaf_digest<A: NounAllocator>(
+    stack: &mut A,
+    noun: Noun,
+) -> Result<Hash, JetErr> {
     let space = stack.noun_space();
     let digest = tip5::hash::hash_noun_varlen_digest(stack, noun, &space)?;
     Ok(Hash::from_limbs(&digest))
+}
+
+pub(crate) fn hashable_leaf_noun<A: NounAllocator>(stack: &mut A, noun: Noun) -> Noun {
+    tagged_hashable_noun(stack, tas!(b"leaf"), noun)
+}
+
+pub(crate) fn hashable_hash_noun<A: NounAllocator>(stack: &mut A, hash: &Hash) -> Noun {
+    let noun = hash.to_noun(stack);
+    tagged_hashable_noun(stack, tas!(b"hash"), noun)
 }
 
 fn hash_hashable_list_digest<A: NounAllocator>(stack: &mut A, p: Noun) -> Result<Hash, JetErr> {
@@ -81,6 +110,10 @@ fn hash_hashable_other_digest<A: NounAllocator>(
     let ph = hash_hashable_digest(stack, p)?;
     let qh = hash_hashable_digest(stack, q)?;
     Ok(hash_pair(&ph, &qh))
+}
+
+fn tagged_hashable_noun<A: NounAllocator>(stack: &mut A, tag: u64, payload: Noun) -> Noun {
+    nockvm::noun::T(stack, &[D(tag), payload])
 }
 
 pub fn bpoly_to_list<A: NounAllocator>(stack: &mut A, sam: Noun) -> Result<Noun, JetErr> {

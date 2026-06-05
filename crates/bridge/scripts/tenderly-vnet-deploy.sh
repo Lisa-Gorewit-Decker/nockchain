@@ -10,8 +10,8 @@ set -euo pipefail
 #   TENDERLY_PROJECT_SLUG
 #
 # Required for deploy/fund:
-#   TENDERLY_PRIVATE_KEY (or TENDERLY_TEST_PRIVATE_KEY for disposable VNet runs)
-#   TENDERLY_PUBLIC_ADDRESS (optional; derived from TENDERLY_PRIVATE_KEY when unset)
+#   TENDERLY_TEST_PRIVATE_KEY
+#   TENDERLY_PUBLIC_ADDRESS (optional; derived from TENDERLY_TEST_PRIVATE_KEY when unset)
 #   BRIDGE_NODE_0..BRIDGE_NODE_4 (or BRIDGE_NODE_KEY_0..BRIDGE_NODE_KEY_4)
 #   If BRIDGE_NODE_* are unset, defaults are used from test-bridge-keys.env.example
 #
@@ -23,7 +23,7 @@ set -euo pipefail
 #   export TENDERLY_ACCESS_KEY="..."
 #   export TENDERLY_ACCOUNT_ID="..."
 #   export TENDERLY_PROJECT_SLUG="..."
-#   export TENDERLY_PRIVATE_KEY="0x..." # or rely on TENDERLY_TEST_PRIVATE_KEY for disposable VNet runs
+#   export TENDERLY_TEST_PRIVATE_KEY="0x..." # or rely on the disposable VNet default
 #   export BRIDGE_NODE_0="0x..."
 #   export BRIDGE_NODE_1="0x..."
 #   export BRIDGE_NODE_2="0x..."
@@ -70,6 +70,12 @@ DEPLOY_TARGET_NETWORK=""
 DEPLOYMENTS_PATH=""
 
 DRY_RUN="false"
+
+RPC_READY_MAX_ATTEMPTS="24"
+RPC_READY_SLEEP_SECS="5"
+RPC_READY_REQUEST_TIMEOUT_SECS="10"
+VNET_CREATE_MAX_ATTEMPTS="4"
+VNET_CREATE_SLEEP_SECS="5"
 
 EXTRA_FUND_ADDRS=()
 EXTRA_DEPLOY_ARGS=()
@@ -205,6 +211,44 @@ rpc_request() {
         -d "$payload"
 }
 
+wait_for_rpc_ready() {
+    local label="$1"
+    local rpc_url="$2"
+    local attempt resp chain_id block_number
+
+    for ((attempt = 1; attempt <= RPC_READY_MAX_ATTEMPTS; attempt++)); do
+        if resp="$(
+            curl -sS -X POST "$rpc_url" \
+                --connect-timeout 5 \
+                --max-time "$RPC_READY_REQUEST_TIMEOUT_SECS" \
+                -H "Content-Type: application/json" \
+                -d '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}'
+        )"; then
+            chain_id="$(echo "$resp" | jq -r '.result // empty')"
+            if [[ "$chain_id" =~ ^0x[0-9a-fA-F]+$ ]] && resp="$(
+                curl -sS -X POST "$rpc_url" \
+                    --connect-timeout 5 \
+                    --max-time "$RPC_READY_REQUEST_TIMEOUT_SECS" \
+                    -H "Content-Type: application/json" \
+                    -d '{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}'
+            )"; then
+                block_number="$(echo "$resp" | jq -r '.result.number // empty')"
+                if [[ "$block_number" =~ ^0x[0-9a-fA-F]+$ ]]; then
+                    log "$label RPC is ready (eth_chainId=$chain_id latest_block=$block_number)"
+                    return 0
+                fi
+            fi
+        fi
+
+        if (( attempt < RPC_READY_MAX_ATTEMPTS )); then
+            warn "$label RPC not ready yet (attempt $attempt/$RPC_READY_MAX_ATTEMPTS); retrying in ${RPC_READY_SLEEP_SECS}s"
+            sleep "$RPC_READY_SLEEP_SECS"
+        fi
+    done
+
+    die "$label RPC did not become ready after $RPC_READY_MAX_ATTEMPTS attempts: $rpc_url"
+}
+
 resolve_vnet_start_height() {
     local resp="$1"
     local block_resp block_hex parsed_height
@@ -292,7 +336,7 @@ ensure_contract_deps() {
 }
 
 create_vnet() {
-    local now name slug payload resp
+    local now name slug payload resp attempt sleep_secs
     now="$(date +%Y%m%d-%H%M%S)"
 
     if [[ -z "$VNET_NAME" ]]; then
@@ -340,8 +384,21 @@ create_vnet() {
     fi
 
     log "Creating Tenderly vnet '$name'..."
-    resp="$(api_request POST "account/$TENDERLY_ACCOUNT_ID/project/$TENDERLY_PROJECT_SLUG/vnets" "$payload")" \
-        || die "Failed to create vnet via Tenderly API"
+    for ((attempt = 1; attempt <= VNET_CREATE_MAX_ATTEMPTS; attempt++)); do
+        if resp="$(
+            api_request POST "account/$TENDERLY_ACCOUNT_ID/project/$TENDERLY_PROJECT_SLUG/vnets" "$payload"
+        )"; then
+            break
+        fi
+
+        if (( attempt == VNET_CREATE_MAX_ATTEMPTS )); then
+            die "Failed to create vnet via Tenderly API after $VNET_CREATE_MAX_ATTEMPTS attempts"
+        fi
+
+        sleep_secs=$((VNET_CREATE_SLEEP_SECS * attempt))
+        warn "Tenderly vnet creation failed (attempt $attempt/$VNET_CREATE_MAX_ATTEMPTS); retrying in ${sleep_secs}s"
+        sleep "$sleep_secs"
+    done
 
     VNET_ID="$(echo "$resp" | jq -r '.id // .virtual_network.id // empty')"
     [[ -n "$VNET_ID" ]] || die "Tenderly API response missing vnet id: $resp"
@@ -405,12 +462,15 @@ create_vnet() {
     if [[ -z "$PUBLIC_WS_URL" ]]; then
         PUBLIC_WS_URL="$(to_ws_url "$PUBLIC_RPC_URL")"
     fi
-    resolve_vnet_start_height "$resp"
-
     log "Created vnet id: $VNET_ID"
     log "Admin RPC:  $ADMIN_RPC_URL"
     log "Public RPC: $PUBLIC_RPC_URL"
     log "Public WS:  $PUBLIC_WS_URL"
+
+    wait_for_rpc_ready "Admin" "$ADMIN_RPC_URL"
+    wait_for_rpc_ready "Public" "$PUBLIC_RPC_URL"
+
+    resolve_vnet_start_height "$resp"
     log "Base start height: $VNET_BASE_START_HEIGHT"
 }
 
@@ -421,7 +481,7 @@ fund_vnet() {
 
     require_cmd cast
 
-    DEPLOYER_ADDRESS="$(cast wallet address --private-key "$TENDERLY_PRIVATE_KEY")"
+    DEPLOYER_ADDRESS="$(cast wallet address --private-key "$TENDERLY_TEST_PRIVATE_KEY")"
     addrs+=("$DEPLOYER_ADDRESS")
     for i in 0 1 2 3 4; do
         addrs+=("$(get_var "BRIDGE_NODE_${i}")")
@@ -471,7 +531,7 @@ deploy_contracts() {
     require_cmd forge
     [[ -x "$DEPLOY_SCRIPT" ]] || die "Missing deploy script: $DEPLOY_SCRIPT"
 
-    DEPLOYER_ADDRESS="$(cast wallet address --private-key "$TENDERLY_PRIVATE_KEY")"
+    DEPLOYER_ADDRESS="$(cast wallet address --private-key "$TENDERLY_TEST_PRIVATE_KEY")"
 
     export NOCK_NAME="${NOCK_NAME:-Nock}"
     export NOCK_SYMBOL="${NOCK_SYMBOL:-NOCK}"
@@ -491,8 +551,10 @@ deploy_contracts() {
     else
         deploy_path="$DEPLOYMENTS_PATH"
     fi
+    mkdir -p "$(dirname "$deploy_path")"
 
-    export TENDERLY_RPC_URL="$ADMIN_RPC_URL"
+    export TENDERLY_ADMIN_RPC_URL="$ADMIN_RPC_URL"
+    export TENDERLY_RPC_URL="$PUBLIC_RPC_URL"
     export DEPLOY_TARGET_NETWORK="$network_name"
     export DEPLOYMENTS_PATH="$deploy_path"
     export DEPLOYER_ADDRESS="$DEPLOYER_ADDRESS"
@@ -622,7 +684,8 @@ write_env_file() {
 # Auto-generated by tenderly-vnet-deploy.sh on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 export BRIDGE_ENV="virtual-testnet"
 export TENDERLY_VNET_ID="${VNET_ID}"
-export TENDERLY_RPC_URL="${ADMIN_RPC_URL}"
+export TENDERLY_ADMIN_RPC_URL="${ADMIN_RPC_URL}"
+export TENDERLY_RPC_URL="${PUBLIC_RPC_URL}"
 export TENDERLY_PUBLIC_ADDRESS="${TENDERLY_PUBLIC_ADDRESS}"
 export BASE_RPC_URL="${PUBLIC_RPC_URL}"
 export BASE_WS_URL="${PUBLIC_WS_URL}"
@@ -743,13 +806,13 @@ require_env TENDERLY_ACCOUNT_ID
 require_env TENDERLY_PROJECT_SLUG
 
 if ! is_true "$CLEANUP_ONLY"; then
-    if [[ -z "${TENDERLY_PRIVATE_KEY:-}" ]]; then
-        export TENDERLY_PRIVATE_KEY="${TENDERLY_TEST_PRIVATE_KEY:-$DEFAULT_TENDERLY_TEST_PRIVATE_KEY}"
+    if [[ -z "${TENDERLY_TEST_PRIVATE_KEY:-}" ]]; then
+        export TENDERLY_TEST_PRIVATE_KEY="$DEFAULT_TENDERLY_TEST_PRIVATE_KEY"
     fi
-    require_env TENDERLY_PRIVATE_KEY
+    require_env TENDERLY_TEST_PRIVATE_KEY
     if [[ -z "${TENDERLY_PUBLIC_ADDRESS:-}" ]]; then
         require_cmd cast
-        export TENDERLY_PUBLIC_ADDRESS="$(cast wallet address --private-key "$TENDERLY_PRIVATE_KEY")"
+        export TENDERLY_PUBLIC_ADDRESS="$(cast wallet address --private-key "$TENDERLY_TEST_PRIVATE_KEY")"
     fi
     if is_true "$DO_FUND" || is_true "$DO_DEPLOY"; then
         resolve_bridge_nodes
@@ -765,7 +828,7 @@ if ! is_true "$CLEANUP_ONLY"; then
     if is_true "$DO_FUND"; then
         fund_vnet
     elif is_true "$DO_DEPLOY"; then
-        DEPLOYER_ADDRESS="$(cast wallet address --private-key "$TENDERLY_PRIVATE_KEY")"
+        DEPLOYER_ADDRESS="$(cast wallet address --private-key "$TENDERLY_TEST_PRIVATE_KEY")"
     fi
 
     if is_true "$DO_DEPLOY"; then

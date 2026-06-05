@@ -5,7 +5,7 @@ use nockchain_math::noun_ext::NounMathExtHandle;
 use nockchain_math::zoon::zmap::ZMap;
 use nockchain_types::tx_engine::common::Signature;
 use nockvm::noun::NounSpace;
-use wallet_tx_builder::types::CandidateNote;
+use wallet_tx_builder::types::{CandidateNote, CreateTxPlanningMode};
 
 use super::*;
 
@@ -1279,7 +1279,7 @@ impl Wallet {
         let order_direction = Self::planner_order_direction(note_selection);
 
         let request = PlanRequest {
-            planning_mode: PlanningMode::Standard,
+            planning_mode: CreateTxPlanningMode::Standard,
             selection_mode: selection_mode.clone(),
             order_direction,
             include_data,
@@ -1527,7 +1527,7 @@ impl Wallet {
 
         for signer in active_signers {
             let request = PlanRequest {
-                planning_mode: PlanningMode::V0MigrationSweep {
+                planning_mode: CreateTxPlanningMode::V0MigrationSweep {
                     destination_output: destination_output.clone(),
                 },
                 selection_mode: SelectionMode::Auto,

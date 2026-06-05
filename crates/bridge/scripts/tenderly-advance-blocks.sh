@@ -10,11 +10,11 @@
 set -euo pipefail
 
 NUM_BLOCKS="${1:?Usage: $0 <num_blocks> [rpc_url]}"
-RPC_URL="${2:-${TENDERLY_RPC_URL:-${TENDERLY_VIRTUAL_TESTNET_RPC_URL:-${BASE_WS_URL:-${BASE_RPC_URL:-}}}}}"
+RPC_URL="${2:-${TENDERLY_ADMIN_RPC_URL:-${TENDERLY_RPC_URL:-${TENDERLY_VIRTUAL_TESTNET_RPC_URL:-${BASE_WS_URL:-${BASE_RPC_URL:-}}}}}}"
 
 if [[ -z "$RPC_URL" ]]; then
     echo "Error: No RPC URL provided."
-    echo "Set TENDERLY_RPC_URL, TENDERLY_VIRTUAL_TESTNET_RPC_URL, or pass as second argument."
+    echo "Set TENDERLY_ADMIN_RPC_URL, TENDERLY_RPC_URL, TENDERLY_VIRTUAL_TESTNET_RPC_URL, or pass as second argument."
     exit 1
 fi
 
@@ -32,28 +32,23 @@ CURRENT_BLOCK=$(curl -s -X POST "$RPC_URL" \
 
 echo "Current block: $CURRENT_BLOCK"
 
-# Tenderly uses evm_increaseBlocks to advance multiple blocks at once
-# This is much faster than mining blocks one at a time
-RESULT=$(curl -s -X POST "$RPC_URL" \
-    -H "Content-Type: application/json" \
-    -d "{\"jsonrpc\":\"2.0\",\"method\":\"evm_increaseBlocks\",\"params\":[\"0x$(printf '%x' $NUM_BLOCKS)\"],\"id\":1}")
+# Mine blocks one at a time so the testnet produces contiguous intermediate
+# blocks instead of jumping the visible tip forward in one bulk step.
+for ((i=1; i<=NUM_BLOCKS; i++)); do
+    RESULT=$(curl -s -X POST "$RPC_URL" \
+        -H "Content-Type: application/json" \
+        -d '{"jsonrpc":"2.0","method":"evm_mine","params":[],"id":1}')
 
-ERROR=$(echo "$RESULT" | jq -r '.error // empty')
-if [[ -n "$ERROR" ]]; then
-    echo "Error from RPC: $ERROR"
-    echo "Trying alternative method: evm_mine in a loop..."
-    
-    # Fallback: mine blocks one at a time (slower but more compatible)
-    for ((i=1; i<=NUM_BLOCKS; i++)); do
-        curl -s -X POST "$RPC_URL" \
-            -H "Content-Type: application/json" \
-            -d '{"jsonrpc":"2.0","method":"evm_mine","params":[],"id":1}' > /dev/null
-        
-        if ((i % 10 == 0)); then
-            echo "  Mined $i / $NUM_BLOCKS blocks..."
-        fi
-    done
-fi
+    ERROR=$(echo "$RESULT" | jq -r '.error // empty')
+    if [[ -n "$ERROR" ]]; then
+        echo "Error from RPC while mining block $i: $ERROR"
+        exit 1
+    fi
+
+    if ((i % 10 == 0)) || ((i == NUM_BLOCKS)); then
+        echo "  Mined $i / $NUM_BLOCKS blocks..."
+    fi
+done
 
 # Get new block number
 NEW_BLOCK=$(curl -s -X POST "$RPC_URL" \

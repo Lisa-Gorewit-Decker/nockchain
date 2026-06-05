@@ -473,6 +473,7 @@ async fn run_catchup_peer(
     })
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_mine_effect(effect: &NounSlab) -> Result<Option<MiningCandidate>, NockAppError> {
     let Ok(effect_cell) = (unsafe { effect.root().as_cell() }) else {
         return Ok(None);
@@ -509,6 +510,7 @@ fn parse_mine_effect(effect: &NounSlab) -> Result<Option<MiningCandidate>, NockA
     }))
 }
 
+#[allow(clippy::result_large_err)]
 fn extract_gossip_data(effect: &NounSlab) -> Result<Option<NounSlab>, NockAppError> {
     let Ok(effect_cell) = (unsafe { effect.root().as_cell() }) else {
         return Ok(None);
@@ -525,6 +527,7 @@ fn extract_gossip_data(effect: &NounSlab) -> Result<Option<NounSlab>, NockAppErr
     Ok(Some(data_slab))
 }
 
+#[allow(clippy::result_large_err)]
 fn heard_block_fact(gossip: &mut NounSlab) -> Result<Option<(String, NounSlab)>, NockAppError> {
     let noun = unsafe { gossip.root() };
     let space = gossip.noun_space();
@@ -542,6 +545,7 @@ fn heard_block_fact(gossip: &mut NounSlab) -> Result<Option<(String, NounSlab)>,
     Ok(Some((block_id_str, fact_poke)))
 }
 
+#[allow(clippy::result_large_err)]
 fn block_id_from_page(page: Noun, space: &NounSpace) -> Result<Noun, NockAppError> {
     let page_cell = page.in_space(space).as_cell()?;
     match page_cell.head().as_atom() {
@@ -560,6 +564,7 @@ fn block_id_from_page(page: Noun, space: &NounSpace) -> Result<Noun, NockAppErro
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_mine_result(result: NounSlab) -> Result<MineResult, NockAppError> {
     let result_noun = unsafe { result.root() };
     let space = result.noun_space();

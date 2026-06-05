@@ -53,8 +53,6 @@ use nockvm::jets::cold::Nounable;
 use nockvm::noun::{Atom, Cell, IndirectAtom, Noun, NounAllocator, D, NO, SIG, T, YES};
 use noun_serde::prelude::*;
 use noun_serde::NounDecodeError;
-#[cfg(test)]
-use recipient::BRIDGE_LOCK_ROOT_DEFAULT_B58;
 use recipient::{
     planner_recipient_outputs, planner_refund_output_template, recipient_tokens_to_specs,
     RecipientSpec,
@@ -70,7 +68,7 @@ use wallet_tx_builder::lock_resolver::{
 };
 use wallet_tx_builder::planner::{plan_create_tx, PlanError};
 use wallet_tx_builder::types::{
-    CandidateVersionPolicy, ChainContext, PlanRequest, PlanningMode, SelectionMode, SelectionOrder,
+    CandidateVersionPolicy, ChainContext, PlanRequest, SelectionMode, SelectionOrder,
 };
 use zkvm_jetpack::hot::produce_prover_hot_state;
 
@@ -221,6 +219,7 @@ async fn main() -> Result<(), NockAppError> {
         | Commands::ShowSeedphrase
         | Commands::ShowMasterZPub
         | Commands::ShowMasterZPrv
+        | Commands::ShowMasterPrv
         | Commands::ShowKeyTree { .. }
         | Commands::ShowTx { .. }
         | Commands::SignMultisigTx { .. }
@@ -431,6 +430,7 @@ async fn main() -> Result<(), NockAppError> {
         Commands::ShowSeedphrase => Wallet::show_seed_phrase(),
         Commands::ShowMasterZPub => Wallet::show_master_pubkey(),
         Commands::ShowMasterZPrv => Wallet::show_master_privkey(),
+        Commands::ShowMasterPrv => Wallet::show_master_prv(),
         Commands::ShowKeyTree { include_values } => Wallet::show_key_tree(*include_values),
         Commands::TxAccepted { .. } => {
             unreachable!("transaction-accepted handled earlier")
@@ -1446,6 +1446,12 @@ impl Wallet {
     fn show_master_privkey() -> CommandNoun<NounSlab> {
         let mut slab = NounSlab::new();
         Self::wallet("show-master-zprv", &[], Operation::Poke, &mut slab)
+    }
+
+    /// Shows the raw master private key as base58.
+    fn show_master_prv() -> CommandNoun<NounSlab> {
+        let mut slab = NounSlab::new();
+        Self::wallet("show-master-prv", &[], Operation::Poke, &mut slab)
     }
 
     /// Shows the key tree structure.

@@ -23,7 +23,7 @@ use wallet_tx_builder::adapter::normalize_balance_pages;
 use wallet_tx_builder::fee::{compute_minimum_fee, FeeInputs};
 use wallet_tx_builder::planner::plan_create_tx;
 use wallet_tx_builder::types::{
-    CandidateVersionPolicy, ChainContext, PlanRequest, PlanningMode, RawNoteDataEntry,
+    CandidateVersionPolicy, ChainContext, CreateTxPlanningMode, PlanRequest, RawNoteDataEntry,
     SelectionMode, SelectionOrder,
 };
 
@@ -34,7 +34,7 @@ use crate::create_tx::{
     MigrateV0SignerSummary, PlannerBlockchainConstantsNoun, PlannerNoteDataConstantsNoun,
     SigningKeyLockMatcher,
 };
-use crate::recipient::{planner_recipient_outputs, RecipientSpec};
+use crate::recipient::{planner_recipient_outputs, RecipientSpec, BRIDGE_LOCK_ROOT_DEFAULT_B58};
 
 static INIT: Once = Once::new();
 
@@ -92,7 +92,10 @@ fn note_data_from_raw_entries(entries: Vec<RawNoteDataEntry>) -> NoteData {
     NoteData::new(
         entries
             .into_iter()
-            .map(|entry| NoteDataEntry::new(entry.key, entry.blob))
+            .map(|entry| {
+                NoteDataEntry::from_raw_blob(entry.key, entry.blob)
+                    .expect("fixture raw note-data should decode")
+            })
             .collect(),
     )
 }
@@ -146,7 +149,10 @@ fn word_count_from_noun_encode<T: NounEncode>(value: &T) -> u64 {
 }
 
 fn merged_seed_word_count(spends: &v1::Spends) -> u64 {
-    let mut merged_by_lock_root = BTreeMap::<[u64; 5], BTreeMap<String, Bytes>>::new();
+    let mut merged_by_lock_root = BTreeMap::<
+        [u64; 5],
+        BTreeMap<String, nockchain_types::tx_engine::v1::note::NoteDataValue>,
+    >::new();
 
     for (_, spend) in &spends.0 {
         let seeds = match spend {
@@ -159,7 +165,7 @@ fn merged_seed_word_count(spends: &v1::Spends) -> u64 {
                 .entry(seed.lock_root.to_array())
                 .or_default();
             for note_data_entry in seed.note_data.iter() {
-                merged.insert(note_data_entry.key.clone(), note_data_entry.blob.clone());
+                merged.insert(note_data_entry.key.clone(), note_data_entry.value.clone());
             }
         }
     }
@@ -169,7 +175,7 @@ fn merged_seed_word_count(spends: &v1::Spends) -> u64 {
         .map(|merged| {
             let entries = merged
                 .into_iter()
-                .map(|(key, blob)| NoteDataEntry::new(key, blob))
+                .map(|(key, value)| NoteDataEntry::new(key, value))
                 .collect::<Vec<_>>();
             word_count_from_noun_encode(&NoteData::new(entries))
         })
@@ -979,6 +985,7 @@ fn planner_recipient_outputs_match_hoon_lock_root_vectors() {
             amount: 7,
         },
         RecipientSpec::BridgeDeposit {
+            root: Hash::from_base58(BRIDGE_LOCK_ROOT_DEFAULT_B58).expect("default bridge root"),
             evm_address: bridge_address,
             amount: 9,
         },
@@ -1024,6 +1031,7 @@ fn planner_recipient_outputs_respect_include_data_for_p2pkh_but_not_multisig_or_
             amount: 7,
         },
         RecipientSpec::BridgeDeposit {
+            root: Hash::from_base58(BRIDGE_LOCK_ROOT_DEFAULT_B58).expect("default bridge root"),
             evm_address: bridge_address,
             amount: 9,
         },
@@ -1715,7 +1723,7 @@ async fn migrate_v0_notes_wallet_tx_matches_planner_word_and_fee_counts() -> Res
     let planner_constants = peek_wallet_blockchain_constants(&mut wallet).await?;
     let coinbase_relative_min = planner_constants.coinbase_timelock_min()?;
     let request = PlanRequest {
-        planning_mode: PlanningMode::V0MigrationSweep {
+        planning_mode: CreateTxPlanningMode::V0MigrationSweep {
             destination_output: destination_output.clone(),
         },
         selection_mode: SelectionMode::Auto,
@@ -1758,12 +1766,12 @@ async fn migrate_v0_notes_wallet_tx_matches_planner_word_and_fee_counts() -> Res
         "migration should build a legacy v0 spend"
     );
 
-    let hoon_seed_words = merged_seed_word_count(&spends);
+    let hoon_encoded_seed_words = merged_seed_word_count(&spends);
     let hoon_witness_words = witness_word_count(&spends);
     let hoon_fee = total_paid_fee(&spends);
     let hoon_gift = total_seed_gift(&spends);
     let computed_fee = compute_minimum_fee(FeeInputs {
-        seed_words: hoon_seed_words,
+        seed_words: plan.word_counts.seed_words,
         witness_words: hoon_witness_words,
         base_fee: request.chain_context.base_fee,
         input_fee_divisor: request.chain_context.input_fee_divisor,
@@ -1773,14 +1781,15 @@ async fn migrate_v0_notes_wallet_tx_matches_planner_word_and_fee_counts() -> Res
     });
 
     // A one-input v0 migration on fakenet should emit one merged destination seed
-    // note-data payload and one legacy signature map witness.
-    assert_eq!(hoon_seed_words, 14);
+    // note-data payload and one legacy signature map witness. Fee accounting charges the
+    // tx-engine z-map `rep` shape, which is one leaf smaller than the saved note-data noun.
+    assert_eq!(hoon_encoded_seed_words, 14);
+    assert_eq!(plan.word_counts.seed_words, 13);
     assert_eq!(hoon_witness_words, 31);
-    assert_eq!(computed_fee.minimum_fee, 2_784);
+    assert_eq!(computed_fee.minimum_fee, 2_656);
     assert_eq!(hoon_fee, computed_fee.minimum_fee);
-    assert_eq!(hoon_gift, 22_216);
+    assert_eq!(hoon_gift, 22_344);
 
-    assert_eq!(plan.word_counts.seed_words, hoon_seed_words);
     assert_eq!(plan.word_counts.witness_words, hoon_witness_words);
     assert_eq!(plan.final_fee, computed_fee.minimum_fee);
     assert_eq!(plan.outputs.len(), 1);

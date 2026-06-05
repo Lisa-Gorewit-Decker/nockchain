@@ -1898,7 +1898,15 @@ mod tests {
             )]),
         };
 
-        sleep(Duration::from_millis(25)).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if !manager.node_handle_is_live("node-a").await? {
+                    return Ok::<(), anyhow::Error>(());
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await??;
 
         let head = manager.fetch_private_head_if_current("node-a").await?;
         assert!(

@@ -49,12 +49,12 @@ source "$SCRIPT_DIR/lib/layout.sh"
 bridge_resolve_layout
 
 BIN_DIR="$BRIDGE_BIN_DIR"
-TEST_DATA_DIR="${BRIDGE_DIR}/test_run_data"
+TEST_DATA_DIR="${TEST_DATA_DIR:-${BRIDGE_DIR}/test_run_data}"
 WALLET_DIR="${TEST_DATA_DIR}/wallet"
 
 NODE_PRIVATE_GRPC_PORT="${NODE_PRIVATE_GRPC_PORT:-5002}"
 NODE_PUBLIC_GRPC_SERVER_ADDR="${NODE_PUBLIC_GRPC_SERVER_ADDR:-http://127.0.0.1:5001}"
-COMMON_WALLET_ARGS=(--fakenet)
+COMMON_WALLET_ARGS=(--data-dir "$WALLET_DIR" --fakenet)
 CLIENT_MODE="private"
 
 # Same v1 seed as run-node-only.sh, plus the legacy v0 seed that matches
@@ -128,24 +128,27 @@ if [ ! -f "$BIN_DIR/nockchain-wallet" ]; then
     exit 1
 fi
 
+if [ "$NEW_WALLET" = true ]; then
+    rm -rf "$WALLET_DIR"
+fi
 mkdir -p "$WALLET_DIR"
 
 if [ "$NEW_WALLET" = true ]; then
     # Reset wallet state and import deterministic fakenet keys.
     # Keep the v1 bridge address active by default after also importing the
     # legacy v0 key needed to spend pre-v1 coinbase notes.
-    NOCK_DATA_DIR="$WALLET_DIR" "$BIN_DIR/nockchain-wallet" --new \
+    NOCKAPP_HOME="$TEST_DATA_DIR" "$BIN_DIR/nockchain-wallet" --new \
         "${COMMON_WALLET_ARGS[@]}" import-keys \
         --seedphrase "$FAKENET_V1_SEED" --version 1
-    NOCK_DATA_DIR="$WALLET_DIR" "$BIN_DIR/nockchain-wallet" \
+    NOCKAPP_HOME="$TEST_DATA_DIR" "$BIN_DIR/nockchain-wallet" \
         "${COMMON_WALLET_ARGS[@]}" import-keys \
         --seedphrase "$FAKENET_V0_SEED" --version 0
-    NOCK_DATA_DIR="$WALLET_DIR" "$BIN_DIR/nockchain-wallet" \
+    NOCKAPP_HOME="$TEST_DATA_DIR" "$BIN_DIR/nockchain-wallet" \
         "${COMMON_WALLET_ARGS[@]}" set-active-master-address "$FAKENET_V1_ACTIVE_MASTER"
 fi
 
 # Run the wallet command
-export NOCK_DATA_DIR="$WALLET_DIR"
+export NOCKAPP_HOME="$TEST_DATA_DIR"
 exec "$BIN_DIR/nockchain-wallet" \
     "${CLIENT_ARGS[@]}" \
     "${COMMON_WALLET_ARGS[@]}" \

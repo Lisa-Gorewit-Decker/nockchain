@@ -1,5 +1,5 @@
-use nockvm::noun::{Noun, NounSpace};
-use noun_serde::NounDecodeError;
+use nockvm::noun::{Noun, NounAllocator, NounSpace};
+use noun_serde::{NounDecodeError, NounEncode};
 
 use crate::belt::{based_check, Belt};
 use crate::tip5;
@@ -161,6 +161,44 @@ impl OwnedBasedNoun {
             }
         }
     }
+
+    /// Computes the digest of this noun after applying tx-engine
+    /// `hashable-noun` semantics.
+    ///
+    /// This is different from [`hash_owned_based_noun_varlen`], which hashes
+    /// the noun itself. Here atoms are interpreted as `%leaf` payloads and
+    /// cells are interpreted as hashable pairs, matching Hoon:
+    ///
+    /// ```text
+    /// ?^  n  [$(n -.n) $(n +.n)]
+    /// leaf+n
+    /// ```
+    ///
+    /// TODO(types/maths): Revisit crate layering so primitive digest/hash
+    /// types can live below both `nockchain-math` and `nockchain-types`.
+    /// This currently returns raw limbs to avoid making `nockchain-math`
+    /// depend on `nockchain-types`.
+    pub fn hashable_noun_digest(&self) -> [u64; 5] {
+        match self {
+            Self::Atom(atom) => hash_leaf_belt(*atom),
+            Self::Cell(left, right) => {
+                hash_hashable_pair(left.hashable_noun_digest(), right.hashable_noun_digest())
+            }
+        }
+    }
+}
+
+impl NounEncode for OwnedBasedNoun {
+    fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
+        match self {
+            Self::Atom(atom) => atom.to_noun(allocator),
+            Self::Cell(left, right) => {
+                let left = left.to_noun(allocator);
+                let right = right.to_noun(allocator);
+                nockvm::noun::T(allocator, &[left, right])
+            }
+        }
+    }
 }
 
 /// Computes the tip5 `hash-noun-varlen` digest for an owned noun tree.
@@ -173,6 +211,16 @@ pub fn hash_owned_based_noun_varlen(noun: &OwnedBasedNoun) -> [u64; 5] {
     noun.push_leaf_sequence(&mut input);
     noun.push_dyck(&mut input);
     tip5::hash::hash_varlen(&mut input)
+}
+
+fn hash_leaf_belt(belt: Belt) -> [u64; 5] {
+    let mut input = vec![Belt(1), belt];
+    tip5::hash::hash_varlen(&mut input)
+}
+
+fn hash_hashable_pair(left: [u64; 5], right: [u64; 5]) -> [u64; 5] {
+    let mut input = left.into_iter().chain(right).map(Belt).collect::<Vec<_>>();
+    tip5::hash::hash_10(&mut input)
 }
 
 #[cfg(test)]

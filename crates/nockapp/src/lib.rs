@@ -29,7 +29,7 @@ use std::path::PathBuf;
 pub use bytes::*;
 pub use drivers::*;
 pub use nockapp::*;
-pub use nockvm::noun::Noun;
+pub use nockvm::noun::{Noun, NounAllocator, NounSpace};
 pub use noun::{AtomExt, IndirectAtomExt, JammedNoun, NounExt};
 pub use utils::bytes::{ToBytes, ToBytesExt};
 pub use utils::error::{CrownError, Result};

@@ -3,8 +3,8 @@ use std::time::Duration;
 use ibig::UBig;
 use nockapp::noun::slab::NounSlab;
 use nockapp::noun::IntoSlab;
-use nockvm::noun::{Atom, Noun, NounAllocator, T};
-use noun_serde::NounEncode;
+use nockvm::noun::{Atom, Noun, NounAllocator, NounSpace, T};
+use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 use tracing::info;
 
 pub const DEFAULT_FAKENET_POW_LEN: u64 = 2;
@@ -13,7 +13,7 @@ pub const FAKENET_V1_PHASE: u64 = 1;
 pub const FAKENET_BYTHOS_PHASE: u64 = 1;
 pub const FAKENET_BASE_FEE: u64 = 128;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, NounEncode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, NounEncode, NounDecode)]
 pub struct Seconds(pub u64);
 
 impl Seconds {
@@ -53,7 +53,7 @@ impl From<Seconds> for Duration {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, NounEncode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, NounEncode, NounDecode)]
 pub struct NoteDataConstraints {
     pub max_size: u64,
     pub min_fee: u64,
@@ -287,6 +287,217 @@ impl NounEncode for BlockchainConstants {
     }
 }
 
+// TODO(withdrawals): Replace this manual decode with derived noun-serde once
+// the blockchain-constants wire shape is represented by derive-friendly Rust
+// wrapper types instead of the current mixed v1 wrapper + nested v0 payload.
+impl NounDecode for BlockchainConstants {
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        let mut outer = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let v1_phase = u64::from_noun(&outer.head().noun(), space)?;
+        outer = outer
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let bythos_phase = u64::from_noun(&outer.head().noun(), space)?;
+        outer = outer
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let note_data = NoteDataConstraints::from_noun(&outer.head().noun(), space)?;
+        outer = outer
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let base_fee = u64::from_noun(&outer.head().noun(), space)?;
+        outer = outer
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let input_fee_divisor = u64::from_noun(&outer.head().noun(), space)?;
+        outer = outer
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let mut v0 = outer
+            .head()
+            .noun()
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let mut asert = outer
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let max_block_size = u64::from_noun(&v0.head().noun(), space)?;
+        v0 = v0
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let blocks_per_epoch = u64::from_noun(&v0.head().noun(), space)?;
+        v0 = v0
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let target_epoch_duration = Seconds::from_noun(&v0.head().noun(), space)?;
+        v0 = v0
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let update_candidate_timestamp_interval = decode_shifted_seconds(
+            &v0.head().noun(),
+            space,
+            "update-candidate-timestamp-interval",
+        )?;
+        v0 = v0
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let max_future_timestamp = Seconds::from_noun(&v0.head().noun(), space)?;
+        v0 = v0
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let min_past_blocks = u64::from_noun(&v0.head().noun(), space)?;
+        v0 = v0
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let genesis_target_atom = decode_ubig(&v0.head().noun(), space, "genesis-target-atom")?;
+        v0 = v0
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let max_target_atom = decode_ubig(&v0.head().noun(), space, "max-target-atom")?;
+        v0 = v0
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let check_pow_flag = bool::from_noun(&v0.head().noun(), space)?;
+        v0 = v0
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let coinbase_timelock_min = u64::from_noun(&v0.head().noun(), space)?;
+        v0 = v0
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let pow_len = u64::from_noun(&v0.head().noun(), space)?;
+        v0 = v0
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let max_coinbase_split = u64::from_noun(&v0.head().noun(), space)?;
+        let first_month_coinbase_min = u64::from_noun(&v0.tail().noun(), space)?;
+
+        let asert_phase = u64::from_noun(&asert.head().noun(), space)?;
+        asert = asert
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let asert_anchor_height = u64::from_noun(&asert.head().noun(), space)?;
+        asert = asert
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let asert_anchor_target_atom =
+            decode_ubig(&asert.head().noun(), space, "asert-anchor-target-atom")?;
+        asert = asert
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let asert_ideal_block_time = u64::from_noun(&asert.head().noun(), space)?;
+        asert = asert
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+
+        let asert_half_life = u64::from_noun(&asert.head().noun(), space)?;
+        let asert_anchor_min_timestamp = u64::from_noun(&asert.tail().noun(), space)?;
+
+        Ok(Self {
+            max_block_size,
+            blocks_per_epoch,
+            target_epoch_duration,
+            update_candidate_timestamp_interval,
+            max_future_timestamp,
+            min_past_blocks,
+            genesis_target_atom,
+            max_target_atom,
+            check_pow_flag,
+            coinbase_timelock_min,
+            pow_len,
+            max_coinbase_split,
+            first_month_coinbase_min,
+            v1_phase,
+            bythos_phase,
+            note_data,
+            base_fee,
+            input_fee_divisor,
+            asert_phase,
+            asert_anchor_height,
+            asert_anchor_target_atom,
+            asert_ideal_block_time,
+            asert_half_life,
+            asert_anchor_min_timestamp,
+        })
+    }
+}
+
+fn decode_ubig(
+    noun: &Noun,
+    space: &NounSpace,
+    field: &'static str,
+) -> Result<UBig, NounDecodeError> {
+    let atom = noun
+        .in_space(space)
+        .as_atom()
+        .map_err(|_| NounDecodeError::Custom(format!("{field} should be atom")))?;
+    Ok(UBig::from_le_bytes(&atom.to_le_bytes()))
+}
+
+fn decode_shifted_seconds(
+    noun: &Noun,
+    space: &NounSpace,
+    field: &'static str,
+) -> Result<Seconds, NounDecodeError> {
+    let encoded = decode_ubig(noun, space, field)?;
+    let lower_mask = UBig::from((1u128 << 64) - 1);
+    if (&encoded & &lower_mask) != UBig::from(0u8) {
+        return Err(NounDecodeError::Custom(format!(
+            "{field} lower 64 bits must be zero"
+        )));
+    }
+    let shifted = encoded >> 64usize;
+    let seconds = u64::try_from(shifted)
+        .map_err(|_| NounDecodeError::Custom(format!("{field} too large for u64 seconds")))?;
+    Ok(Seconds(seconds))
+}
+
 impl IntoSlab for BlockchainConstants {
     fn into_slab(self) -> NounSlab {
         let mut slab = NounSlab::new();
@@ -317,6 +528,7 @@ pub fn default_fakenet_blockchain_constants() -> BlockchainConstants {
 #[cfg(test)]
 mod tests {
     use ibig::UBig;
+    use nockapp::noun::slab::NockJammer;
 
     use super::*;
 
@@ -422,6 +634,18 @@ mod tests {
             constants.asert_half_life, 43_200,
             "asert-half-life mismatch"
         );
+    }
+
+    #[test]
+    fn blockchain_constants_roundtrip_from_noun_for_mainnet_and_fakenet() {
+        for constants in [BlockchainConstants::default(), default_fakenet_blockchain_constants()] {
+            let mut slab: NounSlab<NockJammer> = NounSlab::new();
+            let noun = constants.to_noun(&mut slab);
+            let space = slab.noun_space();
+            let decoded =
+                BlockchainConstants::from_noun(&noun, &space).expect("decode blockchain constants");
+            assert_eq!(decoded, constants);
+        }
     }
 
     #[test]
