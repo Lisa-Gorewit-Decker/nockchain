@@ -641,7 +641,7 @@ pub struct TerminalResidualFoldProof {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalAssignmentEvaluationProof {
     pub public_prefix_proof: TerminalOraclePrefixProof,
-    pub fold_commitments: Vec<TerminalOracleCommitment>,
+    pub fold_commitment_roots: Vec<TerminalCommitmentDigest>,
     pub final_value_basis: Vec<u64>,
     pub round_openings: Vec<TerminalOracleMultiProof>,
     pub openings: Vec<TerminalResidualFoldQueryOpening>,
@@ -13481,7 +13481,10 @@ impl NativeTerminalCompiler {
 
         Ok(TerminalAssignmentEvaluationProof {
             public_prefix_proof,
-            fold_commitments,
+            fold_commitment_roots: fold_commitments
+                .iter()
+                .map(|commitment| commitment.root)
+                .collect(),
             final_value_basis,
             round_openings,
             openings,
@@ -13577,7 +13580,10 @@ impl NativeTerminalCompiler {
 
         Ok(TerminalAssignmentEvaluationProof {
             public_prefix_proof,
-            fold_commitments,
+            fold_commitment_roots: fold_commitments
+                .iter()
+                .map(|commitment| commitment.root)
+                .collect(),
             final_value_basis,
             round_openings,
             openings,
@@ -13598,10 +13604,15 @@ impl NativeTerminalCompiler {
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
         Self::verify_terminal_assignment_commitment_identity(verifying_key, assignment_commitment)?;
         Self::verify_prelude_binds_commitment(prelude, assignment_commitment)?;
+        let fold_commitments = self.terminal_assignment_fold_commitments_from_roots::<F>(
+            verifying_key,
+            assignment_commitment,
+            &proof.fold_commitment_roots,
+        )?;
         self.validate_terminal_assignment_fold_commitments::<F>(
             verifying_key,
             assignment_commitment,
-            &proof.fold_commitments,
+            &fold_commitments,
         )?;
 
         let public_prefix_len = 1 + verifying_key.header.fingerprint.public_flat_len;
@@ -13617,11 +13628,11 @@ impl NativeTerminalCompiler {
         let query_plan = self.derive_terminal_assignment_fold_query_plan(
             prelude,
             assignment_commitment,
-            &proof.fold_commitments,
+            &fold_commitments,
         )?;
         self.verify_terminal_compact_fold_openings_goldilocks::<F, _>(
             assignment_commitment,
-            &proof.fold_commitments,
+            &fold_commitments,
             &proof.final_value_basis,
             &proof.round_openings,
             &proof.openings,
@@ -13655,10 +13666,15 @@ impl NativeTerminalCompiler {
         Self::verify_terminal_assignment_commitment_identity(verifying_key, assignment_commitment)?;
         Self::verify_prelude_binds_commitment(prelude, assignment_commitment)?;
         Self::validate_terminal_assignment_point(verifying_key, point)?;
+        let fold_commitments = self.terminal_assignment_fold_commitments_from_roots::<F>(
+            verifying_key,
+            assignment_commitment,
+            &proof.fold_commitment_roots,
+        )?;
         self.validate_terminal_assignment_fold_commitments::<F>(
             verifying_key,
             assignment_commitment,
-            &proof.fold_commitments,
+            &fold_commitments,
         )?;
 
         let public_prefix_len = 1 + verifying_key.header.fingerprint.public_flat_len;
@@ -13674,11 +13690,11 @@ impl NativeTerminalCompiler {
         let query_plan = self.derive_terminal_assignment_fold_query_plan(
             prelude,
             assignment_commitment,
-            &proof.fold_commitments,
+            &fold_commitments,
         )?;
         self.verify_terminal_compact_fold_openings_goldilocks::<F, _>(
             assignment_commitment,
-            &proof.fold_commitments,
+            &fold_commitments,
             &proof.final_value_basis,
             &proof.round_openings,
             &proof.openings,
@@ -25870,6 +25886,46 @@ impl NativeTerminalCompiler {
         Ok(())
     }
 
+    fn terminal_assignment_fold_commitments_from_roots<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        assignment_commitment: &TerminalOracleCommitment,
+        roots: &[TerminalCommitmentDigest],
+    ) -> Result<Vec<TerminalOracleCommitment>, NativeTerminalVerifyError> {
+        Self::verify_terminal_assignment_commitment_identity::<F>(
+            verifying_key,
+            assignment_commitment,
+        )?;
+        let mut len = assignment_commitment.values_len;
+        let mut expected_rounds = 0usize;
+        while len > 1 {
+            len = len.div_ceil(2);
+            expected_rounds += 1;
+        }
+        if roots.len() != expected_rounds {
+            return Err(
+                NativeTerminalVerifyError::TerminalResidualFoldCommitmentLengthMismatch {
+                    round: expected_rounds,
+                    expected: expected_rounds,
+                    got: roots.len(),
+                },
+            );
+        }
+
+        let mut current_len = assignment_commitment.values_len;
+        let mut commitments = Vec::with_capacity(roots.len());
+        for (round, root) in roots.iter().copied().enumerate() {
+            let expected_len = current_len.div_ceil(2);
+            commitments.push(TerminalOracleCommitment {
+                label: Self::assignment_fold_oracle_label(round),
+                values_len: expected_len,
+                root,
+            });
+            current_len = expected_len;
+        }
+        Ok(commitments)
+    }
+
     fn validate_terminal_assignment_point<F>(
         verifying_key: &NativeTerminalVerifyingKey<F>,
         point: &[F],
@@ -33834,6 +33890,29 @@ mod tests {
             NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch { .. }
         ));
 
+        let mut tampered_assignment_fold_root = proof.clone();
+        tampered_assignment_fold_root
+            .primitive_r1cs_proof
+            .matrix_sumcheck
+            .assignment_evaluation
+            .fold_commitment_roots[0]
+            .0[0] ^= 1;
+        let err = compiler
+            .verify_terminal_production_goldilocks(
+                &vk,
+                &public_inputs,
+                &tampered_assignment_fold_root,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
+                    | NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch { .. }
+            ),
+            "tampered assignment fold root must fail reconstructed commitment checks, got {err:?}"
+        );
+
         let mut extra_commitment = proof.clone();
         extra_commitment
             .prelude
@@ -34134,7 +34213,10 @@ mod tests {
             )
             .unwrap()
         );
-        assert_eq!(proof.round_openings.len(), proof.fold_commitments.len());
+        assert_eq!(
+            proof.round_openings.len(),
+            proof.fold_commitment_roots.len()
+        );
         assert!(
             proof
                 .openings

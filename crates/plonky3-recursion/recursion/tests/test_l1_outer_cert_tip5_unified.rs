@@ -1011,13 +1011,13 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
     )
     .expect("terminal assignment public-prefix proof must serialize")
     .len();
-    let r1cs_assignment_fold_commitments_size = postcard::to_allocvec(
+    let r1cs_assignment_fold_commitment_roots_size = postcard::to_allocvec(
         &r1cs_row_product_proof
             .matrix_sumcheck
             .assignment_evaluation
-            .fold_commitments,
+            .fold_commitment_roots,
     )
-    .expect("terminal assignment fold commitments must serialize")
+    .expect("terminal assignment fold commitment roots must serialize")
     .len();
     let r1cs_assignment_fold_openings_size = postcard::to_allocvec(
         &r1cs_row_product_proof
@@ -1237,13 +1237,13 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
         r1cs_row_product_verify_elapsed.as_secs_f64(),
     );
     eprintln!(
-        "terminal R1CS row-product breakdown: row_rounds={} matrix_sumcheck={} matrix_rounds={} assignment_eval={} assignment_public_prefix={} assignment_fold_commitments={} assignment_fold_query_indices={} assignment_fold_round_multiproofs={}",
+        "terminal R1CS row-product breakdown: row_rounds={} matrix_sumcheck={} matrix_rounds={} assignment_eval={} assignment_public_prefix={} assignment_fold_commitment_roots={} assignment_fold_query_indices={} assignment_fold_round_multiproofs={}",
         r1cs_row_product_rounds_size,
         r1cs_row_product_matrix_size,
         r1cs_matrix_rounds_size,
         r1cs_assignment_evaluation_size,
         r1cs_assignment_public_prefix_size,
-        r1cs_assignment_fold_commitments_size,
+        r1cs_assignment_fold_commitment_roots_size,
         r1cs_assignment_fold_openings_size,
         r1cs_assignment_fold_round_openings_size,
     );
