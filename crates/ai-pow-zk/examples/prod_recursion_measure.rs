@@ -69,7 +69,7 @@ fn main() {
     eprintln!("══ ai-pow-zk → Plonky3-recursion · production caller ══");
     eprintln!("target model : Llama-3.1-8B-Instruct-pearl — FFN gate/up GEMM");
     eprintln!("ZkParams     : m=4096 k=4096 n=14336 r=64 tile=8");
-    eprintln!("L0 FRI profile : CircuitConfig::PROD (log_blowup=4, num_queries=15, pow_bits=1)");
+    eprintln!("L0 FRI profile : CircuitConfig::PROD (log_blowup=4, num_queries=15, pow_bits=0)");
     eprintln!(
         "L1 FRI profile : goldilocks_tip5_60bit (60-bit Johnson, log_blowup=4, num_queries=9, query_pow_bits=24, cap_height=5)"
     );

@@ -118,8 +118,8 @@ of `MDS_MATRIX_I64`.
 
 ### 2.2 Path 5 — FRI `lb` reduction (designed, not landed)
 
-`lb=4 nq=15` is the current inner PROD (62-bit Johnson). The
-alternative `lb=3 nq=20` is also 62 bits Johnson (`3·20 + 1 + 1 = 62`)
+`lb=4 nq=15 pow=0` is the current inner PROD (60 pure-query Johnson).
+The alternative `lb=3 nq=20 pow=0` is also 60 pure-query Johnson (`3·20 = 60`)
 but the LDE is 8× instead of 16× ⇒ half the Merkle leaves ⇒
 ~half the trace-commit Tip5 hashing. Trade-offs:
 - Inner prove ~2× faster on the commit phase.

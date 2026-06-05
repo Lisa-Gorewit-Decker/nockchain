@@ -329,7 +329,7 @@ mod tests {
     }
 
     // =================================================================
-    //  PROD-profile benches (62-bit unconditional FRI soundness at
+    //  PROD-profile benches (60-bit pure-query FRI soundness at
     //  the Johnson radius — paper IACR ePrint 2025/2055 Theorem 1.5;
     //  2026-05-21 anchored-between policy).
     // =================================================================
@@ -365,7 +365,7 @@ mod tests {
     // =================================================================
     //  FRI parameter sweep. The historical PROD_LBn profiles remain
     //  at ≥80-bit unconditional Johnson-radius soundness; current PROD
-    //  is the 62-bit anchored-between profile.
+    //  is the 60-bit pure-query anchored-between profile.
     //
     //  The high-margin profiles pair `log_blowup` with `num_queries` so
     //  that `log_blowup · num_queries ≥ 80` (~90 bits each for margin).
@@ -387,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "FRI sweep — current PROD log_blowup=4, num_queries=15, pow_bits=1 @ 8K heavy (62-bit Johnson)"]
+    #[ignore = "FRI sweep — current PROD log_blowup=4, num_queries=15, pow_bits=0 @ 8K heavy (60-bit Johnson)"]
     fn bench_fri_sweep_current_prod_8k_heavy() {
         let r = run_heavy_at(MIN_STARK_LEN, 100, 100, 100, &CircuitConfig::PROD);
         r.print();

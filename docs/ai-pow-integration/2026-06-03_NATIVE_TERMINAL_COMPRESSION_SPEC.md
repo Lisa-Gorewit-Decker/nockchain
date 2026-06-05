@@ -22,26 +22,28 @@ The current recursion pipeline is:
 2. execute that circuit to produce `p3_circuit::tables::Traces`;
 3. prove those traces with `BatchStarkProver`.
 
-Step 3 is the size bottleneck. After the 2026-06-03 batch-STARK FRI parameter
-pass (`lb=4, nq=9, query_pow=24`, mixed query/PoW accounting), the outer
-certificate is 200.6 KiB under the canonical fixed-int bincode byte helper
-(225.8 KiB under legacy postcard), with about 163.5 KiB in FRI opening proof
-material under postcard component accounting. That profile is useful historical
-context, but it is not a production terminal profile because terminal soundness
-must come from FRI queries alone. Another layer of the same batch-STARK proof
-format does not address that floor.
+Step 3 is the size bottleneck. After the current production-profile rerun
+(`CircuitConfig::PROD` at `lb=4,nq=15,pow=0`, L1 checkpoint at
+`lb=4,nq=9,query_pow=24`), the L1 batch-STARK proof body is `149.1 KiB`, while
+the full checkpoint certificate is `1,135.5 KiB` under legacy postcard and
+`5,794.7 KiB` under the fixed-int bincode helper. Earlier `200.6 KiB`
+fixed-int checkpoint measurements are stale for the current certificate shape.
+The batch-STARK checkpoint profile remains useful historical context, but it is
+not a production terminal profile because terminal soundness must come from FRI
+queries alone and because another layer of the same batch-STARK proof format
+does not address the wire-size floor.
 
 Rejected size routes measured on 2026-06-03:
 
 - generic lossless compression: 328.7 KiB raw became only about 291.1 KiB
   under best zlib/gzip before the parameter pass, so it cannot reach 100 KiB;
-- Merkle-digest dictionarying: all authentication digests in the sampled L1
-  proof were unique (`1365/1365` before the parameter pass, `819/819` at
-  the active profile), so a digest dictionary is larger than the raw paths;
+- Merkle-digest dictionarying: all or nearly all authentication digests in the
+  sampled L1 proof were unique (`1008/1008` in the current rerun), so a digest
+  dictionary is larger than the raw paths;
 - query-count reduction alone: `nq=9, query_pow=24` was the best measured
-  mixed-accounting size/time point; combined with fixed-int bincode it reaches
-  200.6 KiB and 28.69 s for the L1 outer stage, but it is still above the
-  terminal target and does not meet the pure-query terminal requirement;
+  mixed-accounting size/time point for the batch checkpoint, but the current
+  rerun still has a `149.1 KiB` L1 proof body and `59.21 s` L1 outer stage,
+  and it does not meet the pure-query terminal requirement;
 - pushing further to `nq=8, query_pow=28` reduced the fixed-int L1 certificate
   to 185.6 KiB under mixed accounting, but the extra query PoW pushed the L1
   outer stage to 61.90 s and total trace-to-certificate time to 94.17 s, so it

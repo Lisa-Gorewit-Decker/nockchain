@@ -409,7 +409,7 @@ This benchmark uses the production AI-PoW Layer-0 shape and the hardened
 batch-STARK recursive checkpoint profile documented in the harness:
 
 - model params: `m=4096 k=4096 n=14336 noise_rank=64 tile=8`;
-- L0 profile: `CircuitConfig::PROD` with `log_blowup=4`, `num_queries=15`, `pow_bits=1`;
+- L0 profile: `CircuitConfig::PROD` with `log_blowup=4`, `num_queries=15`, `pow_bits=0`;
 - L1 profile: `goldilocks_tip5_60bit()` with `log_blowup=4`, `num_queries=9`, `query_pow_bits=24`, `cap_height=5`;
 - trace: `2^15 = 32768` rows by `1917` columns;
 - trace contents: zero-activity baseline at production dimensions. The
@@ -417,51 +417,53 @@ batch-STARK recursive checkpoint profile documented in the harness:
   and prover time are dimension/profile measurements without needing
   16 GB of model weights.
 
-Measured on 2026-06-03 after the position-keyed `noised_packed`
+Measured on 2026-06-05 after the position-keyed `noised_packed`
 constraint update, the `urange8` redundant-query reduction, L1 Horner
 packing, digest-binding the outer certificate's statement public
-values, and removing the low-soundness L1 `goldilocks_tip5()` testing
+values, removing Layer-0 proof-system PoW grinding
+(`CircuitConfig::PROD.pow_bits=0`), and removing the low-soundness L1
+`goldilocks_tip5()` testing
 profile. The hardened L1 outer certificate profile is now
 `goldilocks_tip5_60bit()` only: `log_blowup=4`, `num_queries=9`,
 `query_pow_bits=24`, `cap_height=5`, for 60 Johnson bits.
 
 | Stage | Time |
 |---|---:|
-| L0 composite prove | 32.29 s |
-| L1 verifier-circuit build | 0.50 s |
-| L1 in-circuit verify | 0.07 s |
-| L1 outer certificate prove + verify | 28.69 s |
-| End-to-end trace-to-recursive-proof time | 61.55 s |
-| Recursive-only time after L0 proof exists | 29.26 s |
+| L0 composite prove | 34.11 s |
+| L1 verifier-circuit build | 0.51 s |
+| L1 in-circuit verify | 0.06 s |
+| L1 outer certificate prove + verify | 59.21 s |
+| End-to-end trace-to-recursive-proof time | 93.88 s |
+| Recursive-only time after L0 proof exists | 59.77 s |
 
 Serialized sizes from the same run:
 
 | Artifact | Bytes | KiB |
 |---|---:|---:|
-| L0 composite proof | 303,896 | 296.8 KiB |
-| L1 batch-STARK checkpoint certificate (fixed-int bincode helper) | 205,446 | 200.6 KiB |
-| L1 batch-STARK checkpoint certificate (legacy postcard comparison) | 231,235 | 225.8 KiB |
+| L0 composite proof | 304,048 | 296.9 KiB |
+| L1 batch-STARK proof body inside checkpoint | 152,700 | 149.1 KiB |
+| L1 batch-STARK checkpoint certificate (legacy postcard comparison) | 1,162,800 | 1,135.5 KiB |
+| L1 batch-STARK checkpoint certificate (fixed-int bincode helper) | 5,933,764 | 5,794.7 KiB |
+| L1 batch-STARK checkpoint certificate (gzip-best envelope) | 366,944 | 358.3 KiB |
 
 The batch-STARK L1 certificate breakdown from the same run was:
 
 | Component | KiB |
 |---|---:|
 | proof commitments | 4.5 KiB |
-| opened values | 49.5 KiB |
-| opening proof | 163.5 KiB |
-| global lookup data | 6.8 KiB |
+| opened values | 24.0 KiB |
+| opening proof | 117.3 KiB |
+| global lookup data | 3.4 KiB |
 
-The opening proof still dominates under the required 9-query, 60-bit L1
-FRI profile. A direct Pearl/Plonky2-style Merkle path-compression model
-was run against the same q=9/cap=5 proof shape on 2026-06-03
-(`/tmp/prod_recursion_measure_15_path_model_20260603.log`): 10 tree
-groups, 819 raw auth siblings, 787.7 compressed siblings on average
-across 256 transcript-shaped index trials. That saves only 1.2 KiB on
-average (6.8 KiB best sampled, 0 KiB worst sampled), leaving a fixed-int
-certificate floor of about 199.4 KiB on average. This route cannot reach
-the ~100 KiB target, and any real version would have to rederive query
-indices from the Fiat-Shamir transcript rather than trusting serialized
-indices.
+The opening proof still dominates the L1 proof body under the required
+9-query, 60-bit L1 FRI profile, but the full checkpoint certificate is
+now much larger than the proof body because it carries verifier context.
+A direct Pearl/Plonky2-style Merkle path-compression model in the
+2026-06-05 rerun saw 11 tree groups and 1008 raw auth siblings; it saved
+only 1.4 KiB on average (5.4 KiB best sampled, 0 KiB worst sampled).
+This route cannot reach the ~100 KiB target, and any real version would
+have to rederive query indices from the Fiat-Shamir transcript rather
+than trusting serialized indices.
 
 A further measured `nq=8, query_pow=28` profile reduced the canonical
 fixed-int L1 certificate to 185.6 KiB, but rejected itself on

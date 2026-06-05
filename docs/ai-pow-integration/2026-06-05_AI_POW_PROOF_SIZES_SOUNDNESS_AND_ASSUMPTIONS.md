@@ -27,17 +27,19 @@ must not be treated as the production block/wire artifact.
 
 | Artifact | Current production role | Last measured size | Source |
 |---|---|---:|---|
-| Layer-0 composite proof | Regular STARK proof of the AI-PoW puzzle statement; consumed by recursion; diagnostic/intermediate, not persisted by consensus | `303,896` bytes / `296.8 KiB` | `2026-05-29_AI_ZKP_NOUN_WIRE_SPEC.md`, `prod_recursion_measure 15` |
-| Hardened L1 batch-STARK recursive certificate | Soundness-hardened recursive verifier checkpoint/fallback path; not acceptable as the production wire artifact because it exceeds the size budget | `205,446` bytes / `200.6 KiB` fixed-int bincode (`231,235` bytes / `225.8 KiB` legacy postcard) | `prod_recursion_measure 15` |
+| Layer-0 composite proof | Regular STARK proof of the AI-PoW puzzle statement; consumed by recursion; diagnostic/intermediate, not persisted by consensus | `304,048` bytes / `296.9 KiB` | `RUSTFLAGS="-C target-cpu=native" cargo run -p ai-pow-zk --release --features recursion --example prod_recursion_measure -- 15`, 2026-06-05 after `CircuitConfig::PROD.pow_bits=0` |
+| Hardened L1 batch-STARK recursive certificate | Soundness-hardened recursive verifier checkpoint/fallback path; not acceptable as the production wire artifact because it exceeds the size budget | L1 proof body `149.1 KiB`; full checkpoint certificate `1,135.5 KiB` legacy postcard / `5,794.7 KiB` fixed-int bincode / `358.3 KiB` gzip-best envelope | same `prod_recursion_measure 15` run |
 | Native terminal certificate fixture | Recursion-crate terminal proof over the real Tip5 verifier-circuit fixture; proves the terminal backend can be small, but is not yet the full `ai-pow-zk` composite verifier path | `85,948` bytes / `83.9 KiB`; release prove `1.492s`, verify `1.181s` | `RUSTFLAGS="-C target-cpu=native" cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --release --test test_l1_outer_cert_tip5_unified terminal_production_certificate_measures_real_tip5_l0_verifier_circuit -- --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier native terminal path | Newly wired opt-in diagnostic path; not yet production-qualified | Release/native run of `terminal_recursive_certificate_round_trip_verifies` was stopped after more than two minutes without completing the proof, so no production size/time claim is valid yet | 2026-06-05 follow-up integration run |
-| Full `ai-pow-zk` composite-verifier terminal relation metrics | Non-proving diagnostic for the same path | PROD baseline: `125,991` ops, `222,017` witnesses, `43,443` terminal private inputs, `14,049` NPO rows, `242,798` NPO residual components, `5,340` bytes of terminal public inputs, terminal compile `21.022s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_for_prod_baseline_composite_are_available -- --ignored --nocapture`, 2026-06-05 |
+| Full `ai-pow-zk` composite-verifier terminal relation metrics | Non-proving diagnostic for the same path | PROD baseline: `125,961` ops, `221,989` witnesses, `43,443` terminal private inputs, `14,049` NPO rows, `242,798` NPO residual components, `5,319` bytes of terminal public inputs, terminal compile `20.943s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_for_prod_baseline_composite_are_available -- --ignored --nocapture`, 2026-06-05 |
 
 The active production target is therefore:
 
-- regular Layer-0 proof: **296.8 KiB** if materialized;
-- hardened batch-STARK L1 checkpoint: **200.6 KiB**, soundness-relevant but too
-  large for production wire use;
+- regular Layer-0 proof: **296.9 KiB** if materialized;
+- hardened batch-STARK L1 checkpoint: the submitted L1 proof body is
+  **149.1 KiB**, and the full checkpoint certificate is **1.1 MiB+** before
+  optional compression; soundness-relevant but too large for production wire
+  use;
 - native terminal recursive fixture: **85,948 bytes / 83.9 KiB**, satisfying
   the about-100 KiB and `<30s` release-proving gates for the recursion-crate
   Tip5 verifier fixture;
@@ -89,34 +91,37 @@ for this batch-STARK checkpoint path:
 
 | Stage | Time | Why it costs |
 |---|---:|---|
-| L0 composite prove | `32.29s` | Proves a `2^15` row, `1917` column composite AIR with `log_blowup=4`; the main-trace LDE alone is about `7.5 GiB` before permutation, quotient, and Merkle-tree allocations |
-| L1 verifier-circuit build | `0.50s` | Builds the recursive verifier circuit and allocates targets; not the bottleneck |
-| L1 in-circuit verify | `0.07s` | Runs the verifier circuit once to produce traces; not the bottleneck |
-| L1 outer certificate prove + verify | `28.69s` | Proves the verifier-circuit traces with `BatchStarkProver::prove_all_tables` using the production Tip5/recompose NPO tables and FRI profile |
-| End-to-end trace-to-recursive-proof time | `61.55s` | Mostly L0 proving plus the L1 batch-STARK outer proof |
-| Recursive-only time after L0 proof exists | `29.26s` | Almost entirely the L1 outer batch-STARK proof |
+| L0 composite prove | `34.11s` | Proves a `2^15` row, `1917` column composite AIR with `log_blowup=4`; the main-trace LDE alone is about `7.5 GiB` before permutation, quotient, and Merkle-tree allocations |
+| L1 verifier-circuit build | `0.51s` | Builds the recursive verifier circuit and allocates targets; not the bottleneck |
+| L1 in-circuit verify | `0.06s` | Runs the verifier circuit once to produce traces; not the bottleneck |
+| L1 outer certificate prove + verify | `59.21s` | Proves the verifier-circuit traces with `BatchStarkProver::prove_all_tables` using the production Tip5/recompose NPO tables and FRI profile |
+| End-to-end trace-to-recursive-proof time | `93.88s` | Mostly L0 proving plus the L1 batch-STARK outer proof |
+| Recursive-only time after L0 proof exists | `59.77s` | Mostly the L1 outer batch-STARK proof |
 
 The size bottleneck in that same batch-STARK checkpoint is not top-level noun
 or serde framing. It is FRI opening material in the L1 outer proof:
 
 | Component | Measured size |
 |---|---:|
-| Fixed-int batch-STARK checkpoint certificate | `205,446` bytes / `200.6 KiB` |
-| Legacy postcard checkpoint certificate | `231,235` bytes / `225.8 KiB` |
+| Fixed-int full batch-STARK checkpoint certificate | `5,933,764` bytes / `5,794.7 KiB` |
+| Legacy postcard full checkpoint certificate | `1,162,800` bytes / `1,135.5 KiB` |
+| Gzip-best full checkpoint certificate | `366,944` bytes / `358.3 KiB` |
+| L1 proof body inside the checkpoint | `149.1 KiB` |
 | L1 proof commitments | `4.5 KiB` |
-| L1 opened values | `49.5 KiB` |
-| L1 opening proof | `163.5 KiB` |
-| L1 global lookup data | `6.8 KiB` |
+| L1 opened values | `24.0 KiB` |
+| L1 opening proof | `117.3 KiB` |
+| L1 global lookup data | `3.4 KiB` |
 
 The opening proof dominates because the outer proof is a conventional
 multi-table batch-STARK over the executed verifier circuit. The active
-`q=9`, `cap_height=5` shape still carries 10 independent Merkle auth-path tree
-groups and 819 raw authentication siblings. A direct path-compression model
-saved only `1.2 KiB` on average and `6.8 KiB` in the best sampled case, leaving
-an estimated fixed-int floor around `199.4 KiB`. Reducing queries to `q=8` with
-more query PoW got the checkpoint to `185.6 KiB`, but the L1 outer stage rose
-to `61.90s`; it also violates the production terminal policy of not counting
-query PoW toward the 60-bit floor.
+`q=9`, `cap_height=5` shape still carries 11 independent Merkle auth-path tree
+groups and 1008 raw authentication siblings. A direct path-compression model
+saved only `1.4 KiB` on average and `5.4 KiB` in the best sampled case, leaving
+the full fixed-int checkpoint floor around `5,789.3 KiB` even in the best
+sample. Reducing queries to `q=8` with more query PoW was previously measured
+as smaller, but it violates the production terminal policy of not counting
+query PoW toward the 60-bit floor and does not address the full-certificate
+context overhead.
 
 The native terminal certificate is smaller and faster because it does not wrap
 the verifier execution in another batch-STARK proof format. It compiles the
@@ -143,20 +148,20 @@ The non-proving terminal-relation metrics explain why this full path is slow:
 
 | Metric | TEST_PEARL baseline | PROD baseline |
 |---|---:|---:|
-| Terminal compile time | `21.947s` | `21.022s` |
+| Terminal compile time | `21.947s` | `20.943s` |
 | Terminal public input values | `459` | `459` |
-| Terminal public input bytes | `5,381` | `5,340` |
+| Terminal public input bytes | `5,381` | `5,319` |
 | Terminal private input values | `46,002` | `43,443` |
-| Terminal operations | `131,242` | `125,991` |
-| Primitive operations | `111,656` | `106,365` |
+| Terminal operations | `131,242` | `125,961` |
+| Primitive operations | `111,656` | `106,349` |
 | Const operations | `578` | `582` |
 | Public operations | `459` | `459` |
 | ALU add operations | `8,939` | `8,832` |
 | ALU multiplication operations | `10,317` | `10,234` |
-| ALU boolean-check operations | `240` | `256` |
-| ALU fused multiply-add operations | `10,195` | `10,132` |
+| ALU boolean-check operations | `240` | `255` |
+| ALU fused multiply-add operations | `10,195` | `10,117` |
 | ALU Horner-accumulator operations | `80,928` | `75,870` |
-| Hint operations | `5,577` | `5,577` |
+| Hint operations | `5,577` | `5,563` |
 | Supported NPO operations / rows | `14,009` | `14,049` |
 | Tip5 rows | `8,002` | `8,081` |
 | Recompose rows | `238` | `225` |
@@ -164,7 +169,7 @@ The non-proving terminal-relation metrics explain why this full path is slow:
 | NPO callsite input slots | `140,046` | `141,232` |
 | NPO callsite output slots | `86,027` | `86,778` |
 | NPO residual components | `253,882` | `242,798` |
-| Circuit fingerprint | `witness=232,554 public=459 private=46,002 ops=131,242` | `witness=222,017 public=459 private=43,443 ops=125,991` |
+| Circuit fingerprint | `witness=232,554 public=459 private=46,002 ops=131,242` | `witness=221,989 public=459 private=43,443 ops=125,961` |
 
 The terminal public input vector is about `5.3 KiB`, so including it with the
 terminal certificate is not the size blocker. The blockers are the generic L1
@@ -172,7 +177,10 @@ verifier relation itself: more than `100k` primitive operations, about `14k`
 supported NPO rows, and a terminal compile step that already consumes most of
 the `<30s` budget before terminal proving begins. Within the primitive side,
 the single biggest class is Horner accumulation: `75,870` PROD operations,
-about 71% of all primitive operations. Those steps are emitted by the generic
+about 71% of all primitive operations. Removing the last proof-system PoW
+grinding from `CircuitConfig::PROD` only reduced the relation by 30 operations,
+so PoW removal is a soundness-policy cleanup rather than the size/time fix.
+Those Horner steps are emitted by the generic
 FRI/PCS verifier arithmetic for polynomial opening, quotient, and batch
 consistency checks (`crates/plonky3-recursion/recursion/src/pcs/fri/verifier.rs`
 uses `horner_acc_step` in the FRI verifier). On the NPO side, the rows are
@@ -247,7 +255,7 @@ terminal measurement to obtain complete wire bytes and release timing.
 
 | Layer | Parameters | Soundness claim | PoW counted? |
 |---|---|---:|---|
-| Layer-0 composite STARK | `log_blowup=4`, `num_queries=15`, `pow_bits=1` in `CircuitConfig::PROD` | 60 pure FRI-query bits, 62 bits under the code's Johnson accounting including the two one-bit PoW hooks | No PoW is needed to reach 60 bits; the two bits are extra margin |
+| Layer-0 composite STARK | `log_blowup=4`, `num_queries=15`, `pow_bits=0` in `CircuitConfig::PROD` | 60 pure FRI-query bits under the code's Johnson accounting | No |
 | Hardened L1 batch-STARK checkpoint | `log_blowup=4`, `num_queries=9`, `query_pow_bits=24`, `cap_height=5` | 60 bits under mixed query/PoW Johnson accounting | Yes; acceptable for the checkpoint, not for the terminal production target |
 | Production native terminal backend | `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`, `max_log_arity=3`, `log_final_poly_len=0` | Intended 60 pure FRI-query bits for the terminal backend, conditionally on the selected Plonky3 FRI theorem/assumption and terminal theorem; fixture proof-size gate passes, but the full `ai-pow-zk` composite-verifier path has not met the release-time gate | No |
 | End-to-end production recursive certificate target | L0 proof accepted by the native terminal recursive-verifier certificate | At most the minimum of the L0 and terminal layers: **60 bits** | No terminal query PoW counted |
@@ -353,10 +361,9 @@ Implementation anchors:
   family: `composite_prove_pinned_logup` /
   `composite_verify_pow_pinned_logup`.
 - `crates/ai-pow-zk/src/circuit.rs::CircuitConfig::PROD` sets
-  `log_blowup=4`, `num_queries=15`, and `pow_bits=1`.
+  `log_blowup=4`, `num_queries=15`, and `pow_bits=0`.
 - `crates/ai-pow-zk/README.md` records the current Layer-0 soundness policy:
-  60 pure query bits, 62 under the code's Johnson accounting with the two
-  one-bit PoW hooks.
+  60 pure query bits with no proof-system PoW grinding counted or enabled.
 
 Citations:
 
@@ -494,7 +501,7 @@ does not satisfy the production wire budget.
 - No Plonky2 proof system in production. Pearl/Plonky2 code was read only as a
   design reference for safe FRI path compression, and the native terminal
   backend is implemented in the vendored Plonky3-recursion stack.
-- No claim that the 200.6 KiB L1 batch-STARK checkpoint is the production
+- No claim that the multi-hundred-KiB-to-MiB L1 batch-STARK checkpoint is the production
   block/wire artifact.
 - No zero-knowledge claim for the production native terminal certificate.
   Exhaustive NPO openings reveal selected recursive-verifier witness material,
@@ -509,12 +516,14 @@ Tip5 verifier fixture satisfies the hard constraint at **85,948 bytes /
 83.9 KiB** with release prove **1.492 s** and verify **1.181 s**, but the
 newly wired full `ai-pow-zk` composite-verifier terminal path exceeded two
 minutes in release/native measurement before completing. The materialized
-Layer-0 proof is **303,896 bytes / 296.8 KiB**, but it is an intermediate
+Layer-0 proof is **304,048 bytes / 296.9 KiB**, but it is an intermediate
 diagnostic artifact rather than the target consensus wire object.
 
-The hardened batch-STARK L1 certificate is **205,446 bytes / 200.6 KiB** under
-the fixed-int helper. It is retained as a soundness-hardened checkpoint and
-fallback verifier target, not as the production recursive certificate path.
+The hardened batch-STARK L1 proof body is **149.1 KiB**, and the full checkpoint
+certificate is **1,135.5 KiB** as legacy postcard, **5,794.7 KiB** as fixed-int
+bincode, and **358.3 KiB** with gzip-best compression. It is retained as a
+soundness-hardened checkpoint and fallback verifier target, not as the
+production recursive certificate path.
 
 The end-to-end soundness floor is **60 bits**, with the following reduction:
 

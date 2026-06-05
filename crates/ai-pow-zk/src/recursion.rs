@@ -1575,8 +1575,53 @@ mod tests {
     #[test]
     #[ignore = "production-profile terminal relation metrics are opt-in"]
     fn terminal_relation_metrics_for_prod_baseline_composite_are_available() {
-        let metrics = measure_baseline_composite_terminal_relation(CircuitConfig::PROD);
-        print_terminal_relation_metrics("PROD", &metrics);
+        measure_and_assert_terminal_relation_for_profile("PROD", CircuitConfig::PROD);
+    }
+
+    #[test]
+    #[ignore = "pure-query profile sweep diagnostic is opt-in"]
+    fn terminal_relation_metrics_for_pure_query_lb3_nq20_composite_are_available() {
+        measure_and_assert_terminal_relation_for_profile(
+            "PURE_QUERY_LB3_NQ20",
+            CircuitConfig {
+                log_blowup: 3,
+                pow_bits: 0,
+                num_queries: 20,
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "pure-query profile sweep diagnostic is opt-in"]
+    fn terminal_relation_metrics_for_pure_query_lb5_nq12_composite_are_available() {
+        measure_and_assert_terminal_relation_for_profile(
+            "PURE_QUERY_LB5_NQ12",
+            CircuitConfig {
+                log_blowup: 5,
+                pow_bits: 0,
+                num_queries: 12,
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "pure-query profile sweep diagnostic is opt-in"]
+    fn terminal_relation_metrics_for_pure_query_lb6_nq10_composite_are_available() {
+        measure_and_assert_terminal_relation_for_profile(
+            "PURE_QUERY_LB6_NQ10",
+            CircuitConfig {
+                log_blowup: 6,
+                pow_bits: 0,
+                num_queries: 10,
+            },
+        );
+    }
+
+    fn measure_and_assert_terminal_relation_for_profile(label: &str, profile: CircuitConfig) {
+        assert_eq!(profile.johnson_fri_bits(), 60);
+
+        let metrics = measure_baseline_composite_terminal_relation(profile);
+        print_terminal_relation_metrics(label, &metrics);
 
         assert!(metrics.terminal_public_input_values > 0);
         assert!(metrics.terminal_private_input_values > 0);

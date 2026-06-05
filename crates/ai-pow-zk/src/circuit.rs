@@ -73,14 +73,14 @@ pub type Val = Goldilocks;
 /// **Anchored-between policy (2026-05-21):** bits target placed in
 /// the (22, 80) interval, **proven via Theorem 1.5** at the chosen
 /// `(lb, nq)`. Maintainer-targeted **60-bit floor**; `lb=4 nq=15
-/// pow=1+1` ⇒ `bits = 4·15 + 1 + 1 = 62` Johnson, proven. 40 bits
-/// above the known-insecure floor; 20 bits below the prior
-/// conservative ceiling — "reasonable and optimistic."
+/// pow=0+0` ⇒ `bits = 4·15 = 60` Johnson, proven. 38 bits above the
+/// known-insecure floor; 20 bits below the prior conservative ceiling —
+/// "reasonable and optimistic."
 ///
 /// **Time-bounded threat model (rationale):** PoW forgery is bounded
 /// by the **2.5-min block cadence**. An attacker has ≤150 s to forge
-/// before a fresh honest block obsoletes the target; at 62 bits, 2^62
-/// ops ≈ 4.6·10^18 ops in 150 s ⇒ ~30 PetaOps sustained throughput
+/// before a fresh honest block obsoletes the target; at 60 bits, 2^60
+/// ops ≈ 1.15·10^18 ops in 150 s ⇒ ~7.7 PetaOps sustained throughput
 /// needed. FRI verification is Merkle-path-random-access dominated
 /// (not matmul), favoring CPU over GPU/ASIC — the wall-clock budget is
 /// well beyond the 2.5-min window even for state-actor-scale compute.
@@ -102,7 +102,7 @@ pub struct CircuitConfig {
     /// Number of FRI queries. Unconditional soundness (Johnson radius,
     /// paper Theorem 1.5): `num_queries * log_blowup + 2 * pow_bits`
     /// bits as implemented in [`build_stark_config`]. `PROD = 15` at
-    /// `log_blowup = 4`, `pow_bits = 1` gives 62 bits.
+    /// `log_blowup = 4`, `pow_bits = 0` gives 60 pure-query bits.
     pub num_queries: u32,
 }
 
@@ -116,13 +116,11 @@ impl CircuitConfig {
     }
 
     /// Production defaults. **Anchored-between policy (2026-05-21):**
-    /// `lb=4 nq=15 pow=1` feeds one bit into each FRI PoW tier, so
-    /// `bits = lb*nq + 2*pow = 4*15 + 2 = 62` bits unconditional
-    /// Johnson (Theorem 1.5, proven). This leaves a ≥40-bit margin above the
-    /// known-insecure CYCLE-SUM floor at the chain LDR (~22 bits at
-    /// n≤2^22). Matches the outer-cert `goldilocks_tip5_60bit()`
-    /// `nq=15` anchoring for chain-MIN consistency (chain MIN = 62
-    /// bits ≥ the 60-bit maintainer-targeted floor).
+    /// `lb=4 nq=15 pow=0` counts no proof-system PoW grinding, so
+    /// `bits = lb*nq = 4*15 = 60` pure-query Johnson bits (Theorem 1.5,
+    /// proven). This leaves a ≥38-bit margin above the known-insecure
+    /// CYCLE-SUM floor at the chain LDR (~22 bits at n≤2^22) and matches the
+    /// native terminal profile's pure-query `nq=15` anchoring.
     ///
     /// **Trade-off vs the prior `lb=4 nq=20 = 82-bit` PROD:** 25%
     /// fewer queries ⇒ proportional proof-size shrinkage at the inner
@@ -135,7 +133,7 @@ impl CircuitConfig {
     /// cryptographic 80-bit floor.
     pub const PROD: Self = Self {
         log_blowup: 4,
-        pow_bits: 1,
+        pow_bits: 0,
         num_queries: 15,
     };
 
@@ -204,8 +202,8 @@ impl CircuitConfig {
     /// `num_queries = 16` gives ~32 bits of Johnson-provable soundness
     /// (`2 · 16 = 32`) — still non-cryptographic, intended for
     /// round-trip / tamper-detection tests. `PROD` (`log_blowup = 4,
-    /// num_queries = 15`, `pow_bits = 1`) handles the real 62-bit
-    /// anchored-between PoUW verification (paper Theorem 1.5).
+    /// num_queries = 15`, `pow_bits = 0`) handles the real 60-bit
+    /// pure-query anchored-between PoUW verification (paper Theorem 1.5).
     pub const TEST_PEARL: Self = Self {
         log_blowup: 2,
         pow_bits: 0,
@@ -700,16 +698,14 @@ mod tests {
         // ≥60-bit Johnson floor (maintainer-set, anchored between
         // the known-insecure CYCLE-SUM ceiling at γ≥LDR (~22 bits at
         // n≤2^22, IACR ePrint 2025/2055 Thm 1.17) and the prior
-        // conservative 80-bit ceiling). PROD `lb=4 nq=15 pow=1` ⇒
-        // 4·15 + 1 + 1 = 62 bits unconditional Johnson (Theorem 1.5,
-        // proven) because build_stark_config applies pow_bits to both
-        // commit and query PoW tiers.
+        // conservative 80-bit ceiling). PROD `lb=4 nq=15 pow=0` ⇒
+        // 4·15 = 60 pure-query bits unconditional Johnson (Theorem 1.5).
         let prod = CircuitConfig::PROD;
         assert_eq!(prod.log_blowup, 4);
         assert_eq!(prod.num_queries, 15);
-        assert_eq!(prod.pow_bits, 1);
+        assert_eq!(prod.pow_bits, 0);
         let johnson_bits = prod.johnson_fri_bits();
-        assert_eq!(johnson_bits, 62);
+        assert_eq!(johnson_bits, PROD_JOHNSON_FLOOR_BITS);
         assert!(
             johnson_bits >= PROD_JOHNSON_FLOOR_BITS,
             "PROD must meet the 60-bit anchored Johnson floor"
@@ -726,11 +722,9 @@ mod tests {
     #[test]
     fn prod_sweep_profiles_meet_anchored_johnson_floor() {
         // **2026-05-21 anchored-between policy:** PROD `lb=4 nq=15
-        // pow=1` ⇒ 4·15 + 2 = 62 bits. The PROD_LBn sweep variants
-        // (with pow_bits=0)
-        // retain the 90+ bits per `lb·nq` alone — measurement
-        // comparators for the M-S5b proof-size studies, not
-        // production-deployed.
+        // pow=0` ⇒ 4·15 = 60 pure-query bits. The PROD_LBn sweep variants
+        // retain the 90+ bits per `lb·nq` alone — measurement comparators for
+        // the M-S5b proof-size studies, not production-deployed.
         for (name, cfg) in [
             ("PROD", CircuitConfig::PROD),
             ("PROD_LB2", CircuitConfig::PROD_LB2),
@@ -839,15 +833,15 @@ mod tests {
         // Sanity assertion of the security claim: log_blowup ·
         // num_queries + both FRI PoW tiers = unconditional Johnson bits per
         // paper IACR ePrint 2025/2055 Theorem 1.5. **2026-05-21
-        // anchored-between policy:** PROD `lb=4 nq=15 pow=1` ⇒
-        // 4·15 + 2 = 62 bits. Meets the
+        // anchored-between policy:** PROD `lb=4 nq=15 pow=0` ⇒
+        // 4·15 = 60 pure-query bits. Meets the
         // ≥60-bit anchored-Johnson floor (maintainer 2026-05-21,
         // anchored between known-insecure ~22-bit CYCLE-SUM ceiling
         // at γ≥LDR and the prior conservative 80-bit floor).
         let prod = CircuitConfig::PROD;
         let _ = build_stark_config(&sample_zk_params(), &prod);
         let johnson_bits = prod.johnson_fri_bits();
-        assert_eq!(johnson_bits, 62);
+        assert_eq!(johnson_bits, PROD_JOHNSON_FLOOR_BITS);
         assert!(
             johnson_bits >= PROD_JOHNSON_FLOOR_BITS,
             "PROD must meet the 60-bit anchored Johnson floor"

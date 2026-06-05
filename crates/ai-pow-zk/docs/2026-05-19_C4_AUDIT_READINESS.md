@@ -155,7 +155,7 @@ Two soundness objects, both **≥ 60 bits unconditional Johnson**:
 2. **End-to-end recursion** (M-S5 cert). Every layer of the
    verifier-recursion chain is **≥ 60 bits unconditional
    Johnson** at the anchored params (inner Tip5-L0 PROD
-   `lb=4 nq=15 pow=1+1` = 62 bits; outer-cert L1
+   `lb=4 nq=15 pow=0+0` = 60 pure-query bits; outer-cert L1
    `goldilocks_tip5_60bit` `lb=4 nq=9 query_pow=24` = 60 bits;
    chain MIN = 60 bits).
 
@@ -289,7 +289,7 @@ backs it → status)`.
                 ┌─────────────────────────────────────────────┐
                 │   M-S5  ≥60-bit outer-recursive STARK cert  │
                 │   (test_tip5_layer0_compression.rs)         │
-                │   current L1 cert ≈ 200.6 KiB fixed-bincode │
+                │   current batch body 149.1 KiB; envelope >1 MiB │
                 │   M-S5b target remains ≈100 KiB             │
                 └────────────────────┬────────────────────────┘
                                      │ verifies
@@ -460,7 +460,7 @@ otherwise be "surprised" by is here.
 
 | Residual | What it is | Where tracked |
 |---|---|---|
-| **M-S5b / `#131`** | ≈100 KB terminal compression of the production M-S5 cert (size target only; soundness floor remains ≥60-bit Johnson). Current fixed-bincode production recursive certificate is ≈200.6 KiB at `lb=4, nq=9, query_pow=24, cap_height=5`. | `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md` |
+| **M-S5b / `#131`** | ≈100 KB terminal compression of the production M-S5 cert (size target only; soundness floor remains ≥60-bit Johnson). Current batch-STARK checkpoint certificate is not a production-size route: its L1 proof body is `149.1 KiB`, and the full checkpoint envelope is much larger. | `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md` |
 | **Phase B1** | Pearl **reference vectors** from Pearl's miner (golden `(κ,s_a,s_b,E/F,one tile digest)`); today only self-consistency vs ai-pow's own plain path is tested | `2026-05-18_PHASE_B_DESIGN.md` § B1; `2026-05-13_PEARL_COMPARISON.md` |
 | **Phase B2** | Quant-extraction contract: specify how the vLLM plugin maps the model's INT7/INT8 GEMM operands to Pearl type-0 `[−64,64]` int8 `(A,B,μ)`; integration KAT against a real model fixture | `2026-05-18_PHASE_B_DESIGN.md` § B2 |
 | **Packed-MMCS `GoldilocksConfig`** | Landed config is unpacked; `verify_p3_batch_proof_circuit` requires packed; aarch64-neon `Goldilocks::Packing ≠ Goldilocks`. Verified-soundness-neutral substitute used in measurement; production L2 needs the upstream fix or a packed-MMCS sibling. | `2026-05-19_C3_OUTER_CERT_DESIGN.md` § 14 |

@@ -39,24 +39,24 @@ composite L1 terminal relation:
 
 | Metric | PROD baseline |
 |---|---:|
-| Terminal compile time | `21.022s` |
-| Terminal public input bytes | `5,340` |
+| Terminal compile time | `20.943s` |
+| Terminal public input bytes | `5,319` |
 | Terminal private input values | `43,443` |
-| Terminal operations | `125,991` |
-| Primitive operations | `106,365` |
+| Terminal operations | `125,961` |
+| Primitive operations | `106,349` |
 | Const operations | `582` |
 | Public operations | `459` |
 | ALU add operations | `8,832` |
 | ALU multiplication operations | `10,234` |
-| ALU boolean-check operations | `256` |
-| ALU fused multiply-add operations | `10,132` |
+| ALU boolean-check operations | `255` |
+| ALU fused multiply-add operations | `10,117` |
 | ALU Horner-accumulator operations | `75,870` |
 | Supported NPO rows | `14,049` |
 | Tip5 rows | `8,081` |
 | Recompose/coeff rows | `5,743` |
 | NPO input/output callsite slots | `141,232` / `86,778` |
 | NPO residual components | `242,798` |
-| Circuit fingerprint | `witness=222,017 public=459 private=43,443 ops=125,991` |
+| Circuit fingerprint | `witness=221,989 public=459 private=43,443 ops=125,961` |
 
 This shifts the immediate reduction target. The terminal public input vector is
 not the blocker at about `5.3 KiB`; the generic composite verifier relation is.
@@ -65,7 +65,7 @@ about `14k` supported NPO rows, and a terminal compile step that already
 consumes most of the `<30s` budget before proving starts.
 
 The operation-class breakdown makes the cause more specific. In the production
-profile, Horner accumulation accounts for `75,870` of `106,365` primitive
+profile, Horner accumulation accounts for `75,870` of `106,349` primitive
 operations. These are verifier-arithmetic steps from the generic FRI/PCS
 opening, quotient, and batch-consistency checks, not matrix-multiplication work
 or terminal public-input framing. The NPO rows are also concentrated:
@@ -77,6 +77,26 @@ verifier. Disabling that table may make a diagnostic smaller, but it is not a
 production reduction unless there is a replacement proof that every hinted
 extension-field decomposition remains connected to a creator and every affected
 WitnessChecks bus entry is sound.
+
+The current `CircuitConfig::PROD` profile is now exactly 60 pure-query bits
+(`log_blowup=4`, `num_queries=15`, `pow_bits=0`). Removing the previous
+one-bit commit/query proof-system PoW hooks was the right soundness-policy
+cleanup, but it only changed the relation from `125,991` to `125,961`
+operations. It is not the terminal-size fix.
+
+Pure-query 60-bit Layer-0 profile diagnostics show the real tradeoff:
+
+| L0 profile | Test wall time | Terminal compile | Ops | Horner ops | NPO rows | Assessment |
+|---|---:|---:|---:|---:|---:|---|
+| `lb=3,nq=20,pow=0` | `32.51s` | `27.692s` | `155,604` | `101,160` | `16,229` | Lower LDE may help L0 proving, but it makes the recursive terminal relation much larger. |
+| `lb=4,nq=15,pow=0` | `29.49s` | `20.943s` | `125,961` | `75,870` | `14,049` | Current PROD pure-query baseline. |
+| `lb=5,nq=12,pow=0` | `34.05s` | `17.325s` | `108,176` | `60,696` | `12,741` | Meaningful relation reduction, but higher LDE already costs wall time on the tiny baseline. |
+| `lb=6,nq=10,pow=0` | `47.60s` | `14.553s` | `96,319` | `50,580` | `11,868` | Best relation reduction measured, but the 64x LDE makes promotion unlikely without separate L0 prover acceleration. |
+
+These are non-proving terminal-relation diagnostics, not production terminal
+proof measurements. The test wall time includes Layer-0 proof generation,
+L1 verifier construction, and terminal relation compilation for the
+`CompositeTrace::baseline_min()` fixture.
 
 The retired polynomial NPO production candidate remains useful diagnostic
 evidence. Its size blocker was precise:
@@ -268,7 +288,7 @@ Implementation result:
 5. The `ai-pow-zk` composite L1 terminal path is wired as an opt-in diagnostic,
    but its first release/native run exceeded two minutes without completing.
 6. A production-profile non-proving relation metric shows the full path has
-   `125,991` terminal operations, `14,049` supported NPO rows, and `242,798`
+   `125,961` terminal operations, `14,049` supported NPO rows, and `242,798`
    NPO residual components before terminal proving begins.
 
 Assessment: this is still the preferred production direction, but not yet the
@@ -387,7 +407,8 @@ security budget.
 
 The batch-STARK L1 checkpoint is now soundness-hardened and should remain so,
 but it is not a route to the production proof-size target. Its fixed-int
-certificate measurement is about `200.6 KiB`, already above target before
+certificate measurement is now multiple MiB for the full checkpoint envelope,
+and even the L1 proof body alone is `149.1 KiB`, already above target before
 considering the native terminal path. It is still useful for:
 
 - regression testing the recursive verifier relation;
@@ -408,7 +429,7 @@ I would pursue three tracks in this order:
    verifier path still exceeds the time gate.
 2. **Reduce the full composite L1 terminal relation before spending more effort
    on terminal proof-body compression.** The current blocker is relation size:
-   `106,365` primitive operations and `14,049` supported NPO rows in the PROD
+   `106,349` primitive operations and `14,049` supported NPO rows in the PROD
    baseline. The primitive reduction should focus first on generic FRI/PCS
    verifier Horner work; the NPO reduction should focus on Tip5 and
    recompose/coeff callsite count without removing their bindings.

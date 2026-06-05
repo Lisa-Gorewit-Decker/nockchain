@@ -31,7 +31,7 @@ in microseconds. **The real per-block budget includes the real
 ai-pow PoUW prove cost** on top of L1+L2.
 
 The bench harness at `crates/ai-pow-zk/src/bench_suite.rs` runs the
-real ai-pow stack (`CircuitConfig::PROD` = `lb=4 nq=15 pow=1`) on
+real ai-pow stack (`CircuitConfig::PROD` = `lb=4 nq=15 pow=0`) on
 concrete `(trace_height × non_mining_rows)` shapes and reports
 `trace_gen, populate, prove, verify, proof bytes` for each.
 
@@ -94,9 +94,9 @@ evaluated against this budget shortfall, not against the prior
 A measurement-only `Tip5OuterTier::Lb6Nq10` variant added to
 `crates/plonky3-recursion/recursion/tests/test_tip5_l2_over_l1.rs`
 (`stage5_tip5_l2_over_l1_lb6_nq10_measurement`). Same paper-proven
-Johnson soundness as `Production` (`lb=4 nq=15 pow=1+1` ⇒
-`4·15 + 1 + 1 = 62` bits; `lb=6 nq=10 pow=1+1` ⇒ `6·10 + 1 + 1 =
-62` bits). Trade-off: 33% fewer FRI queries vs 4× larger LDE
+Johnson soundness as current `Production` (`lb=4 nq=15 pow=0+0` ⇒
+`4·15 = 60` bits; `lb=6 nq=10 pow=0+0` ⇒ `6·10 = 60` bits).
+Trade-off: 33% fewer FRI queries vs 4× larger LDE
 (16× → 64× trace size at the outer cert).
 
 ### 2.2 Result

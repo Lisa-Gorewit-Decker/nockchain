@@ -130,8 +130,9 @@ heuristic is **not** adopted).
   batching-challenge grind and is not counted toward this floor.
 - **Per-layer (LANDED FRI configurations, 2026-05-21
   anchored-between)**:
-  - Inner Tip5-L0 PROD: `lb=4, nq=15, pow=1+1` ⇒ **62 bits**
-    unconditional Johnson (`crates/ai-pow-zk/src/circuit.rs::CircuitConfig::PROD`).
+  - Inner Tip5-L0 PROD: `lb=4, nq=15, pow=0+0` ⇒ **60 bits**
+    pure-query unconditional Johnson
+    (`crates/ai-pow-zk/src/circuit.rs::CircuitConfig::PROD`).
   - Outer-cert L1 (`goldilocks_tip5_60bit`): **production FRI
     parameters as of 2026-06-03 (anchored-between)** stack every
     soundness-neutral compression lever — `lb=4, nq=9, mla=3,
@@ -141,16 +142,17 @@ heuristic is **not** adopted).
     pow=1+1 d=5` ⇒ **82 bits** pre-anchored-between.
     Pre-2026-05-20 baseline (`lb=2 nq=42 mla=1 lfp=0 cap=0`) was
     85 bits, ~1011 KB L1.
-    **Measured at production-faithful params (2026-06-03,
-    `prod_recursion_measure 15`):** canonical fixed-int bincode L1 =
-    **200.6 KiB** in **28.69 s** for the outer certificate stage
-    (legacy postcard for the same proof was **225.8 KiB**), down from
-    **215.7 KiB** at the prior `nq=10, query_pow=20` L1 point and
-    **328.8 KiB** at the earlier `nq=15, query_pow=1` L1 point.
+    **Measured at production-faithful params (2026-06-05,
+    `prod_recursion_measure 15`, after `CircuitConfig::PROD.pow_bits=0`):**
+    the L1 batch-STARK proof body is **149.1 KiB** and takes **59.21 s** for
+    the outer certificate stage. The full checkpoint certificate is much
+    larger because it still carries verifier context: **1,135.5 KiB** legacy
+    postcard, **5,794.7 KiB** fixed-int bincode helper, and **358.3 KiB**
+    gzip-best envelope. Earlier measurements of smaller fixed-int checkpoint
+    envelopes are stale for the current certificate shape.
     A direct Pearl/Plonky2-style Merkle path-compression model over this
-    same q=9/cap=5 proof shape saved only **1.2 KiB** on average (best
-    sampled **6.8 KiB**), leaving an estimated fixed-int floor of
-    **~199.4 KiB**; this route is not a path to the **≤100 KiB** target.
+    same q=9/cap=5 proof shape saved only **1.4 KiB** on average (best
+    sampled **5.4 KiB**); this route is not a path to the **≤100 KiB** target.
     **2026-06-05 terminal backend checkpoint:** the intended terminal FRI
     profile is pure-query 60-bit (`log_blowup=4`, `num_queries=15`,
     `query_pow_bits=0`; no PoW bits counted toward soundness). The
@@ -160,10 +162,10 @@ heuristic is **not** adopted).
     The actual `ai-pow-zk` composite-verifier terminal path now exists as the
     opt-in `terminal_recursive_certificate_round_trip_verifies` diagnostic, but
     its first release/native run exceeded two minutes before completing. The
-    non-proving production-profile relation diagnostic reports **125,991**
-    terminal operations, **222,017** witnesses, **43,443** terminal private
+    non-proving production-profile relation diagnostic reports **125,961**
+    terminal operations, **221,989** witnesses, **43,443** terminal private
     inputs, **14,049** supported-NPO rows, **242,798** NPO residual components,
-    and **21.022 s** terminal compile time before proving begins. The largest
+    and **20.943 s** terminal compile time before proving begins. The largest
     primitive class is generic FRI/PCS Horner arithmetic (**75,870** ops), while
     the NPO side is mostly Tip5 rows (**8,081**) and `recompose/coeff` rows
     (**5,743**). The polynomial/FIOP NPO backend remains a diagnostic and
@@ -445,8 +447,8 @@ Copyright (c) 2015-2016 The Decred developers). See also
 ## Security parameters
 
 - **`CircuitConfig::PROD`**: `log_blowup = 4`, `num_queries = 15`,
-  `pow_bits = 1` → 62 bits unconditional Johnson FRI soundness.
-  This is the 2026-05-21 anchored-between production floor.
+  `pow_bits = 0` → 60 bits pure-query unconditional Johnson FRI
+  soundness. This is the 2026-05-21 anchored-between production floor.
 - **`CircuitConfig::TEST_PEARL`**: `log_blowup = 2`, `num_queries = 16`
   → 32 bits Johnson soundness. For fast test round-trips only;
   not production-grade.

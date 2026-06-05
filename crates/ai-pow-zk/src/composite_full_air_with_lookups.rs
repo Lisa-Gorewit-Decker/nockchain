@@ -1430,7 +1430,7 @@ mod tests {
 
     /// **PROD bench with LogUp enabled.** Run the full
     /// CompositeFullAirWithLookups under PROD profile (log_blowup
-    /// = 4, num_queries = 15, pow_bits = 1 → 62 bits unconditional
+    /// = 4, num_queries = 15, pow_bits = 0 → 60 pure-query bits
     /// Johnson-radius FRI soundness; paper IACR ePrint 2025/2055
     /// Theorem 1.5).
     /// Ignored by default; run with --ignored.
