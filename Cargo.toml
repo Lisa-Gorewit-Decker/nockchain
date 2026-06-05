@@ -299,7 +299,6 @@ overflow-checks = false
 [profile.test]
 inherits = "dev"
 
-# TODO: Enable debug info for release or dev builds
 [profile.release]
 lto = "thin"
 opt-level = 3
