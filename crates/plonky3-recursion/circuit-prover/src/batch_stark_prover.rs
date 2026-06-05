@@ -1157,10 +1157,9 @@ where
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
-    {
+        {
         let primitive = &circuit_prover_data.primitive_columns;
         let non_primitive = &circuit_prover_data.non_primitive_columns;
-        let prover_data = &circuit_prover_data.prover_data;
 
         // One lookup per NpoTypeId instead of repeated `op_type()` (clones inner id string).
         let prover_index_by_type: BTreeMap<NpoTypeId, usize> = self
@@ -1429,29 +1428,24 @@ where
             non_primitive_meta.push((op_type, rows, lanes, AirVariant::Baseline));
         }
 
-        // Use the pre-computed ProverData when the AIR structure is unchanged (common case).
-        // Recompute only when lane reduction altered the lookup layout, since the number of
-        // lookups per table depends on lane count.
-        let lanes_reduced = (alu_trace_only_dummy && packing.alu_lanes() > 1)
-            || (public_trace_only_dummy && packing.public_lanes() > 1);
-        let recomputed_data: Option<ProverData<SC>> = if lanes_reduced {
-            let trace_ext_degree_bits: Vec<usize> = trace_storage
-                .iter()
-                .map(|m| log2_strict_usize(m.height()) + self.config.is_zk())
-                .collect();
-            let lookup_metadata_airs: Vec<CircuitTableAir<SC, D>> = air_storage
-                .iter()
-                .map(strip_public_binding_for_lookup_metadata)
-                .collect();
-            Some(ProverData::from_airs_and_degrees(
-                &self.config,
-                &lookup_metadata_airs,
-                &trace_ext_degree_bits,
-            ))
-        } else {
-            None
-        };
-        let effective_prover_data = recomputed_data.as_ref().unwrap_or(prover_data);
+        // The circuit setup data is an upper-bound/static description. The
+        // actual runner output may reduce lanes for dummy primitive tables or
+        // use trace heights that differ from the static degree hints. Build the
+        // proving common data from the exact AIRs and matrix heights committed
+        // below so native `verify_all_tables` reconstructs the same statement.
+        let trace_ext_degree_bits: Vec<usize> = trace_storage
+            .iter()
+            .map(|m| log2_strict_usize(m.height()) + self.config.is_zk())
+            .collect();
+        let lookup_metadata_airs: Vec<CircuitTableAir<SC, D>> = air_storage
+            .iter()
+            .map(strip_public_binding_for_lookup_metadata)
+            .collect();
+        let effective_prover_data = ProverData::from_airs_and_degrees(
+            &self.config,
+            &lookup_metadata_airs,
+            &trace_ext_degree_bits,
+        );
 
         let proof = {
             let trace_refs: Vec<&RowMajorMatrix<Val<SC>>> = trace_storage.iter().collect();
@@ -1505,7 +1499,7 @@ where
                 check_lookups(&debug_instances);
             }
 
-            p3_batch_stark::prove_batch(&self.config, &instances, effective_prover_data)
+            p3_batch_stark::prove_batch(&self.config, &instances, &effective_prover_data)
         };
 
         let dynamic_public_values = public_storage.drain(NUM_PRIMITIVE_TABLES..);
@@ -1536,10 +1530,9 @@ where
             .clone()
             .with_public_alu_lanes(public_lanes, alu_lanes);
 
-        // Populate `stark_common` so the proof is self-binding to the preprocessed metadata.
-        let stark_common = recomputed_data
-            .map(|pd| pd.common)
-            .unwrap_or_else(|| clone_common_data(&prover_data.common));
+        // Populate `stark_common` so the proof is self-binding to the exact
+        // preprocessed metadata used for this proof.
+        let stark_common = clone_common_data(&effective_prover_data.common);
 
         Ok(BatchStarkProof {
             proof,
@@ -1635,7 +1628,13 @@ where
             })?;
             let plugin = &self.non_primitive_provers[pi];
             let air = plugin
-                .batch_air_from_table_entry(&self.config, D, proof.ext_degree as u32, entry)
+                .batch_air_from_table_entry_with_min_height(
+                    &self.config,
+                    D,
+                    proof.ext_degree as u32,
+                    packing.min_trace_height(),
+                    entry,
+                )
                 .map_err(BatchStarkProverError::Verify)?;
             airs.push(CircuitTableAir::Dynamic(air));
             pvs.push(entry.public_values.clone());

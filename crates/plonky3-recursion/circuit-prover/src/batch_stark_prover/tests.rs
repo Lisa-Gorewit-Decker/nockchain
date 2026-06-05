@@ -1020,6 +1020,7 @@ struct PackingMirror {
     npo_lanes: Vec<(p3_circuit::ops::NpoTypeId, usize)>,
     min_trace_height: usize,
     horner_packed_steps: usize,
+    public_binding_lanes: usize,
 }
 
 impl PackingMirror {
@@ -1030,6 +1031,7 @@ impl PackingMirror {
             npo_lanes: Vec::new(),
             min_trace_height: 1,
             horner_packed_steps: 2,
+            public_binding_lanes: 0,
         }
     }
 

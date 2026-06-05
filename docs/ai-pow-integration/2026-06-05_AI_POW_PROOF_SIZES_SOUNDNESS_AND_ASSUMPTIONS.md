@@ -23,31 +23,41 @@ the structured recursive certificate.
 | Artifact | Current production role | Last measured size | Source |
 |---|---|---:|---|
 | Layer-0 composite proof | Regular STARK proof of the AI-PoW puzzle statement; consumed by recursion; diagnostic/intermediate, not persisted by consensus | `303,896` bytes / `296.8 KiB` | `2026-05-29_AI_ZKP_NOUN_WIRE_SPEC.md`, `prod_recursion_measure 15` |
-| Historical L1 recursive certificate | Batch-STARK proof that an L1 verifier circuit accepted the Layer-0 proof; superseded for the terminal path | `205,446` bytes / `200.6 KiB` fixed-int bincode (`231,235` bytes / `225.8 KiB` legacy postcard) | same `prod_recursion_measure 15` run |
-| Active terminal recursive certificate | Current production terminal proof of the recursive-verifier relation | `99,289` bytes / `97.0 KiB` | `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md`, production checkpoint |
+| Active structured L1 recursive certificate | Batch-STARK proof that an L1 verifier circuit accepted the Layer-0 proof; this is the current `AiPowRecursiveCertificate` wire object | `205,446` bytes / `200.6 KiB` fixed-int bincode (`231,235` bytes / `225.8 KiB` legacy postcard) | same `prod_recursion_measure 15` run |
+| Terminal backend checkpoint | Compact terminal proof backend measurement; not the current `AiPowRecursiveCertificate` block/wire artifact | `99,289` bytes / `97.0 KiB` | `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md`, production checkpoint |
 
 The active production answer is therefore:
 
 - regular Layer-0 proof: **296.8 KiB** if materialized;
-- active recursive proof/certificate: **97.0 KiB**;
-- older non-terminal recursive certificate: **200.6 KiB**, retained only as
-  historical context.
+- active structured recursive proof/certificate: **200.6 KiB**;
+- compact terminal backend checkpoint: **97.0 KiB**, retained as backend
+  development context until the terminal artifact is wired into the AI-PoW
+  certificate type and verifier entrypoint.
+
+Verifier status after the 2026-06-05 hardening pass: the
+`AiPowRecursiveCertificate` verifier now calls the production
+`BatchStarkProver::verify_all_tables` path for the submitted L1 outer proof.
+The hardened verifier accepts honest generated L1 outer proofs and rejects
+outer proof-body tampering, non-production envelopes, metadata tampering, and
+wrong statement public inputs in the Rust test suite. The Hoon/kernel path
+remains fail-closed for `%ai-pow` until verifier wiring is explicitly added.
 
 ## Soundness Summary
 
 | Layer | Parameters | Soundness claim | PoW counted? |
 |---|---|---:|---|
 | Layer-0 composite STARK | `log_blowup=4`, `num_queries=15`, `pow_bits=1` in `CircuitConfig::PROD` | 60 pure FRI-query bits, 62 bits under the code's Johnson accounting including the two one-bit PoW hooks | No PoW is needed to reach 60 bits; the two bits are extra margin |
-| Historical L1 batch-STARK recursive certificate | `log_blowup=4`, `num_queries=9`, `query_pow_bits=24`, `cap_height=5` | 60 bits under mixed query/PoW Johnson accounting | Yes; this is why it is not the final terminal profile |
-| Active terminal recursive certificate | `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`, `max_log_arity=3`, `log_final_poly_len=0` | 60 pure FRI-query bits, conditionally on the selected Plonky3 FRI theorem/assumption and terminal theorem | No |
-| End-to-end accepted recursive certificate | L0 proof accepted inside terminal recursive-verifier relation | At most the minimum of the L0 and terminal layers: **60 bits** | No terminal PoW; L0 already has 60 pure-query bits |
+| Active L1 batch-STARK recursive certificate | `log_blowup=4`, `num_queries=9`, `query_pow_bits=24`, `cap_height=5` | 60 bits under mixed query/PoW Johnson accounting | Yes |
+| Terminal backend checkpoint | `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`, `max_log_arity=3`, `log_final_poly_len=0` | 60 pure FRI-query bits for the terminal backend, conditionally on the selected Plonky3 FRI theorem/assumption and terminal theorem | No |
+| End-to-end accepted recursive certificate | L0 proof accepted inside the active L1 batch-STARK recursive-verifier relation | At most the minimum of the L0 and active L1 layers: **60 bits** | L1 query PoW contributes to the active L1 layer |
 
 The recursive certificate does not make the underlying Layer-0 statement more
 sound. It replaces the large Layer-0 proof object with a smaller proof that the
 recursive verifier accepted that Layer-0 proof. A successful forgery must either
-forge the Layer-0 STARK statement, forge the terminal proof that the verifier
-accepted it, or break one of the transcript/commitment assumptions that bind
-the two.
+forge the Layer-0 STARK statement, forge the active L1 batch-STARK proof that
+the verifier accepted it, or break one of the transcript/commitment assumptions
+that bind the two. The compact terminal backend is not currently the
+block-facing `AiPowRecursiveCertificate` artifact.
 
 ## Logic Flow
 
@@ -70,18 +80,17 @@ Layer-0 composite STARK
   |
   | recursive verifier circuit runs the Layer-0 verifier
   v
-Active terminal recursive certificate
+Active structured L1 recursive certificate
   proves:
     - the verifier circuit was executed with the committed Layer-0 proof,
       public inputs, relation profile, and production parameters;
-    - primitive verifier-circuit rows satisfy the sparse-R1CS row-product
-      argument;
-    - supported Tip5/recompose NPO rows satisfy the merged
-      residual-zero/recompose/value-bridge proof;
-    - 5-round Tip5 lookup trace, byte-table LogUp, and selected-vs-trace
-      NPO-IO LogUp are consistent;
-    - terminal FRI openings are valid under the canonical 15-query,
-      zero-query-PoW profile.
+    - the submitted L1 batch-STARK proof body verifies with the production
+      `verify_all_tables` verifier;
+    - the proof metadata matches the verifier-rebuilt canonical L1 circuit
+      shape for the supplied Layer-0 proof, program, parameters, and public
+      inputs;
+    - Tip5 and recompose non-primitive tables are the registered production
+      tables for the verifier circuit.
   |
   v
 Nockchain block/wire artifact: structured recursive certificate
@@ -100,6 +109,12 @@ Cryptographic assumptions:
   proof construction.
 - The verifier recomputes the public statement instead of trusting prover-supplied
   metadata.
+- In the Pearl merge-mining path, cheap noun metadata precheck re-derives and
+  compares the Pearl-bound slots (`HASH_A`, `HASH_B`, `JOB_KEY`,
+  `COMMITMENT_HASH`, `JACKPOT`, `HASH_JACKPOT`) from the ticket and trusted
+  matrices. It does not independently derive `cumsum`; `cumsum` remains bound
+  by the Layer-0 proof and by full recursive verification of the exact public
+  input vector carried in the certificate.
 
 Citations and anchors:
 
@@ -186,48 +201,36 @@ Citations:
 - Tip5 paper as above.
 - FRI and Fiat-Shamir-for-FRI references as above.
 
-### 4. Active Terminal Recursive Certificate
+### 4. Active L1 Batch-STARK Recursive Certificate
 
 Cryptographic assumptions:
 
-- The terminal certificate binding digest commits to protocol id, production
-  proof kind, public-values digest, proof-body digest, relation digest, and
-  proof parameters before backend challenges are derived.
-- Primitive verifier-circuit rows are soundly reduced by the sparse-R1CS
-  row-product/sumcheck argument.
-- Supported Tip5/recompose NPO rows are soundly covered by the merged
-  residual-zero/recompose/value-bridge proof and integrated Tip5 AIR/LogUp /
-  selected-vs-trace NPO-IO proof.
-- The terminal FRI/PCS proof is sound under the active pure-query production
+- The L1 circuit-prover batch-STARK verifies against the submitted proof body,
+  not only proof-carried metadata.
+- The verifier rebuilds the canonical L1 verifier circuit from the embedded
+  Layer-0 proof, pinned program, production profile, and verifier-derived
+  public inputs, then rejects if submitted L1 metadata differs from the rebuilt
+  canonical shape.
+- The verifier registers only the production Tip5 and recompose non-primitive
+  tables before calling `verify_all_tables`.
+- The L1 FRI/PCS proof is sound under the active mixed query/PoW production
   profile.
-- Terminal `TerminalCompressedFriProof` is soundness-neutral serialization: it
-  restores a normal Plonky3 FRI proof and does not serialize query indices.
 
 Implementation anchors:
 
-- `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md` records the active
-  production terminal tuple:
-  `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`,
-  `max_log_arity=3`, `log_final_poly_len=0`.
-- The same spec records the production checkpoint:
-  `99,289` bytes / `97.0 KiB`, integrated NPO compact FRI payload
-  `80,885` bytes / `79.0 KiB`, `total_prove=23.688s`,
-  `total_verify=62.6ms`.
-- `crates/plonky3-recursion/recursion/src/terminal.rs` defines
-  `TerminalProductionProof`, `TerminalProductionNpoPolynomialProof`,
-  `prove_terminal_production_goldilocks`, and
-  `verify_terminal_production_goldilocks`.
+- `crates/ai-pow-zk/src/recursion.rs::verify_recursive_certificate` rebuilds
+  and runs the L1 verifier circuit, compares stable metadata against a
+  canonical rebuilt proof, and verifies the submitted outer proof with
+  `BatchStarkProver::verify_all_tables`.
+- `crates/plonky3-recursion/circuit-prover/src/batch_stark_prover.rs` defines
+  `verify_all_tables` and `verify_all_tables_with_public_values`.
+- `crates/ai-pow-zk/src/recursion.rs::recursive_certificate_rejects_outer_proof_body_tamper`
+  is the regression test for metadata-preserving proof-body tampering.
 
 Citations:
 
-- Spartan and Aurora give the row-product/sumcheck/R1CS design lineage:
-  Setty, "Spartan: Efficient and general-purpose zkSNARKs without trusted
-  setup", CRYPTO 2020 / IACR ePrint 2019/550,
-  <https://eprint.iacr.org/2019/550>; and Ben-Sasson, Chiesa, Riabzev,
-  Spooner, Virza, Ward, "Aurora: Transparent Succinct Arguments for R1CS",
-  IACR ePrint 2018/828, <https://eprint.iacr.org/2018/828.pdf>.
 - FRI, Fiat-Shamir-for-FRI, LogUp, and Tip5 citations are the same as the
-  Layer-0 section because the terminal proof uses the same families of
+  Layer-0 section because the L1 batch-STARK uses the same families of
   assumptions.
 
 ## What Is Not Being Assumed
@@ -236,34 +239,37 @@ Citations:
 - No KZG, pairing-friendly curve, Groth16, or Plonkish SNARK wrapper.
 - No Plonky2 proof system in production. Pearl/Plonky2 code was read only as a
   design reference for safe FRI path compression, and the native terminal
-  compressor is implemented in the vendored Plonky3-recursion stack.
-- No terminal query proof-of-work bits are counted toward the active terminal
-  certificate's 60-bit production floor.
-- No zero-knowledge claim for the active terminal certificate. It is compact,
-  but selected FRI openings may reveal evaluations of witness-derived columns.
+  backend is implemented in the vendored Plonky3-recursion stack.
+- No claim that the 97.0 KiB terminal backend checkpoint is the active
+  `AiPowRecursiveCertificate` block/wire artifact.
+- No zero-knowledge claim for the active structured recursive certificate.
+  Selected FRI openings may reveal evaluations of witness-derived columns.
 
 ## Clear End-To-End Claim
 
-For the current production path, the block-facing artifact is a structured
-recursive terminal certificate of **99,289 bytes / 97.0 KiB**. It proves that
-the recursive verifier accepted the Layer-0 AI-PoW composite STARK statement.
-The materialized Layer-0 proof is **303,896 bytes / 296.8 KiB**, but it is an
-intermediate diagnostic artifact rather than the consensus wire object.
+For the intended production path, the block-facing artifact is a structured L1
+batch-STARK recursive certificate of **205,446 bytes / 200.6 KiB** fixed-int
+bincode. The hardened verifier now cryptographically verifies the submitted L1
+outer proof body and proves that the recursive verifier accepted the Layer-0
+AI-PoW composite STARK statement. The materialized Layer-0 proof is **303,896
+bytes / 296.8 KiB**, but it is an intermediate diagnostic artifact rather than
+the consensus wire object.
 
 The end-to-end soundness floor is **60 bits**, with the following reduction:
 
 1. If the AI-PoW computation/public statement is false, a valid Layer-0 proof
    requires breaking the Layer-0 STARK/FRI/LogUp/Tip5/BLAKE3 assumptions or
    exploiting a bug in the AIR/public-input binding.
-2. If the Layer-0 verifier would reject, a valid terminal certificate requires
-   breaking the terminal row-product/NPO/FRI/Tip5 binding assumptions or
+2. If the Layer-0 verifier would reject, a valid structured L1 certificate
+   requires breaking the L1 batch-STARK/FRI/Tip5 binding assumptions or
    exploiting a bug in the recursive-verifier relation.
 3. The certificate binds public values, relation/profile metadata, commitments,
    and production parameters before challenge derivation, so there is no
    intended grinding surface over public values, profiles, roots, or query
    indices.
 
-The weakest active production soundness term is the terminal profile's 60 pure
-FRI-query bits. The older 200.6 KiB recursive certificate also had a 60-bit
-claim, but it got there through mixed query/PoW accounting and is superseded by
-the active pure-query terminal profile.
+The weakest active production soundness term is the 60-bit floor shared by the
+Layer-0 proof and active L1 recursive certificate. The L1 layer gets there
+through mixed query/PoW accounting. The compact terminal backend remains a
+future artifact candidate until it is wired into this certificate type and
+entrypoint.

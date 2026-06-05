@@ -254,9 +254,9 @@ Rust conversion rules:
 3. Reconstruct omitted recursive verifier metadata from canonical config.
 4. Rebuild `ai_pow_zk::recursion::AiPowRecursiveCertificate`.
 5. Invoke `ai_pow_zk::recursion::verify_recursive_certificate` with the
-   verifier-derived `CompositePublicInputs`. This verifies both the recursive
-   recursive STARK envelope and the cryptographic binding between the outer
-   proof's public values and the Layer-0 AI-PoW statement.
+   verifier-derived `CompositePublicInputs`. This verifies the recursive STARK
+   envelope, the submitted outer proof body, and the cryptographic binding
+   between the certificate's Layer-0 public inputs and the AI-PoW statement.
 
 The node-side Rust helpers package the required ordering for decoded noun
 artifacts. The generic `%ai-pow` parser is crate-internal; the public
@@ -558,8 +558,18 @@ Before accepting `%ai-pow`, consensus must require:
 17. `public-inputs.hash-a == commitments.h-a-chunk`.
 18. `public-inputs.hash-b == commitments.h-b-chunk`.
 19. `public-inputs.hash-jackpot <= target`.
-20. Rust verifies the structured recursive certificate with `verify_recursive_certificate`, including the outer recursive STARK envelope.
-21. Rust verifies that the certificate's bound public values are exactly the canonical statement rebuilt from config, commitments, `found-idx`, block commitment, nonce, and target.
+20. Rust verifies the structured recursive certificate with
+    `verify_recursive_certificate`, including the outer recursive STARK
+    envelope and submitted outer proof body.
+21. Rust verifies that the certificate's bound public values match the
+    canonical statement. For native AI-PoW this means the full public-input
+    vector rebuilt from config, commitments, `found-idx`, block commitment,
+    nonce, and target. For Pearl merge mining, the cheap metadata precheck
+    re-derives the Pearl-bound slots (`hash-a`, `hash-b`, `job-key`,
+    `commitment-hash`, `jackpot`, `hash-jackpot`); `cumsum` is not
+    independently derivable from the Pearl ticket and is bound by Layer-0 plus
+    full recursive verification of the exact public-input vector carried in the
+    certificate.
 
 ## 11. Implementation Plan
 

@@ -18,14 +18,17 @@
 //! compact D=1 path: per-input-limb **sends** with multiplicity
 //! `-in_ctl`, per-rate-output **receives** with multiplicity
 //! `out_ctl`, both gated by the row-kind selector so the L-table /
-//! padding rows contribute nothing to the bus.
+//! padding rows contribute nothing to the bus. CTL metadata is placed
+//! on the verifier-fixed final-round row of each permutation so
+//! `TIN` is the permutation input and `ROUT` is the final output.
 //!
 //! Trace shape is the *unmodified* [`crate::generate_lookup_trace`]
 //! output: rows `[0,256)` = L-table, rows `[256,256+P)` = one full
 //! Tip5 evaluation each, the rest inert padding. The matching
-//! preprocessed trace carries the verifier-fixed L-table columns
-//! `[IS_TABLE, TIN, TOUT]` *and* the per-perm-row CTL columns
-//! `[in_ctl[16], in_idx[16], out_idx[10], out_ctl[10]]`.
+//! preprocessed trace carries the verifier-fixed L-table/round-selector
+//! columns `[IS_TABLE, TIN, TOUT, IS_ROUND, ROUND[0..5]]` *and* the
+//! per-perm-row CTL columns `[in_ctl[16], in_idx[16], out_idx[10],
+//! out_ctl[10]]`.
 
 use alloc::vec::Vec;
 
@@ -36,11 +39,11 @@ use p3_lookup::builder::InteractionBuilder;
 use p3_matrix::dense::RowMajorMatrix;
 
 use crate::air_lookup::{
-    PREP_WIDTH as L_PREP_WIDTH, TABLE_ROWS, Tip5PermLookupAir, tip5_in_col, tip5_kind_col,
+    PREP_WIDTH as L_PREP_WIDTH, TABLE_ROWS, Tip5PermLookupAir, tip5_in_col,
     tip5_lookup_air_width, tip5_out_col,
 };
 use crate::generation_lookup::generate_lookup_trace;
-use crate::tip5_spec::STATE_SIZE;
+use crate::tip5_spec::{NUM_ROUNDS, STATE_SIZE};
 
 /// Sponge rate (squeezed/CTL-exposed output lanes) of recursive
 /// Tip5: `PaddingFreeSponge<_,16,10,5>` / `DuplexChallenger<_,_,16,10>`.
@@ -48,22 +51,25 @@ pub const TIP5_RATE: usize = 10;
 /// Tip5 state width in base-field elements.
 pub const TIP5_WIDTH: usize = STATE_SIZE; // 16
 
-/// Per-perm-row CTL preprocessed columns appended after the L-table's
-/// `[IS_TABLE, TIN, TOUT]`: `in_ctl[16] | in_idx[16] | out_idx[10] |
-/// out_ctl[10]`. (Mirrors the Poseidon1 compact-D1 header/idx/ctl
-/// columns, Tip5-shaped: no merkle/chaining selectors — Tip5 sponge
-/// chaining is realised by the executor carrying the previous full
-/// state into `IN`, not by per-limb preprocessed chain selectors.)
+/// Per-perm-row CTL preprocessed columns appended after the lookup AIR's
+/// L-table/round-selector columns: `in_ctl[16] | in_idx[16] |
+/// out_idx[10] | out_ctl[10]`. (Mirrors the Poseidon1 compact-D1
+/// header/idx/ctl columns, Tip5-shaped: no merkle/chaining selectors —
+/// Tip5 sponge chaining is realised by the executor carrying the previous
+/// full state into `IN`, not by per-limb preprocessed chain selectors.)
 pub const TIP5_CTL_PREP_COLS: usize = TIP5_WIDTH + TIP5_WIDTH + TIP5_RATE + TIP5_RATE; // 52
 
-/// Total preprocessed width: L-table columns + CTL columns.
-pub const TIP5_CIRCUIT_PREP_WIDTH: usize = L_PREP_WIDTH + TIP5_CTL_PREP_COLS; // 3 + 52 = 55
+/// Total preprocessed width: lookup AIR columns + CTL columns.
+pub const TIP5_CIRCUIT_PREP_WIDTH: usize = L_PREP_WIDTH + TIP5_CTL_PREP_COLS; // 9 + 52 = 61
 
 // CTL column offsets *within* the appended block (after `L_PREP_WIDTH`).
 const CTL_IN_CTL: usize = 0;
 const CTL_IN_IDX: usize = CTL_IN_CTL + TIP5_WIDTH;
 const CTL_OUT_IDX: usize = CTL_IN_IDX + TIP5_WIDTH;
 const CTL_OUT_CTL: usize = CTL_OUT_IDX + TIP5_RATE;
+/// Verifier-fixed permutation-row selector in the embedded lookup AIR
+/// preprocessed columns. Mirrors `air_lookup::P_IS_ROUND`.
+const L_PREP_IS_ROUND: usize = 3;
 
 /// Per-permutation row description captured by the Tip5 NPO executor
 /// and consumed by trace + preprocessed generation.
@@ -107,7 +113,7 @@ pub fn tip5_inputs_from_rows<F: Field + p3_field::PrimeField64>(
 /// Build the full circuit preprocessed flat vector (row-major,
 /// `TIP5_CIRCUIT_PREP_WIDTH` wide, height = padded lookup-trace
 /// height): the verifier-fixed L-table on rows `[0,256)` and the
-/// per-perm-row CTL columns on rows `[256,256+P)`.
+/// per-perm-row CTL columns on each permutation's final round row.
 ///
 /// `idx_scale` is the witness-bus extension scale (always 1 for the
 /// base-field Tip5 circuit; kept for mirror parity with Poseidon1's
@@ -123,13 +129,14 @@ pub fn build_tip5_circuit_preprocessed<F: Field>(
     let width = TIP5_CIRCUIT_PREP_WIDTH;
     let mut prep = F::zero_vec(height * width);
 
-    // L-table columns [0,3) on the first `TABLE_ROWS` rows. The
-    // lookup-AIR's own preprocessed is Goldilocks; transmute-free copy
-    // through the field's canonical u64 (Goldilocks → F is the
-    // identity here since the Tip5 circuit field *is* Goldilocks, but
-    // we go through the field API to keep this generic and lint-clean).
-    debug_assert!(l_table_preprocessed.len() >= TABLE_ROWS * L_PREP_WIDTH);
-    for r in 0..TABLE_ROWS {
+    // Lookup-AIR preprocessed columns [0,L_PREP_WIDTH) on every row:
+    // table rows, round selectors, and padding. The lookup-AIR's own
+    // preprocessed is Goldilocks; transmute-free copy through the
+    // field's canonical u64 (Goldilocks -> F is the identity here since
+    // the Tip5 circuit field is Goldilocks, but we go through the field
+    // API to keep this generic and lint-clean).
+    debug_assert!(l_table_preprocessed.len() >= height * L_PREP_WIDTH);
+    for r in 0..height {
         let src = r * L_PREP_WIDTH;
         let dst = r * width;
         for c in 0..L_PREP_WIDTH {
@@ -140,13 +147,16 @@ pub fn build_tip5_circuit_preprocessed<F: Field>(
         }
     }
 
-    // Per-perm-row CTL columns on rows [TABLE_ROWS, TABLE_ROWS+P).
+    // Per-perm-row CTL columns on each permutation's final round row.
+    // The input `TIN` is carried across all five rows, but `ROUT` is
+    // the full permutation output only on the final round.
     for (pi, row) in rows.iter().enumerate() {
         debug_assert_eq!(row.in_ctl.len(), TIP5_WIDTH);
         debug_assert_eq!(row.input_indices.len(), TIP5_WIDTH);
         debug_assert_eq!(row.out_ctl.len(), TIP5_RATE);
         debug_assert_eq!(row.output_indices.len(), TIP5_RATE);
-        let base = (TABLE_ROWS + pi) * width + L_PREP_WIDTH;
+        let trace_row = TABLE_ROWS + pi * NUM_ROUNDS + (NUM_ROUNDS - 1);
+        let base = trace_row * width + L_PREP_WIDTH;
         for i in 0..TIP5_WIDTH {
             prep[base + CTL_IN_CTL + i] = F::from_bool(row.in_ctl[i]);
             prep[base + CTL_IN_IDX + i] = F::from_u32(row.input_indices[i] * idx_scale);
@@ -309,14 +319,15 @@ where
         let local = main.current_slice();
         let pre = prep.current_slice();
 
-        let kind: AB::Expr = local[tip5_kind_col()].into();
+        let kind: AB::Expr = pre[L_PREP_IS_ROUND].into();
         let cbase = L_PREP_WIDTH;
 
         // Input limb SENDS: `[idx, value, ZERO×(WITNESS_EXT_D − 1)]`,
         // multiplicity `-(in_ctl * kind)`. `kind` (boolean, asserted by
-        // the inner AIR) zeroes the bus contribution on L-table /
-        // padding rows. The tuple is D-padded to `WITNESS_EXT_D + 1`
-        // exactly as `p3_poseidon1_circuit_air::eval_interactions`
+        // the inner AIR's verifier-fixed preprocessed selectors) zeroes
+        // the bus contribution on L-table / padding rows. The tuple is
+        // D-padded to `WITNESS_EXT_D + 1` exactly as
+        // `p3_poseidon1_circuit_air::eval_interactions`
         // (input limb sends): `push(idx)`, then the perm's `D` value
         // coordinates, then `WITNESS_EXT_D − D` zeros. Tip5's perm
         // `D == 1`, so the value contributes a single coordinate and

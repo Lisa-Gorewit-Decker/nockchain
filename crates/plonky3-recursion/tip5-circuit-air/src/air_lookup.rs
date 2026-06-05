@@ -108,14 +108,6 @@ pub const fn tip5_lookup_air_width() -> usize {
     C_OUT + STATE_SIZE
 }
 
-/// The lookup AIR no longer carries a prover-controlled row-kind column.
-/// Row kind is verifier-fixed in the preprocessed trace; this accessor is
-/// retained for circuit-wrapper compatibility and returns the table
-/// multiplicity column.
-pub(crate) const fn tip5_kind_col() -> usize {
-    C_TMULT
-}
-
 /// Main-trace column index of input lane `lane` (`IN[lane]`, the Tip5
 /// permutation input state read by the WitnessChecks CTL).
 pub(crate) const fn tip5_in_col(lane: usize) -> usize {

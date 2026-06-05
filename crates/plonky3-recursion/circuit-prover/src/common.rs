@@ -171,8 +171,8 @@ where
     // Let plugins handle non-primitive preprocessing (ext_reads, multiplicities, etc.).
     let mut non_primitive_base: NonPrimitivePreprocessedMap<Val<SC>> = HashMap::new();
     let circuit_any: &dyn Any = circuit;
-    let preprocessed_any: &mut dyn Any = &mut preprocessed;
     for plugin in non_primitive_preprocessors {
+        let preprocessed_any: &mut dyn Any = &mut preprocessed;
         let plugin_prep = plugin.preprocess(circuit_any, preprocessed_any)?;
         non_primitive_base.extend(plugin_prep);
     }

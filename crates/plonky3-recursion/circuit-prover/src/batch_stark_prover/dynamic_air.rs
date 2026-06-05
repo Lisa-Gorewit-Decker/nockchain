@@ -381,6 +381,24 @@ where
         table_entry: &super::NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String>;
 
+    /// Rebuild the AIR for verification when the proof's effective table
+    /// packing is available.
+    ///
+    /// Dynamic tables whose constraints or preprocessed layout depend on the
+    /// minimum trace height should override this method. The default preserves
+    /// existing table plugins whose verifier AIR is height-independent.
+    fn batch_air_from_table_entry_with_min_height(
+        &self,
+        config: &SC,
+        degree: usize,
+        circuit_extension_degree: u32,
+        min_height: usize,
+        table_entry: &super::NonPrimitiveTableEntry<SC>,
+    ) -> Result<DynamicAirEntry<SC>, String> {
+        let _ = min_height;
+        self.batch_air_from_table_entry(config, degree, circuit_extension_degree, table_entry)
+    }
+
     /// Build an AIR entry using committed preprocessed data.
     ///
     /// `lanes` is the lane count that was used when building the table instance

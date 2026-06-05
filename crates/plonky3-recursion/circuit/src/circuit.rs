@@ -243,7 +243,6 @@ impl<F: Field> Circuit<F> {
         // Const and Public define their outputs first. ALU ops define their output (forward)
         // or their `b` operand (backward/sub encoding where `out` was already defined).
         let mut defined = vec![false; self.witness_count as usize];
-
         // Private input witness IDs: these get their bus creator role from the first
         // ALU op that uses them, rather than from a Public table row.
         let private_input_wids: hashbrown::HashSet<u32> =

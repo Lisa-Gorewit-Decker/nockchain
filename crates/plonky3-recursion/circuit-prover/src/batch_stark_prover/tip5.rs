@@ -42,9 +42,9 @@ use p3_field::{Algebra, ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_goldilocks::Goldilocks;
 use p3_matrix::Matrix;
 use p3_tip5_circuit_air::{
-    TABLE_ROWS, TIP5_CIRCUIT_PREP_WIDTH, TIP5_CTL_PREP_COLS, TIP5_RATE, TIP5_WIDTH, Tip5CircuitAir,
-    Tip5CircuitRow, build_tip5_circuit_preprocessed, generate_tip5_circuit_main,
-    tip5_inputs_from_rows,
+    NUM_ROUNDS, TABLE_ROWS, TIP5_CIRCUIT_PREP_WIDTH, TIP5_CTL_PREP_COLS, TIP5_RATE, TIP5_WIDTH,
+    Tip5CircuitAir, Tip5CircuitRow, build_tip5_circuit_preprocessed,
+    generate_tip5_circuit_main, tip5_inputs_from_rows,
 };
 use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
 use p3_util::log2_ceil_usize;
@@ -189,7 +189,6 @@ impl Tip5Prover {
         if rows == 0 {
             return None;
         }
-
         let min_height = packing.min_trace_height();
 
         // 1. Main trace via the *unmodified* validated generator.
@@ -363,6 +362,29 @@ where
         )
     }
 
+    fn batch_air_from_table_entry_with_min_height(
+        &self,
+        _config: &SC,
+        _degree: usize,
+        circuit_extension_degree: u32,
+        min_height: usize,
+        table_entry: &NonPrimitiveTableEntry<SC>,
+    ) -> Result<DynamicAirEntry<SC>, String> {
+        let prep_height = (TABLE_ROWS + table_entry.rows * NUM_ROUNDS)
+            .max(1)
+            .next_power_of_two()
+            .max(min_height.next_power_of_two());
+        let prep = Val::<SC>::zero_vec(prep_height * TIP5_CIRCUIT_PREP_WIDTH);
+        tip5_air_entry_for_witness_dim::<SC>(prep, min_height, circuit_extension_degree)
+            .ok_or_else(|| {
+                format!(
+                    "unsupported witness bus dimension {circuit_extension_degree} for Tip5 \
+                     config {:?}",
+                    self.config
+                )
+            })
+    }
+
     fn air_with_committed_preprocessed(
         &self,
         committed_prep: Vec<Val<SC>>,
@@ -498,7 +520,8 @@ where
         let l_w = width - TIP5_CTL_PREP_COLS;
         let ctl_out_ctl = TIP5_WIDTH + TIP5_WIDTH + TIP5_RATE;
         for (row, op_row) in (0..num_ops).map(|r| (r, r)) {
-            let dst = (TABLE_ROWS + row) * width + l_w + ctl_out_ctl;
+            let trace_row = TABLE_ROWS + row * NUM_ROUNDS + (NUM_ROUNDS - 1);
+            let dst = trace_row * width + l_w + ctl_out_ctl;
             let src = op_row * TIP5_OP_CTL_WIDTH + out_ctl_off;
             for j in 0..TIP5_RATE {
                 full[dst + j] = resolved[src + j];

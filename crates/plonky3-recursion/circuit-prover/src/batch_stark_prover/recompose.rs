@@ -165,6 +165,26 @@ where
         Ok(DynamicAirEntry::new(Box::new(air)))
     }
 
+    fn batch_air_from_table_entry_with_min_height(
+        &self,
+        _config: &SC,
+        _degree: usize,
+        _circuit_extension_degree: u32,
+        min_height: usize,
+        table_entry: &NonPrimitiveTableEntry<SC>,
+    ) -> Result<DynamicAirEntry<SC>, String> {
+        let prep_lane_width =
+            RecomposeAir::<Val<SC>, D>::preprocessed_lane_width_for(self.coeff_lookups);
+        let prep = Val::<SC>::zero_vec(table_entry.rows * prep_lane_width);
+        let air = RecomposeAir::<Val<SC>, D>::new_with_preprocessed(
+            table_entry.lanes,
+            prep,
+            min_height,
+            self.coeff_lookups,
+        );
+        Ok(DynamicAirEntry::new(Box::new(air)))
+    }
+
     fn air_with_committed_preprocessed(
         &self,
         committed_prep: Vec<Val<SC>>,

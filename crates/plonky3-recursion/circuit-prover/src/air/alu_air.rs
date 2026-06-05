@@ -405,7 +405,7 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
                         }
                     }
                     if contiguous
-                        && Self::horner_ops_share_b_idx(preprocessed, plw, &chain[i..i + k])
+                        && Self::horner_ops_can_pack(preprocessed, plw, &chain[i..i + k])
                     {
                         best_k = k;
                         break;
@@ -436,17 +436,21 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
         Some(schedule)
     }
 
-    /// All ops in `op_indices` use the same `b` witness index in preprocessed data.
-    fn horner_ops_share_b_idx(preprocessed: &[F], plw: usize, op_indices: &[usize]) -> bool {
+    /// All ops in `op_indices` can be represented by one packed Horner row.
+    ///
+    /// Packing keeps one `out` lookup: the last step's output.  Earlier step outputs are implicit
+    /// accumulator values inside the packed row, so they may be packed only when their normal
+    /// WitnessChecks output multiplicity is zero.
+    fn horner_ops_can_pack(preprocessed: &[F], plw: usize, op_indices: &[usize]) -> bool {
         if op_indices.is_empty() {
             return true;
         }
         let prep0: &AluPrepLaneCols<F> =
             preprocessed[op_indices[0] * plw..(op_indices[0] + 1) * plw].borrow();
         let b0 = prep0.b_idx;
-        op_indices.iter().all(|&idx| {
+        op_indices.iter().enumerate().all(|(pos, &idx)| {
             let p: &AluPrepLaneCols<F> = preprocessed[idx * plw..(idx + 1) * plw].borrow();
-            p.b_idx == b0
+            p.b_idx == b0 && (pos + 1 == op_indices.len() || p.mult_out == F::ZERO)
         })
     }
 
@@ -618,7 +622,14 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
                             lane_prep.out_idx = src_last_prep.out_idx;
                             lane_prep.mult_out = src_last_prep.mult_out;
 
-                            lane_prep.mult_b *= F::from_usize(k);
+                            lane_prep.mult_b = (0..k)
+                                .map(|t| {
+                                    let src_t: &AluPrepLaneCols<F> = self.preprocessed
+                                        [(*first_idx + t) * plw..(*first_idx + t + 1) * plw]
+                                        .borrow();
+                                    src_t.mult_b
+                                })
+                                .fold(F::ZERO, |acc, mult| acc + mult);
                             lane_prep.mult_a
                         };
 
@@ -1104,6 +1115,81 @@ mod tests {
     }
 
     type EF = BinomialExtensionField<Val, 4>;
+
+    fn horner_prep_row(
+        a_idx: u32,
+        b_idx: u32,
+        c_idx: u32,
+        out_idx: u32,
+        mult_b: Val,
+        mult_out: Val,
+    ) -> [Val; PREP_LANE_WIDTH] {
+        let neg_one = Val::ZERO - Val::ONE;
+        [
+            neg_one,
+            Val::ZERO,
+            Val::ZERO,
+            Val::ZERO,
+            Val::ONE,
+            Val::from_u32(a_idx),
+            Val::from_u32(b_idx),
+            Val::from_u32(c_idx),
+            Val::from_u32(out_idx),
+            mult_b,
+            mult_out,
+            Val::ONE,
+            Val::ONE,
+        ]
+    }
+
+    #[test]
+    fn packed_horner_refuses_nonzero_intermediate_out_lookup() {
+        let neg_one = Val::ZERO - Val::ONE;
+        let mut prep = Vec::new();
+        prep.extend(horner_prep_row(2, 4, 6, 0, neg_one, neg_one));
+        prep.extend(horner_prep_row(8, 4, 10, 12, neg_one, Val::ZERO));
+
+        let air = AluAir::<Val, 2>::new_binomial_with_preprocessed(2, 1, Val::from_u64(7), prep, 2);
+        let prep_trace = air.preprocessed_trace().unwrap();
+        let sel_k2 = PREP_LANE_WIDTH + extra_prep_sel_k_idx(2);
+
+        for row in 0..prep_trace.height() {
+            let row = prep_trace.row_slice(row).unwrap();
+            assert_eq!(
+                row[sel_k2],
+                Val::ZERO,
+                "Horner rows with a nonzero intermediate out lookup must not be packed"
+            );
+        }
+    }
+
+    #[test]
+    fn packed_horner_sums_b_multiplicities() {
+        let neg_one = Val::ZERO - Val::ONE;
+        let mut prep = Vec::new();
+        prep.extend(horner_prep_row(
+            2,
+            4,
+            6,
+            8,
+            Val::from_u64(2),
+            Val::ZERO,
+        ));
+        prep.extend(horner_prep_row(10, 4, 12, 14, neg_one, Val::ZERO));
+
+        let air = AluAir::<Val, 2>::new_binomial_with_preprocessed(2, 1, Val::from_u64(7), prep, 2);
+        let prep_trace = air.preprocessed_trace().unwrap();
+        let sel_k2 = PREP_LANE_WIDTH + extra_prep_sel_k_idx(2);
+
+        let packed = (0..prep_trace.height())
+            .map(|row| prep_trace.row_slice(row).unwrap())
+            .find(|row| row[sel_k2] == Val::ONE)
+            .expect("expected the two Horner ops to pack");
+        let lane: &AluPrepLaneCols<Val> = packed[..PREP_LANE_WIDTH].borrow();
+
+        assert_eq!(lane.mult_b, Val::ONE);
+        assert_eq!(lane.out_idx, Val::from_u32(14));
+    }
 
     #[test]
     fn satisfies_alu_add_base_field() {

@@ -1262,6 +1262,23 @@ where
             })
     }
 
+    fn batch_air_from_table_entry_with_min_height(
+        &self,
+        _config: &SC,
+        _degree: usize,
+        circuit_extension_degree: u32,
+        min_height: usize,
+        _table_entry: &NonPrimitiveTableEntry<SC>,
+    ) -> Result<DynamicAirEntry<SC>, String> {
+        self.wrapper_from_config_with_preprocessed(Vec::new(), min_height, circuit_extension_degree)
+            .ok_or_else(|| {
+                format!(
+                    "unsupported witness bus dimension {} for Poseidon1 config {:?}",
+                    circuit_extension_degree, self.config
+                )
+            })
+    }
+
     fn air_with_committed_preprocessed(
         &self,
         committed_prep: Vec<Val<SC>>,
@@ -1355,6 +1372,28 @@ where
     ) -> Result<DynamicAirEntry<SC>, String> {
         self.0
             .wrapper_from_config_with_preprocessed(Vec::new(), 1, circuit_extension_degree)
+            .ok_or_else(|| {
+                format!(
+                    "unsupported witness bus dimension {} for Poseidon1 config {:?}",
+                    circuit_extension_degree, self.0.config
+                )
+            })
+    }
+
+    fn batch_air_from_table_entry_with_min_height(
+        &self,
+        _config: &SC,
+        _degree: usize,
+        circuit_extension_degree: u32,
+        min_height: usize,
+        _table_entry: &NonPrimitiveTableEntry<SC>,
+    ) -> Result<DynamicAirEntry<SC>, String> {
+        self.0
+            .wrapper_from_config_with_preprocessed(
+                Vec::new(),
+                min_height,
+                circuit_extension_degree,
+            )
             .ok_or_else(|| {
                 format!(
                     "unsupported witness bus dimension {} for Poseidon1 config {:?}",

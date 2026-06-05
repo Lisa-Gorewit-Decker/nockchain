@@ -268,9 +268,15 @@ where
                     "unknown non-primitive op: {:?}",
                     entry.op_type
                 ))
-            })?;
+        })?;
         let air = plugin
-            .batch_air_from_table_entry(config, TRACE_D, proof.ext_degree as u32, entry)
+            .batch_air_from_table_entry_with_min_height(
+                config,
+                TRACE_D,
+                proof.ext_degree as u32,
+                packing.min_trace_height(),
+                entry,
+            )
             .map_err(VerificationError::InvalidProofShape)?;
         circuit_airs.push(CircuitTablesAir::Dynamic(air));
     }

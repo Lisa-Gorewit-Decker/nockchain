@@ -46,8 +46,8 @@ type AiPowL1OuterProof =
 /// otherwise trust proof-carried circuit metadata. The canonical certificate
 /// carries the Layer-0 proof and pinned program so verification can rebuild the
 /// exact L1 verifier circuit, run that verifier against the embedded Layer-0
-/// proof, and reject outer proof metadata that does not match the rebuilt
-/// canonical circuit shape.
+/// proof, reject outer proof metadata that does not match the rebuilt canonical
+/// circuit shape, and cryptographically verify the submitted outer proof body.
 ///
 /// Consensus code must still derive and check the statement metadata
 /// externally before accepting this certificate.
@@ -80,8 +80,8 @@ impl AiPowRecursiveCertificate {
     /// The outer proof, exposed for diagnostics and size accounting only.
     ///
     /// Production verification must call [`verify_recursive_certificate`], which
-    /// rebuilds and runs the canonical L1 verifier circuit and checks this
-    /// proof's stable circuit metadata.
+    /// rebuilds and runs the canonical L1 verifier circuit, checks this proof's
+    /// stable circuit metadata, and verifies the submitted proof body.
     pub fn l1_outer_proof(&self) -> &AiPowL1OuterProof {
         &self.l1_outer_proof
     }
@@ -544,8 +544,9 @@ pub fn prove_composite_l1_outer_cert(
 /// This is the production verification entrypoint. It rejects outer proofs
 /// whose circuit-prover metadata is merely self-consistent by rebuilding the
 /// canonical L1 verifier circuit from the certificate's Layer-0 proof/program,
-/// running that circuit against the verifier-derived public inputs, and
-/// comparing stable rebuilt outer metadata to the submitted outer proof.
+/// running that circuit against the verifier-derived public inputs, comparing
+/// stable rebuilt outer metadata to the submitted outer proof, and verifying
+/// the submitted outer proof with the production batch-STARK verifier.
 pub fn verify_recursive_certificate(
     cert: &AiPowRecursiveCertificate,
     zk_params: &crate::params::ZkParams,
@@ -645,6 +646,14 @@ fn verify_recursive_certificate_inner(
             "AI-PoW recursive certificate unexpectedly selected quintic ALU".to_string(),
         ));
     }
+    expected_outer_prover
+        .verify_all_tables(outer)
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW recursive certificate outer proof failed production \
+             batch-STARK verification: {e:?}"
+            ))
+        })?;
     Ok(())
 }
 
@@ -1147,6 +1156,44 @@ mod tests {
         cert.l1_outer_proof.non_primitives.clear();
         verify_recursive_certificate(&cert, &zk, &profile, &pis)
             .expect_err("recursive verifier must reject non-canonical L1 circuit metadata");
+    }
+
+    #[test]
+    fn recursive_certificate_rejects_outer_proof_body_tamper() {
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+        let outer =
+            prove_composite_l1_outer_cert(&built, &proof).expect("honest recursive certificate");
+        let mut cert = AiPowRecursiveCertificate::new(proof, program, outer);
+
+        let first_opened_value = cert
+            .l1_outer_proof
+            .proof
+            .opened_values
+            .instances
+            .get_mut(0)
+            .and_then(|instance| instance.base_opened_values.trace_local.get_mut(0))
+            .expect("outer proof exposes at least one trace opening");
+        *first_opened_value += Val::ONE;
+
+        verify_recursive_certificate(&cert, &zk, &profile, &pis)
+            .expect_err("recursive verifier must reject tampered L1 proof body");
     }
 
     #[test]
