@@ -85,11 +85,51 @@ pub type TerminalFriProof =
 /// Concrete terminal input-opening proof type used by [`TerminalFriProof`].
 pub type TerminalFriInputProof = Vec<BatchOpening<Goldilocks, TerminalFriValMmcs>>;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalPackedMerkleDigest {
+    pub lo: [u8; 20],
+    pub hi: [u8; 20],
+}
+
+impl TerminalPackedMerkleDigest {
+    fn from_goldilocks_digest(digest: &[Goldilocks; 5]) -> Self {
+        let mut packed = [0u8; 40];
+        for (limb, value) in digest.iter().enumerate() {
+            let start = limb * 8;
+            packed[start..start + 8]
+                .copy_from_slice(&PrimeField64::as_canonical_u64(value).to_le_bytes());
+        }
+        let mut lo = [0u8; 20];
+        let mut hi = [0u8; 20];
+        lo.copy_from_slice(&packed[..20]);
+        hi.copy_from_slice(&packed[20..]);
+        Self { lo, hi }
+    }
+
+    fn to_goldilocks_digest(self) -> Option<[Goldilocks; 5]> {
+        let mut packed = [0u8; 40];
+        packed[..20].copy_from_slice(&self.lo);
+        packed[20..].copy_from_slice(&self.hi);
+        let mut digest = [Goldilocks::ZERO; 5];
+        for limb in 0..digest.len() {
+            let start = limb * 8;
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&packed[start..start + 8]);
+            let value = u64::from_le_bytes(bytes);
+            if value >= Goldilocks::ORDER_U64 {
+                return None;
+            }
+            digest[limb] = Goldilocks::from_u64(value);
+        }
+        Some(digest)
+    }
+}
+
 /// A binary Merkle authentication path pruned against the previous sorted path.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalPrunedMerklePath {
     pub leaf_index: usize,
-    pub siblings: Vec<[Goldilocks; 5]>,
+    pub siblings: Vec<TerminalPackedMerkleDigest>,
 }
 
 /// Compact representation of same-tree binary Merkle paths for all terminal
@@ -22055,7 +22095,10 @@ impl NativeTerminalCompiler {
             };
             pruned.push(TerminalPrunedMerklePath {
                 leaf_index: *leaf,
-                siblings: siblings[..keep].to_vec(),
+                siblings: siblings[..keep]
+                    .iter()
+                    .map(TerminalPackedMerkleDigest::from_goldilocks_digest)
+                    .collect(),
             });
             previous_leaf = *leaf;
         }
@@ -22097,7 +22140,17 @@ impl NativeTerminalCompiler {
                     },
                 );
             }
-            let mut restored = path.siblings.clone();
+            let mut restored = path
+                .siblings
+                .iter()
+                .copied()
+                .map(TerminalPackedMerkleDigest::to_goldilocks_digest)
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(
+                    || NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                        reason: "terminal compressed FRI path digest limb is non-canonical".into(),
+                    },
+                )?;
             if slot > 0 {
                 restored.extend_from_slice(&sorted_full[slot - 1][path.siblings.len()..]);
             }
@@ -38848,7 +38901,7 @@ mod tests {
                 .iter_mut()
                 .find_map(|path| path.siblings.first_mut())
             {
-                sibling[0] += Goldilocks::ONE;
+                terminal_tamper_packed_merkle_digest(sibling);
                 floor_path_tampered = true;
                 break;
             }
@@ -38861,7 +38914,7 @@ mod tests {
                     .iter_mut()
                     .find_map(|path| path.siblings.first_mut())
                 {
-                    sibling[0] += Goldilocks::ONE;
+                    terminal_tamper_packed_merkle_digest(sibling);
                     floor_path_tampered = true;
                     break;
                 }
@@ -39580,6 +39633,43 @@ mod tests {
             Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
         ));
 
+        let mut noncanonical_path_digest = proof.proof.clone();
+        let mut noncanonical_path_digest_tampered = false;
+        for batch in &mut noncanonical_path_digest.input_batches {
+            if let Some(sibling) = batch
+                .pruned_opening_proof
+                .paths
+                .iter_mut()
+                .find_map(|path| path.siblings.first_mut())
+            {
+                terminal_make_packed_merkle_digest_noncanonical(sibling);
+                noncanonical_path_digest_tampered = true;
+                break;
+            }
+        }
+        if !noncanonical_path_digest_tampered {
+            for round in &mut noncanonical_path_digest.commit_rounds {
+                if let Some(sibling) = round
+                    .pruned_opening_proof
+                    .paths
+                    .iter_mut()
+                    .find_map(|path| path.siblings.first_mut())
+                {
+                    terminal_make_packed_merkle_digest_noncanonical(sibling);
+                    noncanonical_path_digest_tampered = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            noncanonical_path_digest_tampered,
+            "compressed FRI proof must carry Merkle siblings"
+        );
+        assert!(matches!(
+            NativeTerminalCompiler::decompress_terminal_fri_proof(&noncanonical_path_digest),
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+        ));
+
         let mut malformed_order = proof.proof.clone();
         let mut order_tampered = false;
         for batch in &mut malformed_order.input_batches {
@@ -39741,7 +39831,7 @@ mod tests {
                 .iter_mut()
                 .find_map(|path| path.siblings.first_mut())
             {
-                sibling[0] += Goldilocks::ONE;
+                terminal_tamper_packed_merkle_digest(sibling);
                 path_tampered = true;
                 break;
             }
@@ -39754,7 +39844,7 @@ mod tests {
                     .iter_mut()
                     .find_map(|path| path.siblings.first_mut())
                 {
-                    sibling[0] += Goldilocks::ONE;
+                    terminal_tamper_packed_merkle_digest(sibling);
                     path_tampered = true;
                     break;
                 }
@@ -47822,6 +47912,18 @@ mod tests {
                 roots,
             )
             .expect("terminal test prelude must build")
+    }
+
+    fn terminal_tamper_packed_merkle_digest(sibling: &mut TerminalPackedMerkleDigest) {
+        let mut digest = sibling
+            .to_goldilocks_digest()
+            .expect("test Merkle digest must be canonical");
+        digest[0] += Goldilocks::ONE;
+        *sibling = TerminalPackedMerkleDigest::from_goldilocks_digest(&digest);
+    }
+
+    fn terminal_make_packed_merkle_digest_noncanonical(sibling: &mut TerminalPackedMerkleDigest) {
+        sibling.lo[..8].copy_from_slice(&Goldilocks::ORDER_U64.to_le_bytes());
     }
 
     fn terminal_test_tip5_lookup_trace<F>(
