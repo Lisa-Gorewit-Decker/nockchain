@@ -401,8 +401,8 @@ impl TerminalProofParameters {
 /// Canonical terminal proximity schedule bound into the transcript profile.
 ///
 /// This is the production FRI-style proximity contract the terminal backend is
-/// being wired toward: blowup 16, 15 pure transcript queries, no query PoW, and
-/// a conservative binary folding schedule down to a constant final polynomial.
+/// being wired toward: blowup 16, 15 pure transcript queries, no query PoW,
+/// arity at most 8 per FRI reduction, and a constant final polynomial.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalProximityProfile {
     pub scheme_id: u8,
@@ -808,12 +808,11 @@ struct TerminalLocalProof {
 
 /// Production proof-body checkpoint for the terminal relation.
 ///
-/// This proof binds a witness oracle for sampled supported-NPO row openings,
-/// an assignment oracle for primitive sparse-R1CS sumcheck, and an optional NPO
-/// validity oracle for keys with supported NPO rows. It no longer serializes
-/// the full witness. The remaining backend gap is polynomializing the supported
-/// Tip5/recompose NPO validity relation rather than checking sampled rows
-/// directly.
+/// This proof binds an assignment oracle for primitive sparse-R1CS sumcheck and
+/// an optional exhaustive supported-NPO proof for keys with supported NPO rows.
+/// It no longer serializes the full witness. The remaining backend gap is
+/// replacing exhaustive supported-NPO witness openings with a complete
+/// polynomial/proximity backend.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalProductionProof {
     pub prelude: TerminalProofPrelude,
