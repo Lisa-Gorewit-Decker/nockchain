@@ -556,8 +556,15 @@ for this route.
   relation identical but drops one committed oracle from the integrated
   transcript and prelude. The focused native/Rayon measurement is now `230,089`
   bytes / `224.7 KiB`, with compact FRI payload `202,238` bytes / `197.5 KiB`,
-  `prove=6.936s` for the integrated merged+LogUp path and `verify=43.1ms`.
+  `prove=6.979s` for the integrated merged+LogUp path and `verify=43.3ms`.
   The tamper check still rejects a modified trace-domain NPO IO opening. A
+  direct-integrated FRI arity sweep kept `log_blowup=4`, `num_queries=15`, and
+  `query_pow_bits=0` fixed. `max_log_arity=4` reduced the integrated FRI
+  payload slightly to `201,673` bytes / `196.9 KiB`, but the full checkpoint
+  grew to `231,890` bytes / `226.5 KiB`; `max_log_arity=2` measured `233,153`
+  bytes / `227.7 KiB` with integrated FRI `202,440` bytes / `197.7 KiB`.
+  The active `max_log_arity=3` remains the measured whole-certificate winner
+  for the direct-integrated backend. A
   2026-06-05 integrated group-size sweep kept the 60-bit pure-query FRI tuple
   fixed and tested the accumulator width versus quotient-degree tradeoff
   directly: 1-lane groups measured `252,162` bytes / `246.3 KiB`, compact FRI
