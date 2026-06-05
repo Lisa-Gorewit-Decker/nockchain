@@ -27,7 +27,11 @@ use p3_recursion::pcs::fri::{
 };
 use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::public_inputs::BatchStarkVerifierInputsBuilder;
-use p3_recursion::{verify_batch_circuit, RecursiveAir, VerificationError};
+use p3_recursion::terminal::{NativeTerminalCompiler, NativeTerminalVerifyError};
+use p3_recursion::{
+    verify_batch_circuit, RecursiveAir, TerminalCertificate, TerminalCircuitFingerprint,
+    TerminalProofParameters, TerminalWitness, VerificationError,
+};
 use p3_symmetric::Permutation;
 use p3_tip5_circuit_air::Tip5Perm as RecTip5Perm;
 use serde::{Deserialize, Serialize};
@@ -38,6 +42,43 @@ use crate::{AiPowStarkConfig, CompositeFullAirWithLookupsPinned, Val};
 /// Outer circuit-prover proof produced after recursively verifying Layer 0.
 type AiPowL1OuterProof =
     p3_circuit_prover::BatchStarkProof<p3_circuit_prover::config::GoldilocksTipsConfig>;
+
+/// Native terminal recursive proof artifact for the AI-PoW L1 verifier
+/// circuit.
+///
+/// The terminal certificate is the size-bounded production target. It proves
+/// execution of the same L1 verifier circuit used by the batch-STARK
+/// checkpoint, but the certificate itself binds only a digest of the terminal
+/// public input vector. Callers must preserve and verify `terminal_public_inputs`
+/// with the certificate; otherwise the terminal binding is incomplete.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiPowTerminalRecursiveCertificate {
+    /// Public inputs supplied to the terminal verifier circuit. This vector is
+    /// bound by `terminal_certificate.public_values_digest`.
+    terminal_public_inputs: Vec<Challenge>,
+    /// Native terminal production certificate for the L1 verifier circuit.
+    terminal_certificate: TerminalCertificate,
+}
+
+impl AiPowTerminalRecursiveCertificate {
+    pub fn new(
+        terminal_public_inputs: Vec<Challenge>,
+        terminal_certificate: TerminalCertificate,
+    ) -> Self {
+        Self {
+            terminal_public_inputs,
+            terminal_certificate,
+        }
+    }
+
+    pub fn terminal_public_inputs(&self) -> &[Challenge] {
+        &self.terminal_public_inputs
+    }
+
+    pub fn terminal_certificate(&self) -> &TerminalCertificate {
+        &self.terminal_certificate
+    }
+}
 
 /// Canonical recursive certificate for Nockchain's AI proof-of-work puzzle
 /// statement.
@@ -707,6 +748,30 @@ pub struct L1CertificateRun {
     pub l1_cert: AiPowRecursiveCertificate,
 }
 
+/// Timings and certificate for recursively certifying an already-built Layer-0
+/// composite proof with the native terminal backend.
+///
+/// This is the production-size target counterpart to [`L1CertificateRun`].
+/// It keeps the terminal public inputs next to the certificate because the
+/// terminal certificate binds their digest but does not serialize the values in
+/// `TerminalCertificate` itself.
+pub struct TerminalCertificateRun {
+    /// Wall-clock (ms) to build the L1 recursive-verifier circuit.
+    pub l1_circuit_build_ms: u128,
+    /// Wall-clock (ms) to run the L1 verifier circuit and materialize terminal
+    /// witness traces.
+    pub l1_in_circuit_verify_ms: u128,
+    /// Wall-clock (ms) to compile the L1 verifier circuit into the terminal
+    /// relation.
+    pub terminal_compile_ms: u128,
+    /// Wall-clock (ms) to produce the native terminal proof body.
+    pub terminal_prove_ms: u128,
+    /// Wall-clock (ms) to verify the native terminal certificate.
+    pub terminal_verify_ms: u128,
+    /// The native terminal recursive certificate and its bound public inputs.
+    pub terminal_cert: AiPowTerminalRecursiveCertificate,
+}
+
 /// **Batch-STARK recursive checkpoint caller** — the full ai-pow-zk →
 /// Plonky3-recursion
 /// pipeline for one composite proof, end to end:
@@ -856,6 +921,195 @@ pub fn prove_recursive_certificate_from_chain_verified_composite_proof(
     })
 }
 
+fn terminal_compiler() -> NativeTerminalCompiler {
+    NativeTerminalCompiler::new("nock-terminal-v0", 60)
+}
+
+fn prove_composite_l1_terminal_cert(
+    built: &BuiltCompositeL1,
+    proof: &BatchProof<AiPowStarkConfig>,
+) -> Result<(AiPowTerminalRecursiveCertificate, u128, u128, u128, u128), VerificationError> {
+    use std::time::Instant;
+
+    let t = Instant::now();
+    let traces = run_composite_l1_verifier_traces(built, proof)?;
+    let l1_in_circuit_verify_ms = t.elapsed().as_millis();
+
+    let compiler = terminal_compiler();
+    let t = Instant::now();
+    let (_pk, vk) = compiler
+        .compile_goldilocks_terminal(&built.circuit)
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW terminal certificate compile failed: {e:?}"
+            ))
+        })?;
+    compiler
+        .validate_goldilocks_production_query_domains(
+            &vk,
+            TerminalProofParameters::production_60bit(),
+        )
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW terminal certificate production parameter check failed: {e:?}"
+            ))
+        })?;
+    let terminal_compile_ms = t.elapsed().as_millis();
+
+    let witness = TerminalWitness {
+        fingerprint: TerminalCircuitFingerprint::from_circuit(&built.circuit),
+        public_inputs: built.public_inputs.clone(),
+        private_inputs: built.private_inputs.clone(),
+        traces,
+    };
+
+    let t = Instant::now();
+    let terminal_proof = compiler
+        .prove_terminal_production_goldilocks(&vk, &witness.public_inputs, &witness)
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW terminal certificate prove failed: {e:?}"
+            ))
+        })?;
+    let terminal_prove_ms = t.elapsed().as_millis();
+
+    let terminal_certificate = compiler
+        .assemble_goldilocks_production_certificate(&vk, &witness.public_inputs, &terminal_proof)
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW terminal certificate assembly failed: {e:?}"
+            ))
+        })?;
+
+    let t = Instant::now();
+    compiler
+        .verify_goldilocks_production_certificate(
+            &vk, &terminal_certificate, &witness.public_inputs,
+        )
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW terminal certificate verification failed: {e:?}"
+            ))
+        })?;
+    let terminal_verify_ms = t.elapsed().as_millis();
+
+    Ok((
+        AiPowTerminalRecursiveCertificate::new(witness.public_inputs, terminal_certificate),
+        l1_in_circuit_verify_ms,
+        terminal_compile_ms,
+        terminal_prove_ms,
+        terminal_verify_ms,
+    ))
+}
+
+/// Produce a native terminal recursive AI-PoW certificate from bridge-verified
+/// Layer-0 proof parts.
+///
+/// This is the production-size recursive target: it verifies the Layer-0 proof
+/// in the L1 circuit, then proves the executed L1 verifier relation with the
+/// native terminal backend instead of wrapping it in another batch-STARK.
+pub fn prove_terminal_certificate_from_chain_verified_composite_proof(
+    zk_params: &crate::params::ZkParams,
+    profile: &crate::circuit::CircuitConfig,
+    verified: &ChainVerifiedCompositeProof<'_>,
+) -> Result<TerminalCertificateRun, VerificationError> {
+    use std::time::Instant;
+
+    let cfg = crate::composite_proof::build_config(zk_params, profile);
+    let t = Instant::now();
+    let air = CompositeFullAirWithLookupsPinned::new_with(verified.program.clone(), true);
+    let pd = crate::composite_proof::logup_common_for(&cfg, &verified.program, true);
+    let built = build_composite_l1_verifier_circuit(
+        &cfg,
+        &air,
+        &verified.proof,
+        &pd.common,
+        &verified.public_inputs.to_vec(),
+        profile,
+    )?;
+    let l1_circuit_build_ms = t.elapsed().as_millis();
+
+    let (
+        terminal_cert,
+        l1_in_circuit_verify_ms,
+        terminal_compile_ms,
+        terminal_prove_ms,
+        terminal_verify_ms,
+    ) = prove_composite_l1_terminal_cert(&built, &verified.proof)?;
+
+    Ok(TerminalCertificateRun {
+        l1_circuit_build_ms,
+        l1_in_circuit_verify_ms,
+        terminal_compile_ms,
+        terminal_prove_ms,
+        terminal_verify_ms,
+        terminal_cert,
+    })
+}
+
+/// Verify a native terminal recursive certificate against the same
+/// chain-verified Layer-0 proof parts used to build the L1 verifier circuit.
+///
+/// This verifies terminal cryptographic binding for the current implementation
+/// shape. A complete production wire verifier still needs a canonical way to
+/// rebuild the L1 terminal verifying key without carrying the whole Layer-0
+/// proof as verifier context.
+pub fn verify_terminal_certificate_from_chain_verified_composite_proof(
+    zk_params: &crate::params::ZkParams,
+    profile: &crate::circuit::CircuitConfig,
+    verified: &ChainVerifiedCompositeProof<'_>,
+    cert: &AiPowTerminalRecursiveCertificate,
+) -> Result<(), VerificationError> {
+    let cfg = crate::composite_proof::build_config(zk_params, profile);
+    let air = CompositeFullAirWithLookupsPinned::new_with(verified.program.clone(), true);
+    let pd = crate::composite_proof::logup_common_for(&cfg, &verified.program, true);
+    let built = build_composite_l1_verifier_circuit(
+        &cfg,
+        &air,
+        &verified.proof,
+        &pd.common,
+        &verified.public_inputs.to_vec(),
+        profile,
+    )?;
+    if built.public_inputs != cert.terminal_public_inputs {
+        return Err(VerificationError::InvalidProofShape(
+            "AI-PoW terminal certificate public input vector is not the \
+             canonical vector for the supplied Layer-0 proof, program, \
+             parameters, and statement"
+                .to_string(),
+        ));
+    }
+    let compiler = terminal_compiler();
+    let (_pk, vk) = compiler
+        .compile_goldilocks_terminal(&built.circuit)
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW terminal certificate compile failed: {e:?}"
+            ))
+        })?;
+    compiler
+        .validate_goldilocks_production_query_domains(
+            &vk,
+            TerminalProofParameters::production_60bit(),
+        )
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW terminal certificate production parameter check failed: {e:?}"
+            ))
+        })?;
+    compiler
+        .verify_goldilocks_production_certificate(
+            &vk,
+            cert.terminal_certificate(),
+            cert.terminal_public_inputs(),
+        )
+        .map_err(|e: NativeTerminalVerifyError| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW terminal certificate verification failed: {e:?}"
+            ))
+        })
+}
+
 /// Produce the hardened batch-STARK recursive AI-PoW checkpoint certificate.
 ///
 /// This is a name-level guardrail against raw Layer-0 proof submission: the
@@ -901,6 +1155,32 @@ pub fn decode_recursive_certificate(
     if consumed != bytes.len() {
         return Err(bincode::error::DecodeError::OtherString(format!(
             "recursive certificate decode left {} trailing bytes",
+            bytes.len() - consumed
+        )));
+    }
+    Ok(cert)
+}
+
+/// Serialize the native terminal recursive certificate and its terminal public
+/// input vector into compact fixed-int bytes.
+pub fn encode_terminal_recursive_certificate(
+    cert: &AiPowTerminalRecursiveCertificate,
+) -> Result<Vec<u8>, bincode::error::EncodeError> {
+    bincode::serde::encode_to_vec(cert, bincode::config::standard().with_fixed_int_encoding())
+}
+
+/// Decode bytes previously produced by
+/// [`encode_terminal_recursive_certificate`].
+pub fn decode_terminal_recursive_certificate(
+    bytes: &[u8],
+) -> Result<AiPowTerminalRecursiveCertificate, bincode::error::DecodeError> {
+    let (cert, consumed) = bincode::serde::decode_from_slice(
+        bytes,
+        bincode::config::standard().with_fixed_int_encoding(),
+    )?;
+    if consumed != bytes.len() {
+        return Err(bincode::error::DecodeError::OtherString(format!(
+            "terminal recursive certificate decode left {} trailing bytes",
             bytes.len() - consumed
         )));
     }
@@ -1103,6 +1383,98 @@ mod tests {
             decode_recursive_certificate(&trailing).is_err(),
             "decoder must reject trailing bytes after certificate"
         );
+    }
+
+    fn prove_test_terminal_certificate() -> (
+        ZkParams,
+        CircuitConfig,
+        CompositePublicInputs,
+        BatchProof<AiPowStarkConfig>,
+        crate::AiPowProgram,
+        TerminalCertificateRun,
+    ) {
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program.clone(),
+                proof,
+                &pis,
+            )
+        };
+        let run = prove_terminal_certificate_from_chain_verified_composite_proof(
+            &zk, &profile, &verified,
+        )
+        .expect("native terminal recursive certificate must prove");
+        let proof = verified.proof;
+        (zk, profile, pis, proof, program, run)
+    }
+
+    #[test]
+    #[ignore = "native terminal proof over the full composite verifier is an opt-in measurement"]
+    fn terminal_recursive_certificate_round_trip_verifies() {
+        let (zk, profile, pis, proof, program, run) = prove_test_terminal_certificate();
+
+        let certificate_bytes = postcard::to_allocvec(run.terminal_cert.terminal_certificate())
+            .expect("terminal certificate postcard serialization")
+            .len();
+        let public_input_bytes = postcard::to_allocvec(run.terminal_cert.terminal_public_inputs())
+            .expect("terminal public inputs postcard serialization")
+            .len();
+        let wire_bytes = encode_terminal_recursive_certificate(&run.terminal_cert)
+            .expect("fixed-int terminal recursive certificate encoding");
+        eprintln!(
+            "native terminal recursive certificate over ai-pow composite verifier: certificate={} bytes public_inputs={} bytes wire={} bytes build_ms={} l1_verify_ms={} compile_ms={} prove_ms={} verify_ms={}",
+            certificate_bytes,
+            public_input_bytes,
+            wire_bytes.len(),
+            run.l1_circuit_build_ms,
+            run.l1_in_circuit_verify_ms,
+            run.terminal_compile_ms,
+            run.terminal_prove_ms,
+            run.terminal_verify_ms,
+        );
+
+        let decoded = decode_terminal_recursive_certificate(&wire_bytes)
+            .expect("decode terminal recursive certificate");
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program, proof, &pis,
+            )
+        };
+        verify_terminal_certificate_from_chain_verified_composite_proof(
+            &zk, &profile, &verified, &decoded,
+        )
+        .expect("decoded terminal recursive certificate must verify");
+
+        let mut trailing = wire_bytes;
+        trailing.push(0);
+        assert!(
+            decode_terminal_recursive_certificate(&trailing).is_err(),
+            "terminal decoder must reject trailing bytes"
+        );
+    }
+
+    #[test]
+    #[ignore = "native terminal proof over the full composite verifier is an opt-in measurement"]
+    fn terminal_recursive_certificate_rejects_public_input_tamper() {
+        let (zk, profile, pis, proof, program, mut run) = prove_test_terminal_certificate();
+        run.terminal_cert.terminal_public_inputs[0] += Challenge::ONE;
+
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program, proof, &pis,
+            )
+        };
+        verify_terminal_certificate_from_chain_verified_composite_proof(
+            &zk, &profile, &verified, &run.terminal_cert,
+        )
+        .expect_err("terminal verifier must reject tampered public input vector");
     }
 
     #[test]

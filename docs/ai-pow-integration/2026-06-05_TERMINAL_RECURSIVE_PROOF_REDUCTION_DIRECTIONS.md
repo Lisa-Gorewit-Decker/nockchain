@@ -1,9 +1,10 @@
 # Native Terminal Recursive Proof Reduction Directions
 
 Date: 2026-06-05
-Status: decision checkpoint. Direction 2 was promoted as the active native
-terminal production path after current release measurement passed the byte and
-time gates.
+Status: decision checkpoint, revised after stack-level integration audit. The
+exhaustive-NPO terminal fixture passes the byte and time gates, but the full
+`ai-pow-zk` composite-verifier terminal path has not yet met the production
+time gate.
 
 ## Goal
 
@@ -13,8 +14,8 @@ the recursive proof and `<30s` release proving time, without letting a miner
 skip the AI-PoW matrix-multiplication work and without relying on an
 undocumented or unproven soundness shortcut.
 
-The current real Tip5 L0 verifier-circuit terminal production measurement now
-passes both targets in release mode:
+The current recursion-crate Tip5 verifier-circuit terminal measurement passes
+both targets in release mode:
 
 | Item | Measurement |
 |---|---:|
@@ -23,6 +24,15 @@ passes both targets in release mode:
 | Prove time | `1.492s` in release with `RUSTFLAGS="-C target-cpu=native"` |
 | Verify time | `1.181s` |
 | Required terminal profile | `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`, `max_log_arity=3`, `log_final_poly_len=0` |
+
+The stack-level follow-up added
+`crates/ai-pow-zk/src/recursion.rs::prove_terminal_certificate_from_chain_verified_composite_proof`
+for the actual composite L1 verifier circuit. Its first release/native
+opt-in run of `terminal_recursive_certificate_round_trip_verifies` was stopped
+after more than two minutes without completing the proof. Therefore the
+fixture measurement is evidence that the backend can be small, not proof that
+the full AI-PoW production recursive artifact already satisfies the `<30s`
+gate.
 
 The retired polynomial NPO production candidate remains useful diagnostic
 evidence. Its size blocker was precise:
@@ -152,8 +162,9 @@ largest implementation, but it directly targets the measured size culprit.
 
 ## Direction 2: Re-Audit The Exhaustive NPO Terminal Proof As A Production Fallback
 
-This direction was promoted. The current exhaustive supported-NPO terminal
-proof measures below the size target:
+This direction was promoted for the recursion-crate terminal fixture, then
+re-opened at the stack level. The current exhaustive supported-NPO terminal
+fixture proof measures below the size target:
 
 | Component | Historical measurement |
 |---|---:|
@@ -163,12 +174,12 @@ proof measures below the size target:
 | Prove / verify | `1.492s` / `1.181s` in release measurement |
 
 This route does not try to make the current polynomial NPO proof smaller.
-Instead, production now uses exhaustive NPO row checking and keeps the
-polynomial backend as a diagnostic/future hardening track.
+Instead, the native terminal candidate uses exhaustive NPO row checking and
+keeps the polynomial backend as a diagnostic/future hardening track.
 
 Why it might work:
 
-- The historical measurement met both size and time targets.
+- The historical fixture measurement met both size and time targets.
 - It checked every supported Tip5/recompose NPO row rather than sampling NPO
   rows.
 - It avoided the current two-FRI-subproof duplication.
@@ -205,16 +216,20 @@ Implementation result:
    instead of the two-subproof polynomial NPO payload.
 2. The production prelude binds exactly the assignment root; extra roots are
    rejected.
-3. The real Tip5 L0 verifier-circuit release measurement passes at
+3. The recursion-crate Tip5 verifier-circuit release measurement passes at
    `85,948` bytes / `83.9 KiB`, `prove=1.492s`, `verify=1.181s`.
 4. Focused production tests reject missing exhaustive assignment-opening
    material, tampered hidden Tip5 inputs, tampered assignment-witness Merkle
    frontier material, and recompose-row witness tampering.
+5. The `ai-pow-zk` composite L1 terminal path is wired as an opt-in diagnostic,
+   but its first release/native run exceeded two minutes without completing.
 
-Assessment: this is the active production path. Its trade-off is witness
-exposure: it reveals selected recursive-verifier witness material, including
-hidden Tip5 lanes. That is acceptable only because the current terminal
-certificate is not specified as zero-knowledge.
+Assessment: this is still the preferred production direction, but not yet the
+active stack-level production path. Its trade-off is witness exposure: it
+reveals selected recursive-verifier witness material, including hidden Tip5
+lanes. That is acceptable only if the final terminal certificate is explicitly
+not specified as zero-knowledge and the full composite verifier path is reduced
+under the production time gate.
 
 ## Direction 3: Relation-Specific Projection Instead Of Full Trace Opening
 
@@ -334,23 +349,27 @@ the production certificate unless the hard size target changes.
 
 I would pursue three tracks in this order:
 
-1. **Keep exhaustive NPO as production while the hard gates hold.** It is the
-   only current native terminal path measured below 100 KiB and below 30s.
+1. **Keep exhaustive NPO as the leading terminal direction, but do not call it
+   fully production-integrated yet.** It is the only current native terminal
+   fixture measured below 100 KiB and below 30s, but the actual composite L1
+   verifier path still exceeds the time gate.
 2. **Continue the unified NPO proof only as hardening/future work.** It would
    reduce witness leakage if it can share one FRI payload and stay under target.
 3. **Keep batch-STARK hardened as checkpoint only.** It is soundness-relevant
    but too large for the production recursive certificate.
 
-I would not spend milestone effort on FRI parameter changes unless the
-exhaustive path loses the hard gates. The current production result meets the
-target without terminal query PoW.
+I would not spend milestone effort on terminal query-PoW parameter changes
+unless the pure-query path is conclusively too large after the composite L1
+relation is reduced. The current fixture result meets the target without
+terminal query PoW, but the full stack does not yet.
 
 ## Minimum Promotion Checklist
 
 Any candidate production direction must satisfy all of the following before it
 replaces the current terminal production proof:
 
-- Real Tip5 L0 verifier-circuit measurement at or below about `100 KiB`.
+- Full `ai-pow-zk` composite-verifier terminal measurement at or below about
+  `100 KiB`, including terminal public inputs required for verification.
 - Release-profile proving time under `30s` on the agreed production machine
   class.
 - No terminal query PoW counted unless the production soundness policy is

@@ -28,6 +28,11 @@
 //!   circuit during verification. It is soundness-relevant, but it is too large
 //!   to be the production consensus, block-persistence, or wire-transmission
 //!   artifact.
+//! - [`recursion::prove_terminal_certificate_from_chain_verified_composite_proof`]
+//!   — native terminal backend integration for the same composite L1 verifier
+//!   circuit. This is the production-size direction, but current full
+//!   composite-verifier measurements are opt-in until the path is proven to
+//!   satisfy the size and release-time gates end to end.
 //! - [`composite_proof::composite_prove_pinned_logup`] /
 //!   [`composite_proof::composite_verify_pinned_logup`] — Layer-0
 //!   composite STARK primitives. These are intermediate inputs to the

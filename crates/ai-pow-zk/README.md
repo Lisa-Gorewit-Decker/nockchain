@@ -2,10 +2,12 @@
 
 EXPERIMENTAL — a Plonky3 STARK and recursive-certificate stack for the
 [`ai-pow`](../ai-pow/) tiling matmul puzzle. The native terminal backend is the
-production recursive proof target. The batch-STARK recursion path in this crate
-is a hardened checkpoint/fallback path and is too large for the production wire
-budget. The plain `MatmulProof` remains a miner diagnostic / pre-ZKP target-hit
-check; it is not the persisted block artifact.
+intended production recursive proof target. The batch-STARK recursion path in
+this crate is a hardened checkpoint/fallback path and is too large for the
+production wire budget. The full composite-verifier terminal path is wired as
+an opt-in diagnostic but has not yet met the release-time gate. The plain
+`MatmulProof` remains a miner diagnostic / pre-ZKP target-hit check; it is not
+the persisted block artifact.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 
@@ -149,15 +151,17 @@ heuristic is **not** adopted).
     same q=9/cap=5 proof shape saved only **1.2 KiB** on average (best
     sampled **6.8 KiB**), leaving an estimated fixed-int floor of
     **~199.4 KiB**; this route is not a path to the **≤100 KiB** target.
-    **2026-06-05 terminal backend checkpoint:** the production terminal
-    FRI profile is pure-query 60-bit (`log_blowup=4`, `num_queries=15`,
+    **2026-06-05 terminal backend checkpoint:** the intended terminal FRI
+    profile is pure-query 60-bit (`log_blowup=4`, `num_queries=15`,
     `query_pow_bits=0`; no PoW bits counted toward soundness). The
-    current production compact recursive certificate measures **85,948
-    bytes (83.9 KiB)** with release prove **1.492 s** and verify **1.181 s** in
+    recursion-crate terminal fixture measures **85,948 bytes (83.9 KiB)** with
+    release prove **1.492 s** and verify **1.181 s** in
     `terminal_production_certificate_measures_real_tip5_l0_verifier_circuit`.
-    The active production path uses exhaustive supported-NPO row checking under
-    the native terminal certificate; the polynomial/FIOP NPO backend remains a
-    diagnostic and future hardening track. This clears the ≤100 KiB production
+    The actual `ai-pow-zk` composite-verifier terminal path now exists as the
+    opt-in `terminal_recursive_certificate_round_trip_verifies` diagnostic, but
+    its first release/native run exceeded two minutes before completing. The
+    polynomial/FIOP NPO backend remains a diagnostic and future hardening track.
+    The full stack therefore does not yet clear the ≤100 KiB / <30s production
     target without terminal query-PoW grinding.
     Trade-off: `lb=4` ⇒ 16× LDE (vs pre-2026-05-20 4×) ⇒ ~4×
     prover memory; 5-round Tip5 dropped prover time ~57% (22 min
