@@ -151,8 +151,8 @@ heuristic is **not** adopted).
     **2026-06-04 terminal backend checkpoint:** the production terminal
     FRI profile is pure-query 60-bit (`log_blowup=4`, `num_queries=15`,
     `query_pow_bits=0`; no PoW bits counted toward soundness). The
-    current production compact recursive certificate measures **87,103
-    bytes (85.1 KiB)** with prove **4.373 s** and verify **3.386 s** in
+    current production compact recursive certificate measures **87,059
+    bytes (85.0 KiB)** with prove **4.471 s** and verify **3.454 s** in
     `terminal_production_certificate_measures_real_tip5_l0_verifier_circuit`.
     The FRI-native NPO residual-zero+recompose+value-bridge candidate
     verifies at the same pure 60-bit profile and measures **99,647 bytes

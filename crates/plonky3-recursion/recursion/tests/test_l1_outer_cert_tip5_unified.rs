@@ -1019,14 +1019,7 @@ fn terminal_production_certificate_measures_real_tip5_l0_verifier_circuit() {
     )
     .expect("terminal assignment fold commitment roots must serialize")
     .len();
-    let r1cs_assignment_fold_openings_size = postcard::to_allocvec(
-        &r1cs_row_product_proof
-            .matrix_sumcheck
-            .assignment_evaluation
-            .openings,
-    )
-    .expect("terminal assignment fold openings must serialize")
-    .len();
+    let r1cs_assignment_fold_openings_size = 0usize;
     let r1cs_assignment_fold_round_openings_size = postcard::to_allocvec(
         &r1cs_row_product_proof
             .matrix_sumcheck

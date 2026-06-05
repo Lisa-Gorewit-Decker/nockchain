@@ -644,7 +644,6 @@ pub struct TerminalAssignmentEvaluationProof {
     pub fold_commitment_roots: Vec<TerminalCommitmentDigest>,
     pub final_value_basis: Vec<u64>,
     pub round_openings: Vec<TerminalOracleMultiProof>,
-    pub openings: Vec<TerminalResidualFoldQueryOpening>,
 }
 
 /// One degree-2 univariate round in the sparse-R1CS matrix-vector sumcheck.
@@ -13471,14 +13470,6 @@ impl NativeTerminalCompiler {
             round_openings.push(current_tree.open_goldilocks_multi_values(&opening_values)?);
         }
 
-        let mut openings = Vec::with_capacity(query_plan.indices.len());
-        for initial_index in &query_plan.indices {
-            openings.push(TerminalResidualFoldQueryOpening {
-                initial_index: *initial_index,
-                rounds: Vec::new(),
-            });
-        }
-
         Ok(TerminalAssignmentEvaluationProof {
             public_prefix_proof,
             fold_commitment_roots: fold_commitments
@@ -13487,7 +13478,6 @@ impl NativeTerminalCompiler {
                 .collect(),
             final_value_basis,
             round_openings,
-            openings,
         })
     }
 
@@ -13570,14 +13560,6 @@ impl NativeTerminalCompiler {
             round_openings.push(current_tree.open_goldilocks_multi_values(&opening_values)?);
         }
 
-        let mut openings = Vec::with_capacity(query_plan.indices.len());
-        for initial_index in &query_plan.indices {
-            openings.push(TerminalResidualFoldQueryOpening {
-                initial_index: *initial_index,
-                rounds: Vec::new(),
-            });
-        }
-
         Ok(TerminalAssignmentEvaluationProof {
             public_prefix_proof,
             fold_commitment_roots: fold_commitments
@@ -13586,7 +13568,6 @@ impl NativeTerminalCompiler {
                 .collect(),
             final_value_basis,
             round_openings,
-            openings,
         })
     }
 
@@ -13630,12 +13611,13 @@ impl NativeTerminalCompiler {
             assignment_commitment,
             &fold_commitments,
         )?;
+        let openings = Self::terminal_empty_fold_query_openings(&query_plan);
         self.verify_terminal_compact_fold_openings_goldilocks::<F, _>(
             assignment_commitment,
             &fold_commitments,
             &proof.final_value_basis,
             &proof.round_openings,
-            &proof.openings,
+            &openings,
             &query_plan,
             |round, prior| {
                 Self::derive_terminal_assignment_fold_challenge::<F>(
@@ -13692,12 +13674,13 @@ impl NativeTerminalCompiler {
             assignment_commitment,
             &fold_commitments,
         )?;
+        let openings = Self::terminal_empty_fold_query_openings(&query_plan);
         self.verify_terminal_compact_fold_openings_goldilocks::<F, _>(
             assignment_commitment,
             &fold_commitments,
             &proof.final_value_basis,
             &proof.round_openings,
-            &proof.openings,
+            &openings,
             &query_plan,
             |round, _prior| Ok(point[round]),
         )?;
@@ -26023,6 +26006,19 @@ impl NativeTerminalCompiler {
         }
     }
 
+    fn terminal_empty_fold_query_openings(
+        query_plan: &TerminalQueryPlan,
+    ) -> Vec<TerminalResidualFoldQueryOpening> {
+        query_plan
+            .indices
+            .iter()
+            .map(|initial_index| TerminalResidualFoldQueryOpening {
+                initial_index: *initial_index,
+                rounds: Vec::new(),
+            })
+            .collect()
+    }
+
     fn verify_terminal_compact_fold_openings_goldilocks<F, D>(
         &self,
         base_commitment: &TerminalOracleCommitment,
@@ -34217,12 +34213,6 @@ mod tests {
             proof.round_openings.len(),
             proof.fold_commitment_roots.len()
         );
-        assert!(
-            proof
-                .openings
-                .iter()
-                .all(|opening| opening.rounds.is_empty())
-        );
 
         let mut bad_public_prefix = proof.clone();
         bad_public_prefix.public_prefix_proof.frontier[0].0[0] ^= 1;
@@ -34268,36 +34258,6 @@ mod tests {
                 )
                 .is_err(),
             "assignment proof must bind compact fold multiproof values"
-        );
-
-        let mut stale_round_payload = proof.clone();
-        let stale_opening = TerminalOracleOpening {
-            index: stale_round_payload.round_openings[0].openings[0].index,
-            value_basis: stale_round_payload.round_openings[0].openings[0]
-                .value_basis
-                .clone(),
-            path: Vec::new(),
-        };
-        stale_round_payload.openings[0]
-            .rounds
-            .push(TerminalResidualFoldRoundOpening {
-                round: 0,
-                pair_index: 0,
-                left: stale_opening.clone(),
-                right: None,
-                next: stale_opening,
-            });
-        assert!(
-            compiler
-                .verify_terminal_assignment_evaluation_goldilocks(
-                    &vk,
-                    &public_inputs,
-                    &prelude,
-                    &assignment_commitment,
-                    &stale_round_payload,
-                )
-                .is_err(),
-            "assignment proof must reject stale per-query fold payloads"
         );
 
         let mut bad_final = proof.clone();
