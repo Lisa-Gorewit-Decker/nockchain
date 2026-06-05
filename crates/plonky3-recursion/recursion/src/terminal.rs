@@ -105,6 +105,9 @@ pub struct TerminalPrunedMerklePaths {
 /// Compact query openings for one terminal FRI input commitment batch.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalCompressedFriInputBatch {
+    /// Leaf payloads in the same sorted-unique order as
+    /// `pruned_opening_proof.paths`. `original_order` reconstructs the
+    /// per-query vector expected by Plonky3's verifier.
     pub opened_values: Vec<Vec<Vec<Goldilocks>>>,
     pub pruned_opening_proof: TerminalPrunedMerklePaths,
 }
@@ -113,6 +116,10 @@ pub struct TerminalCompressedFriInputBatch {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalCompressedFriCommitRound {
     pub log_arity: u8,
+    /// Reduced-coset sibling payloads in original query order. Two queries can
+    /// share a reduced Merkle leaf while omitting different coset positions, so
+    /// these are intentionally independent from the pruned Merkle path
+    /// dictionary.
     pub sibling_values: Vec<Vec<TerminalFriChallenge>>,
     pub pruned_opening_proof: TerminalPrunedMerklePaths,
 }
@@ -376,7 +383,7 @@ impl TerminalProximityProfile {
             log_blowup: 4,
             num_queries: 15,
             query_pow_bits: 0,
-            max_log_arity: 1,
+            max_log_arity: 3,
             log_final_poly_len: 0,
             pure_query_bits: MIN_TERMINAL_SECURITY_BITS,
         }
@@ -18705,16 +18712,22 @@ impl NativeTerminalCompiler {
         }
         let mut input_batches = Vec::with_capacity(input_batch_count);
         for batch in 0..input_batch_count {
-            let mut opened_values = Vec::with_capacity(query_count);
+            let mut query_opened_values = Vec::with_capacity(query_count);
             let mut paths = Vec::with_capacity(query_count);
             for (query_index, query) in query_indices.iter().zip(&proof.query_proofs) {
                 let opening = &query.input_proof[batch];
-                opened_values.push(opening.opened_values.clone());
+                query_opened_values.push(opening.opened_values.clone());
                 paths.push((*query_index, opening.opening_proof.clone()));
             }
+            let pruned_opening_proof = Self::terminal_prune_binary_merkle_paths(&paths)?;
+            let opened_values = Self::terminal_dedup_payloads_by_pruned_order(
+                &query_opened_values,
+                &pruned_opening_proof,
+                "terminal_compressed_fri_input_openings",
+            )?;
             input_batches.push(TerminalCompressedFriInputBatch {
                 opened_values,
-                pruned_opening_proof: Self::terminal_prune_binary_merkle_paths(&paths)?,
+                pruned_opening_proof,
             });
         }
 
@@ -18738,7 +18751,7 @@ impl NativeTerminalCompiler {
         let mut commit_rounds = Vec::with_capacity(commit_round_count);
         for round in 0..commit_round_count {
             let log_arity = proof.query_proofs[0].commit_phase_openings[round].log_arity;
-            let mut sibling_values = Vec::with_capacity(query_count);
+            let mut query_sibling_values = Vec::with_capacity(query_count);
             let mut paths = Vec::with_capacity(query_count);
             cumulative_log_arity += log_arity as usize;
             for (query_index, query) in query_indices.iter().zip(&proof.query_proofs) {
@@ -18750,16 +18763,17 @@ impl NativeTerminalCompiler {
                         },
                     );
                 }
-                sibling_values.push(opening.sibling_values.clone());
+                query_sibling_values.push(opening.sibling_values.clone());
                 paths.push((
                     *query_index >> cumulative_log_arity,
                     opening.opening_proof.clone(),
                 ));
             }
+            let pruned_opening_proof = Self::terminal_prune_binary_merkle_paths(&paths)?;
             commit_rounds.push(TerminalCompressedFriCommitRound {
                 log_arity,
-                sibling_values,
-                pruned_opening_proof: Self::terminal_prune_binary_merkle_paths(&paths)?,
+                sibling_values: query_sibling_values,
+                pruned_opening_proof,
             });
         }
 
@@ -18798,12 +18812,12 @@ impl NativeTerminalCompiler {
         let query_count = compressed
             .input_batches
             .first()
-            .map(|batch| batch.opened_values.len())
+            .map(|batch| batch.pruned_opening_proof.original_order.len())
             .or_else(|| {
                 compressed
                     .commit_rounds
                     .first()
-                    .map(|round| round.sibling_values.len())
+                    .map(|round| round.pruned_opening_proof.original_order.len())
             })
             .unwrap_or(0);
         let production_profile = TerminalProximityProfile::production_60bit();
@@ -18827,64 +18841,19 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        let restored_input_paths = compressed
-            .input_batches
-            .iter()
-            .map(|batch| {
-                if batch.opened_values.len() != query_count {
-                    return Err(
-                        NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
-                            label: "terminal_compressed_fri_input_openings".into(),
-                            expected: query_count,
-                            got: batch.opened_values.len(),
-                        },
-                    );
-                }
-                Self::terminal_restore_binary_merkle_paths(&batch.pruned_opening_proof)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let restored_commit_paths = compressed
-            .commit_rounds
-            .iter()
-            .map(|round| {
-                if round.sibling_values.len() != query_count {
-                    return Err(
-                        NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
-                            label: "terminal_compressed_fri_commit_openings".into(),
-                            expected: query_count,
-                            got: round.sibling_values.len(),
-                        },
-                    );
-                }
-                let log_arity = round.log_arity as usize;
-                let max_log_arity =
-                    TerminalProximityProfile::production_60bit().max_log_arity as usize;
-                if !(1..=max_log_arity).contains(&log_arity) {
-                    return Err(
-                        NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
-                            reason: "terminal compressed FRI invalid commit-round log arity"
-                                .into(),
-                        },
-                    );
-                }
-                let expected_sibling_values = (1usize << log_arity) - 1;
-                for siblings in &round.sibling_values {
-                    if siblings.len() != expected_sibling_values {
-                        return Err(
-                            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
-                                reason:
-                                    "terminal compressed FRI commit-round sibling value count mismatch"
-                                        .into(),
-                            },
-                        );
-                    }
-                }
-                Self::terminal_restore_binary_merkle_paths(&round.pruned_opening_proof)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        // A malformed path dictionary must not panic on later indexing, and it
-        // must not carry ignored authentication paths outside the query count.
-        for paths in &restored_input_paths {
+        let mut restored_input_paths = Vec::with_capacity(compressed.input_batches.len());
+        let mut restored_input_opened_values = Vec::with_capacity(compressed.input_batches.len());
+        for batch in &compressed.input_batches {
+            if batch.pruned_opening_proof.original_order.len() != query_count {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                        label: "terminal_compressed_fri_input_order".into(),
+                        expected: query_count,
+                        got: batch.pruned_opening_proof.original_order.len(),
+                    },
+                );
+            }
+            let paths = Self::terminal_restore_binary_merkle_paths(&batch.pruned_opening_proof)?;
             if paths.len() != query_count {
                 return Err(
                     NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
@@ -18892,8 +18861,65 @@ impl NativeTerminalCompiler {
                     },
                 );
             }
+            let opened_values = Self::terminal_restore_payloads_by_pruned_order(
+                &batch.opened_values,
+                &batch.pruned_opening_proof,
+                "terminal_compressed_fri_input_openings",
+            )?;
+            if opened_values.len() != query_count {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                        label: "terminal_compressed_fri_input_openings".into(),
+                        expected: query_count,
+                        got: opened_values.len(),
+                    },
+                );
+            }
+            restored_input_paths.push(paths);
+            restored_input_opened_values.push(opened_values);
         }
-        for paths in &restored_commit_paths {
+        let mut restored_commit_paths = Vec::with_capacity(compressed.commit_rounds.len());
+        for round in &compressed.commit_rounds {
+            if round.pruned_opening_proof.original_order.len() != query_count {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                        label: "terminal_compressed_fri_commit_order".into(),
+                        expected: query_count,
+                        got: round.pruned_opening_proof.original_order.len(),
+                    },
+                );
+            }
+            if round.sibling_values.len() != query_count {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                        label: "terminal_compressed_fri_commit_openings".into(),
+                        expected: query_count,
+                        got: round.sibling_values.len(),
+                    },
+                );
+            }
+            let log_arity = round.log_arity as usize;
+            let max_log_arity = TerminalProximityProfile::production_60bit().max_log_arity as usize;
+            if !(1..=max_log_arity).contains(&log_arity) {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                        reason: "terminal compressed FRI invalid commit-round log arity".into(),
+                    },
+                );
+            }
+            let expected_sibling_values = (1usize << log_arity) - 1;
+            for siblings in &round.sibling_values {
+                if siblings.len() != expected_sibling_values {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                            reason:
+                                "terminal compressed FRI commit-round sibling value count mismatch"
+                                    .into(),
+                        },
+                    );
+                }
+            }
+            let paths = Self::terminal_restore_binary_merkle_paths(&round.pruned_opening_proof)?;
             if paths.len() != query_count {
                 return Err(
                     NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
@@ -18901,17 +18927,16 @@ impl NativeTerminalCompiler {
                     },
                 );
             }
+            restored_commit_paths.push(paths);
         }
-
         let mut query_proofs = Vec::with_capacity(query_count);
         for query in 0..query_count {
-            let input_proof = compressed
-                .input_batches
+            let input_proof = restored_input_opened_values
                 .iter()
                 .zip(&restored_input_paths)
-                .map(|(batch, paths)| {
+                .map(|(opened_values, paths)| {
                     BatchOpening::<Goldilocks, TerminalFriValMmcs>::new(
-                        batch.opened_values[query].clone(),
+                        opened_values[query].clone(),
                         paths[query].clone(),
                     )
                 })
@@ -19138,6 +19163,81 @@ impl NativeTerminalCompiler {
                 sorted_full.get(slot as usize).cloned().ok_or_else(|| {
                     NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
                         reason: "terminal compressed FRI original-order slot out of range".into(),
+                    }
+                })
+            })
+            .collect()
+    }
+
+    fn terminal_dedup_payloads_by_pruned_order<T: Clone + Eq>(
+        payloads: &[T],
+        pruned: &TerminalPrunedMerklePaths,
+        label: &str,
+    ) -> Result<Vec<T>, NativeTerminalVerifyError> {
+        if payloads.len() != pruned.original_order.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: label.into(),
+                    expected: pruned.original_order.len(),
+                    got: payloads.len(),
+                },
+            );
+        }
+        let mut unique = vec![None; pruned.paths.len()];
+        for (query, &slot) in pruned.original_order.iter().enumerate() {
+            let slot = slot as usize;
+            let Some(entry) = unique.get_mut(slot) else {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                        reason: format!("{label} original-order slot out of range"),
+                    },
+                );
+            };
+            match entry {
+                Some(existing) if existing != &payloads[query] => {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                            reason: format!("{label} duplicate reduced leaf has different payload"),
+                        },
+                    );
+                }
+                Some(_) => {}
+                None => *entry = Some(payloads[query].clone()),
+            }
+        }
+        unique
+            .into_iter()
+            .map(|payload| {
+                payload.ok_or_else(|| {
+                    NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                        reason: format!("{label} has unreferenced payload slot"),
+                    }
+                })
+            })
+            .collect()
+    }
+
+    fn terminal_restore_payloads_by_pruned_order<T: Clone>(
+        payloads: &[T],
+        pruned: &TerminalPrunedMerklePaths,
+        label: &str,
+    ) -> Result<Vec<T>, NativeTerminalVerifyError> {
+        if payloads.len() != pruned.paths.len() {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: label.into(),
+                    expected: pruned.paths.len(),
+                    got: payloads.len(),
+                },
+            );
+        }
+        pruned
+            .original_order
+            .iter()
+            .map(|&slot| {
+                payloads.get(slot as usize).cloned().ok_or_else(|| {
+                    NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                        reason: format!("{label} original-order slot out of range"),
                     }
                 })
             })
@@ -32841,7 +32941,7 @@ mod tests {
         );
         assert!(matches!(
             NativeTerminalCompiler::decompress_terminal_fri_proof(&shortened_order),
-            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. })
         ));
 
         let mut overlong_order = proof.proof.clone();
@@ -32859,7 +32959,7 @@ mod tests {
         );
         assert!(matches!(
             NativeTerminalCompiler::decompress_terminal_fri_proof(&overlong_order),
-            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. })
         ));
 
         let mut unreferenced_input_path = proof.proof.clone();
@@ -32917,7 +33017,7 @@ mod tests {
         );
         assert!(matches!(
             NativeTerminalCompiler::decompress_terminal_fri_proof(&shortened_commit_order),
-            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. })
         ));
 
         let mut overlong_commit_order = proof.proof.clone();
@@ -32935,7 +33035,7 @@ mod tests {
         );
         assert!(matches!(
             NativeTerminalCompiler::decompress_terminal_fri_proof(&overlong_commit_order),
-            Err(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. })
+            Err(NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. })
         ));
 
         let mut unreferenced_commit_path = proof.proof.clone();

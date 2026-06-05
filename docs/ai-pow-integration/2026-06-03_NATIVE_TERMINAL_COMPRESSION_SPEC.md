@@ -104,11 +104,14 @@ for this route.
   `log_blowup * num_queries` product also reaches 60 bits.
 - `TerminalProximityProfile`: the transcript-bound terminal proximity schedule
   that the production backend must implement. The current code binds the
-  conservative two-adic FRI-style schedule `log_blowup=4`, `num_queries=15`,
-  `query_pow_bits=0`, `max_log_arity=1`, and `log_final_poly_len=0` inside the
+  two-adic FRI-style schedule `log_blowup=4`, `num_queries=15`,
+  `query_pow_bits=0`, `max_log_arity=3`, and `log_final_poly_len=0` inside the
   relation profile and backend relation digest. Prelude verification rejects
   parameter tuples that do not match this profile, so overprovisioned or
-  alternate schedules cannot silently share a transcript.
+  alternate schedules cannot silently share a transcript. The proximity profile
+  still gets its 60 production bits only from pure FRI queries
+  (`log_blowup * num_queries = 4 * 15`); no query proof-of-work bits are
+  counted.
 - `TerminalProofPrelude`: the first proof-body transcript object. It binds the
   terminal proof parameters, compiled relation profile including the
   component-expanded supported-NPO validity domain, full public-values digest,
@@ -411,9 +414,25 @@ for this route.
   merge as a checkpoint: it commits the full-main trace once, derives separate
   AIR and LogUp folding challenges from one transcript, commits the AIR
   quotient, LogUp accumulator, and LogUp quotient, and opens all four oracles
-  at one shared FRI point. The focused regression measures `185,396` bytes /
+  at one shared FRI point. With the earlier binary terminal FRI schedule
+  (`max_log_arity=1`), the focused regression measured `185,396` bytes /
   `181.1 KiB`, with compact FRI payload `170,003` bytes / `166.0 KiB`,
-  `prove=40.258s`, `verify=101.1ms`. This is a substantial reduction versus
+  `prove=40.258s`, `verify=101.1ms`. A direct schedule sweep under the same
+  60 pure-query bits measured:
+
+  | `max_log_arity` | Candidate bytes | Compact FRI bytes | Prove | Verify |
+  | --- | ---: | ---: | ---: | ---: |
+  | 2 | `160,269` / `156.5 KiB` | `144,886` / `141.5 KiB` | `40.963s` | `83.6ms` |
+  | 3 | `146,972` / `143.5 KiB` | `131,576` / `128.5 KiB` | `40.754s` | `80.4ms` |
+  | 4 | `158,264` / `154.6 KiB` | `142,885` / `139.5 KiB` | `40.884s` | `82.6ms` |
+
+  `max_log_arity=3` is therefore the current production-profile checkpoint: it
+  is smaller than binary and arity-16 without increasing the focused prove-time
+  measurement. A focused optimized run of the same arity-8 proof measured
+  `prove=4.155s`, `verify=21.6ms`; this component is therefore not the latency
+  blocker by itself, but the final production backend still has to measure the
+  whole recursive certificate end to end against the roughly 30s orphan-rate
+  target. This is a substantial reduction versus
   appending standalone full-main AIR algebra plus full-main LogUp proofs, but
   it is still too large to be the final ~100 KiB production NPO theorem by
   itself. A column-dependency audit rules out a sound smaller projection for
