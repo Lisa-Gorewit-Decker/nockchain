@@ -482,31 +482,33 @@ for this route.
 
   The current linked checkpoint closes that forged-projection audit with
   `TerminalNpoTip5LookupTraceDomainNpoIoExhaustiveBridgeProof` and now merges
-  the trace-to-IO projection plus support/NPO bridge into
-  `TerminalNpoTip5LookupTraceIoSupportBridgeProof`. The combined proof keeps
+  the AIR+LogUp proof, trace-to-IO projection, and support/NPO bridge into
+  `TerminalNpoTip5LookupAirLogupTraceIoSupportProof`. The combined proof keeps
   the four-root prelude span `[selected+lookup, full-main trace,
-  trace-domain lookup IO, trace-domain NPO IO]`, checks the full-main
-  trace-derived terminal-IO fold at the same sampled point used by the support
-  quotient, and keeps the quotient identity that makes lookup IO vanish off
-  the permutation window while matching NPO IO on the window. The exhaustive
-  bridge still opens the selected+lookup commitment on every verifier-derived
-  Tip5 NPO row, opens the trace-domain NPO-IO projection on the matching
-  permutation rows, and checks equality of the 26 IO lanes. The honest focused
-  measurement is `338,304` bytes / `330.4 KiB`, with compact FRI payloads:
-  merged value bridge `11,888` bytes / `11.6 KiB`, AIR+LogUp `140,817` bytes /
-  `137.5 KiB`, combined trace-IO/support bridge `126,059` bytes /
-  `123.1 KiB`, and exhaustive bridge `31,589` bytes / `30.8 KiB`;
-  single-test `prove=5.993s`, `verify=60.6ms` (`10.479s` prove time in the
-  three-test backend audit run). This saves `24,509` certificate bytes /
-  `23.9 KiB` relative to the previous `362,813` byte exhaustive-linked
-  checkpoint while preserving the same 15-query, zero-PoW production profile.
-  The divergent-prelude audit and forged trace-domain NPO IO audit both
-  reject under the combined bridge path; the forged audit serializes to
-  `409,358` bytes / `399.8 KiB` because it carries both exhaustive and LogUp
+  trace-domain lookup IO, trace-domain NPO IO]`, samples the support-fold
+  challenge only after the trace/lookup-IO/NPO-IO commitments are fixed, checks
+  the full-main trace-derived terminal-IO fold at the same sampled point used
+  by the support quotient, and keeps the quotient identity that makes lookup
+  IO vanish off the permutation window while matching NPO IO on the window.
+  The exhaustive bridge still opens the selected+lookup commitment on every
+  verifier-derived Tip5 NPO row, opens the trace-domain NPO-IO projection on
+  the matching permutation rows, and checks equality of the 26 IO lanes. The
+  honest focused measurement is `240,619` bytes / `235.0 KiB`, with compact
+  FRI payloads: merged value bridge `11,888` bytes / `11.6 KiB`, combined
+  AIR+LogUp trace-IO/support proof `178,820` bytes / `174.6 KiB`, and
+  exhaustive bridge `31,589` bytes / `30.8 KiB`; `prove=9.954s`,
+  `verify=345.7ms` in the three-test backend audit run. This saves `97,685`
+  certificate bytes / `95.4 KiB` relative to the previous `338,304` byte
+  exhaustive-linked checkpoint, and `122,194` bytes / `119.3 KiB` relative to
+  the earlier split projection/support checkpoint, while preserving the same
+  15-query, zero-PoW production profile. The divergent-prelude audit now
+  rejects inside the combined AIR+LogUp trace-IO/support proof, and the forged
+  trace-domain NPO IO audit still rejects; the forged audit serializes to
+  `312,633` bytes / `305.3 KiB` because it carries both exhaustive and LogUp
   rejection witnesses for the same forged state. This remains a correctness
-  checkpoint, not a production size route: the next step is to merge the
-  AIR+LogUp proof with the combined trace-IO/support bridge, then replace or
-  absorb the exhaustive multipoint opening with the LogUp-style bridge.
+  checkpoint, not a production size route: the next step is to absorb or
+  replace the exhaustive multipoint opening with the LogUp-style bridge inside
+  the shared commitment/proximity proof.
 
   The intended bridge is a LogUp-style multiset equality, not another
   standalone projection commitment. After absorbing the selected+lookup root,
@@ -535,15 +537,15 @@ for this route.
   denominators. With 3-lane groups it measures `71,679` bytes / `70.0 KiB`
   as a standalone bridge checkpoint, with compact FRI payload `68,797` bytes /
   `67.2 KiB`, `prove=2.902s`, and `verify=18.9ms`; inserted into the combined
-  trace-IO/support linked checkpoint in place of the exhaustive bridge, it
-  measures `377,104` bytes / `368.3 KiB`, worse than the exhaustive-linked
-  `338,304` bytes / `330.4 KiB`. A 26-lane single-group sweep was also worse:
-  `86,187` bytes / `84.2 KiB`, compact FRI payload `84,355` bytes /
-  `82.4 KiB`, and `prove=17.634s`. The result is useful but negative: this
-  bridge is the right asymptotic shape for larger Tip5 row counts, but the
-  current small fixture and separate-proof transcript overhead require merging
-  it with the existing AIR+LogUp/value-bridge openings before it can help the
-  ~100 KiB production target.
+  AIR+LogUp trace-IO/support linked checkpoint in place of the exhaustive
+  bridge, it measures `279,419` bytes / `272.9 KiB`, worse than the
+  exhaustive-linked `240,619` bytes / `235.0 KiB`. A 26-lane single-group
+  sweep was also worse: `86,187` bytes / `84.2 KiB`, compact FRI payload
+  `84,355` bytes / `82.4 KiB`, and `prove=17.634s`. The result is useful but
+  negative: this bridge is the right asymptotic shape for larger Tip5 row
+  counts, but the current small fixture and separate-proof transcript overhead
+  require merging it with the existing AIR+LogUp/value-bridge openings before
+  it can help the ~100 KiB production target.
 - `TerminalNpoTip5LookupFriOpeningProof`: a native terminal FRI opening
   checkpoint for the optimized Tip5 lookup AIR main trace. The prover commits
   the whole Goldilocks-valued lookup main matrix with recursive 5-round Tip5
