@@ -77,12 +77,7 @@ const C_TMULT: usize = 1;
 const C_IN: usize = 2;
 const RB0: usize = C_IN + STATE_SIZE;
 const SPLIT_BC: usize = NS * 2 * NBYTES;
-const PWR: usize = STATE_SIZE - NS;
-// **Angle A (2026-05-21):** ROUND_GROUP shrunk by `STATE_SIZE` —
-// the `A[i]` sbox-output columns were eliminated (substituted inline
-// in the AIR's MDS-sum constraint; see `air_lookup.rs::eval()`).
-// `rout_col` (imported from `air_lookup`) reflects the new layout.
-const ROUND_GROUP: usize = SPLIT_BC + NS + PWR + PWR + STATE_SIZE;
+const ROUND_GROUP: usize = SPLIT_BC + NS + STATE_SIZE;
 #[inline]
 fn rb(r: usize) -> usize {
     RB0 + r * ROUND_GROUP
@@ -99,24 +94,6 @@ fn c_col(r: usize, t: usize, k: usize) -> usize {
 fn inv_col(r: usize, t: usize) -> usize {
     rb(r) + SPLIT_BC + t
 }
-#[inline]
-fn x2_col(r: usize, j: usize) -> usize {
-    rb(r) + SPLIT_BC + NS + (j - NS)
-}
-#[inline]
-fn x3_col(r: usize, j: usize) -> usize {
-    rb(r) + SPLIT_BC + NS + PWR + (j - NS)
-}
-
-// **Angle A (2026-05-21):** `a_col` was removed from the layout —
-// `A[i]` is now substituted inline in the AIR's MDS sum (see
-// `air_lookup.rs::eval()`). The trace gen still computes the `a[i]`
-// values locally to drive the per-row MDS multiplication that
-// produces `rout`, but no longer writes them to a dedicated column.
-// `ROUND_GROUP` shrinks from `SPLIT_BC + NS + 2·PWR + 2·STATE_SIZE`
-// to `SPLIT_BC + NS + 2·PWR + STATE_SIZE`; all subsequent column
-// indices (including `rout_col`) shift left by `STATE_SIZE`.
-
 #[inline]
 fn set_row(row: &mut [Goldilocks], col: usize, v: u64) {
     row[col] = Goldilocks::new(v % P_GOLDILOCKS);
@@ -164,15 +141,7 @@ fn fill_perm_row(
             let x2 = fmul(x, x);
             let x3 = fmul(x2, x);
             a[j] = fmul(fmul(x3, x3), x);
-            set_row(row, x2_col(r, j), x2);
-            set_row(row, x3_col(r, j), x3);
         }
-        // **Angle A (2026-05-21):** the `A[i]` sbox-output column
-        // writes have been removed — `A[i]` is now substituted inline
-        // in the AIR's MDS-sum constraint. The `a` array remains as a
-        // local scratch buffer for driving the MDS multiplication
-        // below (its values are still needed to compute `rout`), but
-        // no longer occupies trace columns.
         for i in 0..STATE_SIZE {
             let mut acc = 0u64;
             for (j, &aj) in a.iter().enumerate() {

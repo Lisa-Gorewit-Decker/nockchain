@@ -394,7 +394,7 @@ for this route.
 - `TerminalNpoTip5LookupLogupQuotientProof`: a committed low-degree split
   LogUp checkpoint for the same byte-table relation. The prover commits the
   LogUp-relevant lookup trace projection (`KIND`, `TMULT`, and every split
-  `(b,c)` byte column; 322 columns instead of the full 558-column main trace),
+  `(b,c)` byte column; 322 columns instead of the full 438-column main trace),
   samples one shared LogUp `(alpha, beta)` from that trace root, groups the
   161 interactions into 54 extension-valued running-sum accumulator columns
   with three cleared-denominator terms per group, absorbs their final
@@ -562,14 +562,24 @@ for this route.
   then kept the same Fiat-Shamir staging but committed each stage's known
   matrices under one Plonky3 input MMCS root, with the existing proof fields
   carrying repeated roots and the verifier rejecting unequal repeats before FRI
-  verification. At the canonical 15-query, zero-PoW 60-bit profile, the
-  native/Rayon measurement is now `193,137` bytes / `188.6 KiB`, with compact
+  verification. At the canonical 15-query, zero-PoW 60-bit profile, that
+  native/Rayon checkpoint measured `193,137` bytes / `188.6 KiB`, with compact
   FRI payload `164,238` bytes / `160.4 KiB`, `prove=6.896s` for the integrated
   merged+LogUp path and `verify=38.4ms`. The integrated FRI breakdown is
   `compact_input_batches=130,093`, `compact_commit_rounds=33,825`, and
   `compact_commits_final=320`; the largest remaining batch is the grouped full
   trace/NPO-IO opening at `76,609` bytes, mostly opened values rather than path
-  material.
+  material. A follow-up 2026-06-05 Tip5 lookup layout pass removed the x2/x3
+  helper columns for power lanes and computes x^7 directly inside the
+  kind-gated MDS relation. This shrinks the lookup main trace from 558 to 438
+  columns, raises the lookup AIR max constraint degree from 4 to 8, and leaves
+  the production proximity tuple unchanged at `log_blowup=4`, `num_queries=15`,
+  `query_pow_bits=0`. The broader backend audit measured the integrated
+  checkpoint at `186,319` bytes / `182.0 KiB`, compact FRI payload `159,145`
+  bytes / `155.4 KiB`, `prove=10.882s`, and `verify=39.6ms`; the grouped
+  full-trace/NPO-IO opening dropped to `62,644` bytes with 464 opened limbs per
+  queried row. This is a real size win but not the final ~100 KiB route because
+  the higher quotient degree shifts some savings into commit-round material.
   The tamper check still rejects a modified trace-domain NPO IO opening. A
   direct-integrated FRI arity sweep kept `log_blowup=4`, `num_queries=15`, and
   `query_pow_bits=0` fixed. `max_log_arity=4` reduced the integrated FRI
@@ -680,24 +690,25 @@ for this route.
 - `TerminalNpoTip5LookupAirAlgebraQuotientProof`: a quotient-backed checkpoint
   for the optimized Tip5 lookup AIR's local algebraic constraints. The prover
   commits the full lookup main trace, samples one folding challenge, commits an
-  extension-valued quotient on a degree-4 disjoint domain, and verifies the
+  extension-valued quotient on a degree-8 disjoint domain, and verifies the
   folded kind-booleanity, split-byte recomposition, Goldilocks canonical guard,
-  x2/x3 auxiliary, and MDS/round-constant output identities, batched with
-  `V_perm_window * terminal_io` so table/padding rows cannot hide terminal IO
-  values in the full trace. Its standalone prelude commitment vector is
+  inlined power-lane x^7, and MDS/round-constant output identities, batched
+  with `V_perm_window * terminal_io` so table/padding rows cannot hide terminal
+  IO values in the full trace. Its standalone prelude commitment vector is
   exactly the full-main lookup trace FRI root; the quotient root is
   challenge-dependent and is absorbed later by the FRI transcript. The focused
-  regression test now stores the compressed terminal FRI payload directly and
-  measures `149,711` bytes /
-  `146.2 KiB`, debug-profile `prove=15.576s`, `verify=83.1ms`, and rejects
-  nonzero table-row terminal IO, tampered S-box image bytes, and tampered x2
-  auxiliaries. The terminal compact-FRI payload is `140,012` bytes / `136.7 KiB`
-  after decompression restores a `161,226` byte / `157.4 KiB` Plonky3 FRI proof.
+  regression test stores the compressed terminal FRI payload directly and now
+  measures `104,683` bytes /
+  `102.2 KiB`, debug-profile `prove=1.712s`, `verify=15.9ms`, and rejects
+  nonzero table-row terminal IO, tampered S-box image bytes, and a tampered
+  power-lane input. The terminal compact-FRI payload is `97,004` bytes /
+  `94.7 KiB` after decompression restores a `105,865` byte / `103.4 KiB`
+  Plonky3 FRI proof.
   This closes a real internal-AIR algebra/support checkpoint, but it is too
   large to combine naively with the current terminal backend. Component accounting shows why: zeta openings are
-  `9,447` bytes, transcript-query input row values are `66,613` bytes, input
-  Merkle paths are `19,985` bytes, commit-phase sibling values are `3,480`
-  bytes, commit-phase Merkle paths are `70,611` bytes, and the remaining
+  `7,425` bytes, transcript-query input row values are `52,553` bytes, input
+  Merkle paths are `20,664` bytes, commit-phase sibling values are `8,146`
+  bytes, commit-phase Merkle paths are `24,311` bytes, and the remaining
   commitments/final data are the balance. A measurement-only PCS floor for one
   extension-valued composition/quotient polynomial over the same 2048-row
   domain is `55,816` bytes / `54.5 KiB` at the same 60-bit FRI tuple; this is
@@ -1548,11 +1559,12 @@ bridge proofs. It still depends on the same unresolved NPO-derived projection
 binding and internal Tip5 lookup/AIR relation work.
 The full-trace Tip5 lookup AIR algebra/support quotient now enforces the local
 permutation algebra and rejects stale internal trace columns plus off-window
-terminal IO, but at 146.2 KiB for the stored-compressed component by itself it is
-a measurement-driven rejection for naive composition. Compact terminal FRI helps
-but only lowers the inner FRI payload to 136.7 KiB, still above target before
-the primitive and NPO value-binding components are included. The next production
-route must either share the trace opening with the boundary/value bridge, commit
+terminal IO, but at 102.2 KiB for the stored-compressed component by itself it is
+a measurement-driven rejection for naive append-only composition. Compact
+terminal FRI helps and lowers the inner FRI payload to 94.7 KiB, but this is
+still above target before the primitive and NPO value-binding components are
+included. The next production route must either share the trace opening with the
+boundary/value bridge, commit
 only a relation-specific projection, or fold the lookup AIR algebra into a
 larger batched proximity proof; simply appending this proof would overshoot the
 100 KiB certificate target. The measured row-value cost (`65.1 KiB`) and
@@ -1697,7 +1709,7 @@ Completion audit against the active terminal-compression requirements:
 |---|---|---|
 | Production profile gets exactly the canonical 60 pure-query bits without query PoW | `TerminalProofParameters::production_60bit()` uses `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`; low-soundness and nonzero terminal-PoW profiles are rejected by prelude tests, and public production verification rejects noncanonical 60-bit parameter tuples. | satisfied for the current terminal profile |
 | Recursive terminal hashing uses 5-round Tip5 only | Recursive Tip5 terminal relation is KAT-checked against `nockchain_math::tip5::permute_5round`; tests reject tampering and bind each callsite. | satisfied for recursive terminal proving |
-| Production certificate is about 100 KiB | Earlier sub-100 KiB fixtures did not cover the complete sound terminal backend. The current sound integrated Tip5 lookup/NPO-IO LogUp grouped direct-IO checkpoint at the canonical 60 pure-query bits measures `193,137` bytes / `188.6 KiB`, compact FRI payload `164,238` bytes / `160.4 KiB`, `prove=6.896s`, `verify=38.4ms`. | not complete |
+| Production certificate is about 100 KiB | Earlier sub-100 KiB fixtures did not cover the complete sound terminal backend. The current sound integrated Tip5 lookup/NPO-IO LogUp grouped direct-IO checkpoint at the canonical 60 pure-query bits measures `186,319` bytes / `182.0 KiB`, compact FRI payload `159,145` bytes / `155.4 KiB`, `prove=10.882s`, `verify=39.6ms`. | not complete |
 | No confusing low-soundness testing production path | Production builds expose only `TerminalProofKind::Production`; local checkpoint proof-kind helpers are `cfg(test)`, and public production verification requires all 15 production queries. | satisfied for public production verifier dispatch |
 | Public values, parameters, relation, proximity schedule, fixed terminal tables, and commitments are bound before challenges | Header, public-values digest, backend relation digest, including the NPO polynomial profile, column layout, and fixed Tip5 lookup preprocessed-table digest, prelude parameters, relation profile, canonical terminal proximity profile, and backend commitment roots are absorbed before terminal challenges. | satisfied for the implemented transcript prefix |
 | Primitive terminal constraints are globally checked | Primitive constraints lower to sparse R1CS; row-product sumcheck delegates matrix-vector claims to the assignment evaluation proof. | substantially satisfied for primitive rows, subject to the stated sumcheck soundness model |

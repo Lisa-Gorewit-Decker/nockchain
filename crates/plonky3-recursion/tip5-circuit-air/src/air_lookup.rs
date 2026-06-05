@@ -71,23 +71,15 @@ pub const TABLE_ROWS: usize = 256;
 // [ KIND | TMULT | IN[16] | round_0 .. round_(NUM_ROUNDS-1) ]
 // per round group:
 //   split:  NS*(2*NBYTES)  (b then c)  +  INV[NS]
-//   power:  X2[PWR]  X3[PWR]
 //   output: ROUT[STATE_SIZE]
 //
-// **Angle A (2026-05-21): A[STATE_SIZE] columns eliminated.** The
-// sbox-output values `A[t] = recompose_c` (for the NS lookup lanes)
-// and `A[j] = X3·X3·X` (for the PWR power-of-7 lanes) are derivable
-// from the existing columns (`c_col` bytes + `x3_col` + `sbox_in_col`)
-// and are now substituted **inline** in the MDS sum constraint (see
-// `eval()` below). This saves `STATE_SIZE * NUM_ROUNDS = 16·5 = 80`
-// columns (~12.5% of the prior ROUND_GROUP width). Constraint
-// degree on the MDS sum becomes degree-3 (was degree-1 with the
-// column read), so the kind-gated `rout` constraint is now degree-4
-// — same maximum as the §4.6 canonical guard, no change to
-// `max_constraint_degree()` (still 4 ⇒ FRI-feasible at lb≥2).
+// The sbox-output `A[STATE_SIZE]` columns and the helper `X2/X3`
+// columns for power-of-7 lanes are substituted inline. This saves
+// `(STATE_SIZE + 2*(STATE_SIZE-NS)) * NUM_ROUNDS = 200` columns versus the earlier
+// layout, but raises the local algebraic degree for power lanes to 8
+// after `KIND` gating.
 const SPLIT_BC: usize = NS * 2 * NBYTES; // 64
-const PWR: usize = STATE_SIZE - NS; // 12
-pub(crate) const ROUND_GROUP: usize = SPLIT_BC + NS + PWR + PWR + STATE_SIZE; // 108
+pub(crate) const ROUND_GROUP: usize = SPLIT_BC + NS + STATE_SIZE; // 84
 
 const C_KIND: usize = 0;
 const C_TMULT: usize = 1;
@@ -111,16 +103,8 @@ const fn inv_col(r: usize, t: usize) -> usize {
     rb(r) + SPLIT_BC + t
 }
 #[inline]
-const fn x2_col(r: usize, j: usize) -> usize {
-    rb(r) + SPLIT_BC + NS + (j - NS)
-}
-#[inline]
-const fn x3_col(r: usize, j: usize) -> usize {
-    rb(r) + SPLIT_BC + NS + PWR + (j - NS)
-}
-#[inline]
 pub(crate) const fn rout_col(r: usize, i: usize) -> usize {
-    rb(r) + SPLIT_BC + NS + 2 * PWR + i
+    rb(r) + SPLIT_BC + NS + i
 }
 #[inline]
 const fn sbox_in_col(r: usize, lane: usize) -> usize {
@@ -190,14 +174,12 @@ impl<F: p3_field::Field> BaseAir<F> for Tip5PermLookupAir<F> {
         ))
     }
     fn max_constraint_degree(&self) -> Option<usize> {
-        // Max over BOTH constraint families, now that the global-bus
-        // restructure (L4) made the LogUp interactions degree-2:
-        //  • hand-written algebraic constraints: degree 4 (the
-        //    kind-gated §4.6 guard / x⁷ closer);
+        // Max over BOTH constraint families:
+        //  • hand-written algebraic constraints: degree 8 after
+        //    inlining power-lane x^7 into the kind-gated MDS relation;
         //  • LogUp gadget (per the global bus): degree 2
         //    (`tests::global_bus_interactions_are_low_degree`).
-        // ⇒ 4, the B=4 FRI tier (log_blowup=2) — FRI-feasible.
-        Some(4)
+        Some(8)
     }
 }
 
@@ -260,19 +242,19 @@ where
         // ---- algebraic constraints, gated by KIND (perm rows only;
         //      table/pad rows have KIND=0 ⇒ trivially satisfied) ----
         //
-        // **Angle A (2026-05-21): sbox-output A[i] columns eliminated;
-        // each A[i] is substituted **inline** into the MDS sum below.**
+        // The sbox-output A[i] columns and the x2/x3 helper columns for
+        // power lanes are eliminated; each A[i] is substituted inline into
+        // the MDS sum below.
         //
         //   A[t] = recompose_c        (for t < NS; degree-1 in byte cols)
-        //   A[j] = x3 · x3 · x        (for j ≥ NS; degree-3 in x3/x cols)
+        //   A[j] = x^7               (for j ≥ NS; degree-7 in input lane)
         //
         // We pre-compute these per-round into `a_expr[0..STATE_SIZE]`
         // (an array of AB::Expr) and reuse them in the rout MDS sum.
-        // The two prior `assert_zero` constraints for A[t] and A[j] are
-        // removed (they were tautologies once A is substituted inline).
-        // Constraint count drops by `2 * STATE_SIZE = 32` per round
-        // (~24% fewer constraints) and the AIR width drops by
-        // `STATE_SIZE = 16` columns per round.
+        // The earlier A, x2, and x3 columns were verifier-derivable from
+        // existing columns; removing them shrinks the AIR width by
+        // `STATE_SIZE + 2 * (STATE_SIZE - NS) = 40` columns per round, at the
+        // cost of raising the kind-gated MDS output relation to degree 8.
         for r in 0..NUM_ROUNDS {
             let mut a_expr: alloc::vec::Vec<AB::Expr> = alloc::vec::Vec::with_capacity(STATE_SIZE);
 
@@ -308,13 +290,11 @@ where
 
             for j in NS..STATE_SIZE {
                 let x = var(sbox_in_col(r, j));
-                let x2 = var(x2_col(r, j));
-                let x3 = var(x3_col(r, j));
-                builder.assert_zero(kind.clone() * (x2.clone() - x.clone() * x.clone()));
-                builder.assert_zero(kind.clone() * (x3.clone() - x2 * x.clone()));
+                let x2 = x.clone() * x.clone();
+                let x3 = x2 * x.clone();
                 // A[j] = x³ · x³ · x = x⁷ — SUBSTITUTED INLINE (no column,
-                // no separate constraint). Degree-3 in column reads
-                // (x3 column × x3 column × x column).
+                // no separate constraint). Degree-7 in the input lane; after
+                // KIND gating, the MDS output relation has degree 8.
                 a_expr.push(x3.clone() * x3 * x);
             }
 
@@ -325,8 +305,8 @@ where
                 }
                 let rc = fe(rc_precomp(ROUND_CONSTANTS[r * STATE_SIZE + i]));
                 // ROUT[i] = MDS·A + RC ; kind-gated. Degree analysis:
-                // kind (deg 1) × (rout (deg 1) − acc (deg ≤3) − rc (deg 0))
-                // ⇒ max degree-4 (matches the §4.6 guard's degree-4).
+                // kind (deg 1) × (rout (deg 1) − acc (deg ≤7) − rc (deg 0))
+                // ⇒ max degree-8 for power lanes.
                 builder.assert_zero(kind.clone() * (var(rout_col(r, i)) - acc - rc));
             }
         }
@@ -442,7 +422,8 @@ mod tests {
     /// `tip5_l` interaction the AIR emits and assert each compiles to
     /// a LogUp `Lookup` of `constraint_degree ≤ 2` — i.e. the
     /// catastrophic single-interaction degree (≈226) is gone and the
-    /// bus form is FRI-feasible (B=4, well within `log_blowup=2`).
+    /// bus form stays low-degree. The separate algebraic AIR constraints
+    /// determine the final quotient degree hint.
     /// Also asserts the exact interaction count
     /// (`7·4·8 = 224` byte queries + 1 L-table provide = 225).
     #[test]

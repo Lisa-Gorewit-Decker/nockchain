@@ -17680,7 +17680,7 @@ impl NativeTerminalCompiler {
             preprocessed_values: main_rows * PREPROCESSED_WIDTH,
             preprocessed_digest: Self::terminal_npo_tip5_lookup_preprocessed_digest(main_rows),
             permutation_row_offset: TIP5_LOOKUP_TABLE_ROWS,
-            max_constraint_degree: 4,
+            max_constraint_degree: 8,
             tip5_rounds: TIP5_PERM_ROUNDS,
         }
     }
@@ -17714,12 +17714,11 @@ impl NativeTerminalCompiler {
         const NS: usize = 4;
         const NBYTES: usize = 8;
         const SPLIT_BC: usize = NS * 2 * NBYTES;
-        const PWR: usize = STATE_SIZE - NS;
         const C_KIND: usize = 0;
         const C_TMULT: usize = 1;
         const C_IN: usize = 2;
         const RB0: usize = C_IN + STATE_SIZE;
-        const ROUND_GROUP: usize = SPLIT_BC + NS + PWR + PWR + STATE_SIZE;
+        const ROUND_GROUP: usize = SPLIT_BC + NS + STATE_SIZE;
 
         #[inline]
         const fn rb(round: usize) -> usize {
@@ -17911,12 +17910,11 @@ impl NativeTerminalCompiler {
         const NS: usize = 4;
         const NBYTES: usize = 8;
         const SPLIT_BC: usize = NS * 2 * NBYTES;
-        const PWR: usize = 16 - NS;
         const C_KIND: usize = 0;
         const C_TMULT: usize = 1;
         const C_IN: usize = 2;
         const RB0: usize = C_IN + 16;
-        const ROUND_GROUP: usize = SPLIT_BC + NS + PWR + PWR + 16;
+        const ROUND_GROUP: usize = SPLIT_BC + NS + 16;
 
         #[inline]
         const fn rb(round: usize) -> usize {
@@ -18082,12 +18080,11 @@ impl NativeTerminalCompiler {
         const NS: usize = 4;
         const NBYTES: usize = 8;
         const SPLIT_BC: usize = NS * 2 * NBYTES;
-        const PWR: usize = 16 - NS;
         const C_KIND: usize = 0;
         const C_TMULT: usize = 1;
         const C_IN: usize = 2;
         const RB0: usize = C_IN + 16;
-        const ROUND_GROUP: usize = SPLIT_BC + NS + PWR + PWR + 16;
+        const ROUND_GROUP: usize = SPLIT_BC + NS + 16;
 
         #[inline]
         const fn rb(round: usize) -> usize {
@@ -19167,12 +19164,11 @@ impl NativeTerminalCompiler {
         const NS: usize = 4;
         const NBYTES: usize = 8;
         const SPLIT_BC: usize = NS * 2 * NBYTES;
-        const PWR: usize = STATE_SIZE - NS;
         const C_KIND: usize = 0;
         const C_IN: usize = 2;
         const RB0: usize = C_IN + STATE_SIZE;
-        const ROUND_GROUP: usize = SPLIT_BC + NS + PWR + PWR + STATE_SIZE;
-        const ROUND_OUTPUT_OFFSET: usize = SPLIT_BC + NS + 2 * PWR;
+        const ROUND_GROUP: usize = SPLIT_BC + NS + STATE_SIZE;
+        const ROUND_OUTPUT_OFFSET: usize = SPLIT_BC + NS;
 
         #[inline]
         const fn rb(round: usize) -> usize {
@@ -19189,14 +19185,6 @@ impl NativeTerminalCompiler {
         #[inline]
         const fn inv_col(round: usize, lane: usize) -> usize {
             rb(round) + SPLIT_BC + lane
-        }
-        #[inline]
-        const fn x2_col(round: usize, lane: usize) -> usize {
-            rb(round) + SPLIT_BC + NS + (lane - NS)
-        }
-        #[inline]
-        const fn x3_col(round: usize, lane: usize) -> usize {
-            rb(round) + SPLIT_BC + NS + PWR + (lane - NS)
         }
         #[inline]
         const fn rout_col(round: usize, lane: usize) -> usize {
@@ -19266,10 +19254,8 @@ impl NativeTerminalCompiler {
 
             for lane in NS..STATE_SIZE {
                 let x = trace[sbox_in_col(round, lane)];
-                let x2 = trace[x2_col(round, lane)];
-                let x3 = trace[x3_col(round, lane)];
-                absorb(kind * (x2 - x * x));
-                absorb(kind * (x3 - x2 * x));
+                let x2 = x * x;
+                let x3 = x2 * x;
                 sbox_outputs.push(x3 * x3 * x);
             }
 
@@ -19435,8 +19421,9 @@ impl NativeTerminalCompiler {
                     &present_label,
                 )?;
                 if present != Goldilocks::ZERO {
+                    let output_offset = Self::terminal_npo_tip5_lookup_terminal_output_offset();
                     values[row * profile.basis_columns + 16 + limb] =
-                        trace.values[trace_row * trace.width() + 542 + limb];
+                        trace.values[trace_row * trace.width() + output_offset + limb];
                 }
             }
             tip5_row += 1;
@@ -30712,6 +30699,17 @@ impl NativeTerminalCompiler {
             .collect()
     }
 
+    const fn terminal_npo_tip5_lookup_terminal_output_offset() -> usize {
+        const INPUT_OFFSET: usize = 2;
+        const INPUT_LANES: usize = 16;
+        const LOOKUP_ROUND_GROUP: usize = 84;
+        const LOOKUP_ROUND_OUTPUT_OFFSET: usize = 68;
+        const LOOKUP_ROUND_BASE_OFFSET: usize = INPUT_OFFSET + INPUT_LANES;
+        LOOKUP_ROUND_BASE_OFFSET
+            + (TIP5_PERM_ROUNDS - 1) * LOOKUP_ROUND_GROUP
+            + LOOKUP_ROUND_OUTPUT_OFFSET
+    }
+
     fn terminal_npo_tip5_lookup_fri_column_indices(
         main_width: usize,
         column_set: TerminalNpoTip5LookupFriColumnSet,
@@ -30719,10 +30717,9 @@ impl NativeTerminalCompiler {
         const INPUT_OFFSET: usize = 2;
         const INPUT_LANES: usize = 16;
         const TERMINAL_OUTPUT_LANES: usize = 10;
-        const LOOKUP_ROUND_GROUP: usize = 108;
+        const LOOKUP_ROUND_GROUP: usize = 84;
         const LOOKUP_SPLIT_LANES: usize = 4;
         const LOOKUP_SPLIT_BYTES: usize = 8;
-        const LOOKUP_ROUND_OUTPUT_OFFSET: usize = 92;
         const LOOKUP_ROUND_BASE_OFFSET: usize = INPUT_OFFSET + INPUT_LANES;
 
         let indices = match column_set {
@@ -30739,16 +30736,7 @@ impl NativeTerminalCompiler {
                 indices
             }
             TerminalNpoTip5LookupFriColumnSet::TerminalIo => {
-                let final_round = TIP5_PERM_ROUNDS.checked_sub(1).ok_or(
-                    NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
-                        label: "tip5_lookup_fri_rounds".into(),
-                        expected: 1,
-                        got: 0,
-                    },
-                )?;
-                let output_offset = LOOKUP_ROUND_BASE_OFFSET
-                    + final_round * LOOKUP_ROUND_GROUP
-                    + LOOKUP_ROUND_OUTPUT_OFFSET;
+                let output_offset = Self::terminal_npo_tip5_lookup_terminal_output_offset();
                 let mut indices = (INPUT_OFFSET..INPUT_OFFSET + INPUT_LANES).collect::<Vec<_>>();
                 indices.extend(output_offset..output_offset + TERMINAL_OUTPUT_LANES);
                 indices
@@ -36261,13 +36249,17 @@ mod tests {
             opened.labels.get(15).map(String::as_str),
             Some("tip5_lookup_air_main_col_17")
         );
+        let output_offset =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_terminal_output_offset();
+        let first_output_label = format!("tip5_lookup_air_main_col_{output_offset}");
+        let last_output_label = format!("tip5_lookup_air_main_col_{}", output_offset + 9);
         assert_eq!(
             opened.labels.get(16).map(String::as_str),
-            Some("tip5_lookup_air_main_col_542")
+            Some(first_output_label.as_str())
         );
         assert_eq!(
             opened.labels.last().map(String::as_str),
-            Some("tip5_lookup_air_main_col_551")
+            Some(last_output_label.as_str())
         );
 
         let serialized = postcard::to_allocvec(&proof)
@@ -38101,8 +38093,10 @@ mod tests {
                 &output_label,
             )
             .expect("test columns must include output value columns");
+            let output_offset =
+                NativeTerminalCompiler::terminal_npo_tip5_lookup_terminal_output_offset();
             forged_columns.columns[output_index][first_tip5_row] = divergent_trace.values
-                [first_permutation_row * divergent_trace.width() + 542 + limb];
+                [first_permutation_row * divergent_trace.width() + output_offset + limb];
         }
         assert_ne!(
             NativeTerminalCompiler::terminal_npo_polynomial_tip5_input_lane_base_value(
@@ -38275,8 +38269,8 @@ mod tests {
         );
         assert_eq!(proof.trace_profile.proximity.pure_query_bits, 60);
         assert_eq!(
-            proof.quotient_profile.log_rows,
-            proof.trace_profile.log_rows + 2
+            proof.quotient_profile.padded_rows,
+            proof.trace_profile.padded_rows * proof.trace_profile.trace.max_constraint_degree
         );
 
         let verify_start = std::time::Instant::now();
@@ -38664,34 +38658,35 @@ mod tests {
                 if label == "tip5_lookup_air_algebra_quotient"
         ));
 
-        let mut bad_x2_trace = trace;
-        bad_x2_trace.values[bad_row * width + 86] += Goldilocks::ONE;
-        let bad_x2_prelude = terminal_test_prelude_from_roots(
+        let mut bad_power_trace = trace;
+        const FIRST_POWER_LANE_INPUT_COL: usize = 2 + 4;
+        bad_power_trace.values[bad_row * width + FIRST_POWER_LANE_INPUT_COL] += Goldilocks::ONE;
+        let bad_power_prelude = terminal_test_prelude_from_roots(
             &compiler,
             &vk,
             &public_inputs,
             NativeTerminalCompiler::terminal_npo_tip5_lookup_fri_prelude_commitments_goldilocks(
                 &trace_profile,
-                &bad_x2_trace,
+                &bad_power_trace,
                 TerminalNpoTip5LookupFriColumnSet::FullMain,
             )
             .expect("bad power-lane AIR algebra prelude roots must build"),
         );
-        let bad_x2_proof =
+        let bad_power_proof =
             NativeTerminalCompiler::prove_terminal_npo_tip5_lookup_air_algebra_quotient_from_trace_goldilocks(
-                &bad_x2_prelude,
+                &bad_power_prelude,
                 &trace_profile,
-                &bad_x2_trace,
+                &bad_power_trace,
             )
             .expect("FRI-valid but algebra-invalid power-lane proof must build");
         let err = compiler
             .verify_terminal_npo_tip5_lookup_air_algebra_quotient_goldilocks::<Goldilocks>(
                 &vk,
                 &public_inputs,
-                &bad_x2_prelude,
-                &bad_x2_proof,
+                &bad_power_prelude,
+                &bad_power_proof,
             )
-            .expect_err("tampered x2 auxiliary must fail AIR algebra quotient");
+            .expect_err("tampered power lane must fail AIR algebra quotient");
         assert!(matches!(
             err,
             NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
@@ -41105,6 +41100,7 @@ mod tests {
         assert_eq!(two_profile.tip5_rows, 2);
         assert_eq!(single_profile.lookup_table_rows, TABLE_ROWS);
         assert_eq!(single_profile.main_width, tip5_lookup_air_width());
+        assert_eq!(single_profile.max_constraint_degree, 8);
         assert_eq!(
             single_profile.preprocessed_digest,
             NativeTerminalCompiler::terminal_npo_tip5_lookup_preprocessed_digest(
