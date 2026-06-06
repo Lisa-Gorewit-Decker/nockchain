@@ -33,7 +33,7 @@ to the hard target:
 
 | Full composite terminal profile | Certificate | Public inputs | Postcard wire | Compile | Prove | Verify |
 |---|---:|---:|---:|---:|---:|---:|
-| `lb=6,nq=10,pow=0` after compact known-index proof encoding | `766,069` bytes / `748.1 KiB` | `5,180` bytes | `771,249` bytes / `753.2 KiB` | `7.579s` | `80.377s` | `58.496s` |
+| `lb=6,nq=10,pow=0` after compact known-index proof encoding | `766,069` bytes / `748.1 KiB` | `5,180` bytes | `771,249` bytes / `753.2 KiB` | `7.606s` | `80.829s` | `58.825s` |
 
 Therefore the fixture measurement is evidence that the backend can be small on
 a much smaller verifier relation, not proof that the full AI-PoW production
@@ -105,9 +105,17 @@ L1 verifier construction, and terminal relation compilation for the
 
 The full proof measurement for the most relation-favorable row in the table,
 `lb=6,nq=10,pow=0`, still produces a `771,249` byte postcard wire object and
-spends `80.377s` in terminal proving. That confirms that simply increasing
+spends `80.829s` in terminal proving. That confirms that simply increasing
 Layer-0 blowup to reduce query count is not enough; the terminal relation and
 assignment-oracle opening material are still far too large.
+
+That `lb=6,nq=10` row is a lower-bound diagnostic for recursive terminal size,
+not a production-profile recommendation. The current PROD baseline remains the
+pure-query `lb=4,nq=15,pow=0` inflection point. The `lb=6,nq=10` diagnostic was
+chosen because it gives the smallest recursive verifier relation in the
+pure-query 60-bit sweep; failing the size/time gates there means the current
+terminal proof shape is structurally too large. Its L0 proving cost remains too
+high for an unqualified production default.
 
 The polynomial NPO path remains useful diagnostic evidence, but it is not a
 drop-in production replacement for the exhaustive NPO proof. The recursion-crate
@@ -223,6 +231,23 @@ The NPO assignment-witness multiproof still opens `47,814` assignment values
 and carries `5,434` Merkle frontier nodes. Ordinary encoding work cannot close
 the remaining gap to about `100 KiB`; a production-sized path has to avoid
 exhaustively opening this many assignment values.
+
+The latest full measurement decomposes that multiproof further:
+
+| Assignment-witness multiproof component | Bytes / Count |
+|---|---:|
+| Nonzero value limbs | `382,515` bytes |
+| Sparse nonzero masks | `20,126` bytes |
+| Boolean bits | `25` bytes |
+| Merkle frontier | `217,362` bytes |
+| Estimated non-boolean opened values | `80,492` |
+| Nonzero coefficients | `47,814` |
+| Zero coefficients already elided | `113,170` |
+
+The existing sparse coefficient encoding has already removed about `905 KiB`
+of dense zero coefficients. The remaining size is mostly nonzero value limbs
+and Merkle authentication data, so further varint/fixed-width encoding tweaks
+are not enough.
 
 The latest measurement also printed useful comparison floors:
 
@@ -385,7 +410,7 @@ Implementation result:
    frontier material, and recompose-row witness tampering.
 5. The `ai-pow-zk` composite L1 terminal path is wired as an opt-in diagnostic.
    Its `lb=6,nq=10,pow=0` release/native run verifies after postcard decode,
-   but measures `771,249` wire bytes, `prove=80.377s`, and `verify=58.496s`.
+   but measures `771,249` wire bytes, `prove=80.829s`, and `verify=58.825s`.
 6. A production-profile non-proving relation metric shows the full path has
    `125,961` terminal operations, `14,049` supported NPO rows, and `242,798`
    NPO residual components before terminal proving begins.
@@ -455,7 +480,7 @@ and it remains necessary for the full composite terminal path. The promoted
 exhaustive path satisfies the `<30s` release target only for the
 recursion-crate Tip5 verifier fixture. The actual `ai-pow-zk` composite
 terminal path now has a completed reduced-profile release measurement:
-`l1_verify=44ms`, `compile=7.579s`, `prove=80.377s`, `verify=58.496s`, and
+`l1_verify=49ms`, `compile=7.606s`, `prove=80.829s`, `verify=58.825s`, and
 postcard wire size `771,249` bytes.
 
 The first runtime-instrumentation pass landed after this analysis. The
@@ -474,7 +499,7 @@ Immediate work:
 
 1. Keep the real release measurement in the hot loop with `RUSTFLAGS="-C
    target-cpu=native"` and `NOCK_TERMINAL_PROFILE_PROVER=1`; the current
-   `lb=6,nq=10,pow=0` proof is `771,249` bytes and `80.377s` to prove.
+   `lb=6,nq=10,pow=0` proof is `771,249` bytes and `80.829s` to prove.
 2. Keep the non-proving relation metric in the hot loop. The current PROD
    relation has `75,870` Horner operations before proof construction, so
    optimizing terminal proof serialization alone cannot satisfy the `<30s`

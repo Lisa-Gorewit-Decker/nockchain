@@ -1905,24 +1905,55 @@ mod tests {
             npo_assignment_values,
             npo_boolean_bits,
             npo_frontier_nodes,
+            npo_assignment_value_bytes,
+            npo_assignment_mask_bytes,
+            npo_assignment_boolean_bytes,
+            npo_assignment_frontier_bytes,
+            npo_assignment_nonzero_coeffs,
+            npo_assignment_dense_coeffs,
+            npo_assignment_estimated_non_boolean_values,
+            npo_assignment_zero_coeffs,
         ) = match &production_proof.npo_exhaustive_proof {
-            Some(npo) => (
-                postcard_len(npo, "terminal npo exhaustive proof"),
-                postcard_len(
-                    &npo.tip5_hidden_input_values_le, "terminal npo hidden Tip5 values",
-                ),
-                postcard_len(
-                    &npo.assignment_witness_multi_opening,
-                    "terminal npo assignment witness multiproof",
-                ),
-                npo.tip5_hidden_input_values_le.len(),
-                npo.assignment_witness_multi_opening.value_basis_flat.len(),
-                npo.assignment_witness_multi_opening
-                    .boolean_value_bits
-                    .len(),
-                npo.assignment_witness_multi_opening.frontier.len(),
-            ),
-            None => (0, 0, 0, 0, 0, 0, 0),
+            Some(npo) => {
+                let assignment = &npo.assignment_witness_multi_opening;
+                let dimension = <Challenge as BasedVectorSpace<Val>>::DIMENSION;
+                let dense_coeffs = if dimension > 1 {
+                    assignment.value_basis_nonzero_masks.len() * 8
+                } else {
+                    assignment.value_basis_flat.len()
+                };
+                let nonzero_coeffs = assignment.value_basis_flat.len();
+                (
+                    postcard_len(npo, "terminal npo exhaustive proof"),
+                    postcard_len(
+                        &npo.tip5_hidden_input_values_le, "terminal npo hidden Tip5 values",
+                    ),
+                    postcard_len(assignment, "terminal npo assignment witness multiproof"),
+                    npo.tip5_hidden_input_values_le.len(),
+                    assignment.value_basis_flat.len(),
+                    assignment.boolean_value_bits.len(),
+                    assignment.frontier.len(),
+                    postcard_len(
+                        &assignment.value_basis_flat, "terminal npo assignment witness value limbs",
+                    ),
+                    postcard_len(
+                        &assignment.value_basis_nonzero_masks,
+                        "terminal npo assignment witness nonzero masks",
+                    ),
+                    postcard_len(
+                        &assignment.boolean_value_bits,
+                        "terminal npo assignment witness boolean bits",
+                    ),
+                    postcard_len(
+                        &assignment.frontier, "terminal npo assignment witness frontier",
+                    ),
+                    nonzero_coeffs,
+                    dense_coeffs,
+                    dense_coeffs / dimension,
+                    dense_coeffs.saturating_sub(nonzero_coeffs),
+                )
+            }
+            None => (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         };
 
         eprintln!(
@@ -1942,6 +1973,18 @@ mod tests {
             npo_hidden_values,
             npo_assignment_values,
             npo_boolean_bits,
+            npo_frontier_nodes,
+        );
+        eprintln!(
+            "native terminal production npo assignment multiproof components [{label}]: values_bytes={} masks_bytes={} boolean_bytes={} frontier_bytes={} nonzero_coeffs={} dense_coeffs={} estimated_non_boolean_values={} zero_coeffs={} frontier_nodes={}",
+            npo_assignment_value_bytes,
+            npo_assignment_mask_bytes,
+            npo_assignment_boolean_bytes,
+            npo_assignment_frontier_bytes,
+            npo_assignment_nonzero_coeffs,
+            npo_assignment_dense_coeffs,
+            npo_assignment_estimated_non_boolean_values,
+            npo_assignment_zero_coeffs,
             npo_frontier_nodes,
         );
     }
