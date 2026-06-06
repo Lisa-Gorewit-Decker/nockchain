@@ -1966,6 +1966,181 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "pure-query L1-only opening-proof byte accounting is opt-in"]
+    fn relaxed_l1_only_pure_query_lb6_cap4_opening_breakdown_for_test_pearl() {
+        use std::time::Instant;
+
+        use p3_circuit::ops::Tip5Config;
+        use p3_circuit_prover::BatchStarkProver;
+
+        const LOG_BLOWUP: usize = 6;
+        const NUM_QUERIES: usize = 10;
+        const CAP_HEIGHT: usize = 4;
+        assert_eq!(LOG_BLOWUP * NUM_QUERIES, 60);
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+            0
+        );
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+            0
+        );
+
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+
+        let statement_digest_public_values = built
+            .public_inputs
+            .iter()
+            .take(DIGEST_ELEMS)
+            .flat_map(|value| {
+                <Challenge as BasedVectorSpace<Val>>::as_basis_coefficients_slice(value)
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>();
+
+        let prove_start = Instant::now();
+        let outer = prove_composite_l1_outer_cert_with_config_and_public_binding_lanes(
+            &built,
+            &proof,
+            pure_query_l1_stark_config_with_shape_and_cap(LOG_BLOWUP, NUM_QUERIES, CAP_HEIGHT),
+            DIGEST_ELEMS,
+        )
+        .expect("pure-query cap-4 recursive certificate");
+        let prove_ms = prove_start.elapsed().as_millis();
+
+        let mut verifier = BatchStarkProver::new(pure_query_l1_stark_config_with_shape_and_cap(
+            LOG_BLOWUP, NUM_QUERIES, CAP_HEIGHT,
+        ))
+        .with_table_packing(production_l1_table_packing(DIGEST_ELEMS));
+        verifier.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+        verifier.register_recompose_table::<2>(true);
+
+        let verify_start = Instant::now();
+        verifier
+            .verify_all_tables_with_public_values(&outer, &statement_digest_public_values)
+            .expect("pure-query cap-4 L1 outer proof must verify");
+        let verify_ms = verify_start.elapsed().as_millis();
+
+        let total_bytes = postcard_len(&outer, "pure-query cap-4 L1 outer proof");
+        let proof_body_bytes = postcard_len(&outer.proof, "pure-query cap-4 L1 proof body");
+        let commitments_bytes =
+            postcard_len(&outer.proof.commitments, "pure-query cap-4 L1 commitments");
+        let opened_values_bytes = postcard_len(
+            &outer.proof.opened_values, "pure-query cap-4 L1 opened values",
+        );
+        let opening_proof_bytes = postcard_len(
+            &outer.proof.opening_proof, "pure-query cap-4 L1 opening proof",
+        );
+        let global_lookup_data_bytes = postcard_len(
+            &outer.proof.global_lookup_data, "pure-query cap-4 L1 global lookup data",
+        );
+
+        let fri = &outer.proof.opening_proof;
+        let commit_phase_commits_bytes = postcard_len(
+            &fri.commit_phase_commits, "pure-query cap-4 L1 FRI commit-phase commits",
+        );
+        let commit_pow_witnesses_bytes = postcard_len(
+            &fri.commit_pow_witnesses, "pure-query cap-4 L1 FRI commit PoW witnesses",
+        );
+        let query_proofs_bytes =
+            postcard_len(&fri.query_proofs, "pure-query cap-4 L1 FRI query proofs");
+        let final_poly_bytes =
+            postcard_len(&fri.final_poly, "pure-query cap-4 L1 FRI final polynomial");
+        let query_pow_witness_bytes = postcard_len(
+            &fri.query_pow_witness, "pure-query cap-4 L1 FRI query PoW witness",
+        );
+
+        let mut input_proofs_total = 0usize;
+        let mut input_opened_values_total = 0usize;
+        let mut input_merkle_total = 0usize;
+        let mut commit_phase_openings_total = 0usize;
+        let mut commit_phase_sibling_values_total = 0usize;
+        let mut commit_phase_merkle_total = 0usize;
+        for query in &fri.query_proofs {
+            input_proofs_total += postcard_len(
+                &query.input_proof, "pure-query cap-4 L1 FRI query input proof",
+            );
+            for batch_opening in &query.input_proof {
+                input_opened_values_total += postcard_len(
+                    &batch_opening.opened_values, "pure-query cap-4 L1 FRI input opened values",
+                );
+                input_merkle_total += postcard_len(
+                    &batch_opening.opening_proof, "pure-query cap-4 L1 FRI input Merkle path",
+                );
+            }
+            commit_phase_openings_total += postcard_len(
+                &query.commit_phase_openings, "pure-query cap-4 L1 FRI commit-phase openings",
+            );
+            for step in &query.commit_phase_openings {
+                commit_phase_sibling_values_total += postcard_len(
+                    &step.sibling_values, "pure-query cap-4 L1 FRI commit-phase sibling values",
+                );
+                commit_phase_merkle_total += postcard_len(
+                    &step.opening_proof, "pure-query cap-4 L1 FRI commit-phase Merkle path",
+                );
+            }
+        }
+
+        eprintln!(
+            "relaxed L1-only pure-query opening breakdown [TEST_PEARL lb6_nq10 cap4]: total={} proof_body={} commitments={} opened_values={} opening_proof={} global_lookup_data={} fri_commit_phase_commits={} fri_commit_pow_witnesses={} fri_query_proofs={} fri_final_poly={} fri_query_pow_witness={} fri_num_queries={} fri_input_proofs={} fri_input_opened_values={} fri_input_merkle={} fri_commit_phase_openings={} fri_commit_phase_sibling_values={} fri_commit_phase_merkle={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} prove_ms={} verify_ms={}",
+            total_bytes,
+            proof_body_bytes,
+            commitments_bytes,
+            opened_values_bytes,
+            opening_proof_bytes,
+            global_lookup_data_bytes,
+            commit_phase_commits_bytes,
+            commit_pow_witnesses_bytes,
+            query_proofs_bytes,
+            final_poly_bytes,
+            query_pow_witness_bytes,
+            fri.query_proofs.len(),
+            input_proofs_total,
+            input_opened_values_total,
+            input_merkle_total,
+            commit_phase_openings_total,
+            commit_phase_sibling_values_total,
+            commit_phase_merkle_total,
+            outer.public_binding_lanes,
+            LOG_BLOWUP,
+            NUM_QUERIES,
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+            LOG_BLOWUP * NUM_QUERIES,
+            prove_ms,
+            verify_ms,
+        );
+
+        assert_eq!(
+            outer.public_binding_lanes, DIGEST_ELEMS,
+            "diagnostic L1 proof must expose the statement digest"
+        );
+        assert_eq!(fri.query_proofs.len(), NUM_QUERIES);
+        assert!(
+            total_bytes >= proof_body_bytes,
+            "metadata split must be well formed"
+        );
+    }
+
+    #[test]
     fn recursive_certificate_outer_verifier_accepts_honest_certificate() {
         let zk = test_zk_params();
         let profile = CircuitConfig::TEST_PEARL;

@@ -518,6 +518,33 @@ still `169.1 KiB`, and the opening proof alone is `141,987` bytes. Reducing the
 batch-STARK envelope further requires fewer/lighter openings or a compact
 recursive proof shape, not cap-height tuning.
 
+The opening-proof diagnostic
+`relaxed_l1_only_pure_query_lb6_cap4_opening_breakdown_for_test_pearl`
+splits that best cap-4 point further:
+
+| Pure-query `lb=6,nq=10,pow=0,cap=4` opening-proof breakdown (`TEST_PEARL`) | Bytes |
+|---|---:|
+| Total L1 outer object | `173,171` |
+| L1 proof body | `172,280` |
+| FRI opening proof | `141,987` |
+| FRI query proofs | `136,577` |
+| Input proof total | `97,424` |
+| Input opened leaf values | `63,201` |
+| Input Merkle paths | `34,213` |
+| Commit-phase openings total | `39,152` |
+| Commit-phase sibling values | `4,813` |
+| Commit-phase Merkle paths | `34,259` |
+
+The dominant bytes are not one removable metadata field. The current proof pays
+for both opened leaf values and Merkle paths at every query. Removing all Merkle
+paths would save about `68.5 KiB`, but the object would still carry the
+`63.2 KiB` input opened-value payload plus commitments, opened OOD values,
+global lookup data, and metadata. That is why the next viable reduction is a
+sound compact opening format, fewer/lighter opened columns, or a second
+recursive compression proof. A Merkle-only serialization change cannot satisfy
+the `100 KiB` production target and is not a robust route to the relaxed
+`150 KiB` target either.
+
 A relaxed-size L1-only path would need to replace those proof-carried rebuild
 inputs with a pinned verifier-key contract:
 
