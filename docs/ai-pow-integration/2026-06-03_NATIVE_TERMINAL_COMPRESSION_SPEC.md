@@ -1664,16 +1664,20 @@ production composition gap is the internal Tip5 lookup/AIR/LogUp relation.
 The most promising complete proof shape seen so far is the native terminal
 integrated-LogUp bundled masked-IO checkpoint: in the recursion-crate synthetic
 Tip5-only backend it serializes `(prelude, primitive, integrated NPO)` to
-`96,017` bytes / `93.8 KiB` and proves in `10.148s` after prepared
-selected+lookup reuse and a batched-LDE AIR quotient builder. That checkpoint
-includes the Tip5 AIR, byte LogUp, raw-trace support bridge,
+`96,017` bytes / `93.8 KiB` and proves in `9.918s` after prepared
+selected+lookup reuse, a batched-LDE AIR quotient builder, and a prover-only
+folded-AIR evaluator cleanup. That checkpoint includes the Tip5 AIR, byte
+LogUp, raw-trace support bridge,
 selected-vs-trace NPO-IO LogUp, and the merged padding/value bridge under the
 terminal prelude. It is not yet a production result: the full `ai-pow-zk`
-composite diagnostic reached `14.702s` primitive proving plus `2.355s` merged
+composite diagnostic reached `14.435s` primitive proving plus `2.340s` merged
 padding/value-bridge proving, then remained inside the integrated Tip5
-`air_quotient_matrix` phase for more than two minutes before the run was
-stopped. The same proof shape still needs full-composite prover-time reduction
-before it can replace the current production recursive certificate path.
+`air_quotient_matrix` phase for more than 90 seconds before the run was
+stopped. The active production baseline has `8,081` terminal Tip5 calls, which
+forces the current generic lookup AIR into a `65,536`-row trace and a
+`524,288`-point quotient domain. The same proof shape still needs a structural
+full-composite Tip5 quotient reduction before it can replace the current
+production recursive certificate path.
 
 The same full-composite run explains why the primitive R1CS component is now a
 first-class blocker. The sparse R1CS relation has `106,604` rows, `222,449`

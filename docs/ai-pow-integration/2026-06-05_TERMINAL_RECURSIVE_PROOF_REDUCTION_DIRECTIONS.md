@@ -217,19 +217,22 @@ cryptographic statement:
 - The trace-domain NPO-IO LogUp quotient builder and the Tip5 AIR quotient
   builder now evaluate quotient rows with batched coset LDEs instead of
   interpolating the full committed matrices independently at every quotient
-  point. This preserves the quotient relations and verifier transcript; it only
-  changes prover work. On the recursion-crate synthetic backend, the
-  production-candidate integrated-LogUp checkpoint remains `96,017` bytes /
-  `93.8 KiB` and improves from `25.117s` to `10.148s` in the focused run.
+  point. The Tip5 AIR quotient evaluator also precomputes its folded-relation
+  constants once, uses stack arrays for opened rows, and evaluates quotient rows
+  in parallel. These changes preserve the quotient relations and verifier
+  transcript; they only change prover work. On the recursion-crate synthetic
+  backend, the production-candidate integrated-LogUp checkpoint remains
+  `96,017` bytes / `93.8 KiB` and improves from `25.117s` to `9.918s` in the
+  focused run.
 - The full-composite diagnostic now prepares NPO columns and the Tip5 trace
   once, then reuses that data for merged roots, bundled Tip5 roots, the merged
   value-bridge proof, and the integrated LogUp proof. This is also
   proof-preserving: the same commitments are still checked against the
   transcript-bound prelude, and verifier acceptance is unchanged. In the partial
   full-composite `lb=6,nq=10,pow=0` run, selected+lookup prepared-data reuse
-  reduced merged value-bridge proving to `2.355s`; the selected+lookup root
-  phase measured `11.135s` including a `4.16s` commit, and the trace-bundle
-  root phase measured `6.678s` including a `6.25s` commit.
+  reduced merged value-bridge proving to `2.340s`; the selected+lookup root
+  phase measured `11.075s` including a `3.85s` commit, and the trace-bundle
+  root phase measured `6.261s` including a `5.84s` commit.
 
 The same partial full-composite run explains why this is not yet a production
 claim. Before the integrated Tip5 LogUp subproof finished, the diagnostic had
@@ -243,6 +246,31 @@ root reuse; it is reducing or specializing the full Tip5 AIR quotient work on
 the actual composite trace. This path also cannot make the whole pipeline
 `<30s` if the budget includes L0 proving at `lb=6,nq=10`, because that L0
 profile alone exceeded `30s`.
+
+The next run after the folded-AIR evaluator cleanup moved the synthetic time but
+not the full-composite bottleneck. It spent `29.834s` in L0, `7.543s` terminal
+compilation, `5.793s` assignment commitment, `11.075s` selected+lookup root
+construction, `6.261s` trace-bundle root construction, `7.600s` prelude
+construction, `14.435s` primitive proving, and `2.340s` merged NPO proving,
+then remained inside the same integrated AIR quotient phase for more than 90
+seconds before the run was stopped. The active production baseline layout has
+`8,081` terminal Tip5 calls, so the current lookup-trace AIR would prove a
+`65,536`-row full-main trace with `81` prover columns plus `9` fixed columns
+over a `524,288`-point degree-8 quotient domain. That is the structural cost to
+remove; loop-level cleanup is not sufficient.
+
+Pearl is useful as an architecture reference, but not as a direct parameter
+match. Its `zk-pow` path compiles and caches two recursive Plonky2 verifier
+circuits, then proves the STARK and two recursive layers from the cache. Its
+default parameters use proof-system PoW bits `[18,18,22]` and rate bits
+`[1 or 2,3,7]`, so its small final proof is not evidence that our pure-query
+`pow=0` terminal profile can keep the current generic verifier-terminal shape.
+The transferable lesson is the shape: a cached, specialized recursive verifier
+with a compact final layer. For this codebase, the closest non-Plonky2 route is
+not the existing lookup-free one-row Tip5 AIR, because that AIR is about
+`5,436` columns wide; it is a new narrow one-row-per-permutation or otherwise
+hash-specialized terminal argument that avoids a `5x` round-row domain without
+opening thousands of bit-decomposition columns.
 
 The current `CircuitConfig::PROD` profile is now exactly 60 pure-query bits
 (`log_blowup=4`, `num_queries=15`, `pow_bits=0`). Removing the previous
@@ -569,9 +597,9 @@ time targets:
 |---|---:|
 | Bundled masked-IO NPO checkpoint | `95,201` bytes / `93.0 KiB` |
 | Primitive + bundled NPO production-candidate body | `96,017` bytes / `93.8 KiB` |
-| NPO prove time | `10.142s` |
-| Total primitive + NPO prove time | `10.148s` |
-| Total verify time | `63.4ms` |
+| NPO prove time | `9.913s` |
+| Total primitive + NPO prove time | `9.918s` |
+| Total verify time | `62.5ms` |
 
 That test is intentionally small. It proves a synthetic NPO-only Tip5 circuit,
 not the full `ai-pow-zk` composite verifier. A full composite diagnostic,
@@ -580,9 +608,9 @@ builds the actual L1 verifier circuit, binds the assignment root plus the
 selected+lookup and bundled trace roots, proves the primitive row-product
 component, proves the merged value bridge from the prepared selected+lookup
 PCS data, and then attempts the integrated polynomial NPO proof. The latest
-release/native run reached `14.702s` primitive prove and `2.355s` merged
+release/native run reached `14.435s` primitive prove and `2.340s` merged
 padding/value-bridge prove, then stayed inside the integrated Tip5
-`air_quotient_matrix` phase for more than two minutes and was stopped. This
+`air_quotient_matrix` phase for more than 90 seconds and was stopped. This
 already violates the `<30s` production proving constraint, so the synthetic
 `93.8 KiB` checkpoint must not be treated as evidence that the full composite
 recursive certificate path meets the milestone without additional prover
@@ -594,24 +622,24 @@ integrated Tip5 LogUp subproof:
 
 | Full composite integrated-LogUp phase | Time |
 |---|---:|
-| Layer-0 proof generation for the diagnostic fixture | `31.983s` |
-| L1 verifier-circuit build | `0.469s` |
+| Layer-0 proof generation for the diagnostic fixture | `29.834s` |
+| L1 verifier-circuit build | `0.417s` |
 | L1 verifier trace execution | `0.044s` |
-| Terminal compile | `7.539s` |
-| Assignment oracle commitment | `5.933s` |
-| Selected+lookup root construction | `11.135s` total, including `4.16s` selected+lookup commit |
-| Bundled trace root construction | `6.678s` total, including `6.25s` trace-bundle commit |
-| Terminal prelude build | `7.468s` |
-| Primitive R1CS row-product proof | `14.702s` |
-| Merged padding/value-bridge proof | `2.355s` |
-| Integrated Tip5 LogUp proof | stopped after more than two minutes inside `air_quotient_matrix` |
+| Terminal compile | `7.543s` |
+| Assignment oracle commitment | `5.793s` |
+| Selected+lookup root construction | `11.075s` total, including `3.85s` selected+lookup commit |
+| Bundled trace root construction | `6.261s` total, including `5.84s` trace-bundle commit |
+| Terminal prelude build | `7.600s` |
+| Primitive R1CS row-product proof | `14.435s` |
+| Merged padding/value-bridge proof | `2.340s` |
+| Integrated Tip5 LogUp proof | stopped after more than 90 seconds inside `air_quotient_matrix` |
 
 The cumulative recursive-side work before the integrated Tip5 LogUp proof
 finishes is already far beyond the production proving budget. The selected
 lookup and trace-bundle root construction phases are now reused by the subproof
-provers instead of rebuilt internally, which cuts merged proving to `2.355s`.
+provers instead of rebuilt internally, which cuts merged proving to `2.340s`.
 That still cannot make this candidate production-viable by itself: primitive
-proving remains `14.702s`, and the integrated Tip5 AIR quotient had not
+proving remains `14.435s`, and the integrated Tip5 AIR quotient had not
 completed.
 
 A later PROD merged padding/value-bridge run fixes the Merkle-direction value
@@ -625,7 +653,7 @@ NPO)` body is `151,448` bytes and post-prelude serial proof-body construction
 is `14.914s` (`8.372s` primitive plus `6.541s` merged NPO). That makes it the
 best full-composite partial checkpoint so far. The most promising complete
 proof shape is the integrated-LogUp bundled masked-IO path measured above at
-`96,017` bytes / `10.148s` in the synthetic backend, but its full-composite
+`96,017` bytes / `9.918s` in the synthetic backend, but its full-composite
 integrated subproof still misses the time gate. Neither checkpoint is a
 production certificate yet: the merged full-composite proof leaves the Tip5
 lookup/AIR/LogUp relation outside the theorem, and the integrated proof shape
@@ -1198,11 +1226,11 @@ solution:
   so this path currently misses the proving-time gate before it can be
   considered for promotion.
 - Phase instrumentation shows that before the integrated Tip5 LogUp subproof
-  finishes, the full composite candidate still spends `14.702s` proving the
+  finishes, the full composite candidate still spends `14.435s` proving the
   primitive component and then remains inside the integrated AIR quotient for
-  more than two minutes. Prepared selected+lookup reuse cuts the merged
-  padding/value bridge to `2.355s`, so that component is no longer the first
-  recursive-side bottleneck.
+  more than 90 seconds after quotient-loop cleanup. Prepared selected+lookup
+  reuse cuts the merged padding/value bridge to `2.340s`, so that component is
+  no longer the first recursive-side bottleneck.
 - The full production certificate can tolerate roughly `75-78 KiB` of NPO
   payload after the primitive R1CS component and certificate framing. A unified
   proof must therefore cut the NPO payload by about `125 KiB`.
