@@ -25,6 +25,61 @@ use crate::batch_stark_prover::{
 use crate::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
 
+fn prove_babybear_public_plus_const(
+    constant: u64,
+    extra_addend: Option<u64>,
+) -> (
+    BatchStarkProver<BabyBearConfig>,
+    BatchStarkProof<BabyBearConfig>,
+    CircuitProverData<BabyBearConfig>,
+) {
+    let mut builder = CircuitBuilder::<BabyBear>::new();
+    let x = builder.public_input();
+    let expected = builder.public_input();
+    let c = builder.define_const(BabyBear::from_u64(constant));
+    let mut sum = builder.add(x, c);
+    let mut expected_output = 7 + constant;
+    if let Some(extra) = extra_addend {
+        let c_extra = builder.define_const(BabyBear::from_u64(extra));
+        sum = builder.add(sum, c_extra);
+        expected_output += extra;
+    }
+    let diff = builder.sub(sum, expected);
+    builder.assert_zero(diff);
+
+    let circuit = builder.build().unwrap();
+    let cfg = config::baby_bear();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+            &circuit,
+            &TablePacking::default(),
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&[
+            BabyBear::from_u64(7),
+            BabyBear::from_u64(expected_output),
+        ])
+        .unwrap();
+    let traces = runner.run().unwrap();
+
+    let prover = BatchStarkProver::new(cfg);
+    let proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .unwrap();
+    prover.verify_all_tables(&proof).unwrap();
+    (prover, proof, circuit_prover_data)
+}
+
 #[test]
 fn test_babybear_batch_stark_base_field() {
     let mut builder = CircuitBuilder::<BabyBear>::new();
@@ -1000,6 +1055,44 @@ fn test_stark_serialization_round_trip() {
     prover
         .verify_all_tables(&deserialized)
         .expect("verification uses proof.stark_common");
+}
+
+#[test]
+fn test_compact_preprocessed_ood_round_trip_uses_canonical_setup() {
+    let (prover, proof, circuit_prover_data) = prove_babybear_public_plus_const(10, None);
+    let full_bytes = postcard::to_allocvec(&proof).expect("serialize full proof");
+    let compact = PreprocessedOodCompactBatchStarkProof::from_full(proof);
+    let compact_bytes = postcard::to_allocvec(&compact).expect("serialize compact proof");
+    assert!(
+        compact_bytes.len() < full_bytes.len(),
+        "compact proof should omit preprocessed OOD bytes: full={}, compact={}",
+        full_bytes.len(),
+        compact_bytes.len()
+    );
+
+    let compact: PreprocessedOodCompactBatchStarkProof<BabyBearConfig> =
+        postcard::from_bytes(&compact_bytes).expect("deserialize compact proof");
+    prover
+        .verify_all_tables(&compact.proof)
+        .expect_err("normal verifier must reject missing preprocessed OOD openings");
+    prover
+        .verify_compact_preprocessed_ood(compact, &circuit_prover_data)
+        .expect("compact verifier restores omitted preprocessed OOD openings");
+}
+
+#[test]
+fn test_compact_preprocessed_ood_rejects_wrong_setup_binding() {
+    let (prover, proof, _) = prove_babybear_public_plus_const(10, None);
+    let (_, _, wrong_setup) = prove_babybear_public_plus_const(10, Some(1));
+    let compact = PreprocessedOodCompactBatchStarkProof::from_full(proof);
+
+    let err = prover
+        .verify_compact_preprocessed_ood(compact, &wrong_setup)
+        .expect_err("compact verifier must bind restoration to canonical setup");
+    assert!(
+        format!("{err:?}").contains("canonical setup binding"),
+        "unexpected error: {err:?}"
+    );
 }
 
 // --- Proof-metadata validation after deserialization ---------------------------

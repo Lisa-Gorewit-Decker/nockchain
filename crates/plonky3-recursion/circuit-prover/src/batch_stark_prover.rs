@@ -9,24 +9,32 @@ use alloc::{format, vec};
 
 #[cfg(debug_assertions)]
 use p3_air::DebugConstraintBuilder;
+use p3_air::symbolic::AirLayout;
 use p3_air::{Air, BaseAir};
 use p3_batch_stark::common::{GlobalPreprocessed, PreprocessedInstanceMeta};
-use p3_batch_stark::{BatchProof, CommonData, ProverData, StarkGenericConfig, StarkInstance, Val};
+use p3_batch_stark::symbolic::get_log_num_quotient_chunks as get_batch_log_num_quotient_chunks;
+use p3_batch_stark::{
+    BatchProof, BatchTranscript, CommonData, Domain, ProverData, StarkGenericConfig,
+    StarkInstance, Val,
+};
 use p3_circuit::ops::{
     NonPrimitivePreprocessedMap, NpoTypeId, Poseidon1Config, Poseidon2Config, PrimitiveOpType,
     Tip5Config,
 };
 use p3_circuit::tables::Traces;
-use p3_commit::Pcs;
+use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
-use p3_field::{Algebra, BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
+use p3_field::{
+    Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField,
+};
+use p3_lookup::logup::LogUpGadget;
 use p3_lookup::Lookups;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
-use p3_util::log2_strict_usize;
+use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt, validate_degree_bits};
+use p3_util::{checked_log_size_sum, log2_strict_usize};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::instrument;
@@ -529,6 +537,70 @@ where
     /// Common data derived from the final table AIRs after trace construction.
     #[serde(with = "serde_stark_common")]
     pub stark_common: CommonData<SC>,
+}
+
+/// Compact projection of [`BatchStarkProof`] that omits verifier-deterministic
+/// out-of-domain openings for preprocessed columns.
+///
+/// This is **not** a standalone proof format. Verification must provide the
+/// canonical [`CircuitProverData`] for the statement being verified. The verifier
+/// first checks that the canonical setup's preprocessed commitment/metadata is
+/// exactly the binding serialized in [`BatchStarkProof::stark_common`], then
+/// recomputes the omitted `preprocessed_local` / `preprocessed_next` OOD values
+/// from that setup before delegating to `p3-batch-stark` verification.
+///
+/// Soundness invariant: the omitted values are never trusted from the prover and
+/// are never skipped in the Fiat-Shamir transcript. They are restored before the
+/// upstream verifier observes PCS openings, so the transcript and AIR checks are
+/// identical to a full proof with those openings serialized.
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct PreprocessedOodCompactBatchStarkProof<SC>
+where
+    SC: StarkGenericConfig,
+{
+    /// The full batch proof metadata and cryptographic proof, with
+    /// `proof.opened_values.instances[*].base_opened_values.preprocessed_*`
+    /// omitted where the verifier can recompute them from canonical setup data.
+    pub proof: BatchStarkProof<SC>,
+}
+
+impl<SC> PreprocessedOodCompactBatchStarkProof<SC>
+where
+    SC: StarkGenericConfig,
+{
+    /// Build a compact proof by consuming a full proof and clearing all
+    /// serialized preprocessed OOD openings.
+    pub fn from_full(mut proof: BatchStarkProof<SC>) -> Self {
+        omit_preprocessed_ood_openings(&mut proof.proof);
+        Self { proof }
+    }
+
+    /// Consume the compact wrapper and return its inner proof object.
+    pub fn into_inner(self) -> BatchStarkProof<SC> {
+        self.proof
+    }
+}
+
+fn omit_preprocessed_ood_openings<SC>(proof: &mut BatchProof<SC>) -> usize
+where
+    SC: StarkGenericConfig,
+{
+    proof
+        .opened_values
+        .instances
+        .iter_mut()
+        .map(|inst| {
+            let mut omitted = 0;
+            if inst.base_opened_values.preprocessed_local.take().is_some() {
+                omitted += 1;
+            }
+            if inst.base_opened_values.preprocessed_next.take().is_some() {
+                omitted += 1;
+            }
+            omitted
+        })
+        .sum()
 }
 
 impl<SC> core::fmt::Debug for BatchStarkProof<SC>
@@ -1144,6 +1216,60 @@ where
         }
     }
 
+    /// Verify a compact proof whose preprocessed OOD openings were omitted.
+    ///
+    /// `canonical_setup` must be the setup data for the exact statement being
+    /// verified. Its preprocessed commitment and metadata are compared to the
+    /// proof's serialized `stark_common` before any omitted value is restored.
+    pub fn verify_compact_preprocessed_ood(
+        &self,
+        proof: PreprocessedOodCompactBatchStarkProof<SC>,
+        canonical_setup: &CircuitProverData<SC>,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: PartialEq,
+    {
+        self.verify_compact_preprocessed_ood_with_public_values(proof, &[], canonical_setup)
+    }
+
+    /// Verify a compact proof while binding leading Public-table lanes.
+    ///
+    /// This restores omitted preprocessed OOD openings from `canonical_setup`
+    /// and then runs the same `p3-batch-stark` verifier used for full proofs.
+    pub fn verify_compact_preprocessed_ood_with_public_values(
+        &self,
+        proof: PreprocessedOodCompactBatchStarkProof<SC>,
+        public_values: &[Val<SC>],
+        canonical_setup: &CircuitProverData<SC>,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: PartialEq,
+    {
+        proof.proof.validate()?;
+        if !common_preprocessed_binding_eq(
+            &proof.proof.stark_common,
+            &canonical_setup.prover_data.common,
+        ) {
+            return Err(BatchStarkProverError::Verify(
+                String::from(
+                    "compact preprocessed OOD proof does not match canonical setup binding",
+                ),
+            ));
+        }
+
+        let ext_degree = proof.proof.ext_degree;
+        let w_binomial = proof.proof.w_binomial;
+        match ext_degree {
+            1 => self.verify_compact::<1>(proof, None, public_values, canonical_setup),
+            2 => self.verify_compact::<2>(proof, w_binomial, public_values, canonical_setup),
+            4 => self.verify_compact::<4>(proof, w_binomial, public_values, canonical_setup),
+            5 => self.verify_compact::<5>(proof, w_binomial, public_values, canonical_setup),
+            6 => self.verify_compact::<6>(proof, w_binomial, public_values, canonical_setup),
+            8 => self.verify_compact::<8>(proof, w_binomial, public_values, canonical_setup),
+            d => Err(BatchStarkProverError::UnsupportedDegree(d)),
+        }
+    }
+
     /// Generate a batch STARK proof for a specific extension field degree.
     ///
     /// This is the core proving logic that handles all circuit tables for a given
@@ -1560,6 +1686,68 @@ where
         common: &CommonData<SC>,
         public_values: &[Val<SC>],
     ) -> Result<(), BatchStarkProverError> {
+        let (airs, pvs, effective_common) =
+            self.rebuild_verifier_statement::<D>(proof, w_binomial, common, public_values)?;
+
+        p3_batch_stark::verify_batch(
+            &self.config,
+            &airs,
+            &proof.proof,
+            &pvs,
+            &effective_common,
+        )
+        .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
+    }
+
+    fn verify_compact<const D: usize>(
+        &self,
+        proof: PreprocessedOodCompactBatchStarkProof<SC>,
+        w_binomial: Option<Val<SC>>,
+        public_values: &[Val<SC>],
+        canonical_setup: &CircuitProverData<SC>,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: PartialEq,
+    {
+        let mut proof = proof.into_inner();
+        let (airs, pvs, effective_common) = self.rebuild_verifier_statement::<D>(
+            &proof,
+            w_binomial,
+            &proof.stark_common,
+            public_values,
+        )?;
+        self.restore_preprocessed_ood_openings::<D>(
+            &mut proof.proof,
+            &airs,
+            &pvs,
+            &effective_common,
+            canonical_setup,
+        )?;
+
+        p3_batch_stark::verify_batch(
+            &self.config,
+            &airs,
+            &proof.proof,
+            &pvs,
+            &effective_common,
+        )
+        .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
+    }
+
+    fn rebuild_verifier_statement<const D: usize>(
+        &self,
+        proof: &BatchStarkProof<SC>,
+        w_binomial: Option<Val<SC>>,
+        common: &CommonData<SC>,
+        public_values: &[Val<SC>],
+    ) -> Result<
+        (
+            Vec<CircuitTableAir<SC, D>>,
+            Vec<Vec<Val<SC>>>,
+            CommonData<SC>,
+        ),
+        BatchStarkProverError,
+    > {
         let expected_public_values = proof.public_binding_lanes * D;
         if public_values.len() != expected_public_values {
             return Err(BatchStarkProverError::Verify(format!(
@@ -1656,9 +1844,221 @@ where
             lookups,
         );
 
-        p3_batch_stark::verify_batch(&self.config, &airs, &proof.proof, &pvs, &effective_common)
-            .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
+        Ok((airs, pvs, effective_common))
     }
+
+    fn restore_preprocessed_ood_openings<const D: usize>(
+        &self,
+        proof: &mut BatchProof<SC>,
+        airs: &[CircuitTableAir<SC, D>],
+        public_values: &[Vec<Val<SC>>],
+        common: &CommonData<SC>,
+        canonical_setup: &CircuitProverData<SC>,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: PartialEq,
+    {
+        let Some(global) = &common.preprocessed else {
+            return Ok(());
+        };
+        if !common_preprocessed_binding_eq(common, &canonical_setup.prover_data.common) {
+            return Err(BatchStarkProverError::Verify(
+                String::from(
+                    "canonical setup preprocessed binding changed during compact verification",
+                ),
+            ));
+        }
+        let preprocessed_prover_data = canonical_setup
+            .prover_data
+            .prover_only
+            .preprocessed_prover_data
+            .as_ref()
+            .ok_or_else(|| {
+                BatchStarkProverError::Verify(
+                    String::from("canonical setup lacks preprocessed prover data"),
+                )
+            })?;
+
+        let (zeta, trace_domains) =
+            self.sample_batch_zeta_and_trace_domains(airs, proof, public_values, common)?;
+        let pcs = self.config.pcs();
+
+        for (matrix_index, &inst_idx) in global.matrix_to_instance.iter().enumerate() {
+            let meta = global.instances.get(inst_idx).and_then(Option::as_ref).ok_or_else(|| {
+                BatchStarkProverError::Verify(format!(
+                    "missing preprocessed metadata for instance {inst_idx}"
+                ))
+            })?;
+            if meta.matrix_index != matrix_index {
+                return Err(BatchStarkProverError::Verify(format!(
+                    "preprocessed matrix metadata mismatch for instance {inst_idx}"
+                )));
+            }
+            if inst_idx >= proof.opened_values.instances.len() || inst_idx >= airs.len() {
+                return Err(BatchStarkProverError::Verify(format!(
+                    "preprocessed instance index {inst_idx} out of bounds"
+                )));
+            }
+
+            let pre_domain = pcs.natural_domain_for_degree(1 << meta.degree_bits);
+            let pre_evals = pcs.get_evaluations_on_domain_no_random(
+                preprocessed_prover_data,
+                matrix_index,
+                pre_domain,
+            );
+            let local = evaluate_matrix_columns_at(&pre_domain, &pre_evals, zeta);
+            let opened = &mut proof.opened_values.instances[inst_idx].base_opened_values;
+            match &opened.preprocessed_local {
+                Some(existing) if existing != &local => {
+                    return Err(BatchStarkProverError::Verify(format!(
+                        "serialized preprocessed local opening mismatch for instance {inst_idx}"
+                    )));
+                }
+                Some(_) => {}
+                None => opened.preprocessed_local = Some(local),
+            }
+
+            if !airs[inst_idx].preprocessed_next_row_columns().is_empty() {
+                let zeta_next = trace_domains[inst_idx]
+                    .next_point(zeta)
+                    .ok_or_else(|| {
+                        BatchStarkProverError::Verify(format!(
+                            "trace domain lacks next point for instance {inst_idx}"
+                        ))
+                    })?;
+                let next = evaluate_matrix_columns_at(&pre_domain, &pre_evals, zeta_next);
+                match &opened.preprocessed_next {
+                    Some(existing) if existing != &next => {
+                        return Err(BatchStarkProverError::Verify(format!(
+                            "serialized preprocessed next opening mismatch for instance {inst_idx}"
+                        )));
+                    }
+                    Some(_) => {}
+                    None => opened.preprocessed_next = Some(next),
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn sample_batch_zeta_and_trace_domains<const D: usize>(
+        &self,
+        airs: &[CircuitTableAir<SC, D>],
+        proof: &BatchProof<SC>,
+        public_values: &[Vec<Val<SC>>],
+        common: &CommonData<SC>,
+    ) -> Result<(SC::Challenge, Vec<Domain<SC>>), BatchStarkProverError> {
+        let all_lookups = &common.lookups;
+        if airs.len() != proof.opened_values.instances.len()
+            || airs.len() != public_values.len()
+            || airs.len() != proof.degree_bits.len()
+            || airs.len() != proof.global_lookup_data.len()
+            || airs.len() != all_lookups.len()
+        {
+            return Err(BatchStarkProverError::Verify(
+                String::from("compact proof instance metadata length mismatch"),
+            ));
+        }
+
+        let pcs = self.config.pcs();
+        let mut transcript = BatchTranscript::<SC>::new(self.config.initialise_challenger());
+        let lookup_gadget = LogUpGadget::new();
+
+        let mut preprocessed_widths = Vec::with_capacity(airs.len());
+        let mut base_degree_bits = Vec::with_capacity(airs.len());
+        let mut trace_domains = Vec::with_capacity(airs.len());
+        let mut num_quotient_chunks = Vec::with_capacity(airs.len());
+
+        for (i, air) in airs.iter().enumerate() {
+            let (base_db, ext_domain_size) = validate_degree_bits(
+                Some(i),
+                proof.degree_bits[i],
+                self.config.is_zk(),
+                pcs.log_max_lde_height(),
+            )
+            .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))?;
+            base_degree_bits.push(base_db);
+            trace_domains.push(pcs.natural_domain_for_degree(ext_domain_size >> self.config.is_zk()));
+
+            let pre_w = common
+                .preprocessed
+                .as_ref()
+                .and_then(|g| g.instances[i].as_ref().map(|m| m.width))
+                .unwrap_or(0);
+            preprocessed_widths.push(pre_w);
+
+            let layout = AirLayout {
+                preprocessed_width: pre_w,
+                main_width: air.width(),
+                num_public_values: air.num_public_values(),
+                num_periodic_columns: air.num_periodic_columns(),
+                ..Default::default()
+            };
+            let log_chunks =
+                get_batch_log_num_quotient_chunks::<Val<SC>, SC::Challenge, _, LogUpGadget>(
+                    air,
+                    layout,
+                    &all_lookups[i],
+                    self.config.is_zk(),
+                    &lookup_gadget,
+                );
+            let (_, chunks) = checked_log_size_sum(log_chunks, self.config.is_zk()).ok_or_else(
+                || {
+                    BatchStarkProverError::Verify(format!(
+                        "quotient domain too large for instance {i}: log chunks {log_chunks}"
+                    ))
+                },
+            )?;
+            num_quotient_chunks.push(chunks);
+        }
+
+        transcript.observe_instance_count(airs.len());
+        for (i, air) in airs.iter().enumerate() {
+            transcript.observe_instance_binding(
+                proof.degree_bits[i],
+                base_degree_bits[i],
+                air.width(),
+                num_quotient_chunks[i],
+            );
+        }
+        transcript.observe_main(&proof.commitments.main, public_values);
+        transcript.observe_preprocessed(&preprocessed_widths, common.preprocessed.as_ref());
+        let _ = transcript.sample_perm_challenges(all_lookups, &lookup_gadget);
+        let _ = transcript.observe_perm_and_sample_alpha(
+            proof.commitments.permutation.as_ref(),
+            &proof.global_lookup_data,
+        );
+        transcript.observe_quotient_commitment(&proof.commitments.quotient_chunks);
+        if let Some(random_commitment) = &proof.commitments.random {
+            transcript.observe_random_commitment(random_commitment);
+        }
+
+        Ok((transcript.sample_zeta(), trace_domains))
+    }
+}
+
+fn evaluate_matrix_columns_at<F, EF, D, M>(domain: &D, matrix: &M, point: EF) -> Vec<EF>
+where
+    F: Field,
+    EF: ExtensionField<F>,
+    D: PolynomialSpace<Val = F>,
+    M: Matrix<F>,
+{
+    let height = matrix.height();
+    let width = matrix.width();
+    (0..width)
+        .map(|col| {
+            let evals = (0..height)
+                .map(|row| {
+                    matrix
+                        .get(row, col)
+                        .expect("row/column are in bounds by construction")
+                })
+                .collect::<Vec<_>>();
+            domain.evaluate_polynomial_at(&evals, point)
+        })
+        .collect()
 }
 
 /// Poseidon2 AIR builders for the given extension degree `D` (typically `2` or `4`).
