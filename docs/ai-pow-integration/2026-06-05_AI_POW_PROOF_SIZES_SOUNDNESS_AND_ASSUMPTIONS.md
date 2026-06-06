@@ -41,10 +41,10 @@ must not be treated as the production block/wire artifact.
 | Fast-L1 pure-query L2-over-L1 batch-STARK sweep | Diagnostic for pairing the only sub-30s L1 profile with the actual compact final-layer body; verifies after the Tip5 MMCS direction-binding fix, but still misses size/time jointly | Shared fast L1 `lb=3,nq=20,cap=4`: `279,719` bytes, L1 prove `25.178s`; compact-body L2 `lb=4,nq=15,cap=4`: `174,707` bytes, L2 prove `25.245s`; compact-body L2 `lb=5,nq=12,cap=4`: `145,695` bytes, L2 prove `48.530s`; compact-body L2 `lb=6,nq=10,cap=4`: `129,804` bytes, L2 prove `98.584s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_fast_l1_statement_bound_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
 | Native terminal certificate fixture | Recursion-crate terminal proof over the real Tip5 verifier-circuit fixture; proves the terminal backend can be small, but is not yet the full `ai-pow-zk` composite verifier path | `85,948` bytes / `83.9 KiB`; release prove `1.492s`, verify `1.181s` | `RUSTFLAGS="-C target-cpu=native" cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --release --test test_l1_outer_cert_tip5_unified terminal_production_certificate_measures_real_tip5_l0_verifier_circuit -- --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier native terminal path | Opt-in diagnostic path for the actual composite L1 verifier circuit; not yet production-qualified because it misses both size and time gates | `lb=6,nq=10,pow=0` reduced-profile run after compact known-index proof encoding: terminal certificate `766,069` bytes / `748.1 KiB`; terminal public inputs `5,180` bytes; postcard wire certificate `771,249` bytes / `753.2 KiB`; release prove `80.829s`, verify `58.825s` | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_recursive_certificate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
-| Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed size measurement. First release/native command compiled in `1m57s`, then the test binary ran for more than `7m35s` without reaching the final size/timing print and was stopped. A phase-instrumented rerun compiled in `1m42s` and showed `38.235s` primitive prove plus `51.902s` merged value-bridge prove before the integrated Tip5 LogUp subproof finished | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
+| Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed full-composite size measurement. Latest release/native rerun compiled in `2m00s`, then reached `14.546s` primitive prove and `20.271s` merged padding/value-bridge prove before the integrated Tip5 LogUp subproof continued running and was stopped. The recursion-crate synthetic backend checkpoint for the same proof shape is small and fast: `96,017` bytes / `93.8 KiB`, total prove `25.117s`, verify `62.7ms`. | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-06 |
 | Full `ai-pow-zk` composite-verifier terminal relation metrics | Non-proving diagnostic for the same path | PROD baseline: `125,961` ops, `221,989` witnesses, `43,443` terminal private inputs, `14,049` NPO rows, `242,798` NPO residual components, `5,319` bytes of terminal public inputs, terminal compile `20.943s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_for_prod_baseline_composite_are_available -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier FRI-native NPO residual-zero floor | Diagnostic only; measures the actual composite L1 verifier NPO polynomial layout and the FRI-native residual-zero body. After the terminal Tip5 Merkle-direction mapping fix, this residual-zero layer verifies, but it is not by itself a production-sound recursive proof because the remaining NPO quotient/value-bridge/lookup and primitive-row relations still have to be included or replaced by documented bindings. | Layout: `14,049` NPO rows, `16,384` padded rows, `89` prover-dependent field columns / `178` basis columns, residual-zero opened-column floor `180` basis columns. Proof body `55,344` bytes with `54,023` bytes compact FRI; `0` nonzero residual values; status `verified`; prove `19.635s`, verify `11.930s`, total diagnostic wall `87.229s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_fri_native_residual_zero_candidate_for_prod_baseline_measures -- --ignored --nocapture`, 2026-06-06 |
-| Full `ai-pow-zk` composite-verifier FRI-native merged value-bridge candidate | Diagnostic only; serializes the terminal prelude, primitive R1CS row-product proof, and one merged residual-zero/recompose/value-bridge NPO proof over the actual composite L1 verifier relation. It verifies after the direction-aware value-bridge fix, but is not production-qualified because the Tip5 lookup/AIR/LogUp binding and explicit `mmcs_bit` padding/boolean/present constraints still have to be in the final theorem. | Body `150,006` bytes / `146.5 KiB`: prelude `240`, primitive R1CS `57,501`, merged value bridge `92,265`, merged compact FRI `90,109`. After reusing the primitive sparse relation/assignment vector, preparing merged NPO data once for the prelude, switching proof calls to prelude-checked prover entry points, and replacing the value-bridge quotient's per-point interpolation with a batched coset LDE: post-prelude proof body construction is `16.159s` serial (`9.232s` primitive, `6.927s` merged value bridge), verify `47.907s`, total diagnostic wall `118.017s`, status `verified`. The full diagnostic setup still includes L0 prove `8.356s`, terminal compile `11.034s`, assignment commitment `7.522s`, prepared merged NPO root `15.682s`, and prelude construction `11.023s`. Primitive split remains assignment evaluation `55,025` bytes, including `53,586` bytes of fold-round openings and `48,462` bytes / `1,211` nodes of Merkle frontier. | `NOCK_TERMINAL_PROFILE_PROVER=1 RUST_LOG=p3_recursion::terminal=info RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_merged_value_bridge_candidate_for_prod_baseline_measures -- --ignored --nocapture`, 2026-06-06 |
+| Full `ai-pow-zk` composite-verifier FRI-native merged padding/value-bridge candidate | Diagnostic only; serializes the terminal prelude, primitive R1CS row-product proof, and one merged residual-zero/recompose/padding/value-bridge NPO proof over the actual composite L1 verifier relation. It verifies after the direction-aware value bridge and dynamic hidden-selector padding fixes, but is not production-qualified because the Tip5 lookup/AIR/LogUp binding still has to be in the final theorem. | Body `151,448` bytes / `147.9 KiB`: prelude `240`, primitive R1CS `57,501`, merged NPO proof `93,707`, merged compact FRI `91,501`. The proof folds mixed value padding, `mmcs_bit` zero-when-absent and booleanity, dynamic hidden Tip5 padding, new-start zero constraints, Merkle capacity-zero constraints, recompose value semantics, residual-zero, recompose quotient, and the direction-aware value bridge into one NPO FRI proof with a combined padding+value-bridge quotient commitment. Post-prelude proof body construction is `14.914s` serial (`8.372s` primitive, `6.541s` merged NPO), verify `43.794s`, total diagnostic wall `108.606s`, status `verified`. Full diagnostic setup still includes terminal compile `10.153s`, assignment commitment `6.843s`, prepared merged NPO root `14.661s`, and prelude construction `10.031s`. Primitive split remains assignment evaluation `55,025` bytes, including `53,586` bytes of fold-round openings and `48,462` bytes / `1,211` nodes of Merkle frontier. | `NOCK_TERMINAL_PROFILE_PROVER=1 RUST_LOG=p3_recursion::terminal=info RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_merged_value_bridge_candidate_for_prod_baseline_measures -- --ignored --nocapture`, 2026-06-06 |
 | Full `ai-pow-zk` composite-verifier terminal assignment compact-FRI floor | Unsound diagnostic lower bound only; commits the terminal assignment vector as one FRI column and verifies a compact FRI opening. This does not replace the production assignment-evaluation proof because it does not prove the univariate FRI opening equals the multilinear assignment evaluation at the sparse-R1CS matrix-sumcheck point. | Proof `56,307` bytes: compact FRI `56,202`, opened values `41`, rows `222,449`, padded rows `262,144`, basis columns `2`, assignment length `222,449`; L1 trace verify `83ms`, terminal compile `11.080s`, assignment commit `7.542s`, prelude `10.917s`, FRI-floor prove `18.233s`, FRI-floor verify `9ms`, total wall `56.526s`. It is slightly larger than the current `55,025` byte Merkle-fold assignment evaluation proof, though faster to prove in isolation. | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_assignment_compact_fri_floor_for_prod_baseline_measures -- --ignored --nocapture`, 2026-06-06 |
 | Recompose/coeff terminal relation lower bound | Unsound diagnostic only; disables the D=2 coefficient-control binding to quantify whether replacing that table could be a primary size lever | Production binding: `125,961` ops, `106,349` primitive ops, `14,049` NPO rows, `5,743` recompose/coeff rows. Disabled binding: `125,571` ops, same `106,349` primitive ops, `13,659` NPO rows, `0` recompose/coeff rows but `5,578` ordinary recompose rows. Net unsound saving: only `390` ops/NPO rows and no primitive arithmetic | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_recompose_ctl_lower_bound_for_prod_baseline_composite -- --ignored --nocapture`, 2026-06-06 |
 | Layer-0 pinned+LogUp baseline proof breakdown | Diagnostic for the specialized AI-PoW AIR that a Pearl-shaped recursive compressor would consume; not a production wire artifact | `lb=4,nq=15,pow=0`: bincode proof `260,987` bytes / `254.9 KiB`, opening proof `229,849` bytes, prove `8.695s`; `lb=6,nq=10,pow=0`: bincode proof `199,882` bytes / `195.2 KiB`, opening proof `168,744` bytes, prove `32.314s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release composite_pinned_logup_prod_l0_size_breakdown -- --ignored --nocapture` and `... composite_pinned_logup_lb6_nq10_l0_size_breakdown ...`, 2026-06-05 |
@@ -65,13 +65,15 @@ The active production target is therefore:
   **771,249 bytes / 753.2 KiB**, with release prove **80.829s** and verify
   **58.825s**, so this path misses both the about-100 KiB and `<30s` gates.
 - full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO
-  candidate: now has an opt-in measurement test, but the release/native runs
-  show it is far outside the proving-time gate. The first run did not complete
-  after more than **7m35s** in the test binary. The phase-instrumented rerun
-  showed **38.235s** primitive prove plus **51.902s** merged value-bridge prove
-  before the integrated Tip5 LogUp subproof finished, so the small synthetic
-  **94.0 KiB / 23.070s** checkpoint cannot be promoted as the production
-  recursive path.
+  candidate: now has an opt-in measurement test, but the release/native full
+  composite run still misses the proving-time gate. The latest rerun compiled
+  in **2m00s**, then reached **14.546s** primitive prove plus **20.271s**
+  merged padding/value-bridge prove before the integrated Tip5 LogUp subproof
+  continued running and was stopped. The same proof shape is promising on the
+  recursion-crate synthetic backend, where the production-candidate body is
+  **96,017 bytes / 93.8 KiB** and total primitive+NPO prove time is
+  **25.117s**, but that cannot be promoted as the full composite recursive
+  path without reducing the full relation's integrated subproof cost.
 - full `ai-pow-zk` composite-verifier FRI-native NPO residual-zero floor: the
   actual composite relation has a plausible byte floor, with a **55,344 byte**
   residual-zero proof body and **54,023 byte** compact FRI payload over
@@ -89,20 +91,21 @@ The active production target is therefore:
   lanes are witness inputs versus hidden values. A production bridge must prove
   that bus-to-trace projection or commit/constrain direction-dependent
   trace-lane selectors.
-- full `ai-pow-zk` composite-verifier merged value-bridge candidate: the next
-  checkpoint now verifies over the actual composite relation and serializes to
-  **150,006 bytes / 146.5 KiB** for `(prelude, primitive R1CS row-product,
-  merged residual-zero/recompose/value-bridge)`. The merged NPO proof alone is
-  **92,265 bytes** with a **90,109 byte** compact FRI payload. This is close to
-  the relaxed `150 KiB` size gate, and after prover-work reuse the
-  post-prelude proof body builds in **16.159s** serial
-  (**9.232s** primitive, **6.927s** merged value bridge). It is still not the
-  production theorem: it binds the `mmcs_bit`-selected
-  bus-to-trace value projection, but the final stack must also include the
-  Tip5 lookup/AIR/LogUp relation and the separate `mmcs_bit`
-  zero-when-absent, booleanity, and value-padding constraints. Full diagnostic
-  wall time remains **118.017s** because setup and verification are outside
-  the post-prelude proof-body timer.
+- full `ai-pow-zk` composite-verifier merged padding/value-bridge candidate:
+  the next checkpoint now verifies over the actual composite relation and
+  serializes to **151,448 bytes / 147.9 KiB** for `(prelude, primitive R1CS
+  row-product, merged residual-zero/recompose/padding/value-bridge)`. The
+  merged NPO proof alone is **93,707 bytes** with a **91,501 byte** compact FRI
+  payload. This is under a binary `150 KiB` relaxed size gate and only
+  **1,448 bytes** over a strict decimal `150,000` byte gate. After prover-work
+  reuse the post-prelude proof body builds in **14.914s** serial
+  (**8.372s** primitive, **6.541s** merged NPO). It is still not the production
+  theorem: it now binds the `mmcs_bit`-selected bus-to-trace value projection,
+  mixed value padding, `mmcs_bit` zero/boolean constraints, dynamic hidden Tip5
+  padding, new-start zero constraints, Merkle capacity-zero constraints, and
+  recompose value semantics, but the final stack must still include the Tip5
+  lookup/AIR/LogUp relation. Full diagnostic wall time remains **108.606s**
+  because setup and verification are outside the post-prelude proof-body timer.
 - specialized Layer-0 pinned+LogUp proof breakdown: the existing AI-PoW AIR
   proof is still too large to submit directly. The pure-query production
   baseline measured **260,987 bytes / 254.9 KiB** as bincode, dominated by a
@@ -415,16 +418,19 @@ not acceptable as an unqualified production default.
 
 The integrated-LogUp polynomial NPO backend is not a production escape hatch
 for this full composite path yet. In the recursion crate's synthetic NPO-only
-Tip5 test, the bundled checkpoint measures `95,403` bytes and the primitive
-plus NPO candidate body measures `96,219` bytes with `23.070s` total prove
-time. The full composite diagnostic added after this audit binds the assignment
-root plus the merged NPO and bundled Tip5 FRI roots, then proves the primitive
-row-product component and attempts the integrated NPO proof over the actual
-AI-PoW L1 verifier relation. The release/native run did not reach its final
-size print after more than `7m35s` in the test binary, which is enough to
-reject it for the current `<30s` production proving gate. It remains a
-soundness and size-reduction research path, not the active production recursive
-certificate backend.
+Tip5 test, the bundled checkpoint measures `95,201` bytes and the primitive
+plus NPO candidate body measures `96,017` bytes with `25.117s` total prove
+time. That is the strongest evidence for the proof shape: one native terminal
+backend, one prelude, a merged padding/value bridge, and an integrated
+AIR+LogUp/support/NPO-IO LogUp proof with bundled masked IO. The full composite
+diagnostic binds the assignment root plus the merged NPO and bundled Tip5 FRI
+roots, then proves the primitive row-product component and attempts the
+integrated NPO proof over the actual AI-PoW L1 verifier relation. The
+release/native full-composite run did not reach its final size print; it
+already spent `14.546s` in primitive proving plus `20.271s` in the merged
+padding/value bridge before the integrated Tip5 LogUp subproof completed. It
+therefore remains the leading proof-shape direction, not the active production
+recursive certificate backend.
 
 The newer FRI-native compact residual-zero checkpoint is much more promising
 on bytes, and the full-composite residual-zero layer now verifies after fixing
@@ -443,32 +449,41 @@ still needs to be shared: L0 proving, terminal compile, NPO-column
 construction, root building, prelude construction, the residual-zero proof, and
 verification took `87.229s` wall time in aggregate.
 
-The follow-up merged value-bridge checkpoint includes the residual-zero layer,
-the recompose quotient, and the NPO-row value bridge in one FRI-native proof,
-then serializes it with the same terminal prelude and primitive row-product
-component. It verifies over the full composite relation with body `150,006`
-bytes: `240` bytes of prelude, `57,501` bytes of primitive proof, and `92,265`
-bytes of merged NPO proof with `90,109` bytes of compact FRI material. After
-reusing primitive relation/assignment data, preparing merged NPO data once,
-using prelude-checked prover calls, and evaluating the value-bridge quotient by
-batched coset LDE, post-prelude proof-body construction is `16.159s` serial:
-`9.232s` for the primitive row-product proof plus `6.927s` for the merged
-value-bridge proof. Full diagnostic wall time is still `118.017s` because L0
-prove, terminal compile, assignment commitment, prepared NPO-root construction,
-prelude construction, and verification are outside that proof-body timer.
+The follow-up merged padding/value-bridge checkpoint includes the
+residual-zero layer, the recompose quotient, the mixed value-padding quotient,
+and the NPO-row value bridge in one FRI-native proof, then serializes it with
+the same terminal prelude and primitive row-product component. It verifies over
+the full composite relation with body `151,448` bytes: `240` bytes of prelude,
+`57,501` bytes of primitive proof, and `93,707` bytes of merged NPO proof with
+`91,501` bytes of compact FRI material. After reusing primitive
+relation/assignment data, preparing merged NPO data once, using
+prelude-checked prover calls, and evaluating both padding and value-bridge
+quotients by batched coset LDE under one combined quotient commitment,
+post-prelude proof-body construction is `14.914s` serial: `8.372s` for the
+primitive row-product proof plus `6.541s` for the merged NPO proof. Full
+diagnostic wall time is still `108.606s` because terminal compile, assignment
+commitment, prepared NPO-root construction, prelude construction, verification,
+and other setup are outside that proof-body timer.
+
 The bridge now uses the committed `mmcs_bit` to select the bus-to-trace
 projection for Merkle Tip5 rows, so `mmcs_bit=1` swaps the input and hidden
-lanes consistently with the lookup/AIR trace. Keeping this quotient inside the
-existing degree profile means the final production stack must separately prove
-that `mmcs_bit` is boolean, zero when not present, and padded consistently with
-the row mode; the value bridge alone should not be read as that padding proof.
-A 2026-06-06 attempt to append that padding/MMCS-bit quotient inside the same
-merged FRI object was not retained: the full-composite honest proof rejected
-with `npo_value_relation_quotient`, and a partially corrected mixed-LDE/direct
-variant spent about `78.8s`-`82.0s` in `padding_quotient_matrix`, raising the
-merged NPO prove phase to about `87s`-`90s`. A production version must fix the
-padding selector taxonomy for the full composite relation and batch the
-remaining constraints without per-point quotient evaluation.
+lanes consistently with the lookup/AIR trace. The padding quotient now proves
+mixed value padding, `mmcs_bit` zero-when-absent and booleanity, dynamic hidden
+Tip5 padding, new-start zero constraints, Merkle capacity-zero constraints, and
+recompose value semantics. Hidden Tip5 lane presence for Merkle rows is not a
+verifier-fixed selector: the constraint uses the committed `mmcs_bit` to select
+between normal and swapped hidden selectors, so serialized sibling lanes
+`5..9` are not incorrectly zeroed on new-start Merkle rows while prior-state
+lanes and capacity lanes remain constrained. The remaining production theorem
+gap is the internal Tip5 lookup/AIR/LogUp relation, not the value-padding
+quotient.
+
+A prior 2026-06-06 attempt to append that padding/MMCS-bit quotient inside the
+same merged FRI object failed because the hidden-selector taxonomy treated
+Merkle hidden-lane presence as verifier-fixed and then spent per-point work in
+`padding_quotient_matrix`. The current implementation replaces that with
+dynamic `mmcs_bit` selectors and a batched LDE, reducing the production
+`padding_quotient_matrix` phase to about `142ms` in the measured run.
 
 The same run breaks down the primitive bottleneck. The sparse R1CS relation has
 `106,604` rows, `222,449` variables, and `489,990` entries. The row-product and
@@ -488,7 +503,8 @@ proof bytes or transcript semantics. In the full composite run, assignment
 commitment construction dropped from about `15.854s` to `7.557s`, and primitive
 prove time first dropped from about `50.169s` to `42.210s`. Reusing the
 primitive relation/assignment vector and skipping redundant prover-side
-prelude verification then dropped post-prelude primitive proving to `9.232s`.
+prelude verification then dropped post-prelude primitive proving to `9.232s` in
+the value-bridge-only run and `8.372s` in the latest padding-merged run.
 This is useful engineering progress, but it does not change the structural
 conclusion: the primitive body is still dominated by assignment-evaluation
 frontier material, and a production theorem still has to include the missing
@@ -513,22 +529,23 @@ A phase-instrumented rerun made the failure mode more concrete:
 
 | Full composite integrated-LogUp phase | Time |
 |---|---:|
-| Layer-0 proof generation for the diagnostic fixture | `32.447s` |
-| L1 verifier-circuit build | `0.466s` |
-| L1 verifier trace execution | `0.045s` |
-| Terminal compile | `7.607s` |
-| Assignment oracle commitment | `14.281s` |
-| Merged NPO prelude root construction | `10.772s` |
-| Bundled Tip5 prelude root construction | `13.020s` |
-| Terminal prelude build | `7.551s` |
-| Primitive R1CS row-product proof | `38.235s` |
-| Merged value-bridge proof | `51.902s` |
+| Layer-0 proof generation for the diagnostic fixture | `31.648s` |
+| L1 verifier-circuit build | `0.449s` |
+| L1 verifier trace execution | `0.044s` |
+| Terminal compile | `7.393s` |
+| Assignment oracle commitment | `5.806s` |
+| Merged NPO prelude root construction | `9.623s` |
+| Bundled Tip5 prelude root construction | `11.607s` |
+| Terminal prelude build | `7.346s` |
+| Primitive R1CS row-product proof | `14.546s` |
+| Merged padding/value-bridge proof | `20.271s` |
 | Integrated Tip5 LogUp proof | still running when stopped |
 
 The root-construction phases duplicate work that the current subproof provers
-redo internally, but removing only that duplication would not be enough: the
-primitive row-product and merged value-bridge proofs alone already cost about
-`90s`, before the integrated Tip5 LogUp proof completes.
+redo internally, so prepared-data plumbing is still worth doing. It is not
+enough by itself: the primitive row-product and merged padding/value-bridge
+proofs alone already cost `34.817s`, before the integrated Tip5 LogUp proof
+completes.
 
 The proof-body split after compact known-index proof encoding is:
 

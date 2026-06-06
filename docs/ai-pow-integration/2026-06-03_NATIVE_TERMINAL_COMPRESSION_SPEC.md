@@ -303,17 +303,21 @@ for this route.
   identity `sum alpha^i * (1 - present_i(zeta)) * value_i(zeta) =
   quotient(zeta) * Z_H(zeta)`, plus MMCS-bit constraints `present(zeta) *
   bit(zeta) * (bit(zeta) - 1)` for the base lane and `present(zeta) *
-  bit_tail(zeta)` for non-base lanes, plus Tip5 chain-start zero constraints
-  for verifier-selected hidden lanes under `mode_new_start`, plus Merkle
-  capacity-zero constraints forcing hidden Tip5 lanes 10 through 15 to zero
-  under verifier-derived
-  `is_tip5 * mode_merkle_path * hidden_tip5_present_limb` selectors, plus
-  recompose constraints forcing non-base input tails to zero and
-  `output_basis_i = input_i_base` under the combined
+  bit_tail(zeta)` for non-base lanes. Hidden Tip5 padding and zero constraints
+  are Merkle-direction aware: for Merkle rows, the selector is
+  `normal_hidden + mmcs_bit * (swapped_hidden - normal_hidden)`, where
+  `normal_hidden` and `swapped_hidden` are verifier-derived after multiplying
+  in the relevant row-mode gates. New-start Merkle rows zero only hidden lanes
+  sourced from the prior running state (`bus_limb < 5` after the
+  `mmcs_bit`-selected mapping); serialized sibling lanes `5..9` are allowed,
+  and Merkle capacity lanes `10..15` are always zeroed when present. The same
+  quotient also enforces recompose constraints forcing non-base input tails to
+  zero and `output_basis_i = input_i_base` under the combined
   `is_recompose + is_recompose_coeff` selector. The quotient domain is twice
-  the value-column trace domain so the degree-3 booleanity relation has a
-  low-degree quotient. Its standalone prelude commitment vector is exactly the
-  witness-value FRI root; the quotient root is not prelude material because it
+  the value-column trace domain so the degree-3 booleanity/dynamic-selector
+  relations have low-degree quotients. Its standalone prelude commitment vector
+  is exactly the witness-value FRI root; the quotient root is not prelude
+  material because it
   depends on the value-root-derived folding challenge and is instead observed
   in the PCS transcript before the opening point is sampled. The proof now
   stores the terminal FRI opening in the compressed terminal wrapper rather
@@ -876,23 +880,24 @@ for this route.
   when `mmcs_bit=1`.
 - `TerminalNpoPolynomialFriResidualZeroRecomposeValueBridgeProof`: a combined
   FRI-native checkpoint that opens the prover-dependent NPO table, the folded
-  residual-zero composition polynomial, the recompose residual quotient, and
-  the NPO-row value-bridge quotient in one terminal FRI proof. The current
+  residual-zero composition polynomial, the recompose residual quotient, and a
+  shared padding+value-bridge quotient in one terminal FRI proof. The current
   full-composite `ai-pow-zk` diagnostic serializes this merged proof with the
-  terminal prelude and primitive row-product proof as a `150,006` byte body:
-  `240` bytes of prelude, `57,501` bytes of primitive proof, and `92,265`
-  bytes of merged NPO proof with `90,109` bytes of compact FRI payload. It
+  terminal prelude and primitive row-product proof as a `151,448` byte body:
+  `240` bytes of prelude, `57,501` bytes of primitive proof, and `93,707`
+  bytes of merged NPO proof with `91,501` bytes of compact FRI payload. It
   verifies over the actual composite L1 verifier relation. After prover-work
-  reuse, prepared merged NPO data, prelude-checked prover entry points, and a
-  batched-LDE value-bridge quotient, post-prelude serial proof-body
-  construction is `16.159s`: `9.232s` primitive R1CS plus `6.927s` merged NPO
-  proof. The full diagnostic wall is still `118.017s` because setup and
-  verification are outside that proof-body timer. The
-  value bridge is now Merkle-direction aware: it uses the committed `mmcs_bit`
-  to select the bus-limb expression that feeds each Tip5 trace lane. This keeps
-  the quotient inside the existing degree profile, so the final production
-  theorem must also prove `mmcs_bit` booleanity, zero-when-absent behavior, and
-  value-padding consistency; this checkpoint still lacks the internal Tip5
+  reuse, prepared merged NPO data, prelude-checked prover entry points, and
+  batched-LDE padding/value-bridge quotients committed together on the shared
+  quotient domain, post-prelude serial proof-body construction is `14.914s`:
+  `8.372s` primitive R1CS plus `6.541s` merged NPO proof. The full diagnostic
+  wall is still `108.606s` because setup and verification are outside that
+  proof-body timer. The value bridge is Merkle-direction aware: it uses the
+  committed `mmcs_bit` to select the bus-limb expression that feeds each Tip5
+  trace lane. The padding quotient now proves `mmcs_bit` booleanity,
+  zero-when-absent behavior, value-padding consistency, dynamic hidden Tip5
+  padding, new-start zero constraints, capacity-zero constraints, and
+  recompose value semantics. This checkpoint still lacks the internal Tip5
   lookup/AIR/LogUp binding and is not the production proof body.
 - `TerminalNpoPolynomialFriResidualZeroRecomposeProof`: a combined FRI-native
   checkpoint that opens the prover-dependent NPO table, the folded residual-zero
@@ -1601,7 +1606,7 @@ Tip5-L0 verifier circuit produced:
 | selected-column compact residual-zero FRI candidate, opt-in real Tip5-L0 measurement | 376,642 | - | 48,495 | 26.304 s | 2.273 s |
 | FRI-native compact residual-zero candidate, opt-in real Tip5-L0 measurement | 61,683 | - | 60,372 | 1.567 s | 0.496 s |
 | FRI-native compact residual-zero candidate, full AI-PoW composite measurement, verified residual-zero layer | 55,344 | - | 54,023 | 19.635 s | 11.930 s |
-| FRI-native merged residual-zero/recompose/value-bridge candidate, full AI-PoW composite measurement, verified with primitive/prelude body `150,006` bytes | 92,265 | - | 90,109 | 6.927 s post-prelude prepared | 14.731 s |
+| FRI-native merged residual-zero/recompose/padding/value-bridge candidate, full AI-PoW composite measurement, verified with primitive/prelude body `151,448` bytes | 93,707 | - | 91,501 | 6.541 s post-prelude prepared | 13.525 s |
 | recompose residual-relation quotient candidate, opt-in real Tip5-L0 measurement | 81,266 | - | 79,916 | 1.852 s | 0.601 s |
 
 The full-table FRI candidate is too large to combine with the primitive
@@ -1643,18 +1648,30 @@ shared roots/transcript bindings. The total diagnostic wall time was
 NPO-column, root, and prelude work instead of rebuilding them around each
 checkpoint proof.
 
-The merged residual-zero/recompose/value-bridge full-composite measurement
-confirms that the next NPO identity layer can still fit near the relaxed byte
-target and that post-prelude body construction can fit the relaxed time target.
-The merged proof body is `92,265` bytes with `90,109` bytes of compact FRI
-material; the complete diagnostic body including prelude and primitive proof is
-`150,006` bytes. Post-prelude serial proving takes `16.159s`, split between
-`9.232s` primitive R1CS row product and `6.927s` prepared merged NPO proof.
-The bridge binds Merkle direction by selecting the value expression with the
-committed `mmcs_bit`; because that keeps the quotient within the current degree
-profile, the final production composition still has to prove the separate
-`mmcs_bit` zero/boolean/padding constraints and the internal Tip5
-lookup/AIR/LogUp relation.
+The merged residual-zero/recompose/padding/value-bridge full-composite
+measurement confirms that the next NPO identity layer can still fit near the
+relaxed byte target and that post-prelude body construction can fit the relaxed
+time target. The merged proof body is `93,707` bytes with `91,501` bytes of
+compact FRI material; the complete diagnostic body including prelude and
+primitive proof is `151,448` bytes. Post-prelude serial proving takes
+`14.914s`, split between `8.372s` primitive R1CS row product and `6.541s`
+prepared merged NPO proof. The bridge binds Merkle direction by selecting the
+value expression with the committed `mmcs_bit`, and the padding quotient proves
+the `mmcs_bit` zero/boolean/padding constraints plus dynamic hidden-lane,
+new-start, capacity-zero, and recompose value semantics. The remaining
+production composition gap is the internal Tip5 lookup/AIR/LogUp relation.
+
+The most promising complete proof shape seen so far is the native terminal
+integrated-LogUp bundled masked-IO checkpoint: in the recursion-crate synthetic
+Tip5-only backend it serializes `(prelude, primitive, integrated NPO)` to
+`96,017` bytes / `93.8 KiB` and proves in `25.117s`. That checkpoint includes
+the Tip5 AIR, byte LogUp, raw-trace support bridge, selected-vs-trace NPO-IO
+LogUp, and the merged padding/value bridge under the terminal prelude. It is
+not yet a production result: the full `ai-pow-zk` composite diagnostic reached
+`14.546s` primitive proving plus `20.271s` merged padding/value-bridge proving
+before the integrated Tip5 LogUp subproof completed, so the same proof shape
+still needs full-composite prover-time reduction before it can replace the
+current production recursive certificate path.
 
 The same full-composite run explains why the primitive R1CS component is now a
 first-class blocker. The sparse R1CS relation has `106,604` rows, `222,449`
@@ -1674,7 +1691,8 @@ tree builder improves the same proof shape without changing serialized bytes.
 In the full-composite diagnostic, base assignment commitment construction fell
 from about `15.854s` to `7.557s`, and primitive proving fell from `50.169s` to
 `42.210s`. Reusing primitive relation/assignment data and using prelude-checked
-prover entry points then reduced post-prelude primitive proving to `9.232s`.
+prover entry points then reduced post-prelude primitive proving to `9.232s` in
+the value-bridge-only run and `8.372s` in the latest padding-merged run.
 This preserves the existing verifier language and transcript bindings, but the
 final production theorem still needs the missing NPO lookup/AIR/LogUp bindings.
 
@@ -1702,8 +1720,9 @@ standalone proof. The FRI verifier now exposes exactly that checked
 value-column opening handoff. The padding quotient checkpoint now
 checks mixed present-bit value padding and MMCS direction-bit booleanity with a
 quotient/vanishing identity over the same opened value columns, and it now
-checks Tip5 chain-start zero lanes, Merkle capacity-zero lanes, and recompose
-value-column semantics under verifier-derived row selectors. The optimized
+checks Tip5 chain-start zero lanes and Merkle capacity-zero lanes under dynamic
+`mmcs_bit`-selected hidden selectors, plus recompose value-column semantics
+under verifier-derived row selectors. The optimized
 lookup-trace FRI checkpoint proves the preferred Tip5 table source can be
 committed and opened with the production 60-bit FRI tuple, but its standalone
 116.6 KiB compressed proof is still too large to combine with the rest of the
@@ -1715,10 +1734,11 @@ Adding the now-compressed zero-support quotient keeps that projection under
 target at 60.7 KiB and removes table/padding-row hiding capacity with about
 14.0 s debug-profile prove time after folding the 26 IO columns before quotient
 evaluation.
-The padding-quotient checkpoint now also stores compressed FRI
-material directly, reducing its focused restored raw FRI payload from 15.1 KiB
-to 8.0 KiB, but it remains a component proof rather than the final production
-terminal proximity backend.
+The padding quotient is now also folded into the full-composite merged
+residual-zero/recompose/value-bridge proof. In the focused component path, the
+compressed FRI payload remains small; in the production-scale merged path, the
+padding and value-bridge quotients share one quotient-domain commitment and one
+opening batch rather than adding a standalone FRI proof.
 The now-compressed bridge quotient ties lookup IO to the supported-NPO table
 projection at 68.6 KiB, inside the 100 KiB component target, and rejects stale
 lookup IO against the NPO table. This bridge is not yet a standalone replacement
@@ -1770,12 +1790,13 @@ payload directly; the FRI payload itself shrinks from 15.6 KiB to 8.8 KiB by
 pruning shared binary Merkle authentication paths across the 15
 transcript-derived queries.
 On the full composite relation, the bridge is now Merkle-direction aware and
-verifier-accepted inside the merged residual-zero/recompose/value-bridge proof.
+verifier-accepted inside the merged residual-zero/recompose/padding/value-bridge proof.
 It uses the committed `mmcs_bit` as the direction selector from callsite
-bus-limb coordinates into Tip5 trace lanes. That is sound only together with
-the separate padding/boolean/present constraints that make `mmcs_bit` zero when
-absent and boolean when present; those constraints remain part of the final
-composition obligation.
+bus-limb coordinates into Tip5 trace lanes. The merged padding quotient now
+proves the paired padding/boolean/present constraints that make `mmcs_bit` zero
+when absent and boolean when present, including dynamic hidden selectors for
+Merkle rows. The remaining composition obligation is the internal Tip5
+lookup/AIR/LogUp relation and its shared commitment/transcript binding.
 Shared commitment binding across these components, committed LogUp byte-table
 soundness, prior-output chain transitions, and residual-zero constraints over
 those openings are still pending.
@@ -1919,10 +1940,10 @@ Security-audit conclusions for the current implementation checkpoint:
   residual-zero+recompose+value-bridge checks and the Tip5 lookup AIR/LogUp
   selected-vs-trace NPO-IO bridge remain the leading replacement direction, but
   they are diagnostic today. The full-composite residual-zero layer is now
-  small and verified, and the merged residual-zero/recompose/value-bridge proof
-  now verifies at `150,006` bytes including prelude and primitive proof. This is
-  still diagnostic: the merged path misses the proving-time gate, relies on
-  separate `mmcs_bit` padding/boolean/present constraints, and still needs the
+  small and verified, and the merged residual-zero/recompose/padding/value-bridge proof
+  now verifies at `151,448` bytes including prelude and primitive proof. This
+  is still diagnostic: post-prelude proving fits the relaxed time gate, but the
+  full diagnostic wall still includes setup cost, and the path still needs the
   internal Tip5 lookup/AIR/LogUp relation before it can replace exhaustive NPO
   checking.
 - The terminal proof prelude is now an implemented transcript-binding prefix,
