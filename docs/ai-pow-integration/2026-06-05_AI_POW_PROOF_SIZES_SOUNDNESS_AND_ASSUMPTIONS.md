@@ -82,6 +82,29 @@ The current `lb=6,nq=10,pow=0` result is a lower-bound diagnostic for the
 generic terminal relation, not a production profile recommendation; `lb=4,nq=15`
 remains the current pure-query baseline until the proof shape changes.
 
+If the production size budget relaxes to about `150 KiB`, the existing
+batch-STARK L1 proof body becomes a plausible size target because the
+production-faithful run measured it at **149.1 KiB**. That does not make the
+current `AiPowRecursiveCertificate` production-ready: the full checkpoint still
+carries the L0 proof and program for verifier-side circuit reconstruction, and
+therefore measures **1,135.5 KiB** under legacy postcard and **358.3 KiB** with
+gzip-best compression. A `150 KiB` branch would need a new L1-only certificate
+contract that pins the verifier key, L0 proof shape, statement digest,
+preprocessed commitment, L1 circuit fingerprint, table metadata, and proof
+public values without carrying the raw L0 proof. It also still has to solve the
+time gate: the measured L1 outer batch-STARK step was **59.21s** after L0 proof
+generation and **93.88s** end to end.
+
+A new opt-in diagnostic,
+`relaxed_l1_only_candidate_size_breakdown_for_test_pearl`, measures the same
+split on the small `TEST_PEARL` profile: current full checkpoint postcard
+**588,162 bytes**, embedded L0 proof **262,404 bytes**, embedded L0 program
+**171,908 bytes**, full L1 outer object **153,850 bytes**, L1 proof body
+**152,205 bytes**, L1 metadata **1,645 bytes**, and
+`l1_public_binding_lanes=0`. The size result supports the relaxed target, but
+the zero public-binding lanes and the **75.17s** release test runtime are the
+next two blockers.
+
 Verifier status after the 2026-06-05 hardening pass: the batch-STARK
 `AiPowRecursiveCertificate` verifier now calls
 `BatchStarkProver::verify_all_tables` for the submitted L1 outer proof. That

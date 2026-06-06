@@ -35,6 +35,7 @@ use p3_recursion::{
 use p3_symmetric::Permutation;
 use p3_tip5_circuit_air::Tip5Perm as RecTip5Perm;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::circuit::{Challenge, Tip5Compress, Tip5Sponge};
 use crate::{AiPowStarkConfig, CompositeFullAirWithLookupsPinned, Val};
@@ -1307,6 +1308,77 @@ pub fn decode_recursive_certificate(
     Ok(cert)
 }
 
+/// Size accounting for the relaxed-size L1-only batch-STARK candidate.
+///
+/// This is a diagnostic for the possible `~150 KiB` branch. It does not define
+/// a production certificate format. In particular, the current
+/// [`AiPowRecursiveCertificate`] carries `l0_proof` and `l0_program` so the
+/// verifier can rebuild the exact L1 verifier circuit; an actual L1-only
+/// certificate would need a separate verifier-key/statement binding contract
+/// before these bytes could be omitted safely.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelaxedL1OnlyCandidateSizeBreakdown {
+    /// Legacy postcard size of the current full batch-STARK checkpoint
+    /// certificate, including L0 proof/program context.
+    pub current_checkpoint_postcard_bytes: usize,
+    /// Fixed-int bincode size used by [`encode_recursive_certificate`].
+    pub current_checkpoint_fixed_bincode_bytes: usize,
+    /// Postcard size of the embedded L0 proof.
+    pub l0_proof_postcard_bytes: usize,
+    /// Postcard size of the embedded canonical L0 program.
+    pub l0_program_postcard_bytes: usize,
+    /// Postcard size of the full L1 outer proof object, including circuit
+    /// metadata and `stark_common`.
+    pub l1_outer_postcard_bytes: usize,
+    /// Postcard size of the cryptographic L1 batch proof body alone.
+    pub l1_proof_body_postcard_bytes: usize,
+    /// Difference between `l1_outer_postcard_bytes` and
+    /// `l1_proof_body_postcard_bytes`: metadata that must either remain on
+    /// wire or be rebuilt/pinned by the verifier.
+    pub l1_outer_metadata_postcard_bytes: usize,
+    /// Current number of L1 public-table lanes exposed as STARK public values.
+    ///
+    /// This is currently zero for the size-optimized checkpoint. A production
+    /// L1-only branch must add an equivalent explicit binding for the statement
+    /// digest and verifier public inputs.
+    pub l1_public_binding_lanes: usize,
+}
+
+/// Serialization errors while measuring the relaxed L1-only candidate.
+#[derive(Debug, Error)]
+pub enum RelaxedL1OnlyCandidateSizeError {
+    #[error("postcard size accounting failed: {0}")]
+    Postcard(#[from] postcard::Error),
+    #[error("fixed-int bincode size accounting failed: {0}")]
+    Bincode(#[from] bincode::error::EncodeError),
+}
+
+/// Measure the current checkpoint as if the L1 outer proof were the only
+/// on-wire proof body under the relaxed-size branch.
+pub fn measure_relaxed_l1_only_candidate_size(
+    cert: &AiPowRecursiveCertificate,
+) -> Result<RelaxedL1OnlyCandidateSizeBreakdown, RelaxedL1OnlyCandidateSizeError> {
+    let current_checkpoint_postcard_bytes = postcard::to_allocvec(cert)?.len();
+    let current_checkpoint_fixed_bincode_bytes = encode_recursive_certificate(cert)?.len();
+    let l0_proof_postcard_bytes = postcard::to_allocvec(&cert.l0_proof)?.len();
+    let l0_program_postcard_bytes = postcard::to_allocvec(&cert.l0_program)?.len();
+    let l1_outer_postcard_bytes = postcard::to_allocvec(&cert.l1_outer_proof)?.len();
+    let l1_proof_body_postcard_bytes = postcard::to_allocvec(&cert.l1_outer_proof.proof)?.len();
+    let l1_outer_metadata_postcard_bytes =
+        l1_outer_postcard_bytes.saturating_sub(l1_proof_body_postcard_bytes);
+
+    Ok(RelaxedL1OnlyCandidateSizeBreakdown {
+        current_checkpoint_postcard_bytes,
+        current_checkpoint_fixed_bincode_bytes,
+        l0_proof_postcard_bytes,
+        l0_program_postcard_bytes,
+        l1_outer_postcard_bytes,
+        l1_proof_body_postcard_bytes,
+        l1_outer_metadata_postcard_bytes,
+        l1_public_binding_lanes: cert.l1_outer_proof.public_binding_lanes,
+    })
+}
+
 /// Serialize the native terminal recursive certificate and its terminal public
 /// input vector into compact postcard bytes.
 pub fn encode_terminal_recursive_certificate(
@@ -1462,6 +1534,56 @@ mod tests {
             ),
             Err(e) => panic!("valid composite→L1 outer certificate was REJECTED: {e}"),
         }
+    }
+
+    #[test]
+    #[ignore = "relaxed L1-only batch-STARK candidate size accounting is opt-in"]
+    fn relaxed_l1_only_candidate_size_breakdown_for_test_pearl() {
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+        let outer =
+            prove_composite_l1_outer_cert(&built, &proof).expect("honest recursive certificate");
+        let cert = AiPowRecursiveCertificate::new(proof, program, outer);
+        let split = measure_relaxed_l1_only_candidate_size(&cert)
+            .expect("measure relaxed L1-only candidate size");
+
+        eprintln!(
+            "relaxed L1-only candidate size [TEST_PEARL]: current_postcard={} current_fixed_bincode={} l0_proof={} l0_program={} l1_outer={} l1_proof_body={} l1_metadata={} l1_public_binding_lanes={}",
+            split.current_checkpoint_postcard_bytes,
+            split.current_checkpoint_fixed_bincode_bytes,
+            split.l0_proof_postcard_bytes,
+            split.l0_program_postcard_bytes,
+            split.l1_outer_postcard_bytes,
+            split.l1_proof_body_postcard_bytes,
+            split.l1_outer_metadata_postcard_bytes,
+            split.l1_public_binding_lanes,
+        );
+
+        assert_eq!(
+            split.l1_public_binding_lanes, 0,
+            "current checkpoint intentionally disables L1 public binding; a \
+             production L1-only branch must add an equivalent statement binding"
+        );
+        assert!(
+            split.l1_outer_postcard_bytes >= split.l1_proof_body_postcard_bytes,
+            "metadata split must be well formed"
+        );
     }
 
     #[test]

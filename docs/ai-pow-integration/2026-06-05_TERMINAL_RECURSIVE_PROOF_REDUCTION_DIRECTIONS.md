@@ -415,6 +415,85 @@ while `lb=3,nq=20` and `lb=4,nq=15` are the more plausible L0 proving-time
 profiles once recursion and compact serialization remove the raw opening proof
 from the wire.
 
+### Relaxed 150 KiB Size Gate
+
+If the production size gate can relax from about `100 KiB` to about `150 KiB`,
+the existing batch-STARK L1 checkpoint becomes worth re-evaluating, but only as
+a new L1-only certificate shape. It does not become production-ready in its
+current envelope.
+
+The production-faithful `prod_recursion_measure 15` run already measured the
+raw L1 proof body at `149.1 KiB`, which is close to the relaxed byte target.
+However, the current `AiPowRecursiveCertificate` serializes the L0 proof and
+program with the L1 proof so that verification can rebuild the exact L1
+verifier circuit from the submitted L0 proof and reject proof-carried circuit
+metadata substitutions. That is why the full checkpoint certificate remains
+`1,135.5 KiB` under legacy postcard and `358.3 KiB` even with gzip-best
+compression.
+
+The new diagnostic
+`relaxed_l1_only_candidate_size_breakdown_for_test_pearl` measures this split
+directly for the small `TEST_PEARL` profile:
+
+| Relaxed L1-only diagnostic (`TEST_PEARL`) | Bytes |
+|---|---:|
+| Current full checkpoint, postcard | `588,162` |
+| Current full checkpoint, fixed-int bincode | `1,981,331` |
+| Embedded L0 proof | `262,404` |
+| Embedded L0 program | `171,908` |
+| Full L1 outer object | `153,850` |
+| L1 proof body | `152,205` |
+| L1 metadata outside proof body | `1,645` |
+| L1 public binding lanes | `0` |
+
+The byte split supports the relaxed-size intuition: once the L0 proof/program
+context is removed, the L1 object is approximately at the `150 KiB` target and
+almost all of it is the actual cryptographic proof body. The same run took
+`75.17s` inside the release test binary, however, so this is not yet a
+time-qualified production path.
+
+A relaxed-size L1-only path would need to replace those proof-carried rebuild
+inputs with a pinned verifier-key contract:
+
+- verifier rebuilds the canonical program from trusted public block/attempt
+  data via the params-pure canonical program path, not from proof bytes;
+- verifier reconstructs the L0 proof shape from public profile/program/common
+  data, or a small canonical proof-shape descriptor, so
+  `build_composite_l1_verifier_circuit` no longer needs the whole L0 proof just
+  to allocate targets;
+- the final certificate binds the statement public-input digest, L0 profile,
+  L0 preprocessed commitment, L1 circuit fingerprint, table-packing tuple,
+  rows/degrees, non-primitive metadata, and L1 proof public values;
+- the current L1 proof has `public_binding_lanes=0`; production must either
+  enable public-value binding for the statement digest/public inputs or add an
+  equivalent transcript-visible binding with the same rejection tests;
+- negative tests reject swapped programs, stale preprocessed commitments,
+  wrong statement public inputs, wrong L0 profile, wrong L1 circuit metadata,
+  wrong proof public values, and tampered L1 proof body.
+
+This is less invasive than a full Pearl-shaped two-recursion-layer compressor,
+but it still requires new verifier-key plumbing. Simply dropping `l0_proof` and
+`l0_program` from `AiPowRecursiveCertificate` would be unsound because the
+current verifier would no longer have an independent way to know which L1
+verifier circuit the submitted outer proof is supposed to prove.
+
+The relaxed size gate also does not solve the time gate. The same measurement
+spent `59.21s` on the L1 outer batch-STARK prove+verify after the L0 proof
+already existed, and `93.88s` end to end. The `150 KiB` branch is therefore a
+candidate only if the L1 proof can be both wire-minimized and made materially
+faster. The likely short-term levers are:
+
+- avoid verifier-side reproving during metadata validation by replacing it with
+  deterministic verifier-key reconstruction and direct metadata hashing;
+- remove duplicate runner/prover trace materialization in the L1 checkpoint
+  path;
+- benchmark whether the canonical pinned+LogUp L0 baseline plus L1-only proof
+  can meet `<30s` on the actual production trace with release flags after those
+  engineering cuts;
+- if it cannot, fall back to the Pearl-shaped two-layer compact route or a
+  narrower specialized AIR rather than spending more effort on the batch-STARK
+  envelope.
+
 ### Current Specialized Layer-0 Proof Baseline
 
 The tree now has an ignored Layer-0 pinned+LogUp size diagnostic,
