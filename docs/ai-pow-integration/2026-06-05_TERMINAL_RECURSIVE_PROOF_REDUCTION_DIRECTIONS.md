@@ -480,6 +480,27 @@ current recursive prover profile still uses proof-system PoW in addition to
 queries, while the production target is 60-bit soundness without relying on
 verifier-accepted PoW grinding.
 
+The no-PoW diagnostic
+`relaxed_l1_only_pure_query_statement_bound_candidate_size_breakdown_for_test_pearl`
+then reruns the statement-bound L1-only object with `commit_pow_bits=0` and
+`query_pow_bits=0`. It sweeps the three 60-bit pure-query shapes that are most
+relevant to the current parameter discussion:
+
+| Pure-query statement-bound L1-only diagnostic (`TEST_PEARL`) | L1 outer | L1 proof body | Prove | Verify |
+|---|---:|---:|---:|---:|
+| `lb=4,nq=15,pow=0` | `226,542 bytes` | `224,897 bytes` | `49.290s` | `26ms` |
+| `lb=5,nq=12,pow=0` | `196,488 bytes` | `194,845 bytes` | `98.009s` | `22ms` |
+| `lb=6,nq=10,pow=0` | `176,362 bytes` | `174,727 bytes` | `195.574s` | `24ms` |
+
+All three variants bind five public lanes, use zero commit/query proof-system
+PoW, and reach 60 Johnson bits by `log_blowup * num_queries`. This closes the
+parameter-only version of the relaxed L1-only batch-STARK route: removing PoW
+from the soundness accounting pushes the proof well above `150 KiB`, and higher
+blowup reduces bytes only by spending far more prover time. The smallest
+measured pure-query variant is still `172.2 KiB` and takes `195.574s`, so the
+batch-STARK L1-only route needs structural compression or another recursive
+compression layer before it can satisfy the production policy.
+
 A relaxed-size L1-only path would need to replace those proof-carried rebuild
 inputs with a pinned verifier-key contract:
 
@@ -509,9 +530,11 @@ The relaxed size gate also does not solve the time gate. The production-faithful
 measurement spent `59.21s` on the L1 outer batch-STARK prove+verify after the
 L0 proof already existed, and `93.88s` end to end; the focused
 statement-bound `TEST_PEARL` diagnostic spent `54.62s` to `70.14s` proving the
-L1 outer object across two release runs. The `150 KiB` branch is therefore a
-candidate only if the L1 proof can be both wire-minimized and made materially
-faster. The likely short-term levers are:
+mixed query/PoW L1 outer object across two release runs, and the pure-query
+sweep spent `49.290s` to `195.574s` while missing the byte target. The `150 KiB`
+branch is therefore a candidate only if the L1 proof can be both
+wire-minimized and made materially faster through structural changes. The likely
+short-term levers are:
 
 - avoid verifier-side reproving during metadata validation by replacing it with
   deterministic verifier-key reconstruction and direct metadata hashing;

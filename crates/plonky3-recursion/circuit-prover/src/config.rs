@@ -342,14 +342,49 @@ pub const GOLDILOCKS_TIP5_RECURSIVE_JOHNSON_BITS: usize = GOLDILOCKS_TIP5_RECURS
     * GOLDILOCKS_TIP5_RECURSIVE_NUM_QUERIES
     + GOLDILOCKS_TIP5_RECURSIVE_QUERY_POW_BITS;
 
+pub const GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_BLOWUP: usize = 4;
+pub const GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN: usize = 2;
+pub const GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_MAX_LOG_ARITY: usize = 3;
+pub const GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_NUM_QUERIES: usize = 15;
+pub const GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS: usize = 0;
+pub const GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS: usize = 0;
+pub const GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_CAP_HEIGHT: usize = 5;
+pub const GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS: usize =
+    GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_BLOWUP
+        * GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_NUM_QUERIES;
+
 #[inline]
-pub fn goldilocks_tip5_60bit() -> GoldilocksTipsConfig {
+fn goldilocks_tip5_with_fri_params(
+    log_blowup: usize,
+    log_final_poly_len: usize,
+    max_log_arity: usize,
+    num_queries: usize,
+    commit_proof_of_work_bits: usize,
+    query_proof_of_work_bits: usize,
+    cap_height: usize,
+) -> GoldilocksTipsConfig {
     let perm = Tip5Perm;
     let hash = PaddingFreeSponge::<_, 16, 10, 5>::new(perm);
     let compress = TruncatedPermutation::<_, COMPRESS_ARITY, 5, 16>::new(perm);
-    let val_mmcs = MerkleTreeMmcs::new(hash, compress, GOLDILOCKS_TIP5_RECURSIVE_CAP_HEIGHT);
+    let val_mmcs = MerkleTreeMmcs::new(hash, compress, cap_height);
     let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
     let dft = Radix2DitParallel::default();
+    let fri_params = FriParameters {
+        log_blowup,
+        log_final_poly_len,
+        max_log_arity,
+        num_queries,
+        commit_proof_of_work_bits,
+        query_proof_of_work_bits,
+        mmcs: challenge_mmcs,
+    };
+    let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
+    let challenger = DuplexChallenger::new(perm);
+    StarkConfig::new(pcs, challenger)
+}
+
+#[inline]
+pub fn goldilocks_tip5_60bit() -> GoldilocksTipsConfig {
     // Paper-anchored Johnson-radius soundness (IACR ePrint
     // 2025/2055 Theorem 1.5):
     //   bits = log_blowup · num_queries + query_pow
@@ -361,18 +396,61 @@ pub fn goldilocks_tip5_60bit() -> GoldilocksTipsConfig {
     // while cutting query-sized proof material.
     // mla=3 + lfp=2 + cap=5 are soundness-neutral compression
     // levers (fold shape / final poly / Merkle cap).
-    let fri_params = FriParameters {
-        log_blowup: GOLDILOCKS_TIP5_RECURSIVE_LOG_BLOWUP,
-        log_final_poly_len: GOLDILOCKS_TIP5_RECURSIVE_LOG_FINAL_POLY_LEN,
-        max_log_arity: GOLDILOCKS_TIP5_RECURSIVE_MAX_LOG_ARITY,
-        num_queries: GOLDILOCKS_TIP5_RECURSIVE_NUM_QUERIES,
-        commit_proof_of_work_bits: GOLDILOCKS_TIP5_RECURSIVE_COMMIT_POW_BITS,
-        query_proof_of_work_bits: GOLDILOCKS_TIP5_RECURSIVE_QUERY_POW_BITS,
-        mmcs: challenge_mmcs,
-    };
-    let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
-    let challenger = DuplexChallenger::new(perm);
-    StarkConfig::new(pcs, challenger)
+    goldilocks_tip5_with_fri_params(
+        GOLDILOCKS_TIP5_RECURSIVE_LOG_BLOWUP,
+        GOLDILOCKS_TIP5_RECURSIVE_LOG_FINAL_POLY_LEN,
+        GOLDILOCKS_TIP5_RECURSIVE_MAX_LOG_ARITY,
+        GOLDILOCKS_TIP5_RECURSIVE_NUM_QUERIES,
+        GOLDILOCKS_TIP5_RECURSIVE_COMMIT_POW_BITS,
+        GOLDILOCKS_TIP5_RECURSIVE_QUERY_POW_BITS,
+        GOLDILOCKS_TIP5_RECURSIVE_CAP_HEIGHT,
+    )
+}
+
+/// Goldilocks + Tip5 recursive STARK profile with a 60-bit Johnson floor from
+/// queries alone.
+///
+/// This keeps the same soundness-neutral compression levers as
+/// [`goldilocks_tip5_60bit`] (`max_log_arity = 3`,
+/// `log_final_poly_len = 2`, `cap_height = 5`) but replaces the mixed
+/// `4 * 9 + 24` query/PoW accounting with `4 * 15 + 0`. It is not the default
+/// batch-STARK checkpoint profile; callers use it when evaluating production
+/// candidates that must not count verifier-accepted proof-system PoW grinding.
+#[inline]
+pub fn goldilocks_tip5_pure_query_60bit() -> GoldilocksTipsConfig {
+    goldilocks_tip5_pure_query_60bit_with_shape(
+        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_BLOWUP,
+        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_NUM_QUERIES,
+    )
+}
+
+/// Build a query-only 60-bit Goldilocks + Tip5 recursive profile for a
+/// specific `(log_blowup, num_queries)` shape.
+///
+/// The caller supplies only the Johnson-relevant query shape. The
+/// soundness-neutral compression levers and Merkle cap match
+/// [`goldilocks_tip5_pure_query_60bit`]. This intentionally panics unless
+/// `log_blowup * num_queries == 60`, so diagnostics cannot accidentally
+/// compare a weaker profile as a production candidate.
+#[inline]
+pub fn goldilocks_tip5_pure_query_60bit_with_shape(
+    log_blowup: usize,
+    num_queries: usize,
+) -> GoldilocksTipsConfig {
+    assert_eq!(
+        log_blowup * num_queries,
+        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS,
+        "pure-query recursive Tip5 profile must provide exactly 60 Johnson bits"
+    );
+    goldilocks_tip5_with_fri_params(
+        log_blowup,
+        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
+        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_MAX_LOG_ARITY,
+        num_queries,
+        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_CAP_HEIGHT,
+    )
 }
 
 // NOTE: a `goldilocks_tip5_60bit_higharity()` sibling existed at

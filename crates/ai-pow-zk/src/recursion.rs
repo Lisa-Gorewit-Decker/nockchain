@@ -154,6 +154,14 @@ fn production_l1_stark_config() -> p3_circuit_prover::config::GoldilocksTipsConf
     p3_circuit_prover::config::goldilocks_tip5_60bit()
 }
 
+#[cfg(test)]
+fn pure_query_l1_stark_config_with_shape(
+    log_blowup: usize,
+    num_queries: usize,
+) -> p3_circuit_prover::config::GoldilocksTipsConfig {
+    p3_circuit_prover::config::goldilocks_tip5_pure_query_60bit_with_shape(log_blowup, num_queries)
+}
+
 fn statement_public_digest(public_values: &[Val]) -> Vec<Val> {
     let mut state = [Val::ZERO; WIDTH];
     for chunk in public_values.chunks(RATE) {
@@ -448,6 +456,24 @@ fn production_l1_circuit_prover_data_with_public_binding_lanes(
     ),
     VerificationError,
 > {
+    l1_circuit_prover_data_with_config_and_public_binding_lanes(
+        built,
+        &production_l1_stark_config(),
+        public_binding_lanes,
+    )
+}
+
+fn l1_circuit_prover_data_with_config_and_public_binding_lanes(
+    built: &BuiltCompositeL1,
+    outer_config: &p3_circuit_prover::config::GoldilocksTipsConfig,
+    public_binding_lanes: usize,
+) -> Result<
+    (
+        p3_circuit_prover::TablePacking,
+        p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksTipsConfig>,
+    ),
+    VerificationError,
+> {
     use p3_batch_stark::ProverData;
     use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
     use p3_circuit_prover::{
@@ -483,9 +509,8 @@ fn production_l1_circuit_prover_data_with_public_binding_lanes(
         .iter()
         .map(strip_public_binding_for_lookup_metadata)
         .collect::<Vec<_>>();
-    let outer_config = production_l1_stark_config();
     let prover_data =
-        ProverData::from_airs_and_degrees(&outer_config, &lookup_metadata_airs, &degrees);
+        ProverData::from_airs_and_degrees(outer_config, &lookup_metadata_airs, &degrees);
     Ok((
         table_packing,
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns),
@@ -514,6 +539,20 @@ pub fn prove_composite_l1_outer_cert(
 fn prove_composite_l1_outer_cert_with_public_binding_lanes(
     built: &BuiltCompositeL1,
     proof: &BatchProof<AiPowStarkConfig>,
+    public_binding_lanes: usize,
+) -> Result<AiPowL1OuterProof, VerificationError> {
+    prove_composite_l1_outer_cert_with_config_and_public_binding_lanes(
+        built,
+        proof,
+        production_l1_stark_config(),
+        public_binding_lanes,
+    )
+}
+
+fn prove_composite_l1_outer_cert_with_config_and_public_binding_lanes(
+    built: &BuiltCompositeL1,
+    proof: &BatchProof<AiPowStarkConfig>,
+    outer_config: p3_circuit_prover::config::GoldilocksTipsConfig,
     public_binding_lanes: usize,
 ) -> Result<AiPowL1OuterProof, VerificationError> {
     use p3_batch_stark::ProverData;
@@ -580,7 +619,6 @@ fn prove_composite_l1_outer_cert_with_public_binding_lanes(
         .iter()
         .map(strip_public_binding_for_lookup_metadata)
         .collect::<Vec<_>>();
-    let outer_config = production_l1_stark_config();
     let prover_data =
         ProverData::from_airs_and_degrees(&outer_config, &lookup_metadata_airs, &degrees);
     let circuit_prover_data =
@@ -1680,6 +1718,115 @@ mod tests {
             l1_outer_bytes >= l1_proof_body_bytes,
             "metadata split must be well formed"
         );
+    }
+
+    #[test]
+    #[ignore = "pure-query statement-bound relaxed L1-only candidate sweep is opt-in"]
+    fn relaxed_l1_only_pure_query_statement_bound_candidate_size_breakdown_for_test_pearl() {
+        use std::time::Instant;
+
+        use p3_circuit::ops::Tip5Config;
+        use p3_circuit_prover::BatchStarkProver;
+
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+            0
+        );
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+            0
+        );
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS,
+            60
+        );
+
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+
+        let statement_digest_public_values = built
+            .public_inputs
+            .iter()
+            .take(DIGEST_ELEMS)
+            .flat_map(|value| {
+                <Challenge as BasedVectorSpace<Val>>::as_basis_coefficients_slice(value)
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>();
+
+        for (label, log_blowup, num_queries) in [
+            ("lb4_nq15", 4usize, 15usize),
+            ("lb5_nq12", 5usize, 12usize),
+            ("lb6_nq10", 6usize, 10usize),
+        ] {
+            let prove_start = Instant::now();
+            let outer = prove_composite_l1_outer_cert_with_config_and_public_binding_lanes(
+                &built,
+                &proof,
+                pure_query_l1_stark_config_with_shape(log_blowup, num_queries),
+                DIGEST_ELEMS,
+            )
+            .expect("pure-query statement-bound recursive certificate");
+            let prove_ms = prove_start.elapsed().as_millis();
+
+            let mut verifier = BatchStarkProver::new(pure_query_l1_stark_config_with_shape(
+                log_blowup, num_queries,
+            ))
+            .with_table_packing(production_l1_table_packing(DIGEST_ELEMS));
+            verifier.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+            verifier.register_recompose_table::<2>(true);
+
+            let verify_start = Instant::now();
+            verifier
+                .verify_all_tables_with_public_values(&outer, &statement_digest_public_values)
+                .expect("pure-query statement-bound L1 outer proof must verify");
+            let verify_ms = verify_start.elapsed().as_millis();
+
+            let l1_outer_bytes = postcard_len(&outer, "pure-query statement-bound L1 outer proof");
+            let l1_proof_body_bytes =
+                postcard_len(&outer.proof, "pure-query statement-bound L1 proof body");
+            let l1_metadata_bytes = l1_outer_bytes.saturating_sub(l1_proof_body_bytes);
+            eprintln!(
+                "relaxed L1-only pure-query statement-bound candidate [TEST_PEARL {label}]: l1_outer={} l1_proof_body={} l1_metadata={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} prove_ms={} verify_ms={}",
+                l1_outer_bytes,
+                l1_proof_body_bytes,
+                l1_metadata_bytes,
+                outer.public_binding_lanes,
+                log_blowup,
+                num_queries,
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS,
+                prove_ms,
+                verify_ms,
+            );
+
+            assert_eq!(
+                outer.public_binding_lanes, DIGEST_ELEMS,
+                "diagnostic L1 proof must expose the statement digest"
+            );
+            assert!(
+                l1_outer_bytes >= l1_proof_body_bytes,
+                "metadata split must be well formed"
+            );
+        }
     }
 
     #[test]
