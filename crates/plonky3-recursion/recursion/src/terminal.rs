@@ -1276,6 +1276,28 @@ pub struct TerminalNpoTip5LookupTraceProfile {
     pub tip5_rounds: usize,
 }
 
+/// Candidate one-row-per-permutation Tip5 lookup-trace shape.
+///
+/// This is a data-source/profile checkpoint for the narrower fused terminal
+/// backend: it packs the five existing lookup-trace round rows for each Tip5
+/// permutation into one row, dropping the table row and carried-input columns
+/// from each round. It is not yet a standalone proof component.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalNpoTip5PackedLookupTraceProfile {
+    pub tip5_rows: usize,
+    pub rows: usize,
+    pub padded_rows: usize,
+    pub log_rows: usize,
+    pub round_width: usize,
+    pub main_width: usize,
+    pub lookup_table_rows: usize,
+    pub logup_query_tuples: usize,
+    pub algebra_quotient_rows: usize,
+    pub max_constraint_degree: usize,
+    pub tip5_rounds: usize,
+    pub proximity: TerminalProximityProfile,
+}
+
 /// Column subset committed by a terminal Tip5 lookup-trace FRI checkpoint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TerminalNpoTip5LookupFriColumnSet {
@@ -1884,6 +1906,7 @@ pub struct TerminalNpoPolynomialLayoutMetrics {
     pub full_table_profile: TerminalNpoPolynomialFriProfile,
     pub witness_value_profile: TerminalNpoPolynomialFriProfile,
     pub prover_dependent_profile: TerminalNpoPolynomialFriProfile,
+    pub packed_tip5_lookup_profile: TerminalNpoTip5PackedLookupTraceProfile,
     pub compact_residual_composition_profile: TerminalCompactCompositionFriProfile,
     pub residual_relation_quotient_profile: TerminalNpoPolynomialFriProfile,
     pub terminal_challenge_basis_dimension: usize,
@@ -5844,6 +5867,96 @@ impl NativeTerminalCompiler {
             .collect::<Vec<[u64; 16]>>();
         let (trace, preprocessed) = generate_lookup_trace(&raw_inputs);
         Ok((inputs, trace, preprocessed))
+    }
+
+    pub fn terminal_npo_tip5_packed_lookup_trace_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+    ) -> Result<
+        (
+            Vec<[Goldilocks; 16]>,
+            TerminalNpoTip5PackedLookupTraceProfile,
+            RowMajorMatrix<Goldilocks>,
+        ),
+        NativeTerminalVerifyError,
+    >
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let table = self.terminal_npo_polynomial_table_goldilocks(verifying_key, witness)?;
+        let inputs = Self::terminal_npo_tip5_air_inputs_from_table(&table)?;
+        let profile = Self::terminal_npo_tip5_packed_lookup_trace_profile(verifying_key)?;
+        Self::terminal_npo_tip5_packed_lookup_trace_from_inputs(&profile, inputs)
+    }
+
+    fn terminal_npo_tip5_packed_lookup_trace_from_inputs(
+        profile: &TerminalNpoTip5PackedLookupTraceProfile,
+        inputs: Vec<[Goldilocks; 16]>,
+    ) -> Result<
+        (
+            Vec<[Goldilocks; 16]>,
+            TerminalNpoTip5PackedLookupTraceProfile,
+            RowMajorMatrix<Goldilocks>,
+        ),
+        NativeTerminalVerifyError,
+    > {
+        if inputs.len() != profile.tip5_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_packed_lookup_inputs".into(),
+                    expected: profile.tip5_rows,
+                    got: inputs.len(),
+                },
+            );
+        }
+        let mut raw_inputs = inputs
+            .iter()
+            .map(|state| core::array::from_fn(|i| PrimeField64::as_canonical_u64(&state[i])))
+            .collect::<Vec<[u64; 16]>>();
+        raw_inputs.resize(profile.padded_rows, [0u64; 16]);
+        let (lookup_trace, _) = generate_lookup_trace(&raw_inputs);
+        if lookup_trace.width() != tip5_lookup_air_width() {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_packed_lookup_source_width".into(),
+                    expected: tip5_lookup_air_width(),
+                    got: lookup_trace.width(),
+                },
+            );
+        }
+        let expected_round_rows = TIP5_LOOKUP_TABLE_ROWS + profile.padded_rows * TIP5_PERM_ROUNDS;
+        if lookup_trace.height() < expected_round_rows {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_packed_lookup_source_rows".into(),
+                    expected: expected_round_rows,
+                    got: lookup_trace.height(),
+                },
+            );
+        }
+
+        let mut packed = Vec::with_capacity(profile.padded_rows * profile.main_width);
+        for tip5_rank in 0..profile.padded_rows {
+            let row_start = packed.len();
+            packed.resize(row_start + profile.main_width, Goldilocks::ZERO);
+            for round in 0..TIP5_PERM_ROUNDS {
+                let source_row = Self::terminal_npo_tip5_lookup_round_row(tip5_rank, round);
+                let source_start = source_row * lookup_trace.width() + Self::TIP5_LOOKUP_C_IN;
+                let source_end = Self::TIP5_LOOKUP_C_OUT + 16;
+                let source_end = source_row * lookup_trace.width() + source_end;
+                let target_start =
+                    row_start + Self::terminal_npo_tip5_packed_lookup_round_offset(round);
+                let target_end = target_start + profile.round_width;
+                packed[target_start..target_end]
+                    .copy_from_slice(&lookup_trace.values[source_start..source_end]);
+            }
+        }
+        Ok((
+            inputs,
+            profile.clone(),
+            RowMajorMatrix::new(packed, profile.main_width),
+        ))
     }
 
     pub fn commit_terminal_npo_tip5_lookup_air_trace_goldilocks<F>(
@@ -18724,6 +18837,8 @@ impl NativeTerminalCompiler {
                 TerminalNpoPolynomialFriColumnSet::ProverDependent,
                 prover_dependent_field_columns,
             )?;
+        let packed_tip5_lookup_profile =
+            Self::terminal_npo_tip5_packed_lookup_trace_profile(verifying_key)?;
         let compact_residual_composition_profile = Self::terminal_compact_composition_fri_profile(
             column_layout.rows,
             column_layout.rows.next_power_of_two(),
@@ -18748,6 +18863,7 @@ impl NativeTerminalCompiler {
             full_table_profile,
             witness_value_profile,
             prover_dependent_profile,
+            packed_tip5_lookup_profile,
             compact_residual_composition_profile,
             residual_relation_quotient_profile,
             terminal_challenge_basis_dimension,
@@ -18789,6 +18905,48 @@ impl NativeTerminalCompiler {
         }
     }
 
+    pub fn terminal_npo_tip5_packed_lookup_trace_profile<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+    ) -> Result<TerminalNpoTip5PackedLookupTraceProfile, NativeTerminalVerifyError> {
+        let tip5_rows = verifying_key.npo_relation().tip5_rows();
+        let rows = tip5_rows.max(1);
+        let padded_rows = rows.next_power_of_two();
+        let round_width = Self::terminal_npo_tip5_packed_lookup_round_width();
+        let main_width = round_width.checked_mul(TIP5_PERM_ROUNDS).ok_or(
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: "terminal packed Tip5 lookup trace width overflow".into(),
+            },
+        )?;
+        let logup_query_tuples = padded_rows
+            .checked_mul(TIP5_PERM_ROUNDS)
+            .and_then(|value| value.checked_mul(Self::TIP5_LOOKUP_NS))
+            .and_then(|value| value.checked_mul(Self::TIP5_LOOKUP_NBYTES))
+            .ok_or(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                reason: "terminal packed Tip5 lookup tuple count overflow".into(),
+            })?;
+        let max_constraint_degree = 8usize;
+        let algebra_quotient_rows =
+            padded_rows
+                .checked_mul(max_constraint_degree)
+                .ok_or(NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
+                    reason: "terminal packed Tip5 lookup quotient-domain overflow".into(),
+                })?;
+        Ok(TerminalNpoTip5PackedLookupTraceProfile {
+            tip5_rows,
+            rows,
+            padded_rows,
+            log_rows: padded_rows.trailing_zeros() as usize,
+            round_width,
+            main_width,
+            lookup_table_rows: TIP5_LOOKUP_TABLE_ROWS,
+            logup_query_tuples,
+            algebra_quotient_rows,
+            max_constraint_degree,
+            tip5_rounds: TIP5_PERM_ROUNDS,
+            proximity: TerminalProximityProfile::production_60bit(),
+        })
+    }
+
     const TIP5_LOOKUP_NS: usize = 4;
     const TIP5_LOOKUP_NBYTES: usize = 8;
     const TIP5_LOOKUP_SPLIT_BC: usize = Self::TIP5_LOOKUP_NS * 2 * Self::TIP5_LOOKUP_NBYTES;
@@ -18826,6 +18984,31 @@ impl NativeTerminalCompiler {
     #[inline]
     const fn terminal_npo_tip5_lookup_out_col(lane: usize) -> usize {
         Self::TIP5_LOOKUP_C_OUT + lane
+    }
+
+    #[inline]
+    const fn terminal_npo_tip5_packed_lookup_round_width() -> usize {
+        Self::TIP5_LOOKUP_C_OUT + 16 - Self::TIP5_LOOKUP_C_IN
+    }
+
+    #[inline]
+    const fn terminal_npo_tip5_packed_lookup_round_offset(round: usize) -> usize {
+        round * Self::terminal_npo_tip5_packed_lookup_round_width()
+    }
+
+    #[cfg(test)]
+    #[inline]
+    const fn terminal_npo_tip5_packed_lookup_round_input_col(round: usize, lane: usize) -> usize {
+        Self::terminal_npo_tip5_packed_lookup_round_offset(round) + lane
+    }
+
+    #[cfg(test)]
+    #[inline]
+    const fn terminal_npo_tip5_packed_lookup_round_output_col(round: usize, lane: usize) -> usize {
+        Self::terminal_npo_tip5_packed_lookup_round_offset(round)
+            + Self::TIP5_LOOKUP_C_OUT
+            - Self::TIP5_LOOKUP_C_IN
+            + lane
     }
 
     #[inline]
@@ -38334,6 +38517,9 @@ mod tests {
         let (lookup_inputs, lookup_trace, lookup_preprocessed) = compiler
             .terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
             .expect("terminal Tip5 lookup AIR trace must build");
+        let (packed_inputs, packed_profile, packed_trace) = compiler
+            .terminal_npo_tip5_packed_lookup_trace_goldilocks(&vk, &witness)
+            .expect("terminal packed Tip5 lookup trace must build");
         let lookup_profile = NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_profile(&vk);
         let lookup_oracle_set = compiler
             .commit_terminal_npo_tip5_lookup_air_trace_goldilocks(&vk, &witness)
@@ -38343,9 +38529,27 @@ mod tests {
         assert_eq!(air_trace.width(), tip5_perm_air_width());
         assert_eq!(air_trace.height(), 2);
         assert_eq!(lookup_inputs, air_inputs);
+        assert_eq!(packed_inputs, air_inputs);
         assert_eq!(lookup_profile.tip5_rows, air_inputs.len());
         assert_eq!(lookup_profile.lookup_table_rows, TABLE_ROWS);
         assert_eq!(lookup_profile.main_width, tip5_lookup_air_width());
+        assert_eq!(packed_profile.tip5_rows, air_inputs.len());
+        assert_eq!(packed_profile.rows, air_inputs.len());
+        assert_eq!(packed_profile.padded_rows, air_inputs.len().next_power_of_two());
+        assert_eq!(
+            packed_profile.round_width,
+            NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_round_width()
+        );
+        assert_eq!(
+            packed_profile.main_width,
+            packed_profile.round_width * NUM_ROUNDS
+        );
+        assert_eq!(packed_trace.width(), packed_profile.main_width);
+        assert_eq!(packed_trace.height(), packed_profile.padded_rows);
+        assert_eq!(
+            packed_profile.algebra_quotient_rows,
+            packed_profile.padded_rows * packed_profile.max_constraint_degree
+        );
         assert_eq!(
             lookup_profile.preprocessed_digest,
             NativeTerminalCompiler::terminal_npo_tip5_lookup_preprocessed_digest(
@@ -38382,6 +38586,29 @@ mod tests {
                 assert_eq!(
                     lookup_trace.values[lookup_row * lookup_trace.width() + lookup_input_col],
                     *value
+                );
+                let packed_input_col =
+                    NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_round_input_col(
+                        0, limb,
+                    );
+                assert_eq!(
+                    packed_trace.values[row_index * packed_trace.width() + packed_input_col],
+                    *value
+                );
+            }
+            let lookup_row =
+                NativeTerminalCompiler::terminal_npo_tip5_lookup_round_row(row_index, NUM_ROUNDS - 1);
+            for limb in 0..16 {
+                let packed_output_col =
+                    NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_round_output_col(
+                        NUM_ROUNDS - 1,
+                        limb,
+                    );
+                assert_eq!(
+                    packed_trace.values[row_index * packed_trace.width() + packed_output_col],
+                    lookup_trace.values[lookup_row * lookup_trace.width()
+                        + NativeTerminalCompiler::TIP5_LOOKUP_C_OUT
+                        + limb]
                 );
             }
         }

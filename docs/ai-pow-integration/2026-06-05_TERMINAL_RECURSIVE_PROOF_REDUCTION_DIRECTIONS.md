@@ -272,6 +272,30 @@ not the existing lookup-free one-row Tip5 AIR, because that AIR is about
 hash-specialized terminal argument that avoids a `5x` round-row domain without
 opening thousands of bit-decomposition columns.
 
+The first concrete checkpoint for that route is now implemented as a data
+source and profile, not yet as an accepted proof: `TerminalNpoTip5PackedLookupTraceProfile`
+and `terminal_npo_tip5_packed_lookup_trace_goldilocks`. The packed trace reuses
+the already tested lookup-trace generator, pads to zero-input permutations, and
+copies each permutation's five round rows horizontally into one row containing
+only `IN`, split `(b,c)` byte pairs, guard inverses, and `OUT`. The focused
+regression `goldilocks_npo_tip5_air_trace_matches_terminal_rows` now checks
+that these packed rows match the existing lookup trace and terminal-derived
+Tip5 inputs/outputs.
+
+The production-profile layout diagnostic now shows the expected structural
+gain for the actual composite verifier relation:
+
+| Tip5 terminal trace shape | Rows | Width | Algebra quotient rows | Notes |
+|---|---:|---:|---:|---|
+| Current row-per-round lookup trace | `65,536` | `117` | `524,288` | Includes the 256 lookup-table rows and five rows per Tip5 permutation. |
+| Packed one-row-per-permutation lookup trace | `8,192` | `500` | `65,536` | Reuses the same round-row contents, padded with zero-input permutations. |
+
+The packed route therefore removes the `8x` quotient-domain blowup that kept
+the integrated Tip5 AIR proof in `air_quotient_matrix`. It is not yet a
+production theorem: the next step is to write and prove the packed AIR/LogUp
+quotient and its bridge to the selected NPO value columns under the same
+prelude, then measure the fused proof body.
+
 The current `CircuitConfig::PROD` profile is now exactly 60 pure-query bits
 (`log_blowup=4`, `num_queries=15`, `pow_bits=0`). Removing the previous
 one-bit commit/query proof-system PoW hooks was the right soundness-policy
@@ -1374,10 +1398,12 @@ composite verifier path is reduced under both production gates.
 ## Direction 3: Relation-Specific Projection Instead Of Full Trace Opening
 
 The integrated LogUp proof remains large because it opens a wide Tip5 lookup
-trace, even after several successful layout passes. Earlier work already
-reduced the lookup trace from a very wide one-row-per-permutation shape to a
-row-per-round shape, tuned LogUp grouping, and packed Merkle path digests. The
-full-trace opening still dominates many checkpoints.
+trace, even after several successful layout passes. Earlier work reduced the
+lookup trace from a very wide lookup-free one-row-per-permutation shape to a
+narrow row-per-round lookup shape, tuned LogUp grouping, and packed Merkle path
+digests. The new packed lookup data source keeps the narrow lookup encoding
+but restores one row per permutation, so the remaining work is the proof
+theorem rather than another trace-source rewrite.
 
 This direction tries to avoid opening all trace columns needed to evaluate the
 Tip5 AIR relation directly at `zeta`. Instead, the prover would commit a

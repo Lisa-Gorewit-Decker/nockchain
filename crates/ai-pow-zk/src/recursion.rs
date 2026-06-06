@@ -29,6 +29,7 @@ use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::public_inputs::BatchStarkVerifierInputsBuilder;
 use p3_recursion::terminal::{
     NativeTerminalCompiler, NativeTerminalVerifyError, TerminalNpoPolynomialLayoutMetrics,
+    TerminalNpoTip5PackedLookupTraceProfile,
 };
 use p3_recursion::{
     verify_batch_circuit, BatchProofTargets, CommonDataTargets, Recursive, RecursiveAir,
@@ -931,6 +932,7 @@ pub struct CompositeTerminalNpoPolynomialLayoutMetrics {
     pub terminal_public_input_values: usize,
     pub terminal_private_input_values: usize,
     pub npo_polynomial: TerminalNpoPolynomialLayoutMetrics,
+    pub packed_tip5_lookup: TerminalNpoTip5PackedLookupTraceProfile,
 }
 
 /// Public/private input footprint of the current composite-L1 verifier circuit.
@@ -1473,6 +1475,7 @@ pub fn measure_composite_l1_terminal_npo_polynomial_layout(
                 ))
             },
         )?;
+    let packed_tip5_lookup = npo_polynomial.packed_tip5_lookup_profile.clone();
     let terminal_compile_ms = t.elapsed().as_millis();
 
     Ok(CompositeTerminalNpoPolynomialLayoutMetrics {
@@ -1482,6 +1485,7 @@ pub fn measure_composite_l1_terminal_npo_polynomial_layout(
         terminal_public_input_values: built.public_inputs.len(),
         terminal_private_input_values: built.private_inputs.len(),
         npo_polynomial,
+        packed_tip5_lookup,
     })
 }
 
@@ -3445,8 +3449,14 @@ mod tests {
         metrics: &CompositeTerminalNpoPolynomialLayoutMetrics,
     ) {
         let npo = &metrics.npo_polynomial;
+        let packed = &metrics.packed_tip5_lookup;
+        let current_lookup_rows = (packed.lookup_table_rows
+            + packed.tip5_rows * packed.tip5_rounds)
+            .max(1)
+            .next_power_of_two();
+        let current_lookup_quotient_rows = current_lookup_rows * packed.max_constraint_degree;
         eprintln!(
-            "ai-pow composite terminal NPO polynomial layout [{label}]: build_ms={} compile_ms={} public_values={} private_values={} fingerprint={:?} npo_rows={} residual_components={} sampled_residual_components={} tip5_rows={} tip5_merkle_rows={} tip5_new_start_rows={} recompose_rows={} recompose_coeff_rows={} witness_inputs={} witness_outputs={} hidden_inputs={} max_serialized_hidden_inputs={} mmcs_bits={} column_count={} metadata_columns={} input_value_columns={} output_value_columns={} hidden_value_columns={} residual_value_columns={} witness_value_field_columns={} residual_value_field_columns={} prover_dependent_field_columns={} full_table_basis_columns={} witness_value_basis_columns={} prover_dependent_basis_columns={} rows={} padded_rows={} composition_basis_columns={} recompose_quotient_basis_columns={} terminal_challenge_basis_dim={} residual_zero_opened_basis_columns={} residual_zero_min_opened_limb_bytes={} recompose_opened_basis_columns={} recompose_min_opened_limb_bytes={}",
+            "ai-pow composite terminal NPO polynomial layout [{label}]: build_ms={} compile_ms={} public_values={} private_values={} fingerprint={:?} npo_rows={} residual_components={} sampled_residual_components={} tip5_rows={} tip5_merkle_rows={} tip5_new_start_rows={} recompose_rows={} recompose_coeff_rows={} witness_inputs={} witness_outputs={} hidden_inputs={} max_serialized_hidden_inputs={} mmcs_bits={} column_count={} metadata_columns={} input_value_columns={} output_value_columns={} hidden_value_columns={} residual_value_columns={} witness_value_field_columns={} residual_value_field_columns={} prover_dependent_field_columns={} full_table_basis_columns={} witness_value_basis_columns={} prover_dependent_basis_columns={} rows={} padded_rows={} composition_basis_columns={} recompose_quotient_basis_columns={} terminal_challenge_basis_dim={} residual_zero_opened_basis_columns={} residual_zero_min_opened_limb_bytes={} recompose_opened_basis_columns={} recompose_min_opened_limb_bytes={} packed_tip5_rows={} packed_tip5_padded_rows={} packed_tip5_width={} packed_tip5_round_width={} packed_tip5_logup_tuples={} packed_tip5_quotient_rows={} current_lookup_rows={} current_lookup_width={} current_lookup_quotient_rows={}",
             metrics.l1_circuit_build_ms,
             metrics.terminal_compile_ms,
             metrics.terminal_public_input_values,
@@ -3486,6 +3496,15 @@ mod tests {
             npo.fri_native_residual_zero_min_opened_limb_bytes,
             npo.fri_native_recompose_opened_basis_columns,
             npo.fri_native_recompose_min_opened_limb_bytes,
+            packed.rows,
+            packed.padded_rows,
+            packed.main_width,
+            packed.round_width,
+            packed.logup_query_tuples,
+            packed.algebra_quotient_rows,
+            current_lookup_rows,
+            p3_tip5_circuit_air::tip5_lookup_air_width(),
+            current_lookup_quotient_rows,
         );
     }
 
@@ -3786,6 +3805,24 @@ mod tests {
         assert!(
             npo.fri_native_residual_zero_min_opened_limb_bytes > 0,
             "layout diagnostic should expose a nonzero opened-limb floor"
+        );
+        assert_eq!(
+            metrics.packed_tip5_lookup.tip5_rows,
+            npo.relation_profile.tip5_rows
+        );
+        assert_eq!(
+            metrics.packed_tip5_lookup.algebra_quotient_rows,
+            metrics.packed_tip5_lookup.padded_rows
+                * metrics.packed_tip5_lookup.max_constraint_degree
+        );
+        assert!(
+            metrics.packed_tip5_lookup.algebra_quotient_rows
+                < (metrics.packed_tip5_lookup.lookup_table_rows
+                    + metrics.packed_tip5_lookup.tip5_rows
+                        * metrics.packed_tip5_lookup.tip5_rounds)
+                    .next_power_of_two()
+                    * metrics.packed_tip5_lookup.max_constraint_degree,
+            "packed one-row-per-permutation trace should reduce the AIR quotient domain"
         );
     }
 

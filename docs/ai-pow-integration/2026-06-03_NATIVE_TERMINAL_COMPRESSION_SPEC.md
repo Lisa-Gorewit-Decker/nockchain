@@ -388,6 +388,18 @@ for this route.
   transcript using the lookup trace profile, so a profile-compatible
   substitution of the fixed L-table cannot share a terminal statement or
   transcript.
+- `TerminalNpoTip5PackedLookupTrace` profile and data source: the next
+  production-size candidate keeps the same lookup-trace generator but packs the
+  five round rows for each Tip5 permutation horizontally into one row. Each
+  packed row contains only round `IN`, split `(b,c)` byte-pair columns, guard
+  inverses, and `OUT`; table rows and repeated carried-input columns stay out
+  of the packed matrix. The current implementation is a source/profile
+  checkpoint, not an accepted proof component. The focused regression checks
+  packed rows against the existing lookup trace and terminal-derived Tip5 IO.
+  On the full `ai-pow-zk` PROD composite relation, this shape has width `500`,
+  `8,192` padded rows, and a `65,536`-row degree-8 algebra quotient, compared
+  with the current row-per-round lookup trace's width `117`, `65,536` rows,
+  and `524,288`-row quotient.
   A terminal LogUp accumulator checkpoint now mirrors the Plonky3 LogUp
   rational-sum equation with transcript-derived `(alpha, beta)` after the
   committed full-main lookup trace root. It computes query byte-pair terms from
