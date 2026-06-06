@@ -5492,6 +5492,191 @@ mod tests {
         measure_terminal_packed_tip5_air_algebra_candidate_for_profile("PROD", CircuitConfig::PROD);
     }
 
+    fn measure_terminal_packed_tip5_logup_candidate_for_profile(
+        label: &str,
+        profile: CircuitConfig,
+    ) {
+        init_terminal_prover_profile_tracing();
+        assert_eq!(profile.johnson_fri_bits(), 60);
+
+        let total_start = std::time::Instant::now();
+        let zk = test_zk_params();
+        let cfg = build_config(&zk, &profile);
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let l0_prove_start = std::time::Instant::now();
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        eprintln!(
+            "native terminal packed Tip5 LogUp candidate phase [{label}]: l0_prove_ms={}",
+            l0_prove_start.elapsed().as_millis()
+        );
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program.clone(),
+                proof,
+                &pis,
+            )
+        };
+
+        let l1_build_start = std::time::Instant::now();
+        let air = CompositeFullAirWithLookupsPinned::new_with(program, true);
+        let pd = logup_common_for(&cfg, &verified.program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &verified.proof,
+            &pd.common,
+            &verified.public_inputs.to_vec(),
+            &profile,
+        )
+        .expect("packed Tip5 LogUp diagnostic must build L1 verifier circuit");
+        eprintln!(
+            "native terminal packed Tip5 LogUp candidate phase [{label}]: l1_circuit_build_ms={}",
+            l1_build_start.elapsed().as_millis()
+        );
+
+        let l1_verify_start = std::time::Instant::now();
+        let traces = run_composite_l1_verifier_traces(&built, &verified.proof)
+            .expect("packed Tip5 LogUp diagnostic must run L1 verifier traces");
+        let l1_verify_elapsed = l1_verify_start.elapsed();
+        eprintln!(
+            "native terminal packed Tip5 LogUp candidate phase [{label}]: l1_trace_verify_ms={}",
+            l1_verify_elapsed.as_millis()
+        );
+
+        let compiler = terminal_compiler();
+        let compile_start = std::time::Instant::now();
+        let (_pk, vk) = compiler
+            .compile_goldilocks_terminal(&built.circuit)
+            .expect("packed Tip5 LogUp diagnostic must compile terminal circuit");
+        compiler
+            .validate_goldilocks_production_query_domains(
+                &vk,
+                TerminalProofParameters::production_60bit(),
+            )
+            .expect("packed Tip5 LogUp diagnostic must use production query domains");
+        let compile_elapsed = compile_start.elapsed();
+        eprintln!(
+            "native terminal packed Tip5 LogUp candidate phase [{label}]: terminal_compile_ms={}",
+            compile_elapsed.as_millis()
+        );
+
+        let witness = TerminalWitness {
+            fingerprint: TerminalCircuitFingerprint::from_circuit(&built.circuit),
+            public_inputs: built.public_inputs.clone(),
+            private_inputs: built.private_inputs.clone(),
+            traces,
+        };
+
+        let trace_start = std::time::Instant::now();
+        let (_, packed_profile, packed_trace) = compiler
+            .terminal_npo_tip5_packed_lookup_trace_goldilocks(&vk, &witness)
+            .expect("packed Tip5 LogUp diagnostic must build packed lookup trace");
+        let trace_elapsed = trace_start.elapsed();
+        eprintln!(
+            "native terminal packed Tip5 LogUp candidate phase [{label}]: packed_trace_ms={} packed_rows={} packed_padded_rows={} packed_width={} logup_tuples={}",
+            trace_elapsed.as_millis(),
+            packed_profile.rows,
+            packed_profile.padded_rows,
+            packed_profile.main_width,
+            packed_profile.logup_query_tuples,
+        );
+
+        let root_start = std::time::Instant::now();
+        let prelude_roots =
+            NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_fri_prelude_commitments_goldilocks(
+                &packed_profile,
+                &packed_trace,
+            )
+            .expect("packed Tip5 LogUp diagnostic must commit packed trace");
+        let root_elapsed = root_start.elapsed();
+        eprintln!(
+            "native terminal packed Tip5 LogUp candidate phase [{label}]: packed_trace_root_ms={}",
+            root_elapsed.as_millis()
+        );
+
+        let prelude_start = std::time::Instant::now();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &witness.public_inputs,
+                TerminalProofParameters::production_60bit(),
+                prelude_roots,
+            )
+            .expect("packed Tip5 LogUp diagnostic must build terminal prelude");
+        let prelude_elapsed = prelude_start.elapsed();
+        eprintln!(
+            "native terminal packed Tip5 LogUp candidate phase [{label}]: prelude_ms={}",
+            prelude_elapsed.as_millis()
+        );
+
+        let prove_start = std::time::Instant::now();
+        let packed_proof = compiler
+            .prove_terminal_npo_tip5_packed_lookup_logup_quotient_goldilocks(
+                &vk, &witness.public_inputs, &witness, &prelude,
+            )
+            .expect("packed Tip5 LogUp proof must build");
+        let prove_elapsed = prove_start.elapsed();
+        eprintln!(
+            "native terminal packed Tip5 LogUp candidate phase [{label}]: prove_ms={}",
+            prove_elapsed.as_millis()
+        );
+
+        let verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_tip5_packed_lookup_logup_quotient_goldilocks::<Challenge>(
+                &vk, &witness.public_inputs, &prelude, &packed_proof,
+            )
+            .expect("packed Tip5 LogUp proof must verify");
+        let verify_elapsed = verify_start.elapsed();
+
+        let proof_bytes = postcard_len(&packed_proof, "packed Tip5 LogUp proof");
+        let compact_fri_bytes =
+            postcard_len(&packed_proof.proof, "packed Tip5 LogUp compact FRI proof");
+        let opened_trace_bytes = postcard_len(
+            &packed_proof.opened_trace_basis, "packed Tip5 LogUp opened trace",
+        );
+        let opened_table_bytes = postcard_len(
+            &packed_proof.opened_table_basis, "packed Tip5 LogUp opened table",
+        );
+        let opened_accumulator_bytes = postcard_len(
+            &packed_proof.opened_accumulator_points_basis, "packed Tip5 LogUp opened accumulator",
+        );
+        let opened_quotient_bytes = postcard_len(
+            &packed_proof.opened_quotient_basis, "packed Tip5 LogUp opened quotient",
+        );
+        eprintln!(
+            "native terminal packed Tip5 LogUp candidate over ai-pow composite verifier [{label}]: proof={} bytes compact_fri={} opened_trace={} opened_table={} opened_accumulator={} opened_quotient={} packed_rows={} packed_padded_rows={} packed_width={} logup_tuples={} table_columns={} accumulator_columns={} quotient_rows={} l1_verify_ms={} compile_ms={} packed_trace_ms={} packed_trace_root_ms={} prelude_ms={} prove_ms={} verify_ms={} total_wall_ms={}",
+            proof_bytes,
+            compact_fri_bytes,
+            opened_trace_bytes,
+            opened_table_bytes,
+            opened_accumulator_bytes,
+            opened_quotient_bytes,
+            packed_profile.rows,
+            packed_profile.padded_rows,
+            packed_profile.main_width,
+            packed_profile.logup_query_tuples,
+            packed_proof.table_profile.basis_columns,
+            packed_proof.accumulator_profile.basis_columns,
+            packed_proof.quotient_profile.padded_rows,
+            l1_verify_elapsed.as_millis(),
+            compile_elapsed.as_millis(),
+            trace_elapsed.as_millis(),
+            root_elapsed.as_millis(),
+            prelude_elapsed.as_millis(),
+            prove_elapsed.as_millis(),
+            verify_elapsed.as_millis(),
+            total_start.elapsed().as_millis(),
+        );
+    }
+
+    #[test]
+    #[ignore = "full composite packed Tip5 LogUp terminal candidate measurement is opt-in"]
+    fn terminal_packed_tip5_logup_candidate_for_prod_baseline_measures() {
+        measure_terminal_packed_tip5_logup_candidate_for_profile("PROD", CircuitConfig::PROD);
+    }
+
     fn measure_terminal_integrated_logup_candidate_for_profile(
         label: &str,
         profile: CircuitConfig,

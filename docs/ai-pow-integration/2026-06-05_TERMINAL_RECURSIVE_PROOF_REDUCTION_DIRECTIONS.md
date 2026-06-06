@@ -69,16 +69,31 @@ What is done and verified:
   `11.062s`. This confirms the quotient-domain reduction is a real runtime
   improvement over the row-per-round integrated proof, which stayed inside
   `air_quotient_matrix` for more than 90 seconds.
+- The packed byte-table LogUp quotient checkpoint is implemented and verifies.
+  It commits a packed-domain table-multiplicity column before sampling LogUp
+  challenges, uses the fixed Tip5 `(b, LOOKUP_TABLE[b])` table on the same
+  domain, checks final cumulatives sum to zero, and proves the grouped
+  rational running-sum transition. Focused tests round-trip the proof and
+  reject stale trace/table commitments, stale profiles, malformed openings,
+  tampered accumulator/quotient openings, non-table byte pairs, and stale table
+  multiplicities.
+- The full PROD packed-LogUp diagnostic verifies at `167,018` bytes /
+  `163.1 KiB`, with compact FRI `154,339` bytes, full-trace zeta openings
+  `9,964` bytes, table opening `22` bytes, accumulator openings `1,849` bytes,
+  opened quotient `42` bytes, prove `22.442s`, and verify `10.821s`. This
+  proves the missing byte-table binding is sound, but the standalone proof is
+  already above the relaxed `~150 KiB` target and cannot be appended to the
+  merged value-bridge checkpoint.
 
 What remains:
 
-- Implement the packed byte-table LogUp quotient over the packed trace.
 - Implement the selected NPO-value to packed-trace bridge, preserving the
   Merkle-direction-aware `mmcs_bit` bus-to-trace projection.
 - Fuse packed AIR algebra, packed LogUp, and selected-value bridge openings
   with the merged value-bridge proof under one transcript. Appending the
-  standalone packed algebra proof to the `151,448` byte merged checkpoint is
-  not viable; it would exceed the relaxed size target.
+  standalone packed algebra proof or standalone packed LogUp proof to the
+  `151,448` byte merged checkpoint is not viable; either would exceed the
+  relaxed size target.
 - Remove duplicated setup in the production prover path: cache or reuse
   terminal compile outputs, prepared NPO columns, packed traces, roots, and
   prelude material where the verifier key and public inputs are unchanged.
@@ -91,8 +106,9 @@ What remains:
 Current status: this path is the only measured route that attacks the actual
 full-composite terminal bottleneck while keeping native terminal production
 semantics and 60 bits of pure-query soundness. It is not yet a completed
-production proof: packed LogUp and the selected-value bridge still have to be
-fused and measured before the relaxed milestone can be claimed.
+production proof: the selected-value bridge still has to be implemented, and
+packed AIR, packed LogUp, and the selected-value bridge still have to be fused
+and measured before the relaxed milestone can be claimed.
 
 The current recursion-crate Tip5 verifier-circuit terminal measurement passes
 both targets in release mode:
@@ -378,12 +394,23 @@ standalone packed algebra proof is `136,810` bytes / `133.6 KiB`, with
 `126,599` bytes of compact FRI, `10,004` bytes of full-trace zeta openings,
 and `40` bytes of quotient opening. It proves in `22.718s` and verifies in
 `11.062s` after setup. This confirms the quotient-domain specialization is a
-real runtime lever, but it is not yet a production theorem: the byte-table
-LogUp relation and selected NPO value bridge are still outside the proof, and
-the standalone full-trace opening is too large to append to the `151,448` byte
-merged value-bridge checkpoint. The next step is to fuse packed AIR, packed
-LogUp, and selected-value bridge openings under the same prelude and measure
-the fused proof body.
+real runtime lever, but it is not yet a production theorem.
+
+The second packed proof checkpoint now implements the byte-table LogUp binding
+over the same one-row-per-permutation trace. It commits a packed-domain
+table-multiplicity column before sampling LogUp challenges, keeps the fixed
+Tip5 table verifier-derived, and proves the grouped rational running-sum
+transition over the packed trace. On the full PROD composite relation, the
+standalone packed LogUp proof is `167,018` bytes / `163.1 KiB`, with `154,339`
+bytes of compact FRI, `9,964` bytes of full-trace zeta openings, `22` bytes of
+table opening, `1,849` bytes of accumulator openings, and `42` bytes of
+quotient opening. It proves in `22.442s` and verifies in `10.821s` after setup.
+This closes the standalone byte-table soundness gap, but it is not appendable:
+both standalone packed algebra and standalone packed LogUp duplicate the
+full-trace/Fri opening cost and exceed the relaxed target when combined with
+the `151,448` byte merged value-bridge checkpoint. The next step is to fuse
+packed AIR, packed LogUp, and selected-value bridge openings under the same
+prelude and measure the fused proof body.
 
 The current `CircuitConfig::PROD` profile is now exactly 60 pure-query bits
 (`log_blowup=4`, `num_queries=15`, `pow_bits=0`). Removing the previous

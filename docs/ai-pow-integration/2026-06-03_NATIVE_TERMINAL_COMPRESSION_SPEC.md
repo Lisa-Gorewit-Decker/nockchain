@@ -413,6 +413,21 @@ for this route.
   `126,599` bytes, full-trace zeta openings `10,004` bytes, prove `22.718s`,
   and verify `11.062s`. This is a quotient-runtime improvement, not a
   production-size proof to append to the existing merged value-bridge body.
+- `TerminalNpoTip5PackedLookupLogupQuotientProof`: the second committed proof
+  over the packed trace. It keeps table rows out of the packed trace but
+  commits a one-column packed-domain table-multiplicity witness before
+  sampling LogUp challenges. The verifier derives the fixed
+  `(b, LOOKUP_TABLE[b])` table over the same domain, checks that final
+  cumulatives sum to zero, and verifies the grouped rational running-sum
+  quotient. The focused regression round-trips the proof and rejects stale
+  trace/table commitments, stale profiles, malformed openings, tampered
+  accumulator/quotient openings, non-table byte pairs, and stale table
+  multiplicities. The full PROD diagnostic measures this standalone checkpoint
+  at `167,018` bytes / `163.1 KiB`, compact FRI `154,339` bytes, full-trace
+  zeta openings `9,964` bytes, table opening `22` bytes, accumulator openings
+  `1,849` bytes, prove `22.442s`, and verify `10.821s`. This closes the
+  standalone byte-table binding, but it is already above the relaxed `~150 KiB`
+  target and is not appendable to the merged value-bridge body.
   A terminal LogUp accumulator checkpoint now mirrors the Plonky3 LogUp
   rational-sum equation with transcript-derived `(alpha, beta)` after the
   committed full-main lookup trace root. It computes query byte-pair terms from
@@ -1702,9 +1717,13 @@ stopped. The active production baseline has `8,081` terminal Tip5 calls, which
 forces the current generic lookup AIR into a `65,536`-row trace and a
 `524,288`-point quotient domain. The packed one-row-per-permutation algebra
 checkpoint reduces that quotient domain to `65,536` rows and verifies on the
-full PROD relation at `136,810` bytes with `22.718s` proving. The same proof
-shape still needs packed LogUp and selected-value bridge fusion before it can
-replace the current production recursive certificate path.
+full PROD relation at `136,810` bytes with `22.718s` proving. The packed
+byte-table LogUp checkpoint also verifies on the full PROD relation at
+`167,018` bytes with `22.442s` proving, closing the standalone table-membership
+binding but proving that appending standalone packed components will miss the
+relaxed size target. The same proof shape still needs selected-value bridge
+implementation and fused packed AIR/LogUp/bridge openings before it can replace
+the current production recursive certificate path.
 
 The same full-composite run explains why the primitive R1CS component is now a
 first-class blocker. The sparse R1CS relation has `106,604` rows, `222,449`
