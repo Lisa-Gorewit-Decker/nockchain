@@ -35,7 +35,8 @@ single fused NPO theorem that contains:
   and `mmcs_bit` constraints;
 - packed one-row-per-permutation Tip5 AIR algebra;
 - packed byte-table LogUp;
-- selected NPO-value to packed-trace bridge;
+- packed trace to packed NPO-IO projection binding;
+- selected NPO-value to packed NPO-IO projection bridge;
 - one shared prelude, transcript, FRI point, and opening shape so trace
   openings are not duplicated across standalone proof components.
 
@@ -67,12 +68,22 @@ proof verifies at `136,810` bytes / `133.6 KiB` with `22.718s` proving. The
 standalone packed byte-table LogUp proof verifies at `167,018` bytes /
 `163.1 KiB` with `22.442s` proving.
 
+The packed trace NPO-IO projection checkpoint now verifies too. It commits a
+26-column packed-domain projection containing the packed trace's 16 round-0
+input lanes and 10 final-round output lanes, then proves those projection
+columns are derived from the packed trace commitment. On the full PROD
+composite relation, the standalone projection proof verifies at `149,525`
+bytes / `146.0 KiB`, with compact FRI `138,727` bytes, full-trace zeta
+openings `10,007` bytes, NPO-IO openings `527` bytes, opened quotient `7`
+bytes, prove `20.379s`, and verify `10.692s`.
+
 Those standalone proofs are evidence, not an appendable production proof.
-Appending either standalone packed proof to the `151,448` byte merged
+Appending any standalone packed proof to the `151,448` byte merged
 value-bridge checkpoint would exceed the relaxed size target because it would
 duplicate full-trace and FRI opening material. The remaining opportunity is to
-fuse the packed AIR algebra, packed LogUp, and selected-value bridge into the
-same transcript and opening set as the merged value bridge.
+fuse packed AIR algebra, packed LogUp, packed NPO-IO projection, and the
+selected-value bridge into the same transcript and opening set as the merged
+value bridge.
 
 ### Done And Verified
 
@@ -94,16 +105,20 @@ same transcript and opening set as the merged value bridge.
   round-trip the proof and reject stale trace/table commitments, stale table
   profiles, malformed openings, tampered table/accumulator/quotient openings,
   non-table byte pairs, and stale table multiplicities.
+- The packed trace NPO-IO projection checkpoint verifies. Its tests round-trip
+  the proof and reject stale trace/projection commitments, stale projection
+  profiles, malformed openings, tampered projection openings, and stale prelude
+  roots for a changed packed trace.
 - The production soundness policy is explicit: 60 bits must come from FRI query
   soundness at `pow=0`, not from proof-system grinding.
 
 ### Remaining Work
 
-- Implement the selected NPO-value to packed-trace bridge, preserving the
-  Merkle-direction-aware `mmcs_bit` bus-to-trace projection.
-- Fuse packed AIR algebra, packed byte-table LogUp, and selected-value bridge
-  openings with the merged value-bridge proof under one transcript and one
-  shared opening schedule.
+- Implement the selected NPO-value to packed NPO-IO projection bridge,
+  preserving the Merkle-direction-aware `mmcs_bit` bus-to-trace projection.
+- Fuse packed AIR algebra, packed byte-table LogUp, packed NPO-IO projection,
+  and selected-value bridge openings with the merged value-bridge proof under
+  one transcript and one shared opening schedule.
 - Remove duplicated production prover setup by reusing terminal compile
   outputs, prepared NPO columns, packed traces, roots, and prelude material
   wherever verifier key and public inputs are unchanged.
@@ -123,8 +138,8 @@ same transcript and opening set as the merged value bridge.
 - The batch-STARK L2/final-layer route does not replace the native terminal
   production certificate path.
 - Any route that changes to proof-system PoW grinding, omits the selected
-  NPO-value to packed-trace bridge, or appends standalone packed proofs without
-  fusing openings is not the current viable production path.
+  NPO-value to packed projection bridge, or appends standalone packed proofs
+  without fusing openings is not the current viable production path.
 
 The current recursion-crate Tip5 verifier-circuit terminal measurement passes
 both targets in release mode:
@@ -427,6 +442,20 @@ full-trace/Fri opening cost and exceed the relaxed target when combined with
 the `151,448` byte merged value-bridge checkpoint. The next step is to fuse
 packed AIR, packed LogUp, and selected-value bridge openings under the same
 prelude and measure the fused proof body.
+
+The third packed checkpoint now implements the packed trace NPO-IO projection
+binding. It commits a 26-column packed-domain projection of round-0 inputs and
+final-round outputs, then proves the projection is derived from the committed
+packed trace. On the full PROD composite relation, the standalone packed
+NPO-IO projection proof is `149,525` bytes / `146.0 KiB`, with `138,727`
+bytes of compact FRI, `10,007` bytes of full-trace zeta openings, `527` bytes
+of opened projection lanes, and `7` bytes of opened quotient. It proves in
+`20.379s` and verifies in `10.692s` after setup. This closes the
+packed-trace-side projection binding needed by the selected-value bridge, but
+it is also not appendable as a standalone proof. The remaining bridge work is
+to bind the selected NPO-value commitment to this packed projection and then
+fuse the packed AIR, packed LogUp, projection, and selected bridge openings
+under one transcript.
 
 The current `CircuitConfig::PROD` profile is now exactly 60 pure-query bits
 (`log_blowup=4`, `num_queries=15`, `pow_bits=0`). Removing the previous
