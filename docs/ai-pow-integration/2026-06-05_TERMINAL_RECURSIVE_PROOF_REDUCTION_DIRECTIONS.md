@@ -253,6 +253,22 @@ height alone as the route under `~100 KiB`: even the best measured row remains
 about `37.8 KiB` above the hard target, and the cap choices that shrink path
 payload make the core proof substantially larger.
 
+The same relaxed-final-layer row was swept over soundness-neutral FRI
+final-polynomial and folding shape:
+
+| L2 `lb=5,nq=12,cap=4,pow=0` over L1 `lb=6,nq=10,cap=4,pow=0` | Metadata-free compact body | Core compact `BatchProof` | Restoration payload | Path sets | Pruned siblings | L2 prove |
+|---|---:|---:|---:|---:|---:|---:|
+| `lfp=0,mla=3` | `138,170` bytes | `88,576` bytes | `49,594` bytes | `9` | `1,034` | `24.512s` |
+| `lfp=1,mla=3` | `141,282` bytes | `88,034` bytes | `53,248` bytes | `9` | `1,110` | `24.273s` |
+| `lfp=2,mla=2` | `146,316` bytes | `86,990` bytes | `59,326` bytes | `10` | `1,238` | `24.317s` |
+| `lfp=2,mla=3` | `137,816` bytes | `87,207` bytes | `50,609` bytes | `8` | `1,056` | `24.238s` |
+| `lfp=2,mla=4` | `137,766` bytes | `88,118` bytes | `49,648` bytes | `8` | `1,036` | `24.345s` |
+
+All rows verify as compact bodies. The best measured alternate, `lfp=2,mla=4`,
+saves only `50` bytes relative to the current `lfp=2,mla=3` row. This
+effectively rules out FRI fold/final-poly tuning as the missing hard-size lever
+for the batch-STARK L2 route.
+
 The fast-L1 follow-up with L1 `lb=3,nq=20,cap=4,pow=0` also completes and
 verifies after the Tip5 MMCS direction-binding fix:
 
