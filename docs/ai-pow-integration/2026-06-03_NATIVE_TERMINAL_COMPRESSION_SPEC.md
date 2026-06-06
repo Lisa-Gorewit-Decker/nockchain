@@ -882,9 +882,12 @@ for this route.
   terminal prelude and primitive row-product proof as a `150,006` byte body:
   `240` bytes of prelude, `57,501` bytes of primitive proof, and `92,265`
   bytes of merged NPO proof with `90,109` bytes of compact FRI payload. It
-  verifies over the actual composite L1 verifier relation, with prove times of
-  `42.210s` for primitive R1CS and `55.585s` for the merged NPO proof after
-  deterministic parallel parent hashing in terminal oracle Merkle trees. The
+  verifies over the actual composite L1 verifier relation. After prover-work
+  reuse, prepared merged NPO data, prelude-checked prover entry points, and a
+  batched-LDE value-bridge quotient, post-prelude serial proof-body
+  construction is `16.159s`: `9.232s` primitive R1CS plus `6.927s` merged NPO
+  proof. The full diagnostic wall is still `118.017s` because setup and
+  verification are outside that proof-body timer. The
   value bridge is now Merkle-direction aware: it uses the committed `mmcs_bit`
   to select the bus-limb expression that feeds each Tip5 trace lane. This keeps
   the quotient inside the existing degree profile, so the final production
@@ -1598,7 +1601,7 @@ Tip5-L0 verifier circuit produced:
 | selected-column compact residual-zero FRI candidate, opt-in real Tip5-L0 measurement | 376,642 | - | 48,495 | 26.304 s | 2.273 s |
 | FRI-native compact residual-zero candidate, opt-in real Tip5-L0 measurement | 61,683 | - | 60,372 | 1.567 s | 0.496 s |
 | FRI-native compact residual-zero candidate, full AI-PoW composite measurement, verified residual-zero layer | 55,344 | - | 54,023 | 19.635 s | 11.930 s |
-| FRI-native merged residual-zero/recompose/value-bridge candidate, full AI-PoW composite measurement, verified with primitive/prelude body `150,006` bytes | 92,265 | - | 90,109 | 55.585 s | 14.813 s |
+| FRI-native merged residual-zero/recompose/value-bridge candidate, full AI-PoW composite measurement, verified with primitive/prelude body `150,006` bytes | 92,265 | - | 90,109 | 6.927 s post-prelude prepared | 14.731 s |
 | recompose residual-relation quotient candidate, opt-in real Tip5-L0 measurement | 81,266 | - | 79,916 | 1.852 s | 0.601 s |
 
 The full-table FRI candidate is too large to combine with the primitive
@@ -1642,14 +1645,15 @@ checkpoint proof.
 
 The merged residual-zero/recompose/value-bridge full-composite measurement
 confirms that the next NPO identity layer can still fit near the relaxed byte
-target, but not the time target. The merged proof body is `92,265` bytes with
-`90,109` bytes of compact FRI material; the complete diagnostic body including
-prelude and primitive proof is `150,006` bytes. Proving takes `97.796s`
-total, split between `42.210s` primitive R1CS row product and `55.585s` merged
-NPO proof. The bridge binds Merkle direction by selecting the value expression
-with the committed `mmcs_bit`; because that keeps the quotient within the
-current degree profile, the final production composition still has to prove the
-separate `mmcs_bit` zero/boolean/padding constraints and the internal Tip5
+target and that post-prelude body construction can fit the relaxed time target.
+The merged proof body is `92,265` bytes with `90,109` bytes of compact FRI
+material; the complete diagnostic body including prelude and primitive proof is
+`150,006` bytes. Post-prelude serial proving takes `16.159s`, split between
+`9.232s` primitive R1CS row product and `6.927s` prepared merged NPO proof.
+The bridge binds Merkle direction by selecting the value expression with the
+committed `mmcs_bit`; because that keeps the quotient within the current degree
+profile, the final production composition still has to prove the separate
+`mmcs_bit` zero/boolean/padding constraints and the internal Tip5
 lookup/AIR/LogUp relation.
 
 The same full-composite run explains why the primitive R1CS component is now a
@@ -1669,8 +1673,10 @@ Parallelizing deterministic parent-level hashing in the terminal oracle Merkle
 tree builder improves the same proof shape without changing serialized bytes.
 In the full-composite diagnostic, base assignment commitment construction fell
 from about `15.854s` to `7.557s`, and primitive proving fell from `50.169s` to
-`42.210s`. This is still not enough for production, but it narrows the time
-gap while preserving the existing soundness model and transcript bindings.
+`42.210s`. Reusing primitive relation/assignment data and using prelude-checked
+prover entry points then reduced post-prelude primitive proving to `9.232s`.
+This preserves the existing verifier language and transcript bindings, but the
+final production theorem still needs the missing NPO lookup/AIR/LogUp bindings.
 
 The assignment compact-FRI floor is now measured explicitly as a diagnostic
 only. `prove_terminal_assignment_compact_fri_floor_goldilocks` commits the

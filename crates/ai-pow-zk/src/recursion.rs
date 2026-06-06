@@ -5160,12 +5160,10 @@ mod tests {
             assignment_commit_start.elapsed().as_millis()
         );
         let merged_root_start = std::time::Instant::now();
-        let merged_roots = compiler
-            .terminal_npo_fri_residual_zero_recompose_value_bridge_prelude_commitments_from_witness_goldilocks(
-                &vk,
-                &witness,
-            )
-            .expect("merged value-bridge diagnostic must bind merged NPO root");
+        let merged_value_bridge_prepared = compiler
+            .prepare_terminal_npo_fri_residual_zero_recompose_value_bridge_goldilocks(&vk, &witness)
+            .expect("merged value-bridge diagnostic must prepare merged NPO proof data");
+        let merged_roots = merged_value_bridge_prepared.prelude_commitments().to_vec();
         eprintln!(
             "native terminal merged value-bridge candidate phase [{label}]: merged_npo_root_ms={}",
             merged_root_start.elapsed().as_millis()
@@ -5188,7 +5186,7 @@ mod tests {
 
         let primitive_prove_start = std::time::Instant::now();
         let primitive_r1cs_proof = compiler
-            .prove_terminal_r1cs_row_product_sumcheck_goldilocks(
+            .prove_terminal_r1cs_row_product_sumcheck_prelude_checked_goldilocks(
                 &vk, &witness.public_inputs, &prelude, &assignment_oracle, &witness,
             )
             .expect("merged value-bridge diagnostic must prove primitive R1CS");
@@ -5204,8 +5202,9 @@ mod tests {
 
         let merged_prove_start = std::time::Instant::now();
         let merged_value_bridge_proof = compiler
-            .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks(
-                &vk, &witness.public_inputs, &witness, &prelude,
+            .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_prepared_prelude_checked_goldilocks(
+                &prelude,
+                &merged_value_bridge_prepared,
             )
             .expect("merged value-bridge diagnostic must prove merged NPO value bridge");
         let merged_prove_elapsed = merged_prove_start.elapsed();

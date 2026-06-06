@@ -148,9 +148,10 @@ row-product proof:
 | Serialized body | `150,006` bytes / `146.5 KiB` |
 | Prelude / primitive / merged NPO proof | `240` / `57,501` / `92,265` bytes |
 | Merged compact FRI payload | `90,109` bytes |
-| Primitive prove / merged prove / total prove | `42.210s` / `55.585s` / `97.796s` |
-| Primitive verify / merged verify / total verify | `33.187s` / `14.813s` / `48.001s` |
-| Total diagnostic wall | `197.957s` |
+| Post-prelude primitive prove / merged prove / serial total prove | `9.232s` / `6.927s` / `16.159s` |
+| Primitive verify / merged verify / total verify | `33.175s` / `14.731s` / `47.907s` |
+| Full diagnostic setup before proof body | L0 prove `8.356s`; terminal compile `11.034s`; assignment commitment `7.522s`; prepared merged NPO root `15.682s`; prelude `11.023s` |
+| Total diagnostic wall | `118.017s` |
 | Verification status | `verified` |
 
 This is the first full-composite polynomial NPO checkpoint that is both close
@@ -160,8 +161,11 @@ Tip5 lookup/AIR/LogUp binding. The value bridge also uses committed `mmcs_bit`
 as the direction selector to keep the quotient degree inside the existing
 profile, so the final theorem must separately include the `mmcs_bit`
 zero-when-absent, booleanity, and row-padding constraints. The timing result
-makes the next blocker explicit: the primitive row-product proof alone is
-already over the `<30s` gate, and the merged NPO proof roughly doubles that.
+also narrows the remaining production question: after the prelude is already
+fixed, serial proof-body construction is under the relaxed `<30s` proving gate
+at the same body size. The full diagnostic wall time is still high because it
+includes Layer-0 proving, terminal compilation, assignment commitment, prepared
+NPO-root construction, prelude construction, and verification.
 
 The primitive proof is not dominated by scalar sumcheck messages. The PROD
 sparse R1CS relation has `106,604` rows, `222,449` variables, and `489,990`
@@ -178,9 +182,11 @@ than more sumcheck serialization cleanup.
 Deterministic parallel parent hashing in the terminal oracle Merkle tree
 builder then reduced constants without changing proof shape: assignment
 commitment construction fell from about `15.854s` to `7.557s`, and primitive
-prove time fell from `50.169s` to `42.210s`. This confirms terminal oracle
-hashing is meaningful engineering cost, but it still leaves the primitive proof
-over the full `<30s` gate by itself.
+prove time first fell from `50.169s` to `42.210s`. The later
+relation/assignment reuse and prelude-checked prover path drops post-prelude
+primitive proving to `9.232s`. This confirms terminal oracle hashing and
+prover-work reuse are meaningful engineering costs, while the primitive proof
+body remains dominated by assignment-evaluation Merkle frontier material.
 
 The assignment compact-FRI floor confirms that simply FRI-opening the whole
 assignment vector is not the missing size lever. The opt-in diagnostic
@@ -566,14 +572,17 @@ itself: primitive proving plus the merged value-bridge proof already cost
 about `90s`, and the integrated Tip5 LogUp proof had not completed.
 
 A later PROD merged value-bridge run fixes the Merkle-direction value
-projection and reaches a verifier-accepted body, but confirms the same timing
-blocker with current code: `42.210s` primitive prove plus `55.585s` merged
-residual-zero/recompose/value-bridge prove. Its serialized
-`(prelude, primitive, merged NPO)` body is `150,006` bytes, with a `92,265`
-byte merged proof and `90,109` bytes of compact FRI material. That makes it a
-useful relaxed-size checkpoint, not a production certificate: the Tip5
-lookup/AIR/LogUp relation and explicit `mmcs_bit` padding/boolean/present
-constraints remain outside this proof.
+projection and reaches a verifier-accepted body. After removing duplicated
+primitive relation/assignment construction, preparing merged NPO data once for
+the prelude, using prelude-checked prover entry points, and replacing the
+value-bridge quotient's per-point interpolation with batched coset LDE, the
+same serialized `(prelude, primitive, merged NPO)` body is `150,006` bytes and
+post-prelude serial proof-body construction is `16.159s` (`9.232s` primitive
+plus `6.927s` merged value bridge). That makes it the most promising relaxed
+size/time checkpoint so far. It is still not a production certificate: the
+Tip5 lookup/AIR/LogUp relation and explicit `mmcs_bit`
+padding/boolean/present constraints remain outside this proof, and the full
+diagnostic wall time still includes expensive setup phases.
 
 The older two-subproof polynomial NPO production candidate had a precise size
 blocker:
@@ -1133,10 +1142,12 @@ solution:
 - The full-composite merged residual-zero/recompose/value-bridge checkpoint now
   verifies at `150,006` bytes for `(prelude, primitive, merged NPO)`, with a
   `92,265` byte merged NPO proof and `90,109` byte compact FRI payload. It is
-  still not production-qualified: total diagnostic prove time is `97.796s`,
-  the primitive proof alone is `42.210s`, and the internal Tip5 lookup/AIR/LogUp
+  still not production-qualified, but after prover-work reuse its
+  post-prelude serial proof-body construction is `16.159s` (`9.232s`
+  primitive, `6.927s` merged value bridge). The internal Tip5 lookup/AIR/LogUp
   relation plus explicit `mmcs_bit` padding/boolean/present constraints remain
-  outside this proof.
+  outside this proof, and the full diagnostic wall time still contains setup
+  work that is not represented by `total_prove_ms`.
 - The full composite integrated diagnostic ran for more than `7m35s` after
   compile without reaching its final size print, so this path currently misses
   the proving-time gate even before it can be considered for promotion.
@@ -1337,17 +1348,32 @@ terminal path now has a completed reduced-profile release measurement:
 `l1_verify=49ms`, `compile=7.606s`, `prove=80.829s`, `verify=58.825s`, and
 postcard wire size `771,249` bytes.
 
-The first runtime-instrumentation pass landed after this analysis. The
-production prover now emits per-stage timings when
-`NOCK_TERMINAL_PROFILE_PROVER=1` is set. Source inspection still shows
-remaining repeated work:
+The first runtime-instrumentation and reuse pass landed after this analysis.
+The production prover emits per-stage timings when
+`NOCK_TERMINAL_PROFILE_PROVER=1` is set. For the merged value-bridge diagnostic,
+the prover now:
+
+- reuses the primitive sparse-R1CS relation and assignment vector across the
+  row-product, matrix-sumcheck, and assignment-evaluation substeps;
+- prepares merged NPO columns, verifier-derived columns, trace, and prelude
+  commitment once, then proves from that prepared data;
+- uses prelude-checked prover entry points after the prelude has already been
+  built from the same verifier key;
+- computes the value-bridge quotient on the quotient coset with a batched LDE
+  rather than interpolating each quotient-domain point separately.
+
+Those changes preserve the proof body and verifier language, but change the
+measured post-prelude proof-body construction from `97.796s` to `16.159s` at
+the same `150,006` byte body. Remaining repeated or expensive work:
 
 - `verify_assignment_with_goldilocks_npos` checks the full assignment before
-  proof construction.
-- Prelude commitment helpers hash selected+lookup and full-trace+masked-NPO-IO
-  matrices before the actual subproof provers commit the same matrix families.
+  production proof construction.
+- Full diagnostic setup still pays Layer-0 prove, terminal compile, assignment
+  commitment, prepared NPO-root construction, and prelude construction before
+  the measured proof-body timer starts.
 - The integrated LogUp subproof builds several accumulator and quotient
-  matrices over extension fields.
+  matrices over extension fields and remains outside the relaxed-size
+  checkpoint.
 
 Immediate work:
 
@@ -1358,13 +1384,19 @@ Immediate work:
    relation has `75,870` Horner operations before proof construction, so
    optimizing terminal proof serialization alone cannot satisfy the `<30s`
    full-stack target.
-3. Cache selected+lookup matrix, trace bundle matrix, and prelude commitment
-   digests across the prelude builder and subproof builders.
-4. Avoid recomputing verifier-derived columns/layout/profile in the hot path
+3. Promote the prepared-data pattern into any production candidate before
+   measuring production proving time.
+4. Run independent post-prelude subproofs in parallel; on the current
+   measurement this would bound the primitive-plus-merged body construction by
+   roughly `9.3s` instead of the serial `16.159s`.
+5. Avoid recomputing verifier-derived columns/layout/profile in the hot path
    when the verifier key is unchanged.
 
-Assessment: low soundness risk and likely important for time. It is not enough
-for size unless paired with Direction 1, 2, or 3.
+Assessment: low soundness risk and important for time because it changes only
+prover work reuse, not verifier acceptance. For the merged value-bridge
+checkpoint it is enough to satisfy the relaxed post-prelude body-construction
+time gate, but it does not by itself supply the missing NPO lookup/AIR/LogUp
+soundness theorem or remove full diagnostic setup cost.
 
 ## Direction 5: Terminal FRI Parameter Tradeoff
 

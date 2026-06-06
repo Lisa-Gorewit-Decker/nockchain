@@ -850,6 +850,28 @@ pub struct TerminalProductionNpoPolynomialProof {
     pub integrated_logup_proof: TerminalNpoTip5LookupAirLogupTraceIoSupportNpoIoLogupProof,
 }
 
+/// Prover-side cached inputs for the merged residual-zero/recompose/value-bridge
+/// NPO proof.
+///
+/// The prelude must bind `prelude_commitments`, and the proof must then be
+/// built from the same columns and lookup trace. Keeping this as prover-only
+/// data avoids recomputing the selected lookup commitment after the prelude is
+/// already fixed.
+#[derive(Clone)]
+pub struct TerminalNpoMergedValueBridgeProverData<F> {
+    pub trace_profile: TerminalNpoTip5LookupTraceProfile,
+    pub columns: TerminalNpoPolynomialColumns<F>,
+    pub verifier_columns: TerminalNpoPolynomialColumns<F>,
+    pub trace: RowMajorMatrix<Goldilocks>,
+    pub prelude_commitments: Vec<TerminalCommitmentDigest>,
+}
+
+impl<F> TerminalNpoMergedValueBridgeProverData<F> {
+    pub fn prelude_commitments(&self) -> &[TerminalCommitmentDigest] {
+        &self.prelude_commitments
+    }
+}
+
 /// Production proof-body for the terminal relation.
 ///
 /// This proof binds an assignment oracle for primitive sparse-R1CS sumcheck and,
@@ -12273,6 +12295,85 @@ impl NativeTerminalCompiler {
         )
     }
 
+    pub fn prepare_terminal_npo_fri_residual_zero_recompose_value_bridge_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+    ) -> Result<TerminalNpoMergedValueBridgeProverData<F>, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let columns = self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
+        let verifier_columns =
+            self.terminal_npo_polynomial_verifier_derived_columns_goldilocks(verifying_key)?;
+        let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
+        let (_, trace, _) =
+            self.terminal_npo_tip5_lookup_air_trace_goldilocks(verifying_key, witness)?;
+        let prelude_commitments =
+            Self::terminal_npo_fri_residual_zero_recompose_value_bridge_prelude_commitments_goldilocks(
+                &trace_profile,
+                &columns,
+                &trace,
+            )?;
+        Ok(TerminalNpoMergedValueBridgeProverData {
+            trace_profile,
+            columns,
+            verifier_columns,
+            trace,
+            prelude_commitments,
+        })
+    }
+
+    pub fn prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_prepared_goldilocks<
+        F,
+    >(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        prepared: &TerminalNpoMergedValueBridgeProverData<F>,
+    ) -> Result<
+        TerminalNpoPolynomialFriResidualZeroRecomposeValueBridgeProof,
+        NativeTerminalVerifyError,
+    >
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        self.prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_prepared_prelude_checked_goldilocks(
+            prelude,
+            prepared,
+        )
+    }
+
+    /// Build the prepared merged NPO proof after the caller has already built
+    /// and checked the prelude from the same verifier key and commitments.
+    ///
+    /// This is a prover-side fast path only. It does not change verifier
+    /// acceptance or the proof transcript; misuse produces a proof that the
+    /// public verifier rejects.
+    pub fn prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_prepared_prelude_checked_goldilocks<
+        F,
+    >(
+        &self,
+        prelude: &TerminalProofPrelude,
+        prepared: &TerminalNpoMergedValueBridgeProverData<F>,
+    ) -> Result<
+        TerminalNpoPolynomialFriResidualZeroRecomposeValueBridgeProof,
+        NativeTerminalVerifyError,
+    >
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        Self::prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_from_columns_goldilocks(
+            prelude,
+            &prepared.trace_profile,
+            &prepared.columns,
+            &prepared.verifier_columns,
+            &prepared.trace,
+        )
+    }
+
     fn prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_from_columns_goldilocks<
         F,
     >(
@@ -12288,11 +12389,14 @@ impl NativeTerminalCompiler {
     where
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
-        let (selected_profile, selected_matrix) =
+        let selected_matrix_span =
+            tracing::info_span!("terminal_npo_merged_value_bridge.selected_matrix");
+        let (selected_profile, selected_matrix) = selected_matrix_span.in_scope(|| {
             Self::terminal_npo_polynomial_basis_matrix_for_column_set_goldilocks(
                 columns,
                 TerminalNpoPolynomialFriColumnSet::ProverDependent,
-            )?;
+            )
+        })?;
         let value_indices = Self::terminal_npo_polynomial_fri_column_indices(
             columns,
             TerminalNpoPolynomialFriColumnSet::WitnessValues,
@@ -12302,12 +12406,14 @@ impl NativeTerminalCompiler {
             TerminalNpoPolynomialFriColumnSet::WitnessValues,
             value_indices.len(),
         )?;
-        let (lookup_io_profile, lookup_io_matrix) =
+        let lookup_io_span = tracing::info_span!("terminal_npo_merged_value_bridge.lookup_io_matrix");
+        let (lookup_io_profile, lookup_io_matrix) = lookup_io_span.in_scope(|| {
             Self::terminal_npo_tip5_lookup_npo_rows_io_matrix_goldilocks(
                 trace_profile,
                 columns,
                 trace,
-            )?;
+            )
+        })?;
         if lookup_io_profile.padded_rows != selected_profile.padded_rows {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
@@ -12353,16 +12459,23 @@ impl NativeTerminalCompiler {
         >>::natural_domain_for_degree(
             &pcs, selected_profile.padded_rows
         );
-        let selected_lookup_matrix = Self::terminal_row_major_matrix_horizontal_concat_goldilocks(
-            "npo_fri_residual_zero_recompose_value_bridge",
-            &selected_matrix,
-            &lookup_io_matrix,
-        )?;
-        let (selected_lookup_commitment, selected_lookup_data) =
+        let selected_lookup_matrix_span =
+            tracing::info_span!("terminal_npo_merged_value_bridge.selected_lookup_concat");
+        let selected_lookup_matrix = selected_lookup_matrix_span.in_scope(|| {
+            Self::terminal_row_major_matrix_horizontal_concat_goldilocks(
+                "npo_fri_residual_zero_recompose_value_bridge",
+                &selected_matrix,
+                &lookup_io_matrix,
+            )
+        })?;
+        let selected_commit_span =
+            tracing::info_span!("terminal_npo_merged_value_bridge.selected_lookup_commit");
+        let (selected_lookup_commitment, selected_lookup_data) = selected_commit_span.in_scope(|| {
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
                 &pcs,
                 [(selected_domain, selected_lookup_matrix)],
-            );
+            )
+        });
         let selected_lookup_commitment_digest =
             Self::terminal_fri_commitment_digest(&selected_lookup_commitment)?;
         Self::verify_terminal_fri_prelude_commitments(
@@ -12389,29 +12502,38 @@ impl NativeTerminalCompiler {
         let recompose_alpha: TerminalFriChallenge = challenger.sample_algebra_element();
         let value_bridge_alpha: TerminalFriChallenge = challenger.sample_algebra_element();
 
-        let combined_residual_values = Self::terminal_npo_polynomial_combined_residual_values(
-            columns,
-            Self::embed_goldilocks(zero_alpha_base),
-        )?;
-        let composition_matrix = Self::terminal_compact_composition_matrix_from_field_values(
-            &combined_residual_values,
-            &composition_profile,
-        )?;
+        let composition_matrix_span =
+            tracing::info_span!("terminal_npo_merged_value_bridge.composition_matrix");
+        let composition_matrix = composition_matrix_span.in_scope(|| {
+            let combined_residual_values = Self::terminal_npo_polynomial_combined_residual_values(
+                columns,
+                Self::embed_goldilocks(zero_alpha_base),
+            )?;
+            Self::terminal_compact_composition_matrix_from_field_values(
+                &combined_residual_values,
+                &composition_profile,
+            )
+        })?;
         let composition_domain = <TerminalFriPcs as Pcs<
             TerminalFriChallenge,
             TerminalFriChallenger,
         >>::natural_domain_for_degree(
             &pcs, composition_profile.padded_rows
         );
-        let (composition_commitment, composition_data) =
+        let composition_commit_span =
+            tracing::info_span!("terminal_npo_merged_value_bridge.composition_commit");
+        let (composition_commitment, composition_data) = composition_commit_span.in_scope(|| {
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
                 &pcs,
                 [(composition_domain, composition_matrix)],
-            );
+            )
+        });
 
         let recompose_quotient_domain =
             selected_domain.create_disjoint_domain(recompose_quotient_profile.padded_rows);
-        let recompose_quotient_matrix =
+        let recompose_matrix_span =
+            tracing::info_span!("terminal_npo_merged_value_bridge.recompose_quotient_matrix");
+        let recompose_quotient_matrix = recompose_matrix_span.in_scope(|| {
             Self::terminal_npo_polynomial_recompose_residual_quotient_matrix_goldilocks(
                 selected_domain,
                 recompose_quotient_domain,
@@ -12419,16 +12541,23 @@ impl NativeTerminalCompiler {
                 verifier_columns,
                 &selected_profile,
                 recompose_alpha,
-            )?;
+            )
+        })?;
+        let recompose_commit_span =
+            tracing::info_span!("terminal_npo_merged_value_bridge.recompose_quotient_commit");
         let (recompose_quotient_commitment, recompose_quotient_data) =
-            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
-                &pcs,
-                [(recompose_quotient_domain, recompose_quotient_matrix)],
-            );
+            recompose_commit_span.in_scope(|| {
+                let inputs = [(recompose_quotient_domain, recompose_quotient_matrix)];
+                <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                    &pcs, inputs,
+                )
+            });
 
         let value_bridge_quotient_domain =
             selected_domain.create_disjoint_domain(value_bridge_quotient_profile.padded_rows);
-        let value_bridge_quotient_matrix =
+        let value_bridge_matrix_span =
+            tracing::info_span!("terminal_npo_merged_value_bridge.value_bridge_quotient_matrix");
+        let value_bridge_quotient_matrix = value_bridge_matrix_span.in_scope(|| {
             Self::terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_matrix_goldilocks(
                 selected_domain,
                 value_bridge_quotient_domain,
@@ -12438,18 +12567,24 @@ impl NativeTerminalCompiler {
                 columns,
                 verifier_columns,
                 value_bridge_alpha,
-            )?;
+            )
+        })?;
+        let value_bridge_commit_span =
+            tracing::info_span!("terminal_npo_merged_value_bridge.value_bridge_quotient_commit");
         let (value_bridge_quotient_commitment, value_bridge_quotient_data) =
-            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
-                &pcs,
-                [(value_bridge_quotient_domain, value_bridge_quotient_matrix)],
-            );
+            value_bridge_commit_span.in_scope(|| {
+                let inputs = [(value_bridge_quotient_domain, value_bridge_quotient_matrix)];
+                <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                    &pcs, inputs,
+                )
+            });
 
         challenger.observe(composition_commitment.clone());
         challenger.observe(recompose_quotient_commitment.clone());
         challenger.observe(value_bridge_quotient_commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
-        let (opened_values, plain_proof) =
+        let open_span = tracing::info_span!("terminal_npo_merged_value_bridge.fri_open");
+        let (opened_values, plain_proof) = open_span.in_scope(|| {
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::open(
                 &pcs,
                 vec![
@@ -12459,7 +12594,8 @@ impl NativeTerminalCompiler {
                     (&value_bridge_quotient_data, vec![vec![zeta]]),
                 ],
                 &mut challenger,
-            );
+            )
+        });
         let opened_selected_lookup_basis =
             Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
         if opened_selected_lookup_basis.len()
@@ -12507,12 +12643,15 @@ impl NativeTerminalCompiler {
                 query_challenger.observe_algebra_slice(point_values);
             }
         }
-        let query_indices = Self::derive_terminal_fri_query_indices_from_challenger(
-            &mut query_challenger,
-            &plain_proof,
-            selected_profile.proximity,
-        )?;
-        let proof = Self::compress_terminal_fri_proof(&plain_proof, &query_indices)?;
+        let compress_span = tracing::info_span!("terminal_npo_merged_value_bridge.fri_compress");
+        let proof = compress_span.in_scope(|| {
+            let query_indices = Self::derive_terminal_fri_query_indices_from_challenger(
+                &mut query_challenger,
+                &plain_proof,
+                selected_profile.proximity,
+            )?;
+            Self::compress_terminal_fri_proof(&plain_proof, &query_indices)
+        })?;
 
         Ok(
             TerminalNpoPolynomialFriResidualZeroRecomposeValueBridgeProof {
@@ -15930,7 +16069,7 @@ impl NativeTerminalCompiler {
         })?;
         let primitive_r1cs_span = tracing::info_span!("terminal_production.primitive_r1cs_proof");
         let primitive_r1cs_proof = primitive_r1cs_span.in_scope(|| {
-            self.prove_terminal_r1cs_row_product_sumcheck_goldilocks(
+            self.prove_terminal_r1cs_row_product_sumcheck_prelude_checked_goldilocks(
                 verifying_key,
                 public_inputs,
                 &prelude,
@@ -16097,30 +16236,63 @@ impl NativeTerminalCompiler {
         Self::verify_prelude_binds_commitment(prelude, &assignment_commitment)?;
         Self::validate_terminal_assignment_point(verifying_key, point)?;
 
-        let witness_values = Self::terminal_witness_values(witness)?;
-        let assignment_values =
-            Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)?;
-        let public_prefix_len = 1 + verifying_key.header.fingerprint.public_flat_len;
-        let public_prefix_proof =
-            assignment_oracle.open_goldilocks_prefix(&assignment_values[..public_prefix_len])?;
+        let assignment_values_span =
+            tracing::info_span!("terminal_assignment_evaluation.assignment_values");
+        let assignment_values = assignment_values_span.in_scope(|| {
+            let witness_values = Self::terminal_witness_values(witness)?;
+            Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)
+        })?;
 
-        let mut layers = vec![assignment_values];
+        self.prove_terminal_assignment_evaluation_at_point_from_values_goldilocks(
+            verifying_key,
+            prelude,
+            assignment_oracle,
+            &assignment_values,
+            point,
+        )
+    }
+
+    fn prove_terminal_assignment_evaluation_at_point_from_values_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        prelude: &TerminalProofPrelude,
+        assignment_oracle: &TerminalOracleMerkleTree,
+        assignment_values: &[F],
+        point: &[F],
+    ) -> Result<TerminalAssignmentEvaluationProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks>,
+    {
+        let assignment_commitment = assignment_oracle.commitment();
+        let public_prefix_len = 1 + verifying_key.header.fingerprint.public_flat_len;
+        let public_prefix_span =
+            tracing::info_span!("terminal_assignment_evaluation.public_prefix_opening");
+        let public_prefix_proof = public_prefix_span.in_scope(|| {
+            assignment_oracle.open_goldilocks_prefix(&assignment_values[..public_prefix_len])
+        })?;
+
+        let mut layers = vec![assignment_values.to_vec()];
         let mut trees = Vec::new();
         let mut fold_commitments = Vec::new();
-        for (round, challenge) in point.iter().copied().enumerate() {
-            let current = layers.last().expect("current assignment layer exists");
-            let mut next = Vec::with_capacity(current.len().div_ceil(2));
-            for pair in current.chunks(2) {
-                let left = pair[0];
-                let right = pair.get(1).copied().unwrap_or(F::ZERO);
-                next.push(left * (F::ONE - challenge) + right * challenge);
+        let fold_commit_span =
+            tracing::info_span!("terminal_assignment_evaluation.fold_commitments");
+        fold_commit_span.in_scope(|| {
+            for (round, challenge) in point.iter().copied().enumerate() {
+                let current = layers.last().expect("current assignment layer exists");
+                let mut next = Vec::with_capacity(current.len().div_ceil(2));
+                for pair in current.chunks(2) {
+                    let left = pair[0];
+                    let right = pair.get(1).copied().unwrap_or(F::ZERO);
+                    next.push(left * (F::ONE - challenge) + right * challenge);
+                }
+                let label = Self::assignment_fold_oracle_label(round);
+                let tree = TerminalOracleMerkleTree::commit_goldilocks_values(label, &next)?;
+                fold_commitments.push(tree.commitment());
+                trees.push(tree);
+                layers.push(next);
             }
-            let label = Self::assignment_fold_oracle_label(round);
-            let tree = TerminalOracleMerkleTree::commit_goldilocks_values(label, &next)?;
-            fold_commitments.push(tree.commitment());
-            trees.push(tree);
-            layers.push(next);
-        }
+            Ok::<(), NativeTerminalVerifyError>(())
+        })?;
 
         let final_value = layers
             .last()
@@ -16140,21 +16312,25 @@ impl NativeTerminalCompiler {
             fold_commitments.len(),
         );
         let mut round_openings = Vec::with_capacity(fold_commitments.len());
-        for (round, round_indices) in expected_round_indices.iter_mut().enumerate() {
-            round_indices.sort_unstable();
-            let current_tree = if round == 0 {
-                assignment_oracle
-            } else {
-                &trees[round - 1]
-            };
-            let current_values = &layers[round];
-            let mut opening_values = Vec::with_capacity(round_indices.len());
-            for index in round_indices {
-                opening_values.push((*index, &current_values[*index]));
+        let fold_open_span = tracing::info_span!("terminal_assignment_evaluation.fold_openings");
+        fold_open_span.in_scope(|| {
+            for (round, round_indices) in expected_round_indices.iter_mut().enumerate() {
+                round_indices.sort_unstable();
+                let current_tree = if round == 0 {
+                    assignment_oracle
+                } else {
+                    &trees[round - 1]
+                };
+                let current_values = &layers[round];
+                let mut opening_values = Vec::with_capacity(round_indices.len());
+                for index in round_indices {
+                    opening_values.push((*index, &current_values[*index]));
+                }
+                round_openings
+                    .push(current_tree.open_goldilocks_known_index_multi_values(&opening_values)?);
             }
-            round_openings
-                .push(current_tree.open_goldilocks_known_index_multi_values(&opening_values)?);
-        }
+            Ok::<(), NativeTerminalVerifyError>(())
+        })?;
 
         Ok(TerminalAssignmentEvaluationProof {
             public_prefix_proof,
@@ -16309,12 +16485,18 @@ impl NativeTerminalCompiler {
             &assignment_commitment,
             sparse_relation.log_rows,
         )?;
-        self.prove_terminal_sparse_r1cs_sumcheck_at_row_point_goldilocks(
+        let assignment_values_span =
+            tracing::info_span!("terminal_sparse_r1cs.assignment_values");
+        let assignment_values = assignment_values_span.in_scope(|| {
+            let witness_values = Self::terminal_witness_values(witness)?;
+            Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)
+        })?;
+        self.prove_terminal_sparse_r1cs_sumcheck_at_row_point_with_assignment_goldilocks(
             verifying_key,
-            public_inputs,
             prelude,
             assignment_oracle,
-            witness,
+            &sparse_relation,
+            &assignment_values,
             &row_point,
         )
     }
@@ -16341,14 +16523,45 @@ impl NativeTerminalCompiler {
 
         let sparse_relation = verifying_key.primitive_sparse_r1cs_relation()?;
         Self::validate_terminal_r1cs_row_point(&sparse_relation, row_point)?;
-        let witness_values = Self::terminal_witness_values(witness)?;
-        let assignment_values =
-            Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)?;
-        let (claimed_a, claimed_b, claimed_c) = Self::sparse_r1cs_matrix_evaluations_at_row(
+        let assignment_values_span =
+            tracing::info_span!("terminal_sparse_r1cs.assignment_values");
+        let assignment_values = assignment_values_span.in_scope(|| {
+            let witness_values = Self::terminal_witness_values(witness)?;
+            Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)
+        })?;
+
+        self.prove_terminal_sparse_r1cs_sumcheck_at_row_point_with_assignment_goldilocks(
+            verifying_key,
+            prelude,
+            assignment_oracle,
             &sparse_relation,
-            &row_point,
             &assignment_values,
-        )?;
+            row_point,
+        )
+    }
+
+    fn prove_terminal_sparse_r1cs_sumcheck_at_row_point_with_assignment_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        prelude: &TerminalProofPrelude,
+        assignment_oracle: &TerminalOracleMerkleTree,
+        sparse_relation: &TerminalSparseR1csRelation<F>,
+        assignment_values: &[F],
+        row_point: &[F],
+    ) -> Result<TerminalSparseR1csSumcheckProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        Self::validate_terminal_r1cs_row_point(sparse_relation, row_point)?;
+        let assignment_commitment = assignment_oracle.commitment();
+        let matrix_claim_span = tracing::info_span!("terminal_sparse_r1cs.matrix_claims");
+        let (claimed_a, claimed_b, claimed_c) = matrix_claim_span.in_scope(|| {
+            Self::sparse_r1cs_matrix_evaluations_at_row(
+                &sparse_relation,
+                &row_point,
+                &assignment_values,
+            )
+        })?;
         let claimed_a_basis = Self::goldilocks_basis_u64(&claimed_a);
         let claimed_b_basis = Self::goldilocks_basis_u64(&claimed_b);
         let claimed_c_basis = Self::goldilocks_basis_u64(&claimed_c);
@@ -16369,50 +16582,58 @@ impl NativeTerminalCompiler {
         let mut current_assignment_values =
             Self::pad_terminal_values_to_mle_len(&assignment_values, sparse_relation.log_variables);
 
-        for round in 0..sparse_relation.log_variables {
-            let evals = Self::sparse_r1cs_folded_round_evaluations(
-                &current_matrix_values,
-                &current_assignment_values,
-            );
-            if evals[0] + evals[1] != current_claim {
-                return Err(
-                    NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
-                        query: 0,
-                        round,
-                    },
+        let matrix_round_span = tracing::info_span!("terminal_sparse_r1cs.matrix_rounds");
+        matrix_round_span.in_scope(|| {
+            for round in 0..sparse_relation.log_variables {
+                let evals = Self::sparse_r1cs_folded_round_evaluations(
+                    &current_matrix_values,
+                    &current_assignment_values,
                 );
+                if evals[0] + evals[1] != current_claim {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
+                            query: 0,
+                            round,
+                        },
+                    );
+                }
+                rounds.push(TerminalR1csSumcheckRound {
+                    eval_0_basis: Self::goldilocks_basis_u64(&evals[0]),
+                    eval_1_basis: Self::goldilocks_basis_u64(&evals[1]),
+                    eval_2_basis: Self::goldilocks_basis_u64(&evals[2]),
+                });
+                let challenge = Self::derive_terminal_r1cs_sumcheck_round_challenge::<F>(
+                    prelude,
+                    &assignment_commitment,
+                    &row_point,
+                    &claimed_a_basis,
+                    &claimed_b_basis,
+                    &claimed_c_basis,
+                    &current_claim,
+                    &rounds,
+                    round,
+                )?;
+                variable_point.push(challenge);
+                current_claim = Self::interpolate_degree_two_at(evals, challenge);
+                current_matrix_values =
+                    Self::fold_terminal_values(&current_matrix_values, challenge);
+                current_assignment_values =
+                    Self::fold_terminal_values(&current_assignment_values, challenge);
             }
-            rounds.push(TerminalR1csSumcheckRound {
-                eval_0_basis: Self::goldilocks_basis_u64(&evals[0]),
-                eval_1_basis: Self::goldilocks_basis_u64(&evals[1]),
-                eval_2_basis: Self::goldilocks_basis_u64(&evals[2]),
-            });
-            let challenge = Self::derive_terminal_r1cs_sumcheck_round_challenge::<F>(
-                prelude,
-                &assignment_commitment,
-                &row_point,
-                &claimed_a_basis,
-                &claimed_b_basis,
-                &claimed_c_basis,
-                &current_claim,
-                &rounds,
-                round,
-            )?;
-            variable_point.push(challenge);
-            current_claim = Self::interpolate_degree_two_at(evals, challenge);
-            current_matrix_values = Self::fold_terminal_values(&current_matrix_values, challenge);
-            current_assignment_values =
-                Self::fold_terminal_values(&current_assignment_values, challenge);
-        }
+            Ok::<(), NativeTerminalVerifyError>(())
+        })?;
 
-        let assignment_evaluation = self.prove_terminal_assignment_evaluation_at_point_goldilocks(
-            verifying_key,
-            public_inputs,
-            prelude,
-            assignment_oracle,
-            witness,
-            &variable_point,
-        )?;
+        let assignment_eval_span =
+            tracing::info_span!("terminal_sparse_r1cs.assignment_evaluation");
+        let assignment_evaluation = assignment_eval_span.in_scope(|| {
+            self.prove_terminal_assignment_evaluation_at_point_from_values_goldilocks(
+                verifying_key,
+                prelude,
+                assignment_oracle,
+                assignment_values,
+                &variable_point,
+            )
+        })?;
         let assignment_eval =
             Self::field_from_goldilocks_basis_u64::<F>(&assignment_evaluation.final_value_basis)?;
         let matrix_eval = current_matrix_values.first().copied().ok_or(
@@ -16576,6 +16797,32 @@ impl NativeTerminalCompiler {
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        self.prove_terminal_r1cs_row_product_sumcheck_prelude_checked_goldilocks(
+            verifying_key,
+            public_inputs,
+            prelude,
+            assignment_oracle,
+            witness,
+        )
+    }
+
+    /// Build the primitive row-product proof after the caller has already
+    /// built and checked the prelude from the same verifier key and assignment
+    /// commitment.
+    ///
+    /// This is a prover-side fast path only. It preserves the proof body and
+    /// verifier language while avoiding a duplicate relation-digest check.
+    pub fn prove_terminal_r1cs_row_product_sumcheck_prelude_checked_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        prelude: &TerminalProofPrelude,
+        assignment_oracle: &TerminalOracleMerkleTree,
+        witness: &TerminalWitness<F>,
+    ) -> Result<TerminalR1csRowProductSumcheckProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
         let assignment_commitment = assignment_oracle.commitment();
         Self::verify_terminal_assignment_commitment_identity(
             verifying_key,
@@ -16584,20 +16831,27 @@ impl NativeTerminalCompiler {
         Self::verify_prelude_binds_commitment(prelude, &assignment_commitment)?;
 
         let sparse_relation = verifying_key.primitive_sparse_r1cs_relation()?;
-        let witness_values = Self::terminal_witness_values(witness)?;
-        let assignment_values =
-            Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)?;
+        let assignment_values_span =
+            tracing::info_span!("terminal_row_product.assignment_values");
+        let assignment_values = assignment_values_span.in_scope(|| {
+            let witness_values = Self::terminal_witness_values(witness)?;
+            Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)
+        })?;
         let anchor_point = Self::derive_terminal_r1cs_row_product_anchor_point::<F>(
             prelude,
             &assignment_commitment,
             sparse_relation.log_rows,
         )?;
+        let initial_vectors_span =
+            tracing::info_span!("terminal_row_product.initial_vectors");
         let (mut eq_values, mut a_values, mut b_values, mut c_values) =
-            Self::sparse_r1cs_row_product_initial_vectors(
+            initial_vectors_span.in_scope(|| {
+                Self::sparse_r1cs_row_product_initial_vectors(
                 &sparse_relation,
                 &anchor_point,
                 &assignment_values,
-            )?;
+                )
+            })?;
         let mut current_claim =
             Self::row_product_claim(&eq_values, &a_values, &b_values, &c_values);
         if current_claim != F::ZERO {
@@ -16612,48 +16866,55 @@ impl NativeTerminalCompiler {
 
         let mut row_point = Vec::with_capacity(sparse_relation.log_rows);
         let mut rounds = Vec::with_capacity(sparse_relation.log_rows);
-        for round in 0..sparse_relation.log_rows {
-            let evals = Self::sparse_r1cs_row_product_round_evaluations(
-                &eq_values, &a_values, &b_values, &c_values,
-            );
-            if evals[0] + evals[1] != current_claim {
-                return Err(
-                    NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
-                        query: 0,
-                        round,
-                    },
+        let row_round_span = tracing::info_span!("terminal_row_product.rounds");
+        row_round_span.in_scope(|| {
+            for round in 0..sparse_relation.log_rows {
+                let evals = Self::sparse_r1cs_row_product_round_evaluations(
+                    &eq_values, &a_values, &b_values, &c_values,
                 );
+                if evals[0] + evals[1] != current_claim {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
+                            query: 0,
+                            round,
+                        },
+                    );
+                }
+                rounds.push(TerminalR1csRowProductRound {
+                    eval_0_basis: Self::goldilocks_basis_u64(&evals[0]),
+                    eval_1_basis: Self::goldilocks_basis_u64(&evals[1]),
+                    eval_2_basis: Self::goldilocks_basis_u64(&evals[2]),
+                    eval_3_basis: Self::goldilocks_basis_u64(&evals[3]),
+                });
+                let challenge = Self::derive_terminal_r1cs_row_product_round_challenge::<F>(
+                    prelude,
+                    &assignment_commitment,
+                    &anchor_point,
+                    &current_claim,
+                    &rounds,
+                    round,
+                )?;
+                row_point.push(challenge);
+                current_claim = Self::interpolate_degree_three_at(evals, challenge);
+                eq_values = Self::fold_terminal_values(&eq_values, challenge);
+                a_values = Self::fold_terminal_values(&a_values, challenge);
+                b_values = Self::fold_terminal_values(&b_values, challenge);
+                c_values = Self::fold_terminal_values(&c_values, challenge);
             }
-            rounds.push(TerminalR1csRowProductRound {
-                eval_0_basis: Self::goldilocks_basis_u64(&evals[0]),
-                eval_1_basis: Self::goldilocks_basis_u64(&evals[1]),
-                eval_2_basis: Self::goldilocks_basis_u64(&evals[2]),
-                eval_3_basis: Self::goldilocks_basis_u64(&evals[3]),
-            });
-            let challenge = Self::derive_terminal_r1cs_row_product_round_challenge::<F>(
-                prelude,
-                &assignment_commitment,
-                &anchor_point,
-                &current_claim,
-                &rounds,
-                round,
-            )?;
-            row_point.push(challenge);
-            current_claim = Self::interpolate_degree_three_at(evals, challenge);
-            eq_values = Self::fold_terminal_values(&eq_values, challenge);
-            a_values = Self::fold_terminal_values(&a_values, challenge);
-            b_values = Self::fold_terminal_values(&b_values, challenge);
-            c_values = Self::fold_terminal_values(&c_values, challenge);
-        }
+            Ok::<(), NativeTerminalVerifyError>(())
+        })?;
 
-        let matrix_sumcheck = self.prove_terminal_sparse_r1cs_sumcheck_at_row_point_goldilocks(
-            verifying_key,
-            public_inputs,
-            prelude,
-            assignment_oracle,
-            witness,
-            &row_point,
-        )?;
+        let matrix_sumcheck_span = tracing::info_span!("terminal_row_product.matrix_sumcheck");
+        let matrix_sumcheck = matrix_sumcheck_span.in_scope(|| {
+            self.prove_terminal_sparse_r1cs_sumcheck_at_row_point_with_assignment_goldilocks(
+                verifying_key,
+                prelude,
+                assignment_oracle,
+                &sparse_relation,
+                &assignment_values,
+                &row_point,
+            )
+        })?;
         let claimed_a =
             Self::field_from_goldilocks_basis_u64::<F>(&matrix_sumcheck.claimed_a_basis)?;
         let claimed_b =
@@ -20733,31 +20994,58 @@ impl NativeTerminalCompiler {
             }
         }
         let batched_matrix = RowMajorMatrix::new(batched_values, batched_width);
+        let added_bits = quotient_domain
+            .size()
+            .checked_div(value_domain.size())
+            .filter(|ratio| ratio.is_power_of_two())
+            .map(|ratio| ratio.trailing_zeros() as usize)
+            .ok_or(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_npo_rows_value_bridge_quotient_lde".into(),
+                    expected: value_domain.size() * 2,
+                    got: quotient_domain.size(),
+                },
+            )?;
+        let shift = quotient_domain.first_point() / value_domain.first_point();
+        let batched_lde = TerminalFriDft::default()
+            .coset_lde_batch(batched_matrix, added_bits, shift)
+            .to_row_major_matrix();
+        if batched_lde.width() != batched_width || batched_lde.height() != quotient_domain.size() {
+            return Err(
+                NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
+                    label: "tip5_lookup_npo_rows_value_bridge_quotient_lde_shape".into(),
+                    expected: quotient_domain.size(),
+                    got: batched_lde.height(),
+                },
+            );
+        }
 
         let mut quotient_values = Vec::with_capacity(quotient_domain.size());
         let mut point = TerminalFriChallenge::from(quotient_domain.first_point());
-        for _ in 0..quotient_domain.size() {
-            let opened = batched_matrix.interpolate_coset(value_domain.first_point(), point);
+        for row in 0..quotient_domain.size() {
+            let opened = |column: usize| -> TerminalFriChallenge {
+                TerminalFriChallenge::from(batched_lde.values[row * batched_width + column])
+            };
             let mut relation = TerminalFriChallenge::ZERO;
             let mut coeff = TerminalFriChallenge::ONE;
             for limb in 0..16 {
-                let lookup = opened[limb];
+                let lookup = opened(limb);
                 let expected_for_bus = |bus_limb: usize| {
-                    let input_selector = opened[input_selector_offset + bus_limb];
-                    input_selector * opened[input_value_offset + bus_limb]
-                        + (opened[tip5_selector_offset] - input_selector)
-                            * opened[hidden_value_offset + limb]
+                    let input_selector = opened(input_selector_offset + bus_limb);
+                    input_selector * opened(input_value_offset + bus_limb)
+                        + (opened(tip5_selector_offset) - input_selector)
+                            * opened(hidden_value_offset + limb)
                 };
                 let normal = expected_for_bus(limb);
                 let swapped = expected_for_bus(Self::terminal_tip5_merkle_swapped_limb(limb));
-                let expected = normal + opened[mmcs_bit_offset] * (swapped - normal);
+                let expected = normal + opened(mmcs_bit_offset) * (swapped - normal);
                 relation += coeff * (lookup - expected);
                 coeff *= alpha;
             }
             for limb in 0..10 {
-                let lookup = opened[16 + limb];
+                let lookup = opened(16 + limb);
                 let expected =
-                    opened[output_selector_offset + limb] * opened[output_value_offset + limb];
+                    opened(output_selector_offset + limb) * opened(output_value_offset + limb);
                 relation += coeff * (lookup - expected);
                 coeff *= alpha;
             }
