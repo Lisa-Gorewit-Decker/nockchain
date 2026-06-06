@@ -3,7 +3,9 @@ mod common;
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
-use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders, recompose_air_builders};
+use p3_circuit_prover::batch_stark_prover::{
+    PrimitiveTable, poseidon2_air_builders, recompose_air_builders,
+};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, Poseidon2Prover,
@@ -63,7 +65,7 @@ fn test_fibonacci_batch_verifier() {
 
     builder.dump_allocation_log();
 
-    let table_packing = TablePacking::new(2, 4);
+    let table_packing = TablePacking::new(1, 4).with_public_binding_lanes(1);
 
     // Use the default permutation for proving to match circuit's Fiat-Shamir challenger
     let config_proving = make_test_config();
@@ -98,9 +100,12 @@ fn test_fibonacci_batch_verifier() {
     let batch_stark_proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
+    assert_eq!(batch_stark_proof.public_binding_lanes, 1);
 
     let common = circuit_prover_data.common_data();
-    prover.verify_all_tables(&batch_stark_proof).unwrap();
+    prover
+        .verify_all_tables_with_public_values(&batch_stark_proof, &[expected_fib])
+        .unwrap();
 
     // Now verify the batch STARK proof recursively
     // Use same permutation as proving to ensure Fiat-Shamir transcript compatibility
@@ -119,13 +124,15 @@ fn test_fibonacci_batch_verifier() {
 
     const TRACE_D: usize = 1; // Proof traces are in base field
 
-    // Public values (empty for all 5 circuit tables: Witness, Const, Public, Alu, Poseidon2)
+    // Public values for the primitive circuit tables. The Public table carries
+    // the single bound public input from the inner Fibonacci verifier circuit.
     let num_tables = common
         .preprocessed
         .as_ref()
         .map(|g| g.instances.len())
         .unwrap_or(0);
-    let pis: Vec<Vec<F>> = vec![vec![]; num_tables];
+    let mut pis: Vec<Vec<F>> = vec![vec![]; num_tables];
+    pis[PrimitiveTable::Public as usize] = vec![expected_fib];
 
     // Build the recursive verification circuit
     let mut circuit_builder = CircuitBuilder::new();
@@ -223,6 +230,39 @@ fn test_fibonacci_batch_verifier() {
 
     // Run the circuit to generate traces
     let verification_traces = runner.run().unwrap();
+
+    let bound_public_input_index = pis
+        .iter()
+        .take(PrimitiveTable::Public as usize)
+        .map(Vec::len)
+        .sum::<usize>();
+    assert_eq!(public_inputs[bound_public_input_index], expected_fib.into());
+    let mut wrong_public_inputs = public_inputs.clone();
+    wrong_public_inputs[bound_public_input_index] = (expected_fib + F::ONE).into();
+
+    let mut tampered_runner = verification_circuit.runner();
+    tampered_runner
+        .set_public_inputs(&wrong_public_inputs)
+        .unwrap();
+    tampered_runner.set_private_inputs(&private_inputs).unwrap();
+    set_fri_mmcs_private_data::<
+        F,
+        Challenge,
+        ChallengeMmcs,
+        MyMmcs,
+        MyHash,
+        MyCompress,
+        DIGEST_ELEMS,
+    >(
+        &mut tampered_runner,
+        &mmcs_op_ids,
+        &batch_stark_proof.proof.opening_proof,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
+    )
+    .unwrap();
+    tampered_runner
+        .run()
+        .expect_err("recursive batch verifier must reject a wrong bound Public AIR value");
 
     // Create a new config and prover for the verification circuit
     let config3 = make_test_config();
