@@ -162,6 +162,17 @@ fn pure_query_l1_stark_config_with_shape(
     p3_circuit_prover::config::goldilocks_tip5_pure_query_60bit_with_shape(log_blowup, num_queries)
 }
 
+#[cfg(test)]
+fn pure_query_l1_stark_config_with_shape_and_cap(
+    log_blowup: usize,
+    num_queries: usize,
+    cap_height: usize,
+) -> p3_circuit_prover::config::GoldilocksTipsConfig {
+    p3_circuit_prover::config::goldilocks_tip5_pure_query_60bit_with_shape_and_cap(
+        log_blowup, num_queries, cap_height,
+    )
+}
+
 fn statement_public_digest(public_values: &[Val]) -> Vec<Val> {
     let mut state = [Val::ZERO; WIDTH];
     for chunk in public_values.chunks(RATE) {
@@ -1814,6 +1825,131 @@ mod tests {
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS,
+                prove_ms,
+                verify_ms,
+            );
+
+            assert_eq!(
+                outer.public_binding_lanes, DIGEST_ELEMS,
+                "diagnostic L1 proof must expose the statement digest"
+            );
+            assert!(
+                l1_outer_bytes >= l1_proof_body_bytes,
+                "metadata split must be well formed"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "pure-query L1-only cap-height size accounting is opt-in"]
+    fn relaxed_l1_only_pure_query_lb6_cap_height_candidate_size_breakdown_for_test_pearl() {
+        use std::time::Instant;
+
+        use p3_circuit::ops::Tip5Config;
+        use p3_circuit_prover::BatchStarkProver;
+
+        const LOG_BLOWUP: usize = 6;
+        const NUM_QUERIES: usize = 10;
+        assert_eq!(LOG_BLOWUP * NUM_QUERIES, 60);
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+            0
+        );
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+            0
+        );
+
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+
+        let statement_digest_public_values = built
+            .public_inputs
+            .iter()
+            .take(DIGEST_ELEMS)
+            .flat_map(|value| {
+                <Challenge as BasedVectorSpace<Val>>::as_basis_coefficients_slice(value)
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>();
+
+        for cap_height in [4usize, 6usize] {
+            let prove_start = Instant::now();
+            let outer = prove_composite_l1_outer_cert_with_config_and_public_binding_lanes(
+                &built,
+                &proof,
+                pure_query_l1_stark_config_with_shape_and_cap(LOG_BLOWUP, NUM_QUERIES, cap_height),
+                DIGEST_ELEMS,
+            )
+            .expect("pure-query cap-height recursive certificate");
+            let prove_ms = prove_start.elapsed().as_millis();
+
+            let mut verifier = BatchStarkProver::new(
+                pure_query_l1_stark_config_with_shape_and_cap(LOG_BLOWUP, NUM_QUERIES, cap_height),
+            )
+            .with_table_packing(production_l1_table_packing(DIGEST_ELEMS));
+            verifier.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+            verifier.register_recompose_table::<2>(true);
+
+            let verify_start = Instant::now();
+            verifier
+                .verify_all_tables_with_public_values(&outer, &statement_digest_public_values)
+                .expect("pure-query cap-height L1 outer proof must verify");
+            let verify_ms = verify_start.elapsed().as_millis();
+
+            let l1_outer_bytes = postcard_len(&outer, "pure-query cap-height L1 outer proof");
+            let l1_proof_body_bytes =
+                postcard_len(&outer.proof, "pure-query cap-height L1 proof body");
+            let commitments_bytes = postcard_len(
+                &outer.proof.commitments, "pure-query cap-height L1 commitments",
+            );
+            let opened_values_bytes = postcard_len(
+                &outer.proof.opened_values, "pure-query cap-height L1 opened values",
+            );
+            let opening_proof_bytes = postcard_len(
+                &outer.proof.opening_proof, "pure-query cap-height L1 opening proof",
+            );
+            let global_lookup_data_bytes = postcard_len(
+                &outer.proof.global_lookup_data, "pure-query cap-height L1 global lookup data",
+            );
+            let non_primitives_bytes = postcard_len(
+                &outer.non_primitives, "pure-query cap-height L1 non-primitives metadata",
+            );
+            let l1_metadata_bytes = l1_outer_bytes.saturating_sub(l1_proof_body_bytes);
+            eprintln!(
+                "relaxed L1-only pure-query cap-height candidate [TEST_PEARL lb6_nq10 cap={}]: l1_outer={} l1_proof_body={} l1_metadata={} commitments={} opened_values={} opening_proof={} global_lookup_data={} non_primitives={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} prove_ms={} verify_ms={}",
+                cap_height,
+                l1_outer_bytes,
+                l1_proof_body_bytes,
+                l1_metadata_bytes,
+                commitments_bytes,
+                opened_values_bytes,
+                opening_proof_bytes,
+                global_lookup_data_bytes,
+                non_primitives_bytes,
+                outer.public_binding_lanes,
+                LOG_BLOWUP,
+                NUM_QUERIES,
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+                LOG_BLOWUP * NUM_QUERIES,
                 prove_ms,
                 verify_ms,
             );

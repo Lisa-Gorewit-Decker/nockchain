@@ -437,6 +437,26 @@ pub fn goldilocks_tip5_pure_query_60bit_with_shape(
     log_blowup: usize,
     num_queries: usize,
 ) -> GoldilocksTipsConfig {
+    goldilocks_tip5_pure_query_60bit_with_shape_and_cap(
+        log_blowup,
+        num_queries,
+        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_CAP_HEIGHT,
+    )
+}
+
+/// Build a query-only 60-bit Goldilocks + Tip5 recursive profile for a
+/// specific `(log_blowup, num_queries, cap_height)` shape.
+///
+/// This is a diagnostic/profiling variant of
+/// [`goldilocks_tip5_pure_query_60bit_with_shape`]. The Merkle cap height is a
+/// proof-size/prover-time trade-off and is not counted toward Johnson
+/// soundness, so the same exact 60-bit query-only assertion is retained.
+#[inline]
+pub fn goldilocks_tip5_pure_query_60bit_with_shape_and_cap(
+    log_blowup: usize,
+    num_queries: usize,
+    cap_height: usize,
+) -> GoldilocksTipsConfig {
     assert_eq!(
         log_blowup * num_queries,
         GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS,
@@ -449,7 +469,7 @@ pub fn goldilocks_tip5_pure_query_60bit_with_shape(
         num_queries,
         GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
         GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
-        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_CAP_HEIGHT,
+        cap_height,
     )
 }
 

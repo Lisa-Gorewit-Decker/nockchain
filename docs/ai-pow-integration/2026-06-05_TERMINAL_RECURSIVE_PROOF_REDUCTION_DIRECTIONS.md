@@ -501,6 +501,23 @@ measured pure-query variant is still `172.2 KiB` and takes `195.574s`, so the
 batch-STARK L1-only route needs structural compression or another recursive
 compression layer before it can satisfy the production policy.
 
+The cap-height diagnostic
+`relaxed_l1_only_pure_query_lb6_cap_height_candidate_size_breakdown_for_test_pearl`
+then varies only the MMCS cap height for the smallest pure-query shape:
+
+| Pure-query `lb=6,nq=10,pow=0` cap-height diagnostic (`TEST_PEARL`) | L1 outer | L1 proof body | Commitments | Opened values | Opening proof | Global lookup | Prove |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `cap=4` | `173,171 bytes` | `172,280 bytes` | `2,278 bytes` | `24,535 bytes` | `141,987 bytes` | `3,473 bytes` | `191.448s` |
+| `cap=5` | `176,362 bytes` | `174,727 bytes` | not split in that run | not split in that run | not split in that run | not split in that run | `195.574s` |
+| `cap=6` | `187,961 bytes` | `184,797 bytes` | `9,117 bytes` | `24,530 bytes` | `147,649 bytes` | `3,494 bytes` | `193.219s` |
+
+Cap height is therefore not a hidden path to the relaxed target. Lowering the
+cap from `5` to `4` saves only `3,191` bytes, while raising it to `6` increases
+the cap material faster than it saves Merkle-path material. The cap-4 proof is
+still `169.1 KiB`, and the opening proof alone is `141,987` bytes. Reducing the
+batch-STARK envelope further requires fewer/lighter openings or a compact
+recursive proof shape, not cap-height tuning.
+
 A relaxed-size L1-only path would need to replace those proof-carried rebuild
 inputs with a pinned verifier-key contract:
 
@@ -531,10 +548,11 @@ measurement spent `59.21s` on the L1 outer batch-STARK prove+verify after the
 L0 proof already existed, and `93.88s` end to end; the focused
 statement-bound `TEST_PEARL` diagnostic spent `54.62s` to `70.14s` proving the
 mixed query/PoW L1 outer object across two release runs, and the pure-query
-sweep spent `49.290s` to `195.574s` while missing the byte target. The `150 KiB`
-branch is therefore a candidate only if the L1 proof can be both
-wire-minimized and made materially faster through structural changes. The likely
-short-term levers are:
+sweep spent `49.290s` to `195.574s` while missing the byte target. The cap
+height follow-up spent `191.448s` to `193.219s` and still missed the byte
+target. The `150 KiB` branch is therefore a candidate only if the L1 proof can
+be both wire-minimized and made materially faster through structural changes.
+The likely short-term levers are:
 
 - avoid verifier-side reproving during metadata validation by replacing it with
   deterministic verifier-key reconstruction and direct metadata hashing;

@@ -30,6 +30,7 @@ must not be treated as the production block/wire artifact.
 | Layer-0 composite proof | Regular STARK proof of the AI-PoW puzzle statement; consumed by recursion; diagnostic/intermediate, not persisted by consensus | `304,048` bytes / `296.9 KiB` | `RUSTFLAGS="-C target-cpu=native" cargo run -p ai-pow-zk --release --features recursion --example prod_recursion_measure -- 15`, 2026-06-05 after `CircuitConfig::PROD.pow_bits=0` |
 | Hardened L1 batch-STARK recursive certificate | Soundness-hardened recursive verifier checkpoint/fallback path; not acceptable as the production wire artifact because it exceeds the size budget | L1 proof body `149.1 KiB`; full checkpoint certificate `1,135.5 KiB` legacy postcard / `5,794.7 KiB` fixed-int bincode / `358.3 KiB` gzip-best envelope | same `prod_recursion_measure 15` run |
 | Relaxed L1-only batch-STARK pure-query sweep | Diagnostic for a statement-bound L1-only object that does not count proof-system PoW; not production-qualified because every measured pure-query profile misses size and time | `lb=4,nq=15,pow=0`: `226,542` bytes / `221.2 KiB`, prove `49.290s`; `lb=5,nq=12,pow=0`: `196,488` bytes / `191.9 KiB`, prove `98.009s`; `lb=6,nq=10,pow=0`: `176,362` bytes / `172.2 KiB`, prove `195.574s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion relaxed_l1_only_pure_query_statement_bound_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-05 |
+| Relaxed L1-only batch-STARK cap-height sweep | Diagnostic for the smallest measured pure-query shape, varying only MMCS cap height; not enough to hit the relaxed gate | `lb=6,nq=10,pow=0,cap=4`: `173,171` bytes / `169.1 KiB`, prove `191.448s`; `cap=6`: `187,961` bytes / `183.6 KiB`, prove `193.219s`; cap-4 opening proof alone `141,987` bytes | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion relaxed_l1_only_pure_query_lb6_cap_height_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-05 |
 | Native terminal certificate fixture | Recursion-crate terminal proof over the real Tip5 verifier-circuit fixture; proves the terminal backend can be small, but is not yet the full `ai-pow-zk` composite verifier path | `85,948` bytes / `83.9 KiB`; release prove `1.492s`, verify `1.181s` | `RUSTFLAGS="-C target-cpu=native" cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --release --test test_l1_outer_cert_tip5_unified terminal_production_certificate_measures_real_tip5_l0_verifier_circuit -- --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier native terminal path | Opt-in diagnostic path for the actual composite L1 verifier circuit; not yet production-qualified because it misses both size and time gates | `lb=6,nq=10,pow=0` reduced-profile run after compact known-index proof encoding: terminal certificate `766,069` bytes / `748.1 KiB`; terminal public inputs `5,180` bytes; postcard wire certificate `771,249` bytes / `753.2 KiB`; release prove `80.829s`, verify `58.825s` | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_recursive_certificate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed size measurement. First release/native command compiled in `1m57s`, then the test binary ran for more than `7m35s` without reaching the final size/timing print and was stopped. A phase-instrumented rerun compiled in `1m42s` and showed `38.235s` primitive prove plus `51.902s` merged value-bridge prove before the integrated Tip5 LogUp subproof finished | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
@@ -135,6 +136,18 @@ measured 60-bit pure-query profiles meets the `150 KiB` relaxed size gate or
 the `30s` proving gate. A production-qualified route therefore needs structural
 compression or a different proof shape, not just a pure-query retune of the
 current L1 batch-STARK envelope.
+
+The cap-height follow-up,
+`relaxed_l1_only_pure_query_lb6_cap_height_candidate_size_breakdown_for_test_pearl`,
+varies only the MMCS cap for the smallest measured pure-query shape,
+`lb=6,nq=10,pow=0`. Lowering the cap from `5` to `4` improves the outer object
+from **176,362 bytes** to **173,171 bytes** and prove time from **195.574s** to
+**191.448s**; raising it to `6` worsens the object to **187,961 bytes**. The
+cap-4 component split is **2,278 bytes** commitments, **24,535 bytes** opened
+values, **141,987 bytes** opening proof, and **3,473 bytes** global lookup data.
+The opening proof is therefore the dominant section, and cap tuning is only a
+few-KiB lever. It cannot make the L1-only batch-STARK envelope meet either the
+`150 KiB` relaxed size gate or the `30s` proving gate.
 
 Verifier status after the 2026-06-05 hardening pass: the batch-STARK
 `AiPowRecursiveCertificate` verifier now calls
