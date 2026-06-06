@@ -252,9 +252,11 @@ preprocessed/path omission to land near `135 KiB`. Raw final L2 is still above
 the relaxed `150 KiB` target; the smallest raw shape here is about `161 KiB`
 and takes about `49.5s`.
 
-An initial compact verifier artifact now exists for the first, simpler part of
-that projection. `PreprocessedOodCompactBatchStarkProof` consumes a full
-`BatchStarkProof`, omits the verifier-deterministic
+Compact verifier artifacts now exist for the verifier-deterministic
+preprocessed material in that projection.
+
+`PreprocessedOodCompactBatchStarkProof` is the generic first step. It consumes
+a full `BatchStarkProof`, omits the verifier-deterministic
 `preprocessed_local`/`preprocessed_next` OOD vectors from
 `BatchProof.opened_values`, and verifies only when the caller supplies the
 canonical `CircuitProverData` whose preprocessed commitment and metadata match
@@ -262,21 +264,29 @@ the proof's serialized `stark_common` binding. Verification replays the
 batch-STARK transcript through `zeta`, recomputes the omitted preprocessed
 polynomial evaluations from canonical setup data, rejects any serialized value
 that disagrees, restores missing values, then calls the normal upstream
-`p3-batch-stark` verifier. The regression
-`test_compact_preprocessed_ood_round_trip_uses_canonical_setup` confirms that
-the ordinary verifier rejects the omitted proof while the compact verifier
-accepts it; `test_compact_preprocessed_ood_rejects_wrong_setup_binding`
-confirms that a different setup binding cannot be used for restoration.
+`p3-batch-stark` verifier.
 
-This checkpoint does **not** implement the full `preprocessed-omitted
-projection` in the table above. The larger byte win also subtracts the FRI
-input batch for the global preprocessed commitment, including queried
-preprocessed codeword rows and Merkle authentication paths. Those bytes are
-still serialized today. A production compact-final proof must reconstruct that
-FRI input batch from pinned verifier data and transcript-derived query indices,
-or add an equivalently sound PCS-specific verifier path. Omitting those values
-without replaying the transcript and reconstituting the same PCS openings would
-be an unsound prover hint.
+`GoldilocksTip5PreprocessedCompactBatchStarkProof` is the PCS-specific next
+step for the production-candidate Goldilocks/Tip5 path. It also removes the
+preprocessed commitment's FRI input batch from each query proof. Verification
+uses explicit `GoldilocksTip5FriShape` metadata only as a restoration hint,
+checks the canonical setup binding, restores preprocessed OOD values from the
+committed bit-reversed Tip5 LDE exactly as `TwoAdicFriPcs::open` does, replays
+the PCS transcript through FRI query-index sampling, regenerates the omitted
+`Mmcs::open_batch` results from canonical preprocessed prover data, inserts the
+missing batches, and then delegates to normal upstream verification. The tests
+`test_goldilocks_tip5_compact_preprocessed_fri_round_trip_uses_canonical_setup`
+and `test_goldilocks_tip5_compact_preprocessed_fri_rejects_wrong_setup_binding`
+cover ordinary-verifier rejection, OOD-only verifier rejection, byte-for-byte
+restoration against the original full proof, successful compact verification,
+and wrong-setup rejection.
+
+This checkpoint still does **not** implement the full table projection. The
+projection also subtracts Merkle path-pruning/dedup savings for the remaining
+input and commit-phase batches, and this adapter is not wired as the production
+recursive certificate path. Omitting any remaining values without transcript
+replay and reconstituting the same PCS openings would be an unsound prover
+hint.
 
 The polynomial NPO path remains useful diagnostic evidence, but it is not a
 drop-in production replacement for the exhaustive NPO proof. The recursion-crate
@@ -588,10 +598,10 @@ The first implementation milestone should therefore not be another
 direction-bit-`1` regression in place, it should be a p3-native compression
 prototype over the existing pinned+LogUp L0 proof with the following outputs:
 
-- compact final-layer reconstruction beyond the implemented preprocessed OOD
-  adapter: verifier recomputation of the omitted preprocessed FRI input-batch
-  codeword rows, authentication material, and transcript binding of the same
-  values;
+- compact final-layer reconstruction beyond the implemented Goldilocks/Tip5
+  preprocessed OOD plus preprocessed FRI input-batch adapter: path
+  pruning/dedup for the remaining input and commit-phase batches, final compact
+  serialization, and production-path integration;
 - L1 proof size and proving time for verifying the current pinned+LogUp L0
   proof.
 - L2/final proof size and proving time for verifying the L1 proof.

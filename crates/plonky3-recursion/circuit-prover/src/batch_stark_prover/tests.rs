@@ -23,7 +23,7 @@ use crate::batch_stark_prover::{
     poseidon2_air_builders_d5, poseidon2_table_provers_d5, recompose_air_builders,
 };
 use crate::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
-use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
+use crate::config::{self, BabyBearConfig, GoldilocksConfig, GoldilocksTipsConfig, KoalaBearConfig};
 
 fn prove_babybear_public_plus_const(
     constant: u64,
@@ -78,6 +78,86 @@ fn prove_babybear_public_plus_const(
         .unwrap();
     prover.verify_all_tables(&proof).unwrap();
     (prover, proof, circuit_prover_data)
+}
+
+fn prove_goldilocks_tip5_ext2_public_plus_const(
+    extra_addend: Option<u64>,
+) -> (
+    BatchStarkProver<GoldilocksTipsConfig>,
+    BatchStarkProof<GoldilocksTipsConfig>,
+    CircuitProverData<GoldilocksTipsConfig>,
+    GoldilocksTip5FriShape,
+) {
+    const D: usize = 2;
+    type Ext2 = BinomialExtensionField<Goldilocks, D>;
+
+    let fri_shape = GoldilocksTip5FriShape::recursive_pure_query_60bit();
+    let cfg = config::goldilocks_tip5_pure_query_60bit_with_fri_shape(
+        fri_shape.log_blowup,
+        fri_shape.num_queries,
+        fri_shape.log_final_poly_len,
+        fri_shape.max_log_arity,
+        fri_shape.cap_height,
+    );
+    let table_packing =
+        TablePacking::default().with_fri_params(fri_shape.log_final_poly_len, fri_shape.log_blowup);
+
+    let mut builder = CircuitBuilder::<Ext2>::new();
+    let x = builder.public_input();
+    let expected = builder.public_input();
+    let c = Ext2::from_basis_coefficients_slice(&[
+        Goldilocks::from_u64(10),
+        Goldilocks::from_u64(3),
+    ])
+    .unwrap();
+    let c_const = builder.define_const(c);
+    let mut sum = builder.add(x, c_const);
+    let mut expected_value =
+        Ext2::from_basis_coefficients_slice(&[Goldilocks::from_u64(17), Goldilocks::from_u64(5)])
+            .unwrap();
+    if let Some(extra) = extra_addend {
+        let extra_const = Ext2::from_basis_coefficients_slice(&[
+            Goldilocks::from_u64(extra),
+            Goldilocks::from_u64(extra + 1),
+        ])
+        .unwrap();
+        let extra_target = builder.define_const(extra_const);
+        sum = builder.add(sum, extra_target);
+        expected_value += extra_const;
+    }
+    let diff = builder.sub(sum, expected);
+    builder.assert_zero(diff);
+
+    let circuit = builder.build().unwrap();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<GoldilocksTipsConfig, _, D>(
+            &circuit,
+            &table_packing,
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+    let mut runner = circuit.runner();
+    let x_value =
+        Ext2::from_basis_coefficients_slice(&[Goldilocks::from_u64(7), Goldilocks::from_u64(2)])
+            .unwrap();
+    runner
+        .set_public_inputs(&[x_value, expected_value])
+        .unwrap();
+    let traces = runner.run().unwrap();
+
+    let prover = BatchStarkProver::new(cfg).with_table_packing(table_packing);
+    let proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .unwrap();
+    prover.verify_all_tables(&proof).unwrap();
+    (prover, proof, circuit_prover_data, fri_shape)
 }
 
 #[test]
@@ -1088,6 +1168,160 @@ fn test_compact_preprocessed_ood_rejects_wrong_setup_binding() {
 
     let err = prover
         .verify_compact_preprocessed_ood(compact, &wrong_setup)
+        .expect_err("compact verifier must bind restoration to canonical setup");
+    assert!(
+        format!("{err:?}").contains("canonical setup binding"),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[test]
+fn test_goldilocks_tip5_compact_preprocessed_fri_round_trip_uses_canonical_setup() {
+    let (prover, proof, circuit_prover_data, fri_shape) =
+        prove_goldilocks_tip5_ext2_public_plus_const(None);
+    let full_input_batches =
+        goldilocks_tip5_full_fri_input_batch_count(&proof.proof, &proof.stark_common);
+    assert!(
+        full_input_batches
+            > goldilocks_tip5_preprocessed_trace_idx(),
+        "full proof must include a preprocessed FRI input batch"
+    );
+    let preprocessed_idx = goldilocks_tip5_preprocessed_trace_idx();
+    let original_preprocessed_input_batches = proof
+        .proof
+        .opening_proof
+        .query_proofs
+        .iter()
+        .map(|query| {
+            postcard::to_allocvec(&query.input_proof[preprocessed_idx])
+                .expect("serialize original preprocessed FRI input batch")
+        })
+        .collect::<Vec<_>>();
+    let original_opened_values_bytes =
+        postcard::to_allocvec(&proof.proof.opened_values).expect("serialize opened values");
+
+    let full_bytes = postcard::to_allocvec(&proof).expect("serialize full proof");
+    let compact = GoldilocksTip5PreprocessedCompactBatchStarkProof::try_from_full(
+        proof,
+        fri_shape,
+    )
+    .expect("compact Goldilocks/Tip5 proof");
+    for (query, query_proof) in compact
+        .proof
+        .proof
+        .opening_proof
+        .query_proofs
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(
+            query_proof.input_proof.len(),
+            full_input_batches - 1,
+            "query {query} should omit exactly the preprocessed FRI input batch"
+        );
+    }
+    let compact_bytes = postcard::to_allocvec(&compact).expect("serialize compact proof");
+    assert!(
+        compact_bytes.len() < full_bytes.len(),
+        "compact proof should omit preprocessed OOD and FRI input-batch bytes: full={}, compact={}",
+        full_bytes.len(),
+        compact_bytes.len()
+    );
+
+    let debug_compact: GoldilocksTip5PreprocessedCompactBatchStarkProof =
+        postcard::from_bytes(&compact_bytes).expect("deserialize compact proof");
+    let mut debug_proof = debug_compact.into_inner();
+    let (airs, pvs, effective_common) = prover
+        .rebuild_verifier_statement::<2>(
+            &debug_proof,
+            debug_proof.w_binomial,
+            &debug_proof.stark_common,
+            &[],
+        )
+        .expect("rebuild verifier statement");
+    prover
+        .restore_goldilocks_tip5_preprocessed_ood_openings::<2>(
+            &mut debug_proof.proof,
+            &airs,
+            &pvs,
+            &effective_common,
+            &circuit_prover_data,
+            fri_shape,
+        )
+        .expect("restore OOD openings");
+    let restored_opened_values_bytes =
+        postcard::to_allocvec(&debug_proof.proof.opened_values).expect("serialize opened values");
+    assert_eq!(
+        restored_opened_values_bytes, original_opened_values_bytes,
+        "restored OOD openings should exactly match the full proof"
+    );
+    let (query_indices, log_global_max_height) = prover
+        .derive_goldilocks_tip5_fri_query_indices::<2>(
+            &debug_proof.proof,
+            &airs,
+            &pvs,
+            &effective_common,
+            fri_shape,
+        )
+        .expect("derive FRI query indices");
+    let val_mmcs = goldilocks_tip5_val_mmcs(fri_shape.cap_height);
+    let preprocessed_prover_data = circuit_prover_data
+        .prover_data
+        .prover_only
+        .preprocessed_prover_data
+        .as_ref()
+        .expect("preprocessed prover data");
+    let preprocessed_log_max_height =
+        p3_util::log2_strict_usize(val_mmcs.get_max_height(preprocessed_prover_data));
+    for (query, (query_index, expected_bytes)) in query_indices
+        .into_iter()
+        .zip(original_preprocessed_input_batches.iter())
+        .enumerate()
+    {
+        let reduced_index =
+            query_index >> (log_global_max_height - preprocessed_log_max_height);
+        let regenerated = val_mmcs.open_batch(reduced_index, preprocessed_prover_data);
+        let regenerated_bytes =
+            postcard::to_allocvec(&regenerated).expect("serialize regenerated input batch");
+        assert_eq!(
+            regenerated_bytes, *expected_bytes,
+            "regenerated preprocessed FRI input batch should match full proof for query {query}"
+        );
+    }
+
+    let ood_only_compact: GoldilocksTip5PreprocessedCompactBatchStarkProof =
+        postcard::from_bytes(&compact_bytes).expect("deserialize compact proof");
+    prover
+        .verify_compact_preprocessed_ood(
+            PreprocessedOodCompactBatchStarkProof {
+                proof: ood_only_compact.proof,
+            },
+            &circuit_prover_data,
+        )
+        .expect_err("OOD-only compact verifier must reject missing preprocessed FRI input batch");
+
+    let compact: GoldilocksTip5PreprocessedCompactBatchStarkProof =
+        postcard::from_bytes(&compact_bytes).expect("deserialize compact proof");
+    prover
+        .verify_all_tables(&compact.proof)
+        .expect_err("normal verifier must reject compact proof with omitted openings");
+    prover
+        .verify_goldilocks_tip5_preprocessed_compact(compact, &circuit_prover_data)
+        .expect("compact verifier restores preprocessed OOD and FRI input-batch openings");
+}
+
+#[test]
+fn test_goldilocks_tip5_compact_preprocessed_fri_rejects_wrong_setup_binding() {
+    let (prover, proof, _, fri_shape) = prove_goldilocks_tip5_ext2_public_plus_const(None);
+    let (_, _, wrong_setup, _) = prove_goldilocks_tip5_ext2_public_plus_const(Some(1));
+    let compact = GoldilocksTip5PreprocessedCompactBatchStarkProof::try_from_full(
+        proof,
+        fri_shape,
+    )
+    .expect("compact Goldilocks/Tip5 proof");
+
+    let err = prover
+        .verify_goldilocks_tip5_preprocessed_compact(compact, &wrong_setup)
         .expect_err("compact verifier must bind restoration to canonical setup");
     assert!(
         format!("{err:?}").contains("canonical setup binding"),

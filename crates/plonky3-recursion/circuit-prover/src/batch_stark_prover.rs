@@ -17,24 +17,31 @@ use p3_batch_stark::{
     BatchProof, BatchTranscript, CommonData, Domain, ProverData, StarkGenericConfig,
     StarkInstance, Val,
 };
+use p3_challenger::{CanObserve, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::{
     NonPrimitivePreprocessedMap, NpoTypeId, Poseidon1Config, Poseidon2Config, PrimitiveOpType,
     Tip5Config,
 };
 use p3_circuit::tables::Traces;
-use p3_commit::{Pcs, PolynomialSpace};
+use p3_commit::{Mmcs, Pcs, PolynomialSpace};
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{
     Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField,
+    TwoAdicField,
 };
+use p3_goldilocks::Goldilocks;
 use p3_lookup::logup::LogUpGadget;
 use p3_lookup::Lookups;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_matrix::interpolation::Interpolate;
+use p3_merkle_tree::MerkleTreeMmcs;
+use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+use p3_tip5_circuit_air::Tip5Perm;
 use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt, validate_degree_bits};
-use p3_util::{checked_log_size_sum, log2_strict_usize};
+use p3_util::{checked_log_size_sum, log2_strict_usize, reverse_bits_len};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::instrument;
@@ -43,7 +50,19 @@ use crate::air::{AluAir, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
 use crate::batch_stark_prover::packing::{AirTableShape, TraceTablesLayout};
 use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor};
-use crate::config::StarkField;
+use crate::config::{
+    GOLDILOCKS_TIP5_RECURSIVE_CAP_HEIGHT, GOLDILOCKS_TIP5_RECURSIVE_COMMIT_POW_BITS,
+    GOLDILOCKS_TIP5_RECURSIVE_LOG_BLOWUP, GOLDILOCKS_TIP5_RECURSIVE_LOG_FINAL_POLY_LEN,
+    GOLDILOCKS_TIP5_RECURSIVE_MAX_LOG_ARITY, GOLDILOCKS_TIP5_RECURSIVE_NUM_QUERIES,
+    GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_CAP_HEIGHT,
+    GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+    GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_BLOWUP,
+    GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
+    GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_MAX_LOG_ARITY,
+    GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_NUM_QUERIES,
+    GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+    GOLDILOCKS_TIP5_RECURSIVE_QUERY_POW_BITS, GoldilocksTipsConfig, StarkField,
+};
 use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
 
@@ -582,6 +601,131 @@ where
     }
 }
 
+type GoldilocksTip5Challenge = BinomialExtensionField<Goldilocks, 2>;
+type GoldilocksTip5Hash = PaddingFreeSponge<Tip5Perm, 16, 10, 5>;
+type GoldilocksTip5Compress = TruncatedPermutation<Tip5Perm, 2, 5, 16>;
+type GoldilocksTip5ValMmcs =
+    MerkleTreeMmcs<Goldilocks, Goldilocks, GoldilocksTip5Hash, GoldilocksTip5Compress, 2, 5>;
+
+/// Public FRI shape metadata needed to regenerate omitted Goldilocks/Tip5
+/// preprocessed input-batch openings.
+///
+/// `TwoAdicFriPcs` intentionally keeps its FRI parameters private, so a compact
+/// proof that omits verifier-deterministic MMCS openings must carry the shape
+/// used for reconstruction. This shape is not trusted as a verifier policy:
+/// [`BatchStarkProver`] still verifies the restored proof with its configured
+/// PCS. A wrong shape can only make restoration fail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoldilocksTip5FriShape {
+    pub log_blowup: usize,
+    pub log_final_poly_len: usize,
+    pub max_log_arity: usize,
+    pub num_queries: usize,
+    pub commit_pow_bits: usize,
+    pub query_pow_bits: usize,
+    pub cap_height: usize,
+}
+
+impl GoldilocksTip5FriShape {
+    /// Current mixed query/PoW recursive Tip5 profile.
+    pub const fn recursive_60bit() -> Self {
+        Self {
+            log_blowup: GOLDILOCKS_TIP5_RECURSIVE_LOG_BLOWUP,
+            log_final_poly_len: GOLDILOCKS_TIP5_RECURSIVE_LOG_FINAL_POLY_LEN,
+            max_log_arity: GOLDILOCKS_TIP5_RECURSIVE_MAX_LOG_ARITY,
+            num_queries: GOLDILOCKS_TIP5_RECURSIVE_NUM_QUERIES,
+            commit_pow_bits: GOLDILOCKS_TIP5_RECURSIVE_COMMIT_POW_BITS,
+            query_pow_bits: GOLDILOCKS_TIP5_RECURSIVE_QUERY_POW_BITS,
+            cap_height: GOLDILOCKS_TIP5_RECURSIVE_CAP_HEIGHT,
+        }
+    }
+
+    /// Current pure-query recursive Tip5 production-candidate profile.
+    pub const fn recursive_pure_query_60bit() -> Self {
+        Self {
+            log_blowup: GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_BLOWUP,
+            log_final_poly_len: GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
+            max_log_arity: GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_MAX_LOG_ARITY,
+            num_queries: GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_NUM_QUERIES,
+            commit_pow_bits: GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+            query_pow_bits: GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+            cap_height: GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_CAP_HEIGHT,
+        }
+    }
+
+    pub const fn johnson_bits(self) -> usize {
+        self.log_blowup * self.num_queries + self.query_pow_bits
+    }
+
+    fn final_poly_len(self) -> Result<usize, BatchStarkProverError> {
+        checked_power_of_two(self.log_final_poly_len, "FRI final polynomial length")
+    }
+
+    fn validate(self) -> Result<(), BatchStarkProverError> {
+        if self.log_blowup == 0 {
+            return Err(BatchStarkProverError::Verify(String::from(
+                "Goldilocks/Tip5 FRI shape must have non-zero log_blowup",
+            )));
+        }
+        if self.max_log_arity == 0 {
+            return Err(BatchStarkProverError::Verify(String::from(
+                "Goldilocks/Tip5 FRI shape must have non-zero max_log_arity",
+            )));
+        }
+        if self.num_queries == 0 {
+            return Err(BatchStarkProverError::Verify(String::from(
+                "Goldilocks/Tip5 FRI shape must have at least one query",
+            )));
+        }
+        if self.cap_height > Goldilocks::TWO_ADICITY {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 FRI cap height {} exceeds Goldilocks two-adicity {}",
+                self.cap_height,
+                Goldilocks::TWO_ADICITY
+            )));
+        }
+        let _ = self.final_poly_len()?;
+        Ok(())
+    }
+}
+
+/// Goldilocks/Tip5 compact projection that omits all verifier-deterministic
+/// preprocessed openings currently available to the native verifier.
+///
+/// The wrapper removes both:
+/// - preprocessed out-of-domain openings from `BatchProof.opened_values`; and
+/// - the preprocessed commitment's per-query FRI input-batch openings.
+///
+/// Verification must provide the canonical [`CircuitProverData`] for the
+/// statement. The verifier restores OOD openings, replays the transcript to
+/// derive FRI query indices, regenerates the omitted preprocessed
+/// [`Mmcs::open_batch`] results from the canonical preprocessed prover data, and
+/// then delegates to the normal upstream `p3-batch-stark` verifier.
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct GoldilocksTip5PreprocessedCompactBatchStarkProof {
+    pub proof: BatchStarkProof<GoldilocksTipsConfig>,
+    pub fri_shape: GoldilocksTip5FriShape,
+}
+
+impl GoldilocksTip5PreprocessedCompactBatchStarkProof {
+    /// Build the compact projection from a full Goldilocks/Tip5 proof.
+    pub fn try_from_full(
+        mut proof: BatchStarkProof<GoldilocksTipsConfig>,
+        fri_shape: GoldilocksTip5FriShape,
+    ) -> Result<Self, BatchStarkProverError> {
+        fri_shape.validate()?;
+        omit_preprocessed_ood_openings(&mut proof.proof);
+        omit_goldilocks_tip5_preprocessed_fri_input_batches(&mut proof.proof, &proof.stark_common)?;
+        Ok(Self { proof, fri_shape })
+    }
+
+    /// Consume the compact wrapper and return its inner proof object.
+    pub fn into_inner(self) -> BatchStarkProof<GoldilocksTipsConfig> {
+        self.proof
+    }
+}
+
 fn omit_preprocessed_ood_openings<SC>(proof: &mut BatchProof<SC>) -> usize
 where
     SC: StarkGenericConfig,
@@ -601,6 +745,82 @@ where
             omitted
         })
         .sum()
+}
+
+fn omit_goldilocks_tip5_preprocessed_fri_input_batches(
+    proof: &mut BatchProof<GoldilocksTipsConfig>,
+    common: &CommonData<GoldilocksTipsConfig>,
+) -> Result<(), BatchStarkProverError> {
+    if common.preprocessed.is_none() {
+        return Ok(());
+    }
+
+    let preprocessed_idx = goldilocks_tip5_preprocessed_trace_idx();
+    for (query, query_proof) in proof.opening_proof.query_proofs.iter_mut().enumerate() {
+        if query_proof.input_proof.len() <= preprocessed_idx {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 compact proof query {query} lacks preprocessed FRI input batch"
+            )));
+        }
+        query_proof.input_proof.remove(preprocessed_idx);
+    }
+
+    Ok(())
+}
+
+fn goldilocks_tip5_val_mmcs(cap_height: usize) -> GoldilocksTip5ValMmcs {
+    let perm = Tip5Perm;
+    let hash = GoldilocksTip5Hash::new(perm);
+    let compress = GoldilocksTip5Compress::new(perm);
+    MerkleTreeMmcs::new(hash, compress, cap_height)
+}
+
+fn evaluate_goldilocks_tip5_bit_reversed_lde_at<M>(
+    lde_matrix: &M,
+    log_blowup: usize,
+    point: GoldilocksTip5Challenge,
+) -> Result<Vec<GoldilocksTip5Challenge>, BatchStarkProverError>
+where
+    M: Matrix<Goldilocks>,
+{
+    let log_lde_height = log2_strict_usize(lde_matrix.height());
+    if log_blowup > log_lde_height {
+        return Err(BatchStarkProverError::Verify(format!(
+            "Goldilocks/Tip5 log_blowup {log_blowup} exceeds LDE height log {log_lde_height}",
+        )));
+    }
+    let log_low_height = log_lde_height - log_blowup;
+    let low_height = checked_power_of_two(log_low_height, "Goldilocks/Tip5 low coset height")?;
+    let width = lde_matrix.width();
+    let mut natural_values = Vec::with_capacity(low_height * width);
+    for row in 0..low_height {
+        let bit_reversed_row = reverse_bits_len(row, log_low_height);
+        for col in 0..width {
+            natural_values.push(
+                lde_matrix
+                    .get(bit_reversed_row, col)
+                    .expect("row/column are in bounds by construction"),
+            );
+        }
+    }
+    let natural_matrix = RowMajorMatrix::new(natural_values, width);
+    Ok(natural_matrix.interpolate_coset(Goldilocks::GENERATOR, point))
+}
+
+fn goldilocks_tip5_preprocessed_trace_idx() -> usize {
+    <<GoldilocksTipsConfig as StarkGenericConfig>::Pcs as Pcs<
+        GoldilocksTip5Challenge,
+        <GoldilocksTipsConfig as StarkGenericConfig>::Challenger,
+    >>::PREPROCESSED_TRACE_IDX
+}
+
+fn checked_power_of_two(log: usize, label: &str) -> Result<usize, BatchStarkProverError> {
+    let shift = u32::try_from(log).map_err(|_| {
+        BatchStarkProverError::Verify(format!("{label} log {log} does not fit in u32"))
+    })?;
+    1usize.checked_shl(shift).ok_or_else(|| {
+        BatchStarkProverError::Verify(format!("{label} log {log} does not fit in usize"))
+    })
 }
 
 impl<SC> core::fmt::Debug for BatchStarkProof<SC>
@@ -1949,6 +2169,18 @@ where
         public_values: &[Vec<Val<SC>>],
         common: &CommonData<SC>,
     ) -> Result<(SC::Challenge, Vec<Domain<SC>>), BatchStarkProverError> {
+        let (mut transcript, trace_domains) =
+            self.initialise_batch_transcript_to_zeta(airs, proof, public_values, common)?;
+        Ok((transcript.sample_zeta(), trace_domains))
+    }
+
+    fn initialise_batch_transcript_to_zeta<const D: usize>(
+        &self,
+        airs: &[CircuitTableAir<SC, D>],
+        proof: &BatchProof<SC>,
+        public_values: &[Vec<Val<SC>>],
+        common: &CommonData<SC>,
+    ) -> Result<(BatchTranscript<SC>, Vec<Domain<SC>>), BatchStarkProverError> {
         let all_lookups = &common.lookups;
         if airs.len() != proof.opened_values.instances.len()
             || airs.len() != public_values.len()
@@ -2034,8 +2266,612 @@ where
             transcript.observe_random_commitment(random_commitment);
         }
 
-        Ok((transcript.sample_zeta(), trace_domains))
+        Ok((transcript, trace_domains))
     }
+}
+
+impl BatchStarkProver<GoldilocksTipsConfig> {
+    /// Verify a Goldilocks/Tip5 compact proof whose verifier-deterministic
+    /// preprocessed OOD values and FRI input-batch openings were omitted.
+    pub fn verify_goldilocks_tip5_preprocessed_compact(
+        &self,
+        proof: GoldilocksTip5PreprocessedCompactBatchStarkProof,
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <GoldilocksTipsConfig as StarkGenericConfig>::Pcs: Pcs<
+                GoldilocksTip5Challenge,
+                <GoldilocksTipsConfig as StarkGenericConfig>::Challenger,
+                Commitment = <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment,
+            >,
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        self.verify_goldilocks_tip5_preprocessed_compact_with_public_values(
+            proof,
+            &[],
+            canonical_setup,
+        )
+    }
+
+    /// Verify a Goldilocks/Tip5 compact proof while binding leading
+    /// Public-table lanes to caller-supplied STARK public values.
+    pub fn verify_goldilocks_tip5_preprocessed_compact_with_public_values(
+        &self,
+        proof: GoldilocksTip5PreprocessedCompactBatchStarkProof,
+        public_values: &[Goldilocks],
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <GoldilocksTipsConfig as StarkGenericConfig>::Pcs: Pcs<
+                GoldilocksTip5Challenge,
+                <GoldilocksTipsConfig as StarkGenericConfig>::Challenger,
+                Commitment = <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment,
+            >,
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        proof.proof.validate()?;
+        proof.fri_shape.validate()?;
+        if !common_preprocessed_binding_eq(
+            &proof.proof.stark_common,
+            &canonical_setup.prover_data.common,
+        ) {
+            return Err(BatchStarkProverError::Verify(String::from(
+                "Goldilocks/Tip5 compact proof does not match canonical setup binding",
+            )));
+        }
+
+        let ext_degree = proof.proof.ext_degree;
+        let w_binomial = proof.proof.w_binomial;
+        match ext_degree {
+            1 => self.verify_goldilocks_tip5_preprocessed_compact_inner::<1>(
+                proof,
+                None,
+                public_values,
+                canonical_setup,
+            ),
+            2 => self.verify_goldilocks_tip5_preprocessed_compact_inner::<2>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+            ),
+            4 => self.verify_goldilocks_tip5_preprocessed_compact_inner::<4>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+            ),
+            5 => self.verify_goldilocks_tip5_preprocessed_compact_inner::<5>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+            ),
+            6 => self.verify_goldilocks_tip5_preprocessed_compact_inner::<6>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+            ),
+            8 => self.verify_goldilocks_tip5_preprocessed_compact_inner::<8>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+            ),
+            d => Err(BatchStarkProverError::UnsupportedDegree(d)),
+        }
+    }
+
+    fn verify_goldilocks_tip5_preprocessed_compact_inner<const D: usize>(
+        &self,
+        proof: GoldilocksTip5PreprocessedCompactBatchStarkProof,
+        w_binomial: Option<Goldilocks>,
+        public_values: &[Goldilocks],
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        let fri_shape = proof.fri_shape;
+        let mut proof = proof.into_inner();
+        let (airs, pvs, effective_common) = self.rebuild_verifier_statement::<D>(
+            &proof,
+            w_binomial,
+            &proof.stark_common,
+            public_values,
+        )?;
+        self.restore_goldilocks_tip5_preprocessed_ood_openings::<D>(
+            &mut proof.proof,
+            &airs,
+            &pvs,
+            &effective_common,
+            canonical_setup,
+            fri_shape,
+        )?;
+        self.restore_goldilocks_tip5_preprocessed_fri_input_batches::<D>(
+            &mut proof.proof,
+            &airs,
+            &pvs,
+            &effective_common,
+            canonical_setup,
+            fri_shape,
+        )?;
+
+        p3_batch_stark::verify_batch(
+            &self.config,
+            &airs,
+            &proof.proof,
+            &pvs,
+            &effective_common,
+        )
+        .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
+    }
+
+    fn restore_goldilocks_tip5_preprocessed_ood_openings<const D: usize>(
+        &self,
+        proof: &mut BatchProof<GoldilocksTipsConfig>,
+        airs: &[CircuitTableAir<GoldilocksTipsConfig, D>],
+        public_values: &[Vec<Goldilocks>],
+        common: &CommonData<GoldilocksTipsConfig>,
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+        fri_shape: GoldilocksTip5FriShape,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        let Some(global) = &common.preprocessed else {
+            return Ok(());
+        };
+        if !common_preprocessed_binding_eq(common, &canonical_setup.prover_data.common) {
+            return Err(BatchStarkProverError::Verify(String::from(
+                "canonical setup preprocessed binding changed during Goldilocks/Tip5 OOD restoration",
+            )));
+        }
+        let preprocessed_prover_data = canonical_setup
+            .prover_data
+            .prover_only
+            .preprocessed_prover_data
+            .as_ref()
+            .ok_or_else(|| {
+                BatchStarkProverError::Verify(String::from(
+                    "canonical setup lacks preprocessed prover data",
+                ))
+            })?;
+
+        let (zeta, trace_domains) =
+            self.sample_batch_zeta_and_trace_domains(airs, proof, public_values, common)?;
+        let val_mmcs = goldilocks_tip5_val_mmcs(fri_shape.cap_height);
+        let preprocessed_matrices = val_mmcs.get_matrices(preprocessed_prover_data);
+
+        for (matrix_index, &inst_idx) in global.matrix_to_instance.iter().enumerate() {
+            let meta = global.instances.get(inst_idx).and_then(Option::as_ref).ok_or_else(|| {
+                BatchStarkProverError::Verify(format!(
+                    "missing preprocessed metadata for instance {inst_idx}"
+                ))
+            })?;
+            if meta.matrix_index != matrix_index {
+                return Err(BatchStarkProverError::Verify(format!(
+                    "preprocessed matrix metadata mismatch for instance {inst_idx}"
+                )));
+            }
+            if inst_idx >= proof.opened_values.instances.len() || inst_idx >= airs.len() {
+                return Err(BatchStarkProverError::Verify(format!(
+                    "preprocessed instance index {inst_idx} out of bounds"
+                )));
+            }
+            let preprocessed_matrix =
+                preprocessed_matrices
+                    .get(matrix_index)
+                    .ok_or_else(|| {
+                        BatchStarkProverError::Verify(format!(
+                            "missing canonical preprocessed matrix {matrix_index}"
+                        ))
+                    })?;
+
+            let local = evaluate_goldilocks_tip5_bit_reversed_lde_at(
+                *preprocessed_matrix,
+                fri_shape.log_blowup,
+                zeta,
+            )?;
+            let opened = &mut proof.opened_values.instances[inst_idx].base_opened_values;
+            match &opened.preprocessed_local {
+                Some(existing) if existing != &local => {
+                    return Err(BatchStarkProverError::Verify(format!(
+                        "serialized Goldilocks/Tip5 preprocessed local opening mismatch for instance {inst_idx}"
+                    )));
+                }
+                Some(_) => {}
+                None => opened.preprocessed_local = Some(local),
+            }
+
+            if !airs[inst_idx].preprocessed_next_row_columns().is_empty() {
+                let zeta_next = trace_domains[inst_idx]
+                    .next_point(zeta)
+                    .ok_or_else(|| {
+                        BatchStarkProverError::Verify(format!(
+                            "trace domain lacks next point for instance {inst_idx}"
+                        ))
+                    })?;
+                let next = evaluate_goldilocks_tip5_bit_reversed_lde_at(
+                    *preprocessed_matrix,
+                    fri_shape.log_blowup,
+                    zeta_next,
+                )?;
+                match &opened.preprocessed_next {
+                    Some(existing) if existing != &next => {
+                        return Err(BatchStarkProverError::Verify(format!(
+                            "serialized Goldilocks/Tip5 preprocessed next opening mismatch for instance {inst_idx}"
+                        )));
+                    }
+                    Some(_) => {}
+                    None => opened.preprocessed_next = Some(next),
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn restore_goldilocks_tip5_preprocessed_fri_input_batches<const D: usize>(
+        &self,
+        proof: &mut BatchProof<GoldilocksTipsConfig>,
+        airs: &[CircuitTableAir<GoldilocksTipsConfig, D>],
+        public_values: &[Vec<Goldilocks>],
+        common: &CommonData<GoldilocksTipsConfig>,
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+        fri_shape: GoldilocksTip5FriShape,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        if common.preprocessed.is_none() {
+            return Ok(());
+        }
+        if !common_preprocessed_binding_eq(common, &canonical_setup.prover_data.common) {
+            return Err(BatchStarkProverError::Verify(String::from(
+                "canonical setup preprocessed binding changed during Goldilocks/Tip5 compact verification",
+            )));
+        }
+
+        let preprocessed_prover_data = canonical_setup
+            .prover_data
+            .prover_only
+            .preprocessed_prover_data
+            .as_ref()
+            .ok_or_else(|| {
+                BatchStarkProverError::Verify(String::from(
+                    "canonical setup lacks preprocessed prover data",
+                ))
+            })?;
+
+        let expected_full_batches =
+            goldilocks_tip5_full_fri_input_batch_count(proof, common);
+        let expected_compact_batches =
+            expected_full_batches
+                .checked_sub(1)
+                .ok_or_else(|| {
+                    BatchStarkProverError::Verify(String::from(
+                        "Goldilocks/Tip5 compact proof has no input batch slot to omit",
+                    ))
+                })?;
+        let preprocessed_idx = goldilocks_tip5_preprocessed_trace_idx();
+        if preprocessed_idx >= expected_full_batches {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 preprocessed batch index {preprocessed_idx} exceeds expected input batches {expected_full_batches}",
+            )));
+        }
+
+        let (query_indices, log_global_max_height) = self
+            .derive_goldilocks_tip5_fri_query_indices::<D>(
+                proof,
+                airs,
+                public_values,
+                common,
+                fri_shape,
+            )?;
+
+        let val_mmcs = goldilocks_tip5_val_mmcs(fri_shape.cap_height);
+        let preprocessed_max_height = val_mmcs.get_max_height(preprocessed_prover_data);
+        if preprocessed_max_height == 0 || !preprocessed_max_height.is_power_of_two() {
+            return Err(BatchStarkProverError::Verify(format!(
+                "canonical preprocessed prover data has bad max height {preprocessed_max_height}",
+            )));
+        }
+        let preprocessed_log_max_height = log2_strict_usize(preprocessed_max_height);
+        if preprocessed_log_max_height > log_global_max_height {
+            return Err(BatchStarkProverError::Verify(format!(
+                "preprocessed batch height log {preprocessed_log_max_height} exceeds FRI global height log {log_global_max_height}",
+            )));
+        }
+
+        for (query, (query_index, query_proof)) in query_indices
+            .into_iter()
+            .zip(proof.opening_proof.query_proofs.iter_mut())
+            .enumerate()
+        {
+            if query_proof.input_proof.len() != expected_compact_batches {
+                return Err(BatchStarkProverError::Verify(format!(
+                    "Goldilocks/Tip5 compact query {query} input batch count mismatch: expected {expected_compact_batches}, got {}",
+                    query_proof.input_proof.len()
+                )));
+            }
+            let reduced_index = query_index >> (log_global_max_height - preprocessed_log_max_height);
+            let opening = val_mmcs.open_batch(reduced_index, preprocessed_prover_data);
+            query_proof.input_proof.insert(preprocessed_idx, opening);
+        }
+
+        Ok(())
+    }
+
+    fn derive_goldilocks_tip5_fri_query_indices<const D: usize>(
+        &self,
+        proof: &BatchProof<GoldilocksTipsConfig>,
+        airs: &[CircuitTableAir<GoldilocksTipsConfig, D>],
+        public_values: &[Vec<Goldilocks>],
+        common: &CommonData<GoldilocksTipsConfig>,
+        fri_shape: GoldilocksTip5FriShape,
+    ) -> Result<(Vec<usize>, usize), BatchStarkProverError> {
+        let (mut transcript, trace_domains) =
+            self.initialise_batch_transcript_to_zeta(airs, proof, public_values, common)?;
+        let zeta = transcript.sample_zeta();
+        self.observe_goldilocks_tip5_pcs_opened_values(
+            &mut transcript,
+            proof,
+            airs,
+            common,
+            &trace_domains,
+            zeta,
+        )?;
+
+        let fri_proof = &proof.opening_proof;
+        let expected_rounds = fri_proof.commit_phase_commits.len();
+        let log_arities = if let Some(first_query) = fri_proof.query_proofs.first() {
+            first_query
+                .commit_phase_openings
+                .iter()
+                .enumerate()
+                .map(|(round, opening)| {
+                    let log_arity = opening.log_arity as usize;
+                    if !(1..=fri_shape.max_log_arity).contains(&log_arity) {
+                        return Err(BatchStarkProverError::Verify(format!(
+                            "Goldilocks/Tip5 FRI invalid log arity {log_arity} in round {round}; max {}",
+                            fri_shape.max_log_arity
+                        )));
+                    }
+                    Ok(log_arity)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
+        for (query, query_proof) in fri_proof.query_proofs.iter().enumerate() {
+            if query_proof.commit_phase_openings.len() != expected_rounds {
+                return Err(BatchStarkProverError::Verify(format!(
+                    "Goldilocks/Tip5 FRI query {query} commit phase count mismatch: expected {expected_rounds}, got {}",
+                    query_proof.commit_phase_openings.len()
+                )));
+            }
+            let got_log_arities = query_proof
+                .commit_phase_openings
+                .iter()
+                .map(|opening| opening.log_arity as usize)
+                .collect::<Vec<_>>();
+            if got_log_arities != log_arities {
+                return Err(BatchStarkProverError::Verify(format!(
+                    "Goldilocks/Tip5 FRI query {query} log arities mismatch",
+                )));
+            }
+        }
+
+        let total_log_reduction = log_arities.iter().copied().sum::<usize>();
+        let log_global_max_height = total_log_reduction
+            .checked_add(fri_shape.log_blowup)
+            .and_then(|v| v.checked_add(fri_shape.log_final_poly_len))
+            .ok_or_else(|| {
+                BatchStarkProverError::Verify(String::from(
+                    "Goldilocks/Tip5 FRI global height overflow",
+                ))
+            })?;
+        let _ = checked_power_of_two(log_global_max_height, "FRI global max height")?;
+
+        if fri_proof.commit_pow_witnesses.len() != fri_proof.commit_phase_commits.len() {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 FRI commit PoW witness count mismatch: expected {}, got {}",
+                fri_proof.commit_phase_commits.len(),
+                fri_proof.commit_pow_witnesses.len()
+            )));
+        }
+
+        let _: GoldilocksTip5Challenge = transcript.challenger.sample_algebra_element();
+        for (commitment, witness) in fri_proof
+            .commit_phase_commits
+            .iter()
+            .zip(&fri_proof.commit_pow_witnesses)
+        {
+            transcript.challenger.observe(commitment.clone());
+            if !transcript
+                .challenger
+                .check_witness(fri_shape.commit_pow_bits, *witness)
+            {
+                return Err(BatchStarkProverError::Verify(String::from(
+                    "Goldilocks/Tip5 FRI commit PoW witness rejected",
+                )));
+            }
+            let _: GoldilocksTip5Challenge = transcript.challenger.sample_algebra_element();
+        }
+
+        let final_poly_len = fri_shape.final_poly_len()?;
+        if fri_proof.final_poly.len() != final_poly_len {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 FRI final polynomial length mismatch: expected {final_poly_len}, got {}",
+                fri_proof.final_poly.len()
+            )));
+        }
+        transcript
+            .challenger
+            .observe_algebra_slice(&fri_proof.final_poly);
+
+        if fri_proof.query_proofs.len() != fri_shape.num_queries {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 FRI query count mismatch: expected {}, got {}",
+                fri_shape.num_queries,
+                fri_proof.query_proofs.len()
+            )));
+        }
+        for &log_arity in &log_arities {
+            transcript
+                .challenger
+                .observe(Goldilocks::from_usize(log_arity));
+        }
+        if !transcript
+            .challenger
+            .check_witness(fri_shape.query_pow_bits, fri_proof.query_pow_witness)
+        {
+            return Err(BatchStarkProverError::Verify(String::from(
+                "Goldilocks/Tip5 FRI query PoW witness rejected",
+            )));
+        }
+
+        Ok((
+            (0..fri_proof.query_proofs.len())
+                .map(|_| transcript.challenger.sample_bits(log_global_max_height))
+                .collect(),
+            log_global_max_height,
+        ))
+    }
+
+    fn observe_goldilocks_tip5_pcs_opened_values<const D: usize>(
+        &self,
+        transcript: &mut BatchTranscript<GoldilocksTipsConfig>,
+        proof: &BatchProof<GoldilocksTipsConfig>,
+        airs: &[CircuitTableAir<GoldilocksTipsConfig, D>],
+        common: &CommonData<GoldilocksTipsConfig>,
+        trace_domains: &[Domain<GoldilocksTipsConfig>],
+        zeta: GoldilocksTip5Challenge,
+    ) -> Result<(), BatchStarkProverError> {
+        if proof.commitments.random.is_some() {
+            for (i, instance) in proof.opened_values.instances.iter().enumerate() {
+                let random = instance
+                    .base_opened_values
+                    .random
+                    .as_ref()
+                    .ok_or_else(|| {
+                        BatchStarkProverError::Verify(format!(
+                            "Goldilocks/Tip5 proof missing random opening for instance {i}"
+                        ))
+                    })?;
+                transcript.challenger.observe_algebra_slice(random);
+            }
+        }
+
+        for (i, (air, instance)) in airs
+            .iter()
+            .zip(proof.opened_values.instances.iter())
+            .enumerate()
+        {
+            transcript
+                .challenger
+                .observe_algebra_slice(&instance.base_opened_values.trace_local);
+            if !air.main_next_row_columns().is_empty() {
+                let _ = trace_domains[i].next_point(zeta).ok_or_else(|| {
+                    BatchStarkProverError::Verify(format!(
+                        "Goldilocks/Tip5 trace domain lacks next point for instance {i}"
+                    ))
+                })?;
+                let trace_next = instance
+                    .base_opened_values
+                    .trace_next
+                    .as_ref()
+                    .ok_or_else(|| {
+                        BatchStarkProverError::Verify(format!(
+                            "Goldilocks/Tip5 proof missing trace next opening for instance {i}"
+                        ))
+                    })?;
+                transcript.challenger.observe_algebra_slice(trace_next);
+            }
+        }
+
+        for instance in &proof.opened_values.instances {
+            for quotient_chunk in &instance.base_opened_values.quotient_chunks {
+                transcript.challenger.observe_algebra_slice(quotient_chunk);
+            }
+        }
+
+        if let Some(global) = &common.preprocessed {
+            for &inst_idx in &global.matrix_to_instance {
+                if inst_idx >= proof.opened_values.instances.len() || inst_idx >= airs.len() {
+                    return Err(BatchStarkProverError::Verify(format!(
+                        "Goldilocks/Tip5 preprocessed instance index {inst_idx} out of bounds",
+                    )));
+                }
+                let instance = &proof.opened_values.instances[inst_idx];
+                let local = instance
+                    .base_opened_values
+                    .preprocessed_local
+                    .as_ref()
+                    .ok_or_else(|| {
+                        BatchStarkProverError::Verify(format!(
+                            "Goldilocks/Tip5 proof missing preprocessed local opening for instance {inst_idx}"
+                        ))
+                    })?;
+                transcript.challenger.observe_algebra_slice(local);
+                if !airs[inst_idx].preprocessed_next_row_columns().is_empty() {
+                    let _ = trace_domains[inst_idx].next_point(zeta).ok_or_else(|| {
+                        BatchStarkProverError::Verify(format!(
+                            "Goldilocks/Tip5 trace domain lacks preprocessed next point for instance {inst_idx}"
+                        ))
+                    })?;
+                    let next = instance
+                        .base_opened_values
+                        .preprocessed_next
+                        .as_ref()
+                        .ok_or_else(|| {
+                            BatchStarkProverError::Verify(format!(
+                                "Goldilocks/Tip5 proof missing preprocessed next opening for instance {inst_idx}"
+                            ))
+                        })?;
+                    transcript.challenger.observe_algebra_slice(next);
+                }
+            }
+        }
+
+        if proof.commitments.permutation.is_some() {
+            for (i, instance) in proof.opened_values.instances.iter().enumerate() {
+                if instance.permutation_local.len() != instance.permutation_next.len() {
+                    return Err(BatchStarkProverError::Verify(format!(
+                        "Goldilocks/Tip5 permutation opening length mismatch for instance {i}",
+                    )));
+                }
+                if !instance.permutation_local.is_empty() {
+                    let _ = trace_domains[i].next_point(zeta).ok_or_else(|| {
+                        BatchStarkProverError::Verify(format!(
+                            "Goldilocks/Tip5 permutation domain lacks next point for instance {i}"
+                        ))
+                    })?;
+                    transcript
+                        .challenger
+                        .observe_algebra_slice(&instance.permutation_local);
+                    transcript
+                        .challenger
+                        .observe_algebra_slice(&instance.permutation_next);
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn goldilocks_tip5_full_fri_input_batch_count(
+    proof: &BatchProof<GoldilocksTipsConfig>,
+    common: &CommonData<GoldilocksTipsConfig>,
+) -> usize {
+    usize::from(proof.commitments.random.is_some())
+        + 1
+        + 1
+        + usize::from(common.preprocessed.is_some())
+        + usize::from(proof.commitments.permutation.is_some())
 }
 
 fn evaluate_matrix_columns_at<F, EF, D, M>(domain: &D, matrix: &M, point: EF) -> Vec<EF>
