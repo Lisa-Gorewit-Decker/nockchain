@@ -1975,11 +1975,17 @@ mod tests {
         init_terminal_prover_profile_tracing();
         assert_eq!(profile.johnson_fri_bits(), 60);
 
+        let total_start = std::time::Instant::now();
         let zk = test_zk_params();
         let cfg = build_config(&zk, &profile);
         let trace = CompositeTrace::baseline_min();
         let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let l0_prove_start = std::time::Instant::now();
         let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: l0_prove_ms={}",
+            l0_prove_start.elapsed().as_millis()
+        );
         let verified = unsafe {
             ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
                 program.clone(),
@@ -1987,6 +1993,7 @@ mod tests {
                 &pis,
             )
         };
+        let l1_build_start = std::time::Instant::now();
         let air = CompositeFullAirWithLookupsPinned::new_with(program, true);
         let pd = logup_common_for(&cfg, &verified.program, true);
         let built = build_composite_l1_verifier_circuit(
@@ -1998,11 +2005,19 @@ mod tests {
             &profile,
         )
         .expect("integrated LogUp diagnostic must build L1 verifier circuit");
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: l1_circuit_build_ms={}",
+            l1_build_start.elapsed().as_millis()
+        );
 
         let l1_verify_start = std::time::Instant::now();
         let traces = run_composite_l1_verifier_traces(&built, &verified.proof)
             .expect("integrated LogUp diagnostic must run L1 verifier traces");
         let l1_verify_elapsed = l1_verify_start.elapsed();
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: l1_trace_verify_ms={}",
+            l1_verify_elapsed.as_millis()
+        );
 
         let compiler = terminal_compiler();
         let compile_start = std::time::Instant::now();
@@ -2016,6 +2031,10 @@ mod tests {
             )
             .expect("integrated LogUp diagnostic must use production query domains");
         let compile_elapsed = compile_start.elapsed();
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: terminal_compile_ms={}",
+            compile_elapsed.as_millis()
+        );
 
         let witness = TerminalWitness {
             fingerprint: TerminalCircuitFingerprint::from_circuit(&built.circuit),
@@ -2024,11 +2043,17 @@ mod tests {
             traces,
         };
 
+        let assignment_commit_start = std::time::Instant::now();
         let assignment_oracle = compiler
             .commit_terminal_assignment_goldilocks(&vk, &witness.public_inputs, &witness)
             .expect("integrated LogUp diagnostic must commit terminal assignment");
         let assignment_commitment = assignment_oracle.commitment();
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: assignment_commit_ms={}",
+            assignment_commit_start.elapsed().as_millis()
+        );
         let mut prelude_roots = vec![assignment_commitment.root];
+        let merged_root_start = std::time::Instant::now();
         prelude_roots.extend(
             compiler
                 .terminal_npo_fri_residual_zero_recompose_value_bridge_prelude_commitments_from_witness_goldilocks(
@@ -2037,6 +2062,11 @@ mod tests {
                 )
                 .expect("integrated LogUp diagnostic must bind merged NPO root"),
         );
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: merged_npo_root_ms={}",
+            merged_root_start.elapsed().as_millis()
+        );
+        let bundled_tip5_root_start = std::time::Instant::now();
         prelude_roots.extend(
             compiler
                 .terminal_npo_tip5_lookup_trace_bundled_io_support_prelude_commitments_from_witness_goldilocks(
@@ -2045,6 +2075,11 @@ mod tests {
                 )
                 .expect("integrated LogUp diagnostic must bind bundled Tip5 root"),
         );
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: bundled_tip5_root_ms={}",
+            bundled_tip5_root_start.elapsed().as_millis()
+        );
+        let prelude_start = std::time::Instant::now();
         let prelude = compiler
             .build_proof_prelude_goldilocks(
                 &vk,
@@ -2053,6 +2088,10 @@ mod tests {
                 prelude_roots,
             )
             .expect("integrated LogUp diagnostic must build terminal prelude");
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: prelude_ms={}",
+            prelude_start.elapsed().as_millis()
+        );
 
         let primitive_prove_start = std::time::Instant::now();
         let primitive_r1cs_proof = compiler
@@ -2061,19 +2100,42 @@ mod tests {
             )
             .expect("integrated LogUp diagnostic must prove primitive R1CS");
         let primitive_prove_elapsed = primitive_prove_start.elapsed();
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: primitive_prove_ms={}",
+            primitive_prove_elapsed.as_millis()
+        );
 
         let npo_prove_start = std::time::Instant::now();
+        let merged_prove_start = std::time::Instant::now();
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: merged_value_bridge_prove_start"
+        );
         let merged_value_bridge_proof = compiler
             .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks(
                 &vk, &witness.public_inputs, &witness, &prelude,
             )
             .expect("integrated LogUp diagnostic must prove merged NPO value bridge");
+        let merged_prove_elapsed = merged_prove_start.elapsed();
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: merged_value_bridge_prove_ms={}",
+            merged_prove_elapsed.as_millis()
+        );
+        let integrated_logup_prove_start = std::time::Instant::now();
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: integrated_logup_prove_start"
+        );
         let integrated_logup_proof = compiler
             .prove_terminal_npo_tip5_lookup_air_logup_trace_io_support_npo_io_logup_goldilocks(
                 &vk, &witness.public_inputs, &witness, &prelude,
             )
             .expect("integrated LogUp diagnostic must prove bundled Tip5 LogUp");
+        let integrated_logup_prove_elapsed = integrated_logup_prove_start.elapsed();
         let npo_prove_elapsed = npo_prove_start.elapsed();
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: integrated_logup_prove_ms={} npo_prove_ms={}",
+            integrated_logup_prove_elapsed.as_millis(),
+            npo_prove_elapsed.as_millis()
+        );
 
         let primitive_verify_start = std::time::Instant::now();
         compiler
@@ -2083,6 +2145,10 @@ mod tests {
             )
             .expect("integrated LogUp diagnostic primitive proof must verify");
         let primitive_verify_elapsed = primitive_verify_start.elapsed();
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: primitive_verify_ms={}",
+            primitive_verify_elapsed.as_millis()
+        );
         let npo_verify_start = std::time::Instant::now();
         compiler
             .verify_terminal_npo_tip5_lookup_backend_trace_value_integrated_logup_bridge_goldilocks(
@@ -2091,6 +2157,10 @@ mod tests {
             )
             .expect("integrated LogUp diagnostic NPO proof must verify");
         let npo_verify_elapsed = npo_verify_start.elapsed();
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: npo_verify_ms={}",
+            npo_verify_elapsed.as_millis()
+        );
 
         let npo_polynomial_proof = TerminalProductionNpoPolynomialProof {
             merged_value_bridge_proof,
@@ -2141,6 +2211,10 @@ mod tests {
             primitive_verify_elapsed.as_millis(),
             npo_verify_elapsed.as_millis(),
             total_verify_elapsed.as_millis(),
+        );
+        eprintln!(
+            "native terminal integrated-LogUp candidate phase [{label}]: total_wall_ms={}",
+            total_start.elapsed().as_millis()
         );
     }
 

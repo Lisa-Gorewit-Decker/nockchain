@@ -31,7 +31,7 @@ must not be treated as the production block/wire artifact.
 | Hardened L1 batch-STARK recursive certificate | Soundness-hardened recursive verifier checkpoint/fallback path; not acceptable as the production wire artifact because it exceeds the size budget | L1 proof body `149.1 KiB`; full checkpoint certificate `1,135.5 KiB` legacy postcard / `5,794.7 KiB` fixed-int bincode / `358.3 KiB` gzip-best envelope | same `prod_recursion_measure 15` run |
 | Native terminal certificate fixture | Recursion-crate terminal proof over the real Tip5 verifier-circuit fixture; proves the terminal backend can be small, but is not yet the full `ai-pow-zk` composite verifier path | `85,948` bytes / `83.9 KiB`; release prove `1.492s`, verify `1.181s` | `RUSTFLAGS="-C target-cpu=native" cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --release --test test_l1_outer_cert_tip5_unified terminal_production_certificate_measures_real_tip5_l0_verifier_circuit -- --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier native terminal path | Opt-in diagnostic path for the actual composite L1 verifier circuit; not yet production-qualified because it misses both size and time gates | `lb=6,nq=10,pow=0` reduced-profile run after compact known-index proof encoding: terminal certificate `766,069` bytes / `748.1 KiB`; terminal public inputs `5,180` bytes; postcard wire certificate `771,249` bytes / `753.2 KiB`; release prove `80.377s`, verify `58.496s` | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_recursive_certificate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
-| Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed size measurement. Release/native command compiled in `1m57s`, then the test binary ran for more than `7m35s` without reaching the final size/timing print and was stopped; this already misses the `<30s` production proving constraint | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
+| Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed size measurement. First release/native command compiled in `1m57s`, then the test binary ran for more than `7m35s` without reaching the final size/timing print and was stopped. A phase-instrumented rerun compiled in `1m42s` and showed `38.235s` primitive prove plus `51.902s` merged value-bridge prove before the integrated Tip5 LogUp subproof finished | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier terminal relation metrics | Non-proving diagnostic for the same path | PROD baseline: `125,961` ops, `221,989` witnesses, `43,443` terminal private inputs, `14,049` NPO rows, `242,798` NPO residual components, `5,319` bytes of terminal public inputs, terminal compile `20.943s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_for_prod_baseline_composite_are_available -- --ignored --nocapture`, 2026-06-05 |
 
 The active production target is therefore:
@@ -50,10 +50,13 @@ The active production target is therefore:
   **771,249 bytes / 753.2 KiB**, with release prove **80.377s** and verify
   **58.496s**, so this path misses both the about-100 KiB and `<30s` gates.
 - full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO
-  candidate: now has an opt-in measurement test, but the first release/native
-  run did not complete after more than **7m35s** in the test binary, so the
-  small synthetic **94.0 KiB / 23.070s** checkpoint cannot be promoted as the
-  production recursive path.
+  candidate: now has an opt-in measurement test, but the release/native runs
+  show it is far outside the proving-time gate. The first run did not complete
+  after more than **7m35s** in the test binary. The phase-instrumented rerun
+  showed **38.235s** primitive prove plus **51.902s** merged value-bridge prove
+  before the integrated Tip5 LogUp subproof finished, so the small synthetic
+  **94.0 KiB / 23.070s** checkpoint cannot be promoted as the production
+  recursive path.
 
 Verifier status after the 2026-06-05 hardening pass: the batch-STARK
 `AiPowRecursiveCertificate` verifier now calls
@@ -169,6 +172,27 @@ size print after more than `7m35s` in the test binary, which is enough to
 reject it for the current `<30s` production proving gate. It remains a
 soundness and size-reduction research path, not the active production recursive
 certificate backend.
+
+A phase-instrumented rerun made the failure mode more concrete:
+
+| Full composite integrated-LogUp phase | Time |
+|---|---:|
+| Layer-0 proof generation for the diagnostic fixture | `32.447s` |
+| L1 verifier-circuit build | `0.466s` |
+| L1 verifier trace execution | `0.045s` |
+| Terminal compile | `7.607s` |
+| Assignment oracle commitment | `14.281s` |
+| Merged NPO prelude root construction | `10.772s` |
+| Bundled Tip5 prelude root construction | `13.020s` |
+| Terminal prelude build | `7.551s` |
+| Primitive R1CS row-product proof | `38.235s` |
+| Merged value-bridge proof | `51.902s` |
+| Integrated Tip5 LogUp proof | still running when stopped |
+
+The root-construction phases duplicate work that the current subproof provers
+redo internally, but removing only that duplication would not be enough: the
+primitive row-product and merged value-bridge proofs alone already cost about
+`90s`, before the integrated Tip5 LogUp proof completes.
 
 The proof-body split after compact known-index proof encoding is:
 

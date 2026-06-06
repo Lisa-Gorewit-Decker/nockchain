@@ -134,6 +134,32 @@ reaching the final size/timing print and was stopped. This already violates the
 must not be treated as evidence that the full composite recursive certificate
 path meets the milestone.
 
+A second release/native run with phase instrumentation compiled in `1m42s` and
+then isolated the full-composite costs before stopping the still-running
+integrated Tip5 LogUp subproof:
+
+| Full composite integrated-LogUp phase | Time |
+|---|---:|
+| Layer-0 proof generation for the diagnostic fixture | `32.447s` |
+| L1 verifier-circuit build | `0.466s` |
+| L1 verifier trace execution | `0.045s` |
+| Terminal compile | `7.607s` |
+| Assignment oracle commitment | `14.281s` |
+| Merged NPO prelude root construction | `10.772s` |
+| Bundled Tip5 prelude root construction | `13.020s` |
+| Terminal prelude build | `7.551s` |
+| Primitive R1CS row-product proof | `38.235s` |
+| Merged value-bridge proof | `51.902s` |
+| Integrated Tip5 LogUp proof | still running when stopped |
+
+The cumulative recursive-side work before the integrated Tip5 LogUp proof
+finishes is already far beyond the production proving budget. The root
+construction phases also duplicate work that the current subproof provers do
+again internally. Avoiding that duplicate commit/matrix work would be a useful
+engineering cleanup, but it cannot make this candidate production-viable by
+itself: primitive proving plus the merged value-bridge proof already cost
+about `90s`, and the integrated Tip5 LogUp proof had not completed.
+
 The older two-subproof polynomial NPO production candidate had a precise size
 blocker:
 
@@ -241,6 +267,9 @@ solution:
 - The full composite integrated diagnostic ran for more than `7m35s` after
   compile without reaching its final size print, so this path currently misses
   the proving-time gate even before it can be considered for promotion.
+- Phase instrumentation shows that even before the integrated Tip5 LogUp
+  subproof finishes, the full composite candidate spends `38.235s` proving the
+  primitive component and `51.902s` proving the merged value bridge.
 - The full production certificate can tolerate roughly `75-78 KiB` of NPO
   payload after the primitive R1CS component and certificate framing. A unified
   proof must therefore cut the NPO payload by about `125 KiB`.
