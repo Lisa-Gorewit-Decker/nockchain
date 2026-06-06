@@ -26,10 +26,10 @@ proving time, while keeping soundness at 60 pure FRI query bits
 
 The proof shape that still looks viable is a native-terminal theorem that keeps
 the merged value bridge base, but the latest shared packed-trace support
-diagnostic shows that simply batching packed Tip5 subtheorems into one larger
-FRI opening is not enough. The next viable step must algebraically collapse or
-fold the packed Tip5 constraints into a leaner theorem, rather than carrying
-separate AIR, LogUp, and bridge quotient/accumulator domains.
+diagnostics show that even the coalesced support theorem is not enough. The
+next viable step must reduce the opened packed-trace / accumulator payload or
+fold the packed Tip5 constraints into the merged value-bridge theorem with
+fewer opened columns, rather than carrying the current full support theorem.
 
 The relations that still need to coexist in the final theorem are:
 
@@ -59,15 +59,17 @@ What is done and verified:
   `243,516` bytes and `35.423s` proving, so it is negative evidence against
   simply batching more standalone proof components into one opening proof.
 - The shared packed-trace AIR+LogUp+selected-trace bridge theorem verifies,
-  but measures `273,113` bytes / `266.7 KiB`, compact FRI `256,261` bytes,
-  and `36.590s` proving on PROD. It shares the `500`-column packed trace
-  opening, but still carries too many committed domains and quotient checks.
+  and the coalesced PCS-input version reduces PROD size from the prior
+  `273,113` bytes / `266.7 KiB` to `208,799` bytes / `203.9 KiB`, with
+  compact FRI down from `256,261` to `192,253` bytes. It still proves in
+  `33.313s`, so it remains too large and slightly too slow as a standalone
+  support theorem.
 
 What remains:
 
-- Replace the measured shared packed-trace support theorem with a leaner
-  algebraic composition that does not serialize separate standalone AIR,
-  LogUp, selected-bridge, and packed-bridge quotient/accumulator domains.
+- Replace or further collapse the measured coalesced shared packed-trace
+  support theorem so it does not open the full `500`-column packed trace plus
+  wide LogUp/bridge accumulator payload as a standalone support proof.
 - Fold the resulting Tip5 binding into the merged value-bridge proof instead
   of appending another standalone packed proof body.
 - Reuse prepared terminal compile output, NPO columns, packed traces,
@@ -79,11 +81,9 @@ What remains:
 - Remeasure the full production path with release flags and native CPU codegen.
 
 The relaxed milestone is therefore not yet claimed. The verified checkpoints
-show which relations are sound, but the latest shared-trace measurement shows
-that the remaining proof-compression step must reduce committed domains and
-compact-FRI payload, not only share the packed trace opening. Standalone packed
-proofs and the current shared packed-trace support theorem cannot be added to
-the `151,448` byte merged value-bridge checkpoint and still meet the budget.
+show which relations are sound, and coalescing same-phase PCS inputs is a real
+compression lever, but the current support theorem still cannot be added to the
+`151,448` byte merged value-bridge checkpoint and meet the budget.
 
 ### Production Status Summary
 
@@ -96,9 +96,9 @@ the `151,448` byte merged value-bridge checkpoint and still meet the budget.
 | Best measured complete base | Merged padding/value-bridge checkpoint at `151,448` bytes / `147.9 KiB`, post-prelude proof body `14.914s`; sound for its included relations, but missing internal Tip5 binding |
 | Best near-target standalone missing binding | Lane-selector-aware selected-to-packed NPO-IO bridge at `137,355` bytes / `134.1 KiB`, prove `28.526s`, verify `14.510s` |
 | Direct bridge diagnostic | Binding selected NPO values directly to packed trace lanes verifies at `213,546` bytes / `208.5 KiB`, prove `31.997s`; it removes the projection commitment/domain but is too large standalone because it opens the full `500`-column packed trace |
-| Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s`; shared packed-trace AIR+LogUp+selected-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s` |
-| Main current blocker | All required packed Tip5/NPO subtheorems now verify, but the current standalone and shared-support proof shapes inflate compact-FRI/opening material and miss the total size/time target |
-| Next implementation step | Design and measure a leaner algebraic packed Tip5 binding that reduces committed domains/quotients before folding it into the merged value-bridge theorem |
+| Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s`; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; coalesced shared support theorem verifies at `208,799` bytes / `203.9 KiB`, prove `33.313s` |
+| Main current blocker | All required packed Tip5/NPO subtheorems now verify, and PCS input-batch coalescing helps, but the current support proof still opens too much packed trace/accumulator material |
+| Next implementation step | Design and measure a packed Tip5 binding that reduces opened trace/accumulator payload before folding it into the merged value-bridge theorem |
 
 ### Decision
 
@@ -200,31 +200,33 @@ that opening without reducing the surrounding quotient/accumulator domains is
 still not enough.
 
 The first shared packed-trace AIR+LogUp+selected-trace theorem now verifies,
-but it is also a negative size/time result. It shares one packed trace
-commitment and one packed trace opening across packed AIR algebra, packed byte
-LogUp, and the direct selected-value-to-packed-trace bridge. On the full PROD
-composite relation it measures `273,113` bytes / `266.7 KiB`, compact FRI
-`256,261` bytes, selected lookup opening `1,700` bytes, packed trace opening
-`9,985` bytes, AIR quotient opening `42` bytes, LogUp table opening `22`
-bytes, LogUp accumulator opening `1,846` bytes, LogUp quotient opening `41`
-bytes, selected/packed bridge accumulator openings `732 + 729` bytes, and
-selected/packed bridge quotient openings `42 + 41` bytes. It uses AIR and
+and the follow-up PCS input-batch coalescing is a real compression lever. The
+uncoalesced version shared one packed trace opening, but still committed each
+support matrix separately; it measured `273,113` bytes / `266.7 KiB`, compact
+FRI `256,261` bytes, and prove `36.590s`. The coalesced version groups
+same-transcript-phase matrices into four PCS input batches: selected lookup,
+packed trace plus LogUp table, all accumulators, and all quotients. On the full
+PROD composite relation it verifies at `208,799` bytes / `203.9 KiB`, compact
+FRI `192,253` bytes, selected lookup opening `1,693` bytes, packed trace
+opening `9,992` bytes, AIR quotient opening `41` bytes, LogUp table opening
+`20` bytes, LogUp accumulator opening `1,849` bytes, LogUp quotient opening
+`42` bytes, selected/packed bridge accumulator openings `727 + 729` bytes, and
+selected/packed bridge quotient openings `42 + 40` bytes. It uses AIR and
 LogUp quotient domains of `65,536` rows, selected bridge quotient rows
-`65,536`, and packed bridge quotient rows `32,768`. It proves in `36.590s`,
-verifies in `14.378s`, and has `98.387s` total diagnostic wall time. This
-confirms that sharing the full packed trace opening is necessary but not
-sufficient: the compact-FRI payload still grows too much when the theorem
-carries separate AIR, LogUp, selected-bridge, and packed-bridge quotient and
-accumulator domains.
+`65,536`, and packed bridge quotient rows `32,768`. It proves in `33.313s`,
+verifies in `14.073s`, and has `94.365s` total diagnostic wall time. This
+confirms that Merkle-path duplication was meaningful, but the remaining
+full-trace and accumulator leaf payload is still too large for the relaxed
+target.
 
 Those standalone proofs are evidence, not an appendable production proof.
 Appending any standalone packed proof to the `151,448` byte merged
 value-bridge checkpoint would exceed the relaxed size target because it would
-duplicate full-trace and FRI opening material. The current shared packed-trace
-support theorem is also not appendable. The remaining opportunity is a leaner
-algebraic packed Tip5 binding that reduces the number of committed
-domains/quotient checks before it is folded into the same transcript and
-opening set as the merged value bridge.
+duplicate full-trace and FRI opening material. The current coalesced shared
+packed-trace support theorem is also not appendable. The remaining opportunity
+is a leaner algebraic packed Tip5 binding that reduces opened trace and
+accumulator payload before it is folded into the same transcript and opening
+set as the merged value bridge.
 
 The selected-to-packed bridge should compare only lanes that are semantically
 present. The selected value bridge masks final-output lanes by
@@ -279,21 +281,23 @@ masked projection commitment.
   packed trace.
 - The shared packed-trace AIR+LogUp+selected-trace bridge checkpoint verifies.
   Its tests round-trip the proof, require the selected endpoint and packed
-  trace endpoint roots to match the prelude, share one packed trace opening
-  across packed AIR, packed LogUp, and selected-trace bridge checks, and reject
-  tampered packed trace commitments/openings, tampered LogUp table openings,
-  and tampered bridge final cumulatives. The full PROD measurement is a
-  negative result at `273,113` bytes and `36.590s` proving.
+  trace/table endpoint roots to match the prelude, share one packed trace
+  opening across packed AIR, packed LogUp, and selected-trace bridge checks,
+  coalesce same-phase PCS input batches, and reject tampered packed trace
+  commitments/openings, tampered LogUp table openings, and tampered bridge
+  final cumulatives. The full PROD coalesced measurement is still negative at
+  `208,799` bytes and `33.313s` proving.
 - The production soundness policy is explicit: 60 bits must come from FRI query
   soundness at `pow=0`, not from proof-system grinding.
 
 ### Remaining Work
 
-- Replace the current shared packed-trace AIR+LogUp+selected-trace support
-  theorem with a leaner packed Tip5 binding. The failed projection+selected
-  fusion, the still-too-large standalone direct bridge, and the `273,113` byte
-  shared-trace theorem show this must reduce quotient/accumulator domains and
-  compact-FRI payload, not merely share the packed trace opening.
+- Replace the current coalesced shared packed-trace AIR+LogUp+selected-trace
+  support theorem with a leaner packed Tip5 binding. The failed
+  projection+selected fusion, the still-too-large standalone direct bridge,
+  the `273,113` byte uncoalesced theorem, and the `208,799` byte coalesced
+  theorem show this must reduce opened trace/accumulator payload, not merely
+  remove duplicate Merkle paths.
 - Remove duplicated production prover setup by reusing terminal compile
   outputs, prepared NPO columns, packed traces, roots, and prelude material
   wherever verifier key and public inputs are unchanged.

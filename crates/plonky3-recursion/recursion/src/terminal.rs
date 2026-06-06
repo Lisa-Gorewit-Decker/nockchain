@@ -1449,6 +1449,8 @@ pub struct TerminalNpoTip5PackedLookupAirAlgebraQuotientProof {
 /// - packed Tip5 AIR algebra;
 /// - packed byte-table LogUp; and
 /// - lane-selector selected NPO-value to packed trace-lane LogUp.
+/// It also coalesces same-phase PCS inputs so the support theorem does not pay
+/// one Merkle path batch per committed matrix.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TerminalNpoTip5PackedLookupAirLogupSelectedTraceBridgeProof {
     pub selected_profile: TerminalNpoPolynomialFriProfile,
@@ -1466,15 +1468,9 @@ pub struct TerminalNpoTip5PackedLookupAirLogupSelectedTraceBridgeProof {
         TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile,
     pub packed_bridge_quotient_profile: TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile,
     pub selected_lookup_commitment: TerminalFriCommitment,
-    pub packed_trace_commitment: TerminalFriCommitment,
-    pub air_quotient_commitment: TerminalFriCommitment,
-    pub logup_table_commitment: TerminalFriCommitment,
-    pub logup_accumulator_commitment: TerminalFriCommitment,
-    pub logup_quotient_commitment: TerminalFriCommitment,
-    pub selected_bridge_accumulator_commitment: TerminalFriCommitment,
-    pub packed_bridge_accumulator_commitment: TerminalFriCommitment,
-    pub selected_bridge_quotient_commitment: TerminalFriCommitment,
-    pub packed_bridge_quotient_commitment: TerminalFriCommitment,
+    pub packed_trace_table_commitment: TerminalFriCommitment,
+    pub accumulator_commitment: TerminalFriCommitment,
+    pub quotient_commitment: TerminalFriCommitment,
     pub logup_final_cumulative_basis: Vec<Vec<u64>>,
     pub selected_bridge_final_cumulative_basis: Vec<Vec<u64>>,
     pub packed_bridge_final_cumulative_basis: Vec<Vec<u64>>,
@@ -9205,25 +9201,23 @@ impl NativeTerminalCompiler {
         let selected_lookup_commitment = selected_lookup.selected_lookup_commitment.clone();
         let selected_lookup_data = &selected_lookup.selected_lookup_data;
         let selected_lookup_commitment_digest = selected_lookup.commitment_digest;
-        let (packed_trace_commitment, packed_trace_data) =
+        let (packed_trace_table_commitment, packed_trace_table_data) =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
                 &pcs,
-                [(packed_domain, packed_trace.clone())],
+                [
+                    (packed_domain, packed_trace.clone()),
+                    (packed_domain, table_matrix.clone()),
+                ],
             );
-        let packed_trace_commitment_digest =
-            Self::terminal_fri_commitment_digest(&packed_trace_commitment)?;
+        let packed_trace_table_commitment_digest =
+            Self::terminal_fri_commitment_digest(&packed_trace_table_commitment)?;
         Self::verify_terminal_fri_prelude_commitments(
             prelude,
             &[
                 selected_lookup_commitment_digest,
-                packed_trace_commitment_digest,
+                packed_trace_table_commitment_digest,
             ],
         )?;
-        let (logup_table_commitment, logup_table_data) =
-            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
-                &pcs,
-                [(packed_domain, table_matrix.clone())],
-            );
 
         Self::seed_terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_challenger(
             &mut challenger,
@@ -9241,8 +9235,7 @@ impl NativeTerminalCompiler {
             &packed_bridge_quotient_profile,
         );
         challenger.observe(selected_lookup_commitment.clone());
-        challenger.observe(packed_trace_commitment.clone());
-        challenger.observe(logup_table_commitment.clone());
+        challenger.observe(packed_trace_table_commitment.clone());
         let air_alpha: TerminalFriChallenge = challenger.sample_algebra_element();
         let logup_alpha: TerminalFriChallenge = challenger.sample_algebra_element();
         let logup_beta: TerminalFriChallenge = challenger.sample_algebra_element();
@@ -9260,12 +9253,6 @@ impl NativeTerminalCompiler {
                 packed_trace,
                 air_alpha,
             )?;
-        let (air_quotient_commitment, air_quotient_data) =
-            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
-                &pcs,
-                [(air_quotient_domain, air_quotient_matrix)],
-            );
-        challenger.observe(air_quotient_commitment.clone());
 
         let logup_challenges =
             vec![(logup_alpha, logup_beta); Self::terminal_npo_tip5_packed_lookup_logup_interactions()];
@@ -9276,14 +9263,6 @@ impl NativeTerminalCompiler {
                 &table_matrix,
                 &logup_challenges,
             )?;
-        let (logup_accumulator_commitment, logup_accumulator_data) =
-            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
-                &pcs,
-                [(packed_domain, logup_accumulator_matrix.clone())],
-            );
-        challenger.observe(logup_accumulator_commitment.clone());
-        challenger.observe_algebra_slice(&logup_final_cumulatives);
-        let logup_gamma: TerminalFriChallenge = challenger.sample_algebra_element();
 
         let (selected_bridge_accumulator_matrix, selected_bridge_final_cumulatives) =
             Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_lane_accumulator_matrix_goldilocks(
@@ -9323,20 +9302,20 @@ impl NativeTerminalCompiler {
                 );
             }
         }
-        let (selected_bridge_accumulator_commitment, selected_bridge_accumulator_data) =
+        let (accumulator_commitment, accumulator_data) =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
                 &pcs,
-                [(selected_domain, selected_bridge_accumulator_matrix.clone())],
+                [
+                    (packed_domain, logup_accumulator_matrix.clone()),
+                    (selected_domain, selected_bridge_accumulator_matrix.clone()),
+                    (packed_domain, packed_bridge_accumulator_matrix.clone()),
+                ],
             );
-        let (packed_bridge_accumulator_commitment, packed_bridge_accumulator_data) =
-            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
-                &pcs,
-                [(packed_domain, packed_bridge_accumulator_matrix.clone())],
-            );
-        challenger.observe(selected_bridge_accumulator_commitment.clone());
-        challenger.observe(packed_bridge_accumulator_commitment.clone());
+        challenger.observe(accumulator_commitment.clone());
+        challenger.observe_algebra_slice(&logup_final_cumulatives);
         challenger.observe_algebra_slice(&selected_bridge_final_cumulatives);
         challenger.observe_algebra_slice(&packed_bridge_final_cumulatives);
+        let logup_gamma: TerminalFriChallenge = challenger.sample_algebra_element();
         let bridge_gamma: TerminalFriChallenge = challenger.sample_algebra_element();
 
         let logup_quotient_domain =
@@ -9354,11 +9333,6 @@ impl NativeTerminalCompiler {
                 &logup_challenges,
                 logup_gamma,
             )?;
-        let (logup_quotient_commitment, logup_quotient_data) =
-            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
-                &pcs,
-                [(logup_quotient_domain, logup_quotient_matrix)],
-            );
         let selected_bridge_quotient_domain =
             selected_domain.create_disjoint_domain(selected_bridge_quotient_profile.padded_rows);
         let packed_bridge_quotient_domain =
@@ -9399,19 +9373,20 @@ impl NativeTerminalCompiler {
                 bridge_beta_limb,
                 bridge_gamma,
             )?;
-        let (selected_bridge_quotient_commitment, selected_bridge_quotient_data) =
+        let (quotient_commitment, quotient_data) =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
                 &pcs,
-                [(selected_bridge_quotient_domain, selected_bridge_quotient_matrix)],
+                [
+                    (air_quotient_domain, air_quotient_matrix),
+                    (logup_quotient_domain, logup_quotient_matrix),
+                    (
+                        selected_bridge_quotient_domain,
+                        selected_bridge_quotient_matrix,
+                    ),
+                    (packed_bridge_quotient_domain, packed_bridge_quotient_matrix),
+                ],
             );
-        let (packed_bridge_quotient_commitment, packed_bridge_quotient_data) =
-            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
-                &pcs,
-                [(packed_bridge_quotient_domain, packed_bridge_quotient_matrix)],
-            );
-        challenger.observe(logup_quotient_commitment.clone());
-        challenger.observe(selected_bridge_quotient_commitment.clone());
-        challenger.observe(packed_bridge_quotient_commitment.clone());
+        challenger.observe(quotient_commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
         let packed_next_zeta = packed_domain.next_point(zeta).ok_or_else(|| {
             NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
@@ -9433,44 +9408,45 @@ impl NativeTerminalCompiler {
                 &pcs,
                 vec![
                     (selected_lookup_data, vec![vec![zeta]]),
-                    (&packed_trace_data, vec![vec![zeta]]),
-                    (&air_quotient_data, vec![vec![zeta]]),
-                    (&logup_table_data, vec![vec![zeta]]),
-                    (&logup_accumulator_data, vec![vec![zeta, packed_next_zeta]]),
-                    (&logup_quotient_data, vec![vec![zeta]]),
                     (
-                        &selected_bridge_accumulator_data,
-                        vec![vec![zeta, selected_next_zeta]],
+                        &packed_trace_table_data,
+                        vec![vec![zeta], vec![zeta]],
                     ),
                     (
-                        &packed_bridge_accumulator_data,
-                        vec![vec![zeta, packed_next_zeta]],
+                        &accumulator_data,
+                        vec![
+                            vec![zeta, packed_next_zeta],
+                            vec![zeta, selected_next_zeta],
+                            vec![zeta, packed_next_zeta],
+                        ],
                     ),
-                    (&selected_bridge_quotient_data, vec![vec![zeta]]),
-                    (&packed_bridge_quotient_data, vec![vec![zeta]]),
+                    (
+                        &quotient_data,
+                        vec![vec![zeta], vec![zeta], vec![zeta], vec![zeta]],
+                    ),
                 ],
                 &mut challenger,
             );
         let opened_selected_lookup_basis =
             Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 0)?;
         let opened_packed_trace_basis =
-            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 1)?;
-        let opened_air_quotient_basis =
-            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 2)?;
+            Self::terminal_npo_opened_commitment_matrix_basis_u64(&opened_values, 1, 0)?;
         let opened_logup_table_basis =
-            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 3)?;
+            Self::terminal_npo_opened_commitment_matrix_basis_u64(&opened_values, 1, 1)?;
         let opened_logup_accumulator_points_basis =
-            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 4)?;
-        let opened_logup_quotient_basis =
-            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 5)?;
+            Self::terminal_npo_opened_commitment_matrix_points_basis_u64(&opened_values, 2, 0)?;
         let opened_selected_bridge_accumulator_points_basis =
-            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 6)?;
+            Self::terminal_npo_opened_commitment_matrix_points_basis_u64(&opened_values, 2, 1)?;
         let opened_packed_bridge_accumulator_points_basis =
-            Self::terminal_npo_opened_matrix_points_basis_u64(&opened_values, 7)?;
+            Self::terminal_npo_opened_commitment_matrix_points_basis_u64(&opened_values, 2, 2)?;
+        let opened_air_quotient_basis =
+            Self::terminal_npo_opened_commitment_matrix_basis_u64(&opened_values, 3, 0)?;
+        let opened_logup_quotient_basis =
+            Self::terminal_npo_opened_commitment_matrix_basis_u64(&opened_values, 3, 1)?;
         let opened_selected_bridge_quotient_basis =
-            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 8)?;
+            Self::terminal_npo_opened_commitment_matrix_basis_u64(&opened_values, 3, 2)?;
         let opened_packed_bridge_quotient_basis =
-            Self::terminal_npo_opened_matrix_basis_u64(&opened_values, 9)?;
+            Self::terminal_npo_opened_commitment_matrix_basis_u64(&opened_values, 3, 3)?;
 
         let mut query_challenger = TerminalFriChallenger::new(Tip5Perm);
         Self::seed_terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_challenger(
@@ -9489,23 +9465,17 @@ impl NativeTerminalCompiler {
             &packed_bridge_quotient_profile,
         );
         query_challenger.observe(selected_lookup_commitment.clone());
-        query_challenger.observe(packed_trace_commitment.clone());
-        query_challenger.observe(logup_table_commitment.clone());
+        query_challenger.observe(packed_trace_table_commitment.clone());
         for _ in 0..6 {
             let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
         }
-        query_challenger.observe(air_quotient_commitment.clone());
-        query_challenger.observe(logup_accumulator_commitment.clone());
+        query_challenger.observe(accumulator_commitment.clone());
         query_challenger.observe_algebra_slice(&logup_final_cumulatives);
-        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
-        query_challenger.observe(selected_bridge_accumulator_commitment.clone());
-        query_challenger.observe(packed_bridge_accumulator_commitment.clone());
         query_challenger.observe_algebra_slice(&selected_bridge_final_cumulatives);
         query_challenger.observe_algebra_slice(&packed_bridge_final_cumulatives);
         let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
-        query_challenger.observe(logup_quotient_commitment.clone());
-        query_challenger.observe(selected_bridge_quotient_commitment.clone());
-        query_challenger.observe(packed_bridge_quotient_commitment.clone());
+        let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
+        query_challenger.observe(quotient_commitment.clone());
         let _: TerminalFriChallenge = query_challenger.sample_algebra_element();
         for matrix in &opened_values {
             for round in matrix {
@@ -9535,15 +9505,9 @@ impl NativeTerminalCompiler {
                 selected_bridge_quotient_profile,
                 packed_bridge_quotient_profile,
                 selected_lookup_commitment,
-                packed_trace_commitment,
-                air_quotient_commitment,
-                logup_table_commitment,
-                logup_accumulator_commitment,
-                logup_quotient_commitment,
-                selected_bridge_accumulator_commitment,
-                packed_bridge_accumulator_commitment,
-                selected_bridge_quotient_commitment,
-                packed_bridge_quotient_commitment,
+                packed_trace_table_commitment,
+                accumulator_commitment,
+                quotient_commitment,
                 logup_final_cumulative_basis: logup_final_cumulatives
                     .iter()
                     .map(Self::goldilocks_basis_u64)
@@ -26709,12 +26673,45 @@ impl NativeTerminalCompiler {
     where
         F: BasedVectorSpace<Goldilocks>,
     {
-        Self::terminal_npo_tip5_packed_lookup_selected_npo_trace_logup_bridge_prelude_commitments_goldilocks(
-            verifying_key,
-            columns,
+        let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
+        let selected_lookup =
+            Self::prepare_terminal_npo_selected_lookup_prover_data_from_values_goldilocks(
+                &trace_profile,
+                columns,
+            )?;
+        Self::validate_terminal_npo_tip5_packed_lookup_trace_matrix(
             packed_trace_profile,
             packed_trace,
-        )
+        )?;
+        let logup_table_profile =
+            Self::terminal_npo_tip5_packed_lookup_logup_table_profile(packed_trace_profile)?;
+        let table_matrix =
+            Self::terminal_npo_tip5_packed_lookup_logup_table_multiplicity_matrix_goldilocks(
+                packed_trace_profile,
+                packed_trace,
+            )?;
+        Self::validate_terminal_npo_tip5_packed_lookup_logup_table_matrix(
+            &logup_table_profile,
+            &table_matrix,
+        )?;
+        let (pcs, _) = Self::terminal_fri_pcs_and_challenger(packed_trace_profile.proximity)?;
+        let packed_domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs,
+                packed_trace_profile.padded_rows,
+            );
+        let (packed_trace_table_commitment, _) =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::commit(
+                &pcs,
+                [
+                    (packed_domain, packed_trace.clone()),
+                    (packed_domain, table_matrix),
+                ],
+            );
+        Ok(vec![
+            selected_lookup.commitment_digest,
+            Self::terminal_fri_commitment_digest(&packed_trace_table_commitment)?,
+        ])
     }
 
     pub fn terminal_npo_tip5_packed_lookup_npo_io_projection_selected_bridge_prelude_commitments_goldilocks<
@@ -32823,13 +32820,13 @@ impl NativeTerminalCompiler {
         self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
         let selected_lookup_commitment_digest =
             Self::terminal_fri_commitment_digest(&proof.selected_lookup_commitment)?;
-        let packed_trace_commitment_digest =
-            Self::terminal_fri_commitment_digest(&proof.packed_trace_commitment)?;
+        let packed_trace_table_commitment_digest =
+            Self::terminal_fri_commitment_digest(&proof.packed_trace_table_commitment)?;
         Self::verify_terminal_fri_prelude_commitments(
             prelude,
             &[
                 selected_lookup_commitment_digest,
-                packed_trace_commitment_digest,
+                packed_trace_table_commitment_digest,
             ],
         )?;
 
@@ -33233,28 +33230,22 @@ impl NativeTerminalCompiler {
         let packed_bridge_quotient_domain =
             packed_domain.create_disjoint_domain(proof.packed_bridge_quotient_profile.padded_rows);
         challenger.observe(proof.selected_lookup_commitment.clone());
-        challenger.observe(proof.packed_trace_commitment.clone());
-        challenger.observe(proof.logup_table_commitment.clone());
+        challenger.observe(proof.packed_trace_table_commitment.clone());
         let air_alpha: TerminalFriChallenge = challenger.sample_algebra_element();
         let logup_alpha: TerminalFriChallenge = challenger.sample_algebra_element();
         let logup_beta: TerminalFriChallenge = challenger.sample_algebra_element();
         let bridge_alpha: TerminalFriChallenge = challenger.sample_algebra_element();
         let bridge_beta_rank: TerminalFriChallenge = challenger.sample_algebra_element();
         let bridge_beta_limb: TerminalFriChallenge = challenger.sample_algebra_element();
-        challenger.observe(proof.air_quotient_commitment.clone());
         let logup_challenges =
             vec![(logup_alpha, logup_beta); Self::terminal_npo_tip5_packed_lookup_logup_interactions()];
-        challenger.observe(proof.logup_accumulator_commitment.clone());
+        challenger.observe(proof.accumulator_commitment.clone());
         challenger.observe_algebra_slice(&logup_final_cumulatives);
-        let logup_gamma: TerminalFriChallenge = challenger.sample_algebra_element();
-        challenger.observe(proof.selected_bridge_accumulator_commitment.clone());
-        challenger.observe(proof.packed_bridge_accumulator_commitment.clone());
         challenger.observe_algebra_slice(&selected_bridge_final_cumulatives);
         challenger.observe_algebra_slice(&packed_bridge_final_cumulatives);
+        let logup_gamma: TerminalFriChallenge = challenger.sample_algebra_element();
         let bridge_gamma: TerminalFriChallenge = challenger.sample_algebra_element();
-        challenger.observe(proof.logup_quotient_commitment.clone());
-        challenger.observe(proof.selected_bridge_quotient_commitment.clone());
-        challenger.observe(proof.packed_bridge_quotient_commitment.clone());
+        challenger.observe(proof.quotient_commitment.clone());
         let zeta: TerminalFriChallenge = challenger.sample_algebra_element();
         let packed_next_zeta = packed_domain.next_point(zeta).ok_or_else(|| {
             NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
@@ -33279,76 +33270,67 @@ impl NativeTerminalCompiler {
                     vec![(selected_domain, vec![(zeta, opened_selected_lookup.clone())])],
                 ),
                 (
-                    proof.packed_trace_commitment.clone(),
-                    vec![(packed_domain, vec![(zeta, opened_packed_trace.clone())])],
+                    proof.packed_trace_table_commitment.clone(),
+                    vec![
+                        (packed_domain, vec![(zeta, opened_packed_trace.clone())]),
+                        (packed_domain, vec![(zeta, opened_logup_table.clone())]),
+                    ],
                 ),
                 (
-                    proof.air_quotient_commitment.clone(),
-                    vec![(air_quotient_domain, vec![(zeta, opened_air_quotient_flat.clone())])],
+                    proof.accumulator_commitment.clone(),
+                    vec![
+                        (
+                            packed_domain,
+                            vec![
+                                (zeta, opened_logup_accumulator_points[0].clone()),
+                                (
+                                    packed_next_zeta,
+                                    opened_logup_accumulator_points[1].clone(),
+                                ),
+                            ],
+                        ),
+                        (
+                            selected_domain,
+                            vec![
+                                (zeta, opened_selected_bridge_accumulator_points[0].clone()),
+                                (
+                                    selected_next_zeta,
+                                    opened_selected_bridge_accumulator_points[1].clone(),
+                                ),
+                            ],
+                        ),
+                        (
+                            packed_domain,
+                            vec![
+                                (zeta, opened_packed_bridge_accumulator_points[0].clone()),
+                                (
+                                    packed_next_zeta,
+                                    opened_packed_bridge_accumulator_points[1].clone(),
+                                ),
+                            ],
+                        ),
+                    ],
                 ),
                 (
-                    proof.logup_table_commitment.clone(),
-                    vec![(packed_domain, vec![(zeta, opened_logup_table.clone())])],
-                ),
-                (
-                    proof.logup_accumulator_commitment.clone(),
-                    vec![(
-                        packed_domain,
-                        vec![
-                            (zeta, opened_logup_accumulator_points[0].clone()),
-                            (
-                                packed_next_zeta,
-                                opened_logup_accumulator_points[1].clone(),
-                            ),
-                        ],
-                    )],
-                ),
-                (
-                    proof.logup_quotient_commitment.clone(),
-                    vec![(
-                        logup_quotient_domain,
-                        vec![(zeta, opened_logup_quotient_flat.clone())],
-                    )],
-                ),
-                (
-                    proof.selected_bridge_accumulator_commitment.clone(),
-                    vec![(
-                        selected_domain,
-                        vec![
-                            (zeta, opened_selected_bridge_accumulator_points[0].clone()),
-                            (
-                                selected_next_zeta,
-                                opened_selected_bridge_accumulator_points[1].clone(),
-                            ),
-                        ],
-                    )],
-                ),
-                (
-                    proof.packed_bridge_accumulator_commitment.clone(),
-                    vec![(
-                        packed_domain,
-                        vec![
-                            (zeta, opened_packed_bridge_accumulator_points[0].clone()),
-                            (
-                                packed_next_zeta,
-                                opened_packed_bridge_accumulator_points[1].clone(),
-                            ),
-                        ],
-                    )],
-                ),
-                (
-                    proof.selected_bridge_quotient_commitment.clone(),
-                    vec![(
-                        selected_bridge_quotient_domain,
-                        vec![(zeta, opened_selected_bridge_quotient_flat.clone())],
-                    )],
-                ),
-                (
-                    proof.packed_bridge_quotient_commitment.clone(),
-                    vec![(
-                        packed_bridge_quotient_domain,
-                        vec![(zeta, opened_packed_bridge_quotient_flat.clone())],
-                    )],
+                    proof.quotient_commitment.clone(),
+                    vec![
+                        (
+                            air_quotient_domain,
+                            vec![(zeta, opened_air_quotient_flat.clone())],
+                        ),
+                        (
+                            logup_quotient_domain,
+                            vec![(zeta, opened_logup_quotient_flat.clone())],
+                        ),
+                        (
+                            selected_bridge_quotient_domain,
+                            vec![(zeta, opened_selected_bridge_quotient_flat.clone())],
+                        ),
+                        (
+                            packed_bridge_quotient_domain,
+                            vec![(zeta, opened_packed_bridge_quotient_flat.clone())],
+                        ),
+                    ],
                 ),
             ],
             &restored,
@@ -50258,12 +50240,6 @@ mod tests {
         let (_, packed_profile, packed_trace) = compiler
             .terminal_npo_tip5_packed_lookup_trace_goldilocks(&vk, &witness)
             .expect("terminal packed Tip5 lookup trace must build");
-        let packed_trace_roots =
-            NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_fri_prelude_commitments_goldilocks(
-                &packed_profile,
-                &packed_trace,
-            )
-            .expect("packed trace root must build");
         let roots =
             NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_prelude_commitments_goldilocks(
                 &vk,
@@ -50276,10 +50252,6 @@ mod tests {
         assert_eq!(
             roots[0], merged_roots[0],
             "combined selected endpoint must match merged value-bridge root"
-        );
-        assert_eq!(
-            roots[1], packed_trace_roots[0],
-            "combined packed endpoint must match packed trace root"
         );
         let prelude = terminal_test_prelude_from_roots(&compiler, &vk, &public_inputs, roots);
 
@@ -50311,7 +50283,7 @@ mod tests {
         let compact_fri = postcard::to_allocvec(&proof.proof)
             .expect("packed AIR+LogUp selected trace bridge compact FRI must serialize");
         println!(
-            "terminal packed AIR+LogUp selected trace bridge candidate: {} bytes ({:.1} KiB), compact_fri={} bytes ({:.1} KiB), packed_rows={}, packed_columns={}, air_quotient_rows={}, logup_quotient_rows={}, selected_bridge_quotient_rows={}, packed_bridge_quotient_rows={}, prove={:?}, verify={:?}",
+            "terminal coalesced packed AIR+LogUp selected trace bridge candidate: {} bytes ({:.1} KiB), compact_fri={} bytes ({:.1} KiB), packed_rows={}, packed_columns={}, air_quotient_rows={}, logup_quotient_rows={}, selected_bridge_quotient_rows={}, packed_bridge_quotient_rows={}, prove={:?}, verify={:?}",
             serialized.len(),
             serialized.len() as f64 / 1024.0,
             compact_fri.len(),
@@ -50339,11 +50311,11 @@ mod tests {
 
         let mut bad_trace_commitment = proof.clone();
         let mut roots = bad_trace_commitment
-            .packed_trace_commitment
+            .packed_trace_table_commitment
             .roots()
             .to_vec();
         roots[0][0] += Goldilocks::ONE;
-        bad_trace_commitment.packed_trace_commitment = TerminalFriCommitment::new(roots);
+        bad_trace_commitment.packed_trace_table_commitment = TerminalFriCommitment::new(roots);
         let err = compiler
             .verify_terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_goldilocks::<
                 Goldilocks,
