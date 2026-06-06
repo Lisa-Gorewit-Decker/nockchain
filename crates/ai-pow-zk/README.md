@@ -12,7 +12,7 @@ the persisted block artifact.
 > **Important - current production-proof direction:** before changing the
 > recursive proof path, proof shape, FRI parameters, certificate wire format, or
 > packed Tip5/NPO bridge code, read the live status summary:
-> [Current Most Viable Path (2026-06-06)](../../docs/ai-pow-integration/2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md#current-most-viable-path-2026-06-06).
+> [Production Status Summary](../../docs/ai-pow-integration/2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md#production-status-summary).
 > The active route is native terminal plus fused FRI-native NPO work with
 > packed Tip5 AIR/LogUp/projection/value-bridge bindings, including the
 > lane-selector-aware selected-to-packed NPO-IO bridge described there. The

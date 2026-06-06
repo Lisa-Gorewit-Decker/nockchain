@@ -16,7 +16,7 @@ undocumented or unproven soundness shortcut.
 
 ## Current Most Viable Path (2026-06-06)
 
-### At A Glance
+### Production Status Summary
 
 | Question | Current answer |
 |---|---|
@@ -24,9 +24,19 @@ undocumented or unproven soundness shortcut.
 | Relaxed target | About `150 KiB` recursive proof artifact and about `30s` total release proving |
 | Soundness target | 60 pure FRI query bits with `log_blowup=4`, `num_queries=15`, `query_pow_bits=0` |
 | Most viable shape | One fused FRI-native terminal theorem over the merged NPO/value bridge plus packed Tip5 AIR, packed byte LogUp, packed trace-to-NPO-IO projection, and selected-value-to-packed-NPO-IO bridge |
-| Best measured complete base | Merged padding/value-bridge checkpoint at `151,448` bytes / `147.9 KiB`, post-prelude proof body `14.914s`, but missing internal Tip5 binding |
-| Main current blocker | All required packed Tip5/NPO subtheorems now verify standalone, but appending them duplicates compact-FRI and opening material and misses the total size/time target |
-| Next implementation step | Fuse the merged value bridge, packed AIR, packed byte LogUp, packed NPO-IO projection, and lane-selector bridge under one transcript and one opening schedule |
+| Best measured complete base | Merged padding/value-bridge checkpoint at `151,448` bytes / `147.9 KiB`, post-prelude proof body `14.914s`; sound for its included relations, but missing internal Tip5 binding |
+| Best near-target standalone missing binding | Lane-selector-aware selected-to-packed NPO-IO bridge at `137,355` bytes / `134.1 KiB`, prove `28.526s`, verify `14.510s` |
+| Negative fusion result | Naively fusing packed projection plus selected bridge verifies, but measures `243,516` bytes / `237.8 KiB` and `35.423s` proving because compact-FRI/opening material grows |
+| Main current blocker | All required packed Tip5/NPO subtheorems now verify standalone, but appending or naively batching them duplicates compact-FRI and opening material and misses the total size/time target |
+| Next implementation step | Build an algebraically fused/domain-reduced theorem for the merged value bridge, packed AIR, packed byte LogUp, packed NPO-IO projection, and lane-selector bridge under one transcript and one opening schedule |
+
+In short: the current most viable path is still native terminal recursion,
+not the batch-STARK recursive certificate. What is done and verified is the
+soundness-critical set of standalone packed Tip5/NPO bindings plus the merged
+value-bridge base. What remains is the production compression step: combine
+those verified relations into one algebraic terminal theorem without carrying
+the standalone proof duplication that made the first fused projection+bridge
+diagnostic too large and too slow.
 
 ### Decision
 
@@ -94,11 +104,24 @@ binds the selected value-bridge endpoint to the packed NPO-IO projection
 endpoint with verifier-derived per-lane selectors: all 16 input lanes are
 included for every Tip5 row, and each final-output lane is included only when
 its `output_present_limb` selector is one. On the full PROD composite relation,
-the standalone bridge proof verifies at `140,843` bytes / `137.5 KiB`, with
-compact FRI `137,218` bytes, selected lookup opening `1,720` bytes, packed
-NPO-IO opening `524` bytes, accumulator openings `322 + 322` bytes, quotient
-openings `42 + 39` bytes, selected quotient rows `131,072`, packed quotient
-rows `65,536`, prove `31.157s`, and verify `14.482s`.
+the standalone bridge proof now verifies at `137,355` bytes / `134.1 KiB`,
+with compact FRI `132,756` bytes, selected lookup opening `1,691` bytes,
+packed NPO-IO opening `525` bytes, accumulator openings `721 + 729` bytes,
+quotient openings `39 + 40` bytes, selected quotient rows `65,536`, packed
+quotient rows `32,768`, prove `28.526s`, and verify `14.510s`. This uses a
+3-lane LogUp grouping, which keeps the bridge sound while cutting the bridge
+quotient blowup from 8 to 4; a measured one-lane grouping reduced quotient rows
+further but increased proof size because accumulator openings dominated.
+
+A direct fused projection+selected-bridge checkpoint also verifies, but it is
+not the production route. It shares the selected lookup, packed trace, packed
+NPO-IO, projection quotient, and bridge quotient openings in one transcript and
+one compact FRI proof. On the full PROD composite relation, that naive
+multi-domain fusion measures `243,516` bytes / `237.8 KiB`, compact FRI
+`228,782` bytes, prove `35.423s`, and verify `14.835s`. This is useful
+negative evidence: the final production fusion has to reduce or algebraically
+combine opened domains/quotients, not just batch more standalone matrices into
+one PCS opening.
 
 Those standalone proofs are evidence, not an appendable production proof.
 Appending any standalone packed proof to the `151,448` byte merged
@@ -159,7 +182,9 @@ masked projection commitment.
 
 - Fuse packed AIR algebra, packed byte-table LogUp, packed NPO-IO projection,
   and selected-value bridge openings with the merged value-bridge proof under
-  one transcript and one shared opening schedule.
+  one transcript and one shared opening schedule. The failed
+  projection+selected-bridge fusion shows this must be an algebraic composition
+  and domain-reduction step, not a naive multi-domain opening batch.
 - Remove duplicated production prover setup by reusing terminal compile
   outputs, prepared NPO columns, packed traces, roots, and prelude material
   wherever verifier key and public inputs are unchanged.
