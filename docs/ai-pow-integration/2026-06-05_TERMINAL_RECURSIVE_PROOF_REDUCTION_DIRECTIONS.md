@@ -209,6 +209,44 @@ replacement therefore needs a shared proximity/PCS design for the multilinear
 evaluation relation, or a primitive arithmetization that removes that
 obligation.
 
+The integrated Tip5 LogUp route remains the most promising proof-shape route
+for the relaxed `150 KiB` target, but not yet for the full `<30s` pipeline.
+Two prover-side changes move it in the right direction without changing the
+cryptographic statement:
+
+- The trace-domain NPO-IO LogUp quotient builder now evaluates the quotient
+  columns with one batched coset LDE instead of interpolating the full value,
+  accumulator, selector, and rank matrices independently at every quotient
+  point. This preserves the quotient relation and verifier transcript; it only
+  changes prover work. On the recursion-crate synthetic backend, the
+  production-candidate integrated-LogUp checkpoint remains `96,017` bytes /
+  `93.8 KiB` and improves from `25.117s` to `19.356s` in the focused run
+  (`22.029s` in the broad `goldilocks_npo` filter).
+- The full-composite diagnostic now prepares NPO columns and the Tip5 trace
+  once, then reuses that data for merged roots, bundled Tip5 roots, the merged
+  value-bridge proof, and the integrated LogUp proof. This is also
+  proof-preserving: the same commitments are still recomputed or checked
+  against the transcript-bound prelude, and verifier acceptance is unchanged.
+  In the partial full-composite `lb=6,nq=10,pow=0` run, prepared reuse reduced
+  merged value-bridge proving from about `20.2s` to `6.433s`, and the bundled
+  Tip5 root phase measured `6.381s` instead of a second witness-derived root
+  build.
+
+The same partial full-composite run explains why this is not yet a production
+claim. Before the integrated Tip5 LogUp subproof finished, the diagnostic had
+already spent `33.138s` in L0 proving, `7.499s` terminal compilation,
+`5.845s` assignment commitment, `10.860s` prepared merged-root construction,
+`6.381s` bundled Tip5-root construction, `7.424s` prelude construction,
+`14.606s` primitive proving, and `6.433s` merged NPO proving. The integrated
+proof then stayed in its first full-trace phase for several minutes and was
+stopped. The next engineering lever is deeper prepared integrated data:
+precompute and reuse the full-main trace matrix, trace NPO-IO matrix, selected
+lookup matrix, and PCS commitment data that the prelude roots already need,
+then prove from those prepared commitments. That can remove duplicate
+materialization/commitment work from the post-prelude proof body, but it cannot
+make the whole pipeline `<30s` if the budget includes L0 proving and terminal
+setup, because L0 alone exceeded `30s` in this reduced-profile run.
+
 The current `CircuitConfig::PROD` profile is now exactly 60 pure-query bits
 (`log_blowup=4`, `num_queries=15`, `pow_bits=0`). Removing the previous
 one-bit commit/query proof-system PoW hooks was the right soundness-policy

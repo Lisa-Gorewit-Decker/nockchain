@@ -5366,26 +5366,20 @@ mod tests {
         );
         let mut prelude_roots = vec![assignment_commitment.root];
         let merged_root_start = std::time::Instant::now();
-        prelude_roots.extend(
-            compiler
-                .terminal_npo_fri_residual_zero_recompose_value_bridge_prelude_commitments_from_witness_goldilocks(
-                    &vk,
-                    &witness,
-                )
-                .expect("integrated LogUp diagnostic must bind merged NPO root"),
-        );
+        let merged_value_bridge_prepared = compiler
+            .prepare_terminal_npo_fri_residual_zero_recompose_value_bridge_goldilocks(&vk, &witness)
+            .expect("integrated LogUp diagnostic must prepare merged NPO proof data");
+        prelude_roots.extend(merged_value_bridge_prepared.prelude_commitments().to_vec());
         eprintln!(
             "native terminal integrated-LogUp candidate phase [{label}]: merged_npo_root_ms={}",
             merged_root_start.elapsed().as_millis()
         );
         let bundled_tip5_root_start = std::time::Instant::now();
         prelude_roots.extend(
-            compiler
-                .terminal_npo_tip5_lookup_trace_bundled_io_support_prelude_commitments_from_witness_goldilocks(
-                    &vk,
-                    &witness,
-                )
-                .expect("integrated LogUp diagnostic must bind bundled Tip5 root"),
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_bundled_io_support_prelude_commitments_prepared_goldilocks(
+                &merged_value_bridge_prepared,
+            )
+            .expect("integrated LogUp diagnostic must bind bundled Tip5 root"),
         );
         eprintln!(
             "native terminal integrated-LogUp candidate phase [{label}]: bundled_tip5_root_ms={}",
@@ -5423,8 +5417,9 @@ mod tests {
             "native terminal integrated-LogUp candidate phase [{label}]: merged_value_bridge_prove_start"
         );
         let merged_value_bridge_proof = compiler
-            .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks(
-                &vk, &witness.public_inputs, &witness, &prelude,
+            .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_prepared_prelude_checked_goldilocks(
+                &prelude,
+                &merged_value_bridge_prepared,
             )
             .expect("integrated LogUp diagnostic must prove merged NPO value bridge");
         let merged_prove_elapsed = merged_prove_start.elapsed();
@@ -5437,8 +5432,9 @@ mod tests {
             "native terminal integrated-LogUp candidate phase [{label}]: integrated_logup_prove_start"
         );
         let integrated_logup_proof = compiler
-            .prove_terminal_npo_tip5_lookup_air_logup_trace_io_support_npo_io_logup_goldilocks(
-                &vk, &witness.public_inputs, &witness, &prelude,
+            .prove_terminal_npo_tip5_lookup_air_logup_trace_io_support_npo_io_logup_prepared_prelude_checked_goldilocks(
+                &prelude,
+                &merged_value_bridge_prepared,
             )
             .expect("integrated LogUp diagnostic must prove bundled Tip5 LogUp");
         let integrated_logup_prove_elapsed = integrated_logup_prove_start.elapsed();
