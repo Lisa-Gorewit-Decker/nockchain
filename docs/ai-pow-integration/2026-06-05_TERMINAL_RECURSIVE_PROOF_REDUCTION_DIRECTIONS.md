@@ -102,7 +102,7 @@ compression lever, but the current support theorem still cannot be added to the
 | Best measured complete base | Merged padding/value-bridge checkpoint at `151,448` bytes / `147.9 KiB`, post-prelude proof body `14.914s`; sound for its included relations, but missing internal Tip5 binding |
 | Best near-target standalone missing binding | Lane-selector-aware selected-to-packed NPO-IO bridge at `137,355` bytes / `134.1 KiB`, prove `28.526s`, verify `14.510s` |
 | Direct bridge diagnostic | Binding selected NPO values directly to compact packed trace lanes verifies at `205,950` bytes / `201.1 KiB`, prove `35.863s`; it removes the projection commitment/domain but is too large standalone because it still opens the full `436`-column packed trace |
-| Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s` |
+| Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s` |
 | Main current blocker | All required packed Tip5/NPO subtheorems now verify, and PCS input-batch coalescing helps, but the current support proof still opens too much packed trace/accumulator material |
 | Next implementation step | Design and measure a packed Tip5 binding that reduces opened trace/accumulator payload before folding it into the merged value-bridge theorem |
 
@@ -230,6 +230,15 @@ duplication and duplicate round-input columns were meaningful payload, but the
 remaining full-trace and accumulator leaf payload is still too large for the
 relaxed target.
 
+A narrower final-round capacity-lane elision was also measured and rejected.
+That transient layout kept the 10 final output lanes selected by the NPO
+bridge, omitted unused final output lanes 10-15, and reduced packed trace width
+from `436` to `430`. On the full PROD composite relation, the shared theorem
+measured `197,259` bytes / `192.6 KiB`, compact FRI `182,152` bytes, opened
+packed trace `8,584` bytes, and prove `35.362s`. It saved only `1,028` bytes
+versus the current compact-trace coalesced theorem and worsened proof time by
+about `2.1s`, so it is not retained as the current production route.
+
 Those standalone proofs are evidence, not an appendable production proof.
 Appending any standalone packed proof to the `151,448` byte merged
 value-bridge checkpoint would exceed the relaxed size target because it would
@@ -309,7 +318,8 @@ masked projection commitment.
   the `273,113` byte uncoalesced theorem, the `208,799` byte width-500
   coalesced theorem, and the `198,287` byte compact-trace coalesced theorem
   show this must reduce opened trace/accumulator payload, not merely remove
-  duplicate Merkle paths or duplicate round-input columns.
+  duplicate Merkle paths, duplicate round-input columns, or unused final
+  capacity output lanes.
 - Remove duplicated production prover setup by reusing terminal compile
   outputs, prepared NPO columns, packed traces, roots, and prelude material
   wherever verifier key and public inputs are unchanged.
