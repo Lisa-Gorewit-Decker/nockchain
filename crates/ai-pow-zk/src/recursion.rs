@@ -4917,6 +4917,164 @@ mod tests {
         );
     }
 
+    fn measure_terminal_assignment_compact_fri_floor_for_profile(
+        label: &str,
+        profile: CircuitConfig,
+    ) {
+        init_terminal_prover_profile_tracing();
+        assert_eq!(profile.johnson_fri_bits(), 60);
+
+        let total_start = std::time::Instant::now();
+        let zk = test_zk_params();
+        let cfg = build_config(&zk, &profile);
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let l0_prove_start = std::time::Instant::now();
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        eprintln!(
+            "native terminal assignment compact-FRI floor phase [{label}]: l0_prove_ms={}",
+            l0_prove_start.elapsed().as_millis()
+        );
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program.clone(),
+                proof,
+                &pis,
+            )
+        };
+        let l1_build_start = std::time::Instant::now();
+        let air = CompositeFullAirWithLookupsPinned::new_with(program, true);
+        let pd = logup_common_for(&cfg, &verified.program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &verified.proof,
+            &pd.common,
+            &verified.public_inputs.to_vec(),
+            &profile,
+        )
+        .expect("assignment compact-FRI floor diagnostic must build L1 verifier circuit");
+        eprintln!(
+            "native terminal assignment compact-FRI floor phase [{label}]: l1_circuit_build_ms={}",
+            l1_build_start.elapsed().as_millis()
+        );
+
+        let l1_verify_start = std::time::Instant::now();
+        let traces = run_composite_l1_verifier_traces(&built, &verified.proof)
+            .expect("assignment compact-FRI floor diagnostic must run L1 verifier traces");
+        let l1_verify_elapsed = l1_verify_start.elapsed();
+        eprintln!(
+            "native terminal assignment compact-FRI floor phase [{label}]: l1_trace_verify_ms={}",
+            l1_verify_elapsed.as_millis()
+        );
+
+        let compiler = terminal_compiler();
+        let compile_start = std::time::Instant::now();
+        let (_pk, vk) = compiler
+            .compile_goldilocks_terminal(&built.circuit)
+            .expect("assignment compact-FRI floor diagnostic must compile terminal circuit");
+        compiler
+            .validate_goldilocks_production_query_domains(
+                &vk,
+                TerminalProofParameters::production_60bit(),
+            )
+            .expect("assignment compact-FRI floor diagnostic must use production query domains");
+        let compile_elapsed = compile_start.elapsed();
+        eprintln!(
+            "native terminal assignment compact-FRI floor phase [{label}]: terminal_compile_ms={}",
+            compile_elapsed.as_millis()
+        );
+
+        let witness = TerminalWitness {
+            fingerprint: TerminalCircuitFingerprint::from_circuit(&built.circuit),
+            public_inputs: built.public_inputs.clone(),
+            private_inputs: built.private_inputs.clone(),
+            traces,
+        };
+
+        let assignment_commit_start = std::time::Instant::now();
+        let assignment_oracle = compiler
+            .commit_terminal_assignment_goldilocks(&vk, &witness.public_inputs, &witness)
+            .expect("assignment compact-FRI floor diagnostic must commit terminal assignment");
+        let assignment_commitment = assignment_oracle.commitment();
+        let assignment_commit_elapsed = assignment_commit_start.elapsed();
+        eprintln!(
+            "native terminal assignment compact-FRI floor phase [{label}]: assignment_commit_ms={}",
+            assignment_commit_elapsed.as_millis()
+        );
+        let prelude_start = std::time::Instant::now();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &witness.public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![assignment_commitment.root],
+            )
+            .expect("assignment compact-FRI floor diagnostic must build terminal prelude");
+        let prelude_elapsed = prelude_start.elapsed();
+        eprintln!(
+            "native terminal assignment compact-FRI floor phase [{label}]: prelude_ms={}",
+            prelude_elapsed.as_millis()
+        );
+
+        let fri_floor_prove_start = std::time::Instant::now();
+        let fri_floor_proof = compiler
+            .prove_terminal_assignment_compact_fri_floor_goldilocks(
+                &vk, &witness.public_inputs, &witness, &prelude,
+            )
+            .expect("assignment compact-FRI floor proof must build");
+        let fri_floor_prove_elapsed = fri_floor_prove_start.elapsed();
+        eprintln!(
+            "native terminal assignment compact-FRI floor phase [{label}]: fri_floor_prove_ms={}",
+            fri_floor_prove_elapsed.as_millis()
+        );
+
+        let fri_floor_verify_start = std::time::Instant::now();
+        let opened =
+            NativeTerminalCompiler::verify_terminal_assignment_compact_fri_floor_goldilocks(
+                &prelude, assignment_commitment.values_len, &fri_floor_proof,
+            )
+            .expect("assignment compact-FRI floor proof must verify");
+        let fri_floor_verify_elapsed = fri_floor_verify_start.elapsed();
+        assert_eq!(opened.len(), fri_floor_proof.profile.basis_columns);
+        eprintln!(
+            "native terminal assignment compact-FRI floor phase [{label}]: fri_floor_verify_ms={}",
+            fri_floor_verify_elapsed.as_millis()
+        );
+
+        let proof_bytes = postcard_len(&fri_floor_proof, "assignment compact-FRI floor proof");
+        let compact_fri_bytes = postcard_len(
+            &fri_floor_proof.proof, "assignment compact-FRI floor compact FRI proof",
+        );
+        let opened_values_bytes = postcard_len(
+            &fri_floor_proof.opened_values_basis, "assignment compact-FRI floor opened values",
+        );
+        let total_candidate_elapsed = total_start.elapsed();
+        eprintln!(
+            "native terminal assignment compact-FRI floor over ai-pow composite verifier [{label}]: proof={} bytes compact_fri={} opened_values={} rows={} padded_rows={} basis_columns={} assignment_len={} l1_verify_ms={} compile_ms={} assignment_commit_ms={} prelude_ms={} fri_floor_prove_ms={} fri_floor_verify_ms={} total_wall_ms={}",
+            proof_bytes,
+            compact_fri_bytes,
+            opened_values_bytes,
+            fri_floor_proof.profile.rows,
+            fri_floor_proof.profile.padded_rows,
+            fri_floor_proof.profile.basis_columns,
+            assignment_commitment.values_len,
+            l1_verify_elapsed.as_millis(),
+            compile_elapsed.as_millis(),
+            assignment_commit_elapsed.as_millis(),
+            prelude_elapsed.as_millis(),
+            fri_floor_prove_elapsed.as_millis(),
+            fri_floor_verify_elapsed.as_millis(),
+            total_candidate_elapsed.as_millis(),
+        );
+    }
+
+    #[test]
+    #[ignore = "full composite assignment compact-FRI floor measurement is opt-in"]
+    fn terminal_assignment_compact_fri_floor_for_prod_baseline_measures() {
+        measure_terminal_assignment_compact_fri_floor_for_profile("PROD", CircuitConfig::PROD);
+    }
+
     fn measure_terminal_merged_value_bridge_candidate_for_profile(
         label: &str,
         profile: CircuitConfig,

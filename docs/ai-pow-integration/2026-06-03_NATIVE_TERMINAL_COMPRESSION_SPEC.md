@@ -1672,6 +1672,22 @@ from about `15.854s` to `7.557s`, and primitive proving fell from `50.169s` to
 `42.210s`. This is still not enough for production, but it narrows the time
 gap while preserving the existing soundness model and transcript bindings.
 
+The assignment compact-FRI floor is now measured explicitly as a diagnostic
+only. `prove_terminal_assignment_compact_fri_floor_goldilocks` commits the
+full terminal assignment as one extension-field FRI column and verifies a
+compact FRI opening under the terminal prelude. On the full composite PROD
+baseline it serializes to `56,307` bytes, with `56,202` bytes of compact FRI
+payload, `41` bytes of opened values, `222,449` assignment rows, `262,144`
+padded rows, and `2` Goldilocks basis columns. The isolated FRI-floor prove
+step takes `18.233s` and verify takes `9ms`, but the proof is slightly larger
+than the current `55,025` byte assignment-evaluation component. It is also not
+a production-sound replacement for `TerminalAssignmentEvaluationProof`: the
+primitive sparse-R1CS matrix-sumcheck needs the multilinear assignment value at
+its random point, and this diagnostic only proves a univariate FRI opening of
+the assignment codeword. Any production PCS replacement must explicitly prove
+that univariate/multilinear binding or change the primitive arithmetization so
+the binding is no longer required.
+
 The next viable direction is a shared/batched terminal proximity backend that
 commits the NPO row columns through one low-degree object and amortizes FRI
 proof material across primitive and NPO relations, or an NPO relation check

@@ -182,6 +182,22 @@ prove time fell from `50.169s` to `42.210s`. This confirms terminal oracle
 hashing is meaningful engineering cost, but it still leaves the primitive proof
 over the full `<30s` gate by itself.
 
+The assignment compact-FRI floor confirms that simply FRI-opening the whole
+assignment vector is not the missing size lever. The opt-in diagnostic
+`terminal_assignment_compact_fri_floor_for_prod_baseline_measures` commits the
+full `222,449`-entry terminal assignment as one extension-field FRI column over
+`262,144` padded rows. The resulting proof is `56,307` bytes: `56,202` bytes
+of compact FRI payload, `41` bytes of opened values, and `2` Goldilocks basis
+columns. It proves in `18.233s` and verifies in `9ms` after terminal setup, but
+it is slightly larger than the current `55,025` byte Merkle-fold assignment
+evaluation proof. It also lacks the critical production binding: the sparse
+R1CS matrix-sumcheck needs a proof that the opened commitment equals the
+multilinear assignment evaluation at its random point, while this lower-bound
+proof only opens the assignment vector as a univariate FRI codeword. A real
+replacement therefore needs a shared proximity/PCS design for the multilinear
+evaluation relation, or a primitive arithmetization that removes that
+obligation.
+
 The current `CircuitConfig::PROD` profile is now exactly 60 pure-query bits
 (`log_blowup=4`, `num_queries=15`, `pow_bits=0`). Removing the previous
 one-bit commit/query proof-system PoW hooks was the right soundness-policy

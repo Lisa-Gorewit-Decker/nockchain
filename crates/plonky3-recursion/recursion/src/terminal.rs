@@ -21747,6 +21747,75 @@ impl NativeTerminalCompiler {
         Ok(opened_values)
     }
 
+    /// Diagnostic lower bound for replacing Merkle-fold assignment openings
+    /// with a terminal FRI commitment.
+    ///
+    /// This honestly commits the terminal assignment vector as one extension
+    /// column and proves a compact FRI opening. It is not, by itself, a sound
+    /// replacement for [`TerminalAssignmentEvaluationProof`]: the primitive
+    /// sparse-R1CS sumcheck still needs a proof that the opened univariate
+    /// assignment commitment equals the multilinear assignment evaluation at
+    /// the matrix-sumcheck point.
+    pub fn prove_terminal_assignment_compact_fri_floor_goldilocks<F>(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        public_inputs: &[F],
+        witness: &TerminalWitness<F>,
+        prelude: &TerminalProofPrelude,
+    ) -> Result<TerminalCompactCompositionFriProof, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + Copy,
+    {
+        self.verify_proof_prelude_goldilocks(verifying_key, public_inputs, prelude)?;
+        let witness_values = Self::terminal_witness_values(witness)?;
+        let assignment_values =
+            Self::terminal_assignment_values(verifying_key, public_inputs, &witness_values)?;
+        let padded_rows = assignment_values.len().next_power_of_two();
+        let profile =
+            Self::terminal_compact_composition_fri_profile(assignment_values.len(), padded_rows)?;
+        let mut matrix_values = Vec::with_capacity(profile.padded_rows * profile.basis_columns);
+        for value in &assignment_values {
+            let basis = Self::goldilocks_basis_u64(value);
+            if basis.len() > profile.basis_columns {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                        expected: profile.basis_columns,
+                        got: basis.len(),
+                    },
+                );
+            }
+            for basis_index in 0..profile.basis_columns {
+                matrix_values.push(Goldilocks::from_u64(
+                    basis.get(basis_index).copied().unwrap_or(0),
+                ));
+            }
+        }
+        matrix_values.resize(profile.padded_rows * profile.basis_columns, Goldilocks::ZERO);
+        Self::prove_terminal_compact_composition_fri_goldilocks(
+            prelude,
+            Self::terminal_assignment_compact_fri_floor_label(),
+            profile.clone(),
+            RowMajorMatrix::new(matrix_values, profile.basis_columns),
+        )
+    }
+
+    pub fn verify_terminal_assignment_compact_fri_floor_goldilocks(
+        prelude: &TerminalProofPrelude,
+        assignment_len: usize,
+        proof: &TerminalCompactCompositionFriProof,
+    ) -> Result<Vec<TerminalFriChallenge>, NativeTerminalVerifyError> {
+        let expected_profile = Self::terminal_compact_composition_fri_profile(
+            assignment_len,
+            assignment_len.next_power_of_two(),
+        )?;
+        Self::verify_terminal_compact_composition_fri_goldilocks(
+            prelude,
+            Self::terminal_assignment_compact_fri_floor_label(),
+            &expected_profile,
+            proof,
+        )
+    }
+
     pub fn terminal_npo_exhaustive_residual_compact_composition_profile_goldilocks<F>(
         verifying_key: &NativeTerminalVerifyingKey<F>,
     ) -> Result<TerminalCompactCompositionFriProfile, NativeTerminalVerifyError>
@@ -31269,6 +31338,10 @@ impl NativeTerminalCompiler {
 
     fn terminal_npo_exhaustive_residual_compact_composition_label() -> &'static str {
         "nock-terminal-npo-exhaustive-residual-compact-zero-v1"
+    }
+
+    fn terminal_assignment_compact_fri_floor_label() -> &'static str {
+        "nock-terminal-assignment-compact-fri-floor-v1"
     }
 
     fn terminal_npo_polynomial_compact_residual_zero_label() -> &'static str {
@@ -42810,6 +42883,75 @@ mod tests {
                 .is_err(),
             "assignment proof must bind the externally supplied evaluation point"
         );
+    }
+
+    #[test]
+    fn goldilocks_terminal_assignment_compact_fri_floor_round_trips_and_rejects_tamper() {
+        let circuit = build_goldilocks_const_circuit(5);
+        let public_inputs = vec![Goldilocks::from_u64(5)];
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness(&circuit, public_inputs.clone());
+        let assignment_oracle = compiler
+            .commit_terminal_assignment_goldilocks(&vk, &public_inputs, &witness)
+            .expect("assignment oracle must commit");
+        let assignment_commitment = assignment_oracle.commitment();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                vec![assignment_commitment.root],
+            )
+            .expect("assignment compact-FRI floor prelude must build");
+
+        let proof = compiler
+            .prove_terminal_assignment_compact_fri_floor_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &prelude,
+            )
+            .expect("assignment compact-FRI floor proof must build");
+        assert_eq!(
+            proof.profile.rows,
+            assignment_commitment.values_len,
+            "diagnostic FRI floor must commit the same assignment length"
+        );
+        let opened = NativeTerminalCompiler::verify_terminal_assignment_compact_fri_floor_goldilocks(
+            &prelude,
+            assignment_commitment.values_len,
+            &proof,
+        )
+        .expect("honest assignment compact-FRI floor proof must verify");
+        assert_eq!(opened.len(), proof.profile.basis_columns);
+
+        let mut tampered_opening = proof.clone();
+        tampered_opening.opened_values_basis[0][0] =
+            tampered_opening.opened_values_basis[0][0].wrapping_add(1);
+        let err = NativeTerminalCompiler::verify_terminal_assignment_compact_fri_floor_goldilocks(
+            &prelude,
+            assignment_commitment.values_len,
+            &tampered_opening,
+        )
+        .expect_err("tampered assignment compact-FRI floor opening must fail");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
+        ));
+
+        let mut wrong_profile = proof;
+        wrong_profile.profile.rows += 1;
+        let err = NativeTerminalCompiler::verify_terminal_assignment_compact_fri_floor_goldilocks(
+            &prelude,
+            assignment_commitment.values_len,
+            &wrong_profile,
+        )
+        .expect_err("stale assignment compact-FRI floor profile must fail");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch { .. }
+        ));
     }
 
     #[test]
