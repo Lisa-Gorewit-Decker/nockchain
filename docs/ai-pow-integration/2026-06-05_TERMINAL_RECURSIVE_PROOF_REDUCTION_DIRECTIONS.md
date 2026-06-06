@@ -16,99 +16,115 @@ undocumented or unproven soundness shortcut.
 
 ## Current Most Viable Path (2026-06-06)
 
-The most viable route to the relaxed `~150 KiB` recursive proof and `~30s`
-release proving target is still the native terminal backend, not the
-batch-STARK recursive certificate. The concrete path is:
+### Decision
 
-1. Keep the production profile at pure-query 60-bit FRI soundness:
-   `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`.
-2. Keep the primitive sparse-R1CS row-product proof, but reuse prepared
-   assignment/relation data and run independent post-prelude proof work in
-   parallel where possible.
-3. Replace exhaustive supported-NPO openings with one fused FRI-native NPO
-   theorem:
-   - merged residual-zero, recompose, padding, Merkle-direction-aware value
-     bridge, and `mmcs_bit` constraints;
-   - packed one-row-per-permutation Tip5 AIR algebra;
-   - packed byte-table LogUp;
-   - selected NPO-value to packed-trace bridge;
-   - one shared prelude/transcript/opening shape so trace openings are not
-     duplicated across standalone proof components.
+The current most viable route to the relaxed production target is a native
+terminal recursive certificate with one fused FRI-native terminal theorem. The
+target remains approximately `150 KiB` for the recursive proof artifact and
+approximately `30s` total release proving time, with no proof-system PoW bits
+counted toward soundness.
 
-What is done and verified:
+This route keeps the production profile at pure-query 60-bit FRI soundness:
+`log_blowup=4`, `num_queries=15`, `query_pow_bits=0`. It also keeps the
+primitive sparse-R1CS row-product proof, but it must reuse prepared
+assignment/relation data and parallelize independent post-prelude work. The
+main size and time lever is replacing exhaustive supported-NPO openings with a
+single fused NPO theorem that contains:
 
-- The old production native terminal body is understood and ruled out as-is:
-  the reduced `lb=6,nq=10,pow=0` full-composite diagnostic still measured
-  `771,249` bytes postcard wire and `80.829s` proving.
-- The full-composite merged padding/value-bridge checkpoint verifies over the
-  actual `ai-pow-zk` composite verifier relation. It serializes
-  `(prelude, primitive R1CS, merged NPO)` to `151,448` bytes / `147.9 KiB` and
-  builds the post-prelude proof body in `14.914s` serial. This proves the
-  direction-aware value bridge, mixed padding, `mmcs_bit` zero/boolean
-  constraints, dynamic hidden Tip5 padding, new-start zero constraints, Merkle
-  capacity-zero constraints, recompose semantics, and residual-zero relation.
-  It is not production complete because it does not include the internal Tip5
-  lookup/AIR/LogUp binding.
-- The packed Tip5 lookup trace source is implemented and checked against the
-  existing lookup trace and terminal-derived Tip5 inputs/outputs. On the full
-  PROD composite relation it packs `8,081` Tip5 calls into an `8,192 x 500`
-  trace and reduces the algebra quotient domain from `524,288` rows to
-  `65,536` rows.
-- The packed Tip5 AIR algebra quotient checkpoint is implemented and verifies.
-  It binds the packed trace root through the terminal prelude, samples its
-  folding challenge after that root, commits a degree-8 quotient, and opens
-  trace plus quotient at one shared terminal FRI point. The quotient enforces
-  split-byte recomposition, Goldilocks canonical guard constraints, power
-  lanes, MDS/round-constant outputs, and within-row round chaining. Focused
-  regression tests round-trip the proof and reject stale roots/profiles,
-  malformed openings, and tampered packed round links, split bytes, and power
-  lanes.
-- The full PROD packed-algebra diagnostic verifies at `136,810` bytes /
-  `133.6 KiB`, with compact FRI `126,599` bytes, full-trace zeta openings
-  `10,004` bytes, opened quotient `40` bytes, prove `22.718s`, and verify
-  `11.062s`. This confirms the quotient-domain reduction is a real runtime
-  improvement over the row-per-round integrated proof, which stayed inside
-  `air_quotient_matrix` for more than 90 seconds.
-- The packed byte-table LogUp quotient checkpoint is implemented and verifies.
-  It commits a packed-domain table-multiplicity column before sampling LogUp
-  challenges, uses the fixed Tip5 `(b, LOOKUP_TABLE[b])` table on the same
-  domain, checks final cumulatives sum to zero, and proves the grouped
-  rational running-sum transition. Focused tests round-trip the proof and
-  reject stale trace/table commitments, stale profiles, malformed openings,
-  tampered accumulator/quotient openings, non-table byte pairs, and stale table
-  multiplicities.
-- The full PROD packed-LogUp diagnostic verifies at `167,018` bytes /
-  `163.1 KiB`, with compact FRI `154,339` bytes, full-trace zeta openings
-  `9,964` bytes, table opening `22` bytes, accumulator openings `1,849` bytes,
-  opened quotient `42` bytes, prove `22.442s`, and verify `10.821s`. This
-  proves the missing byte-table binding is sound, but the standalone proof is
-  already above the relaxed `~150 KiB` target and cannot be appended to the
-  merged value-bridge checkpoint.
+- merged residual-zero, recompose, padding, Merkle-direction-aware value bridge,
+  and `mmcs_bit` constraints;
+- packed one-row-per-permutation Tip5 AIR algebra;
+- packed byte-table LogUp;
+- selected NPO-value to packed-trace bridge;
+- one shared prelude, transcript, FRI point, and opening shape so trace
+  openings are not duplicated across standalone proof components.
 
-What remains:
+The batch-STARK recursive certificate path is not the production wire target.
+Its compact final-layer diagnostics are useful architectural references, but
+the measured end-to-end batch-STARK pipeline is dominated by the L1 witness
+proof and does not meet the production proving-time requirement.
+
+### Why This Is The Best Measured Path
+
+The old production native terminal body is ruled out as-is. Even the
+relation-favorable `lb=6,nq=10,pow=0` full-composite diagnostic measured
+`771,249` bytes postcard wire and `80.829s` terminal proving. That row is a
+lower-bound diagnostic for verifier-relation size, not a production parameter
+recommendation.
+
+The merged padding/value-bridge checkpoint verifies over the actual
+`ai-pow-zk` composite verifier relation and serializes
+`(prelude, primitive R1CS, merged NPO)` to `151,448` bytes / `147.9 KiB`. Its
+post-prelude proof body builds in `14.914s` serial. This is close enough to the
+relaxed byte target to be a credible base, but it is not production complete
+because it does not bind the internal Tip5 lookup/AIR/LogUp work.
+
+The packed Tip5 checkpoints show the missing internal Tip5 binding can be made
+sound and materially faster than the row-per-round shape. The packed trace maps
+`8,081` Tip5 calls into an `8,192 x 500` trace and cuts the algebra quotient
+domain from `524,288` rows to `65,536` rows. The standalone packed AIR algebra
+proof verifies at `136,810` bytes / `133.6 KiB` with `22.718s` proving. The
+standalone packed byte-table LogUp proof verifies at `167,018` bytes /
+`163.1 KiB` with `22.442s` proving.
+
+Those standalone proofs are evidence, not an appendable production proof.
+Appending either standalone packed proof to the `151,448` byte merged
+value-bridge checkpoint would exceed the relaxed size target because it would
+duplicate full-trace and FRI opening material. The remaining opportunity is to
+fuse the packed AIR algebra, packed LogUp, and selected-value bridge into the
+same transcript and opening set as the merged value bridge.
+
+### Done And Verified
+
+- Native terminal remains the selected production backend; the README for
+  `ai-pow-zk` links directly to this section as the current important status.
+- The old full-composite native terminal proof shape is measured and ruled out
+  at `771,249` bytes and `80.829s` proving.
+- The full-composite merged padding/value-bridge checkpoint verifies and proves
+  residual-zero, recompose semantics, mixed padding, dynamic hidden Tip5
+  padding, new-start zero constraints, Merkle capacity-zero constraints,
+  `mmcs_bit` zero/boolean constraints, and Merkle-direction-aware bus-to-trace
+  value projection.
+- The packed Tip5 trace source is implemented and checked against the existing
+  lookup trace and terminal-derived Tip5 inputs/outputs.
+- The packed Tip5 AIR algebra quotient checkpoint verifies. Its tests
+  round-trip the proof and reject stale roots/profiles, malformed openings, and
+  tampered packed round links, split bytes, and power lanes.
+- The packed byte-table LogUp quotient checkpoint verifies. Its tests
+  round-trip the proof and reject stale trace/table commitments, stale table
+  profiles, malformed openings, tampered table/accumulator/quotient openings,
+  non-table byte pairs, and stale table multiplicities.
+- The production soundness policy is explicit: 60 bits must come from FRI query
+  soundness at `pow=0`, not from proof-system grinding.
+
+### Remaining Work
 
 - Implement the selected NPO-value to packed-trace bridge, preserving the
   Merkle-direction-aware `mmcs_bit` bus-to-trace projection.
-- Fuse packed AIR algebra, packed LogUp, and selected-value bridge openings
-  with the merged value-bridge proof under one transcript. Appending the
-  standalone packed algebra proof or standalone packed LogUp proof to the
-  `151,448` byte merged checkpoint is not viable; either would exceed the
-  relaxed size target.
-- Remove duplicated setup in the production prover path: cache or reuse
-  terminal compile outputs, prepared NPO columns, packed traces, roots, and
-  prelude material where the verifier key and public inputs are unchanged.
+- Fuse packed AIR algebra, packed byte-table LogUp, and selected-value bridge
+  openings with the merged value-bridge proof under one transcript and one
+  shared opening schedule.
+- Remove duplicated production prover setup by reusing terminal compile
+  outputs, prepared NPO columns, packed traces, roots, and prelude material
+  wherever verifier key and public inputs are unchanged.
 - Remeasure the fused full-composite proof in release with
-  `RUSTFLAGS="-C target-cpu=native"` and production pure-query parameters, then
-  add negative tests for stale packed trace roots, stale fixed table/profile
+  `RUSTFLAGS="-C target-cpu=native"` and the production pure-query profile.
+  The milestone requires a total production-pipeline proving measurement, not
+  only post-prelude subproof timings.
+- Add negative tests for stale packed trace roots, stale fixed table/profile
   data, wrong selected-value bridge commitments, wrong `mmcs_bit` projection,
   malformed compact FRI payloads, and transcript/prelude substitutions.
 
-Current status: this path is the only measured route that attacks the actual
-full-composite terminal bottleneck while keeping native terminal production
-semantics and 60 bits of pure-query soundness. It is not yet a completed
-production proof: the selected-value bridge still has to be implemented, and
-packed AIR, packed LogUp, and the selected-value bridge still have to be fused
-and measured before the relaxed milestone can be claimed.
+### Current Non-Claims
+
+- The relaxed milestone has not been met yet.
+- The standalone packed AIR and packed LogUp proofs are sound checkpoints, but
+  they are not production artifacts by themselves.
+- The batch-STARK L2/final-layer route does not replace the native terminal
+  production certificate path.
+- Any route that changes to proof-system PoW grinding, omits the selected
+  NPO-value to packed-trace bridge, or appends standalone packed proofs without
+  fusing openings is not the current viable production path.
 
 The current recursion-crate Tip5 verifier-circuit terminal measurement passes
 both targets in release mode:
