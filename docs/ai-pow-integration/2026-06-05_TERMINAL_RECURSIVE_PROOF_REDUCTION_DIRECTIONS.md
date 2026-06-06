@@ -174,50 +174,20 @@ first materializes a roughly **194s** L1 batch-STARK witness proof. The
 Goldilocks/Tip5 compact wrapper now implements the preprocessed-opening
 reconstruction plus Merkle path-pruning portion of this projection with
 binding/tamper tests, but it is still only an adapter around the batch-STARK
-artifact. The next Pearl-shaped route must wire a measured final compact proof
-format and avoid or replace the expensive L1 batch-STARK witness proof.
+artifact. The measured compact-wrapper runs below close the final compact proof
+format gap for this batch-STARK route; the remaining Pearl-shaped route must
+avoid or replace the expensive L1 batch-STARK witness proof and further shrink
+the final proof if the hard `~100 KiB` gate remains.
 
-The natural follow-up is to pair the fast L1 profile (`lb=3,nq=20,cap=4`) with
-the compact final-layer projection above. A release/native diagnostic was
-attempted with:
-
-```text
-RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_fast_l1_statement_bound_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture
-```
-
-That run built and verified the fast L1 proof, then failed while self-verifying
-the L2 proof:
-
-```text
-L2 verify_all_tables: Verify("LookupError(\"GlobalCumulativeMismatch(None): WitnessChecks\")")
-```
-
-Enabling the lookup debugger isolated the mismatch to the Tip5 non-primitive
-table. The failing tuple was a `WitnessChecks` read of `WitnessId(52243)` from
-Tip5 Merkle row `1714`. Row `1713` produced the same witness id with
-`out_ctl=1`, and row `1714` consumed it with `in_ctl=1`; the imbalance was not
-a missing multiplicity. It was an index/value desynchronization: the final
-Merkle-path Tip5 permutation used the post-swap state so its CTL outputs bind
-the computed root, but its input CTL indices remained in the static pre-swap
-slot order. When the direction bit is `1`, the input lookup claims the running
-digest witness id while the row value is the sibling value.
-
-This is a completeness blocker for the fast-L1 L2 measurement and a soundness
-documentation blocker for any compact recursive path that relies on the current
-Tip5 MMCS table. A production fix must do one of the following before the
-fast-L1/L2 numbers are meaningful:
-
-- extend the Tip5 compact AIR with a direction-bit-aware lookup layer that
-  binds the MMCS direction bit and selects the correct input value for each
-  static witness index; or
-- avoid Tip5's internal variable Merkle swap in recursive verification by
-  exposing sibling limbs as circuit witnesses, doing the conditional swap in
-  ordinary circuit constraints, and calling Tip5 with a fixed slot order.
-
-Simply changing `lb`, `nq`, cap height, or L2 table packing cannot make this
-path production-sound. The diagnostic helper now threads the selected L2
-`log_blowup` and `log_final_poly_len` into `TablePacking::with_fri_params`, but
-that explicit FRI-shape packing was not the cause of the mismatch.
+The natural follow-up was to pair the fast L1 profile (`lb=3,nq=20,cap=4`)
+with the compact final-layer projection. A pre-fix release/native diagnostic
+built and verified the fast L1 proof, then failed while self-verifying the L2
+proof with `GlobalCumulativeMismatch(None): WitnessChecks`. Lookup debugging
+isolated the mismatch to Tip5 Merkle-direction witness binding: when the
+direction bit was `1`, the row's input lookup claimed the running-digest witness
+id while the value was the sibling value. The fixed Tip5 AIR below supersedes
+that failed run, and the current fast-L1 measurements are recorded after the
+fix.
 
 The Tip5 MMCS gap has since been fixed in the batch-STARK Tip5 wrapper AIR:
 
@@ -256,6 +226,24 @@ takes about `191s`. The final-layer `lb=5,nq=12` actual compact proof is inside
 the relaxed `150 KiB` and `<30s` final-layer gates (`138,707` bytes,
 `24.327s`), but it is still above the hard `~100 KiB` target and the
 end-to-end pipeline is dominated by the L1 witness proof.
+
+The fast-L1 follow-up with L1 `lb=3,nq=20,cap=4,pow=0` also completes and
+verifies after the Tip5 MMCS direction-binding fix:
+
+| Shape | Final L2 proof | Path-only projection | Preprocessed-omitted projection | Actual compact wrapper | L2 prove time | Shared fast L1 witness proof |
+|---|---:|---:|---:|---:|---:|---:|
+| L2 `lb=4,nq=15,cap=4,pow=0` over L1 `lb=3,nq=20,cap=4,pow=0` | `221,462` bytes | `214,545` bytes | `169,133` bytes | `175,597` bytes | `24.474s` | L1 `279,719` bytes, path-only `268,439`, preprocessed-omitted `210,823`, L1 prove `25.070s`, verify `33ms` |
+| L2 `lb=5,nq=12,cap=4,pow=0` over same L1 | `186,647` bytes | `182,371` bytes | `143,886` bytes | `146,577` bytes | `48.290s` | same |
+| L2 `lb=6,nq=10,cap=4,pow=0` over same L1 | `164,314` bytes | `161,202` bytes | `127,443` bytes | `130,688` bytes | `96.168s` | same |
+
+This rules out the simple fast-L1/two-layer batch-STARK route too. The only
+fast-L1 row whose final-layer proving time is under `30s` is still `175,597`
+bytes, above even the relaxed `150 KiB` target. The first row below the relaxed
+size target (`146,577` bytes) takes `48.290s` for the L2 proof alone, and about
+`73s` including the L1 witness proof. The smaller `130,688` byte final layer
+takes `96.168s` before adding L1 time. Lowering L1 blowup therefore trades the
+L1 proving bottleneck for a larger/slower L2 verifier relation; it does not
+meet the production criteria.
 
 Compact verifier artifacts now exist for the verifier-deterministic
 preprocessed material in that projection.

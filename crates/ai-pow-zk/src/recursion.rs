@@ -2704,22 +2704,21 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "pure-query AI-PoW L2-over-L1 recursive compression measurement is opt-in"]
-    fn pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl() {
+    fn run_pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl(
+        l1_label: &str,
+        l1_log_blowup: usize,
+        l1_num_queries: usize,
+        l1_cap_height: usize,
+        l1_log_final_poly_len: usize,
+        l2_shapes: &[(&str, usize, usize)],
+    ) {
         use std::time::Instant;
 
         use p3_circuit::ops::Tip5Config;
         use p3_circuit_prover::BatchStarkProver;
 
-        const L1_LOG_BLOWUP: usize = 6;
-        const L1_NUM_QUERIES: usize = 10;
-        const L1_CAP_HEIGHT: usize = 4;
-        const L1_LOG_FINAL_POLY_LEN: usize = 2;
-        const L2_LOG_BLOWUP: usize = 4;
-        const L2_NUM_QUERIES: usize = 15;
         const L2_CAP_HEIGHT: usize = 4;
-        assert_eq!(L1_LOG_BLOWUP * L1_NUM_QUERIES, 60);
+        assert_eq!(l1_log_blowup * l1_num_queries, 60);
         assert_eq!(
             p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
             0
@@ -2750,7 +2749,7 @@ mod tests {
 
         let statement_digest_public_values = statement_digest_public_values_for_l1(&built);
         let l1_config = pure_query_l1_stark_config_with_shape_and_cap(
-            L1_LOG_BLOWUP, L1_NUM_QUERIES, L1_CAP_HEIGHT,
+            l1_log_blowup, l1_num_queries, l1_cap_height,
         );
         let l1_prove_start = Instant::now();
         let l1 = prove_composite_l1_outer_cert_with_config_and_public_binding_lanes(
@@ -2775,7 +2774,7 @@ mod tests {
         let l1_outer_bytes = postcard_len(&l1, "pure-query L2 diagnostic L1 outer proof");
         let l1_proof_body_bytes = postcard_len(&l1.proof, "pure-query L2 diagnostic L1 proof body");
         let l1_path_estimate = merkle_path_compression_estimate_for_outer_proof(
-            &l1, L1_LOG_BLOWUP, L1_LOG_FINAL_POLY_LEN, L1_CAP_HEIGHT,
+            &l1, l1_log_blowup, l1_log_final_poly_len, l1_cap_height,
         );
         let l1_path_pruned_projected_outer_bytes = l1_outer_bytes
             .saturating_sub(l1_path_estimate.mean_digest_savings_bytes.round() as usize);
@@ -2786,9 +2785,9 @@ mod tests {
         let l1_path_without_preprocessed =
             merkle_path_compression_estimate_for_outer_proof_with_omitted_input_batch(
                 &l1,
-                L1_LOG_BLOWUP,
-                L1_LOG_FINAL_POLY_LEN,
-                L1_CAP_HEIGHT,
+                l1_log_blowup,
+                l1_log_final_poly_len,
+                l1_cap_height,
                 Some(l1_preprocessed_input.index),
             );
         let l1_preprocessed_omitted_projected_outer_bytes = l1_outer_bytes
@@ -2805,11 +2804,7 @@ mod tests {
             "L1 proof must expose the statement digest before L2 wrapping"
         );
 
-        for (l2_label, l2_log_blowup, l2_num_queries) in [
-            ("lb4_nq15", L2_LOG_BLOWUP, L2_NUM_QUERIES),
-            ("lb5_nq12", 5usize, 12usize),
-            ("lb6_nq10", 6usize, 10usize),
-        ] {
+        for (l2_label, l2_log_blowup, l2_num_queries) in l2_shapes.iter().copied() {
             assert_eq!(l2_log_blowup * l2_num_queries, 60);
             let l2_config = pure_query_l1_stark_config_with_shape_and_cap(
                 l2_log_blowup, l2_num_queries, L2_CAP_HEIGHT,
@@ -2819,7 +2814,7 @@ mod tests {
                 &l1,
                 &statement_digest_public_values,
                 l1_config.clone(),
-                &pure_query_fri_verifier_params_for_l1(L1_LOG_BLOWUP, L1_LOG_FINAL_POLY_LEN),
+                &pure_query_fri_verifier_params_for_l1(l1_log_blowup, l1_log_final_poly_len),
                 l2_config.clone(),
                 l2_log_blowup,
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
@@ -2915,7 +2910,7 @@ mod tests {
             let l2_compact_verify_ms = l2_compact_verify_start.elapsed().as_millis();
 
             eprintln!(
-                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 lb6_nq10_cap4 -> L2 {l2_label}_cap4]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_preprocessed_ood={} l1_preprocessed_input_batch={} l1_preprocessed_input_opened_values={} l1_preprocessed_input_merkle={} l1_preprocessed_omitted_projected_outer={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_preprocessed_ood={} l2_preprocessed_input_batch={} l2_preprocessed_input_opened_values={} l2_preprocessed_input_merkle={} l2_preprocessed_omitted_projected_outer={} l2_actual_compact={} l2_actual_compact_proof_body={} l2_actual_compact_build_ms={} l2_actual_compact_verify_ms={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prove_ms={}",
+                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 {l1_label} -> L2 {l2_label}_cap4]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_preprocessed_ood={} l1_preprocessed_input_batch={} l1_preprocessed_input_opened_values={} l1_preprocessed_input_merkle={} l1_preprocessed_omitted_projected_outer={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_preprocessed_ood={} l2_preprocessed_input_batch={} l2_preprocessed_input_opened_values={} l2_preprocessed_input_merkle={} l2_preprocessed_omitted_projected_outer={} l2_actual_compact={} l2_actual_compact_proof_body={} l2_actual_compact_build_ms={} l2_actual_compact_verify_ms={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prove_ms={}",
                 l1_outer_bytes,
                 l1_proof_body_bytes,
                 l1_path_pruned_projected_outer_bytes,
@@ -2928,12 +2923,12 @@ mod tests {
                 l1_preprocessed_input.merkle_bytes,
                 l1_preprocessed_omitted_projected_outer_bytes,
                 l1.public_binding_lanes,
-                L1_LOG_BLOWUP,
-                L1_NUM_QUERIES,
-                L1_CAP_HEIGHT,
+                l1_log_blowup,
+                l1_num_queries,
+                l1_cap_height,
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
-                L1_LOG_BLOWUP * L1_NUM_QUERIES,
+                l1_log_blowup * l1_num_queries,
                 l1_prove_ms,
                 l1_verify_ms,
                 l2_outer_bytes,
@@ -2979,6 +2974,32 @@ mod tests {
                 "actual compact L2 proof should be smaller than the full L2 proof"
             );
         }
+    }
+
+    #[test]
+    #[ignore = "pure-query AI-PoW L2-over-L1 recursive compression measurement is opt-in"]
+    fn pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl() {
+        run_pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl(
+            "lb6_nq10_cap4",
+            6,
+            10,
+            4,
+            2,
+            &[("lb4_nq15", 4, 15), ("lb5_nq12", 5, 12), ("lb6_nq10", 6, 10)],
+        );
+    }
+
+    #[test]
+    #[ignore = "fast-L1 pure-query AI-PoW L2 recursive compression measurement is opt-in"]
+    fn pure_query_l2_over_fast_l1_statement_bound_candidate_size_breakdown_for_test_pearl() {
+        run_pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl(
+            "lb3_nq20_cap4",
+            3,
+            20,
+            4,
+            2,
+            &[("lb4_nq15", 4, 15), ("lb5_nq12", 5, 12), ("lb6_nq10", 6, 10)],
+        );
     }
 
     #[test]
