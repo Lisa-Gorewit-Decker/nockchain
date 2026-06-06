@@ -170,11 +170,12 @@ preprocessed openings are a real Pearl-style compactness lever: after the Tip5
 direction-binding fix, the `lb5,nq12` final L2 proof projects to `134,877`
 bytes with `24.516s` L2 proving, inside the relaxed size/time budget for the
 **final layer alone**. The end-to-end pipeline still fails production because it
-first materializes a roughly **194s** L1 batch-STARK witness proof, and because
-this projection is not yet an implemented compact verifier with binding/tamper
-tests. The next Pearl-shaped route should therefore implement compact
-preprocessed-opening reconstruction and binding for the final layer, while also
-avoiding or replacing the expensive L1 batch-STARK witness proof.
+first materializes a roughly **194s** L1 batch-STARK witness proof. The
+Goldilocks/Tip5 compact wrapper now implements the preprocessed-opening
+reconstruction plus Merkle path-pruning portion of this projection with
+binding/tamper tests, but it is still only an adapter around the batch-STARK
+artifact. The next Pearl-shaped route must wire a measured final compact proof
+format and avoid or replace the expensive L1 batch-STARK witness proof.
 
 The natural follow-up is to pair the fast L1 profile (`lb=3,nq=20,cap=4`) with
 the compact final-layer projection above. A release/native diagnostic was
@@ -281,10 +282,25 @@ cover ordinary-verifier rejection, OOD-only verifier rejection, byte-for-byte
 restoration against the original full proof, successful compact verification,
 and wrong-setup rejection.
 
-This checkpoint still does **not** implement the full table projection. The
-projection also subtracts Merkle path-pruning/dedup savings for the remaining
-input and commit-phase batches, and this adapter is not wired as the production
-recursive certificate path. Omitting any remaining values without transcript
+`GoldilocksTip5PathPrunedCompactBatchStarkProof` implements the next portion of
+the measured projection. Its constructor consumes a full Goldilocks/Tip5 proof,
+rebuilds the verifier statement, replays the Fiat-Shamir transcript to derive
+FRI query indices, prunes/deduplicates binary Merkle authentication paths for
+the remaining input batches and FRI commit-phase openings, then applies the
+preprocessed-omission adapter. Verification rejects inner proofs that carry
+non-empty auth paths, checks dictionary leaf indices against transcript-derived
+query indices, restores the exact paths from the compact dictionaries, restores
+preprocessed OOD and input-batch openings from canonical setup data, and then
+delegates to normal upstream `p3-batch-stark` verification. The tests
+`test_goldilocks_tip5_path_pruned_compact_round_trip_restores_full_proof` and
+`test_goldilocks_tip5_path_pruned_compact_rejects_tampered_merkle_path` cover
+byte-for-byte full-proof restoration, ordinary-verifier rejection, compact
+verification, tampered leaf-index rejection, and tampered-pruned-path
+rejection.
+
+This checkpoint still does **not** wire that adapter as the production
+recursive certificate path, and it does not solve the roughly **194s** L1
+batch-STARK witness proof. Omitting any additional value without transcript
 replay and reconstituting the same PCS openings would be an unsound prover
 hint.
 
@@ -599,9 +615,9 @@ direction-bit-`1` regression in place, it should be a p3-native compression
 prototype over the existing pinned+LogUp L0 proof with the following outputs:
 
 - compact final-layer reconstruction beyond the implemented Goldilocks/Tip5
-  preprocessed OOD plus preprocessed FRI input-batch adapter: path
-  pruning/dedup for the remaining input and commit-phase batches, final compact
-  serialization, and production-path integration;
+  preprocessed OOD, preprocessed FRI input-batch, and path-pruned Merkle
+  adapter: final compact serialization, measured L2 integration, and
+  production-path integration;
 - L1 proof size and proving time for verifying the current pinned+LogUp L0
   proof.
 - L2/final proof size and proving time for verifying the L1 proof.

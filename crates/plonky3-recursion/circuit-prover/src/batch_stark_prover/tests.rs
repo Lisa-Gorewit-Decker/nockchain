@@ -1329,6 +1329,203 @@ fn test_goldilocks_tip5_compact_preprocessed_fri_rejects_wrong_setup_binding() {
     );
 }
 
+#[test]
+fn test_goldilocks_tip5_path_pruned_compact_round_trip_restores_full_proof() {
+    let (prover, proof, circuit_prover_data, fri_shape) =
+        prove_goldilocks_tip5_ext2_public_plus_const(None);
+    let full_bytes = postcard::to_allocvec(&proof).expect("serialize full proof");
+
+    let compact = prover
+        .compact_goldilocks_tip5_path_pruned_preprocessed(
+            proof,
+            &circuit_prover_data,
+            fri_shape,
+        )
+        .expect("path-prune compact Goldilocks/Tip5 proof");
+    for (query, query_proof) in compact
+        .proof
+        .proof
+        .opening_proof
+        .query_proofs
+        .iter()
+        .enumerate()
+    {
+        for (batch, opening) in query_proof.input_proof.iter().enumerate() {
+            assert!(
+                opening.opening_proof.is_empty(),
+                "query {query} input batch {batch} should omit Merkle paths"
+            );
+        }
+        for (round, opening) in query_proof.commit_phase_openings.iter().enumerate() {
+            assert!(
+                opening.opening_proof.is_empty(),
+                "query {query} commit phase {round} should omit Merkle paths"
+            );
+        }
+    }
+    assert!(
+        compact
+            .input_batch_paths
+            .iter()
+            .chain(compact.commit_phase_paths.iter())
+            .any(|path_set| path_set.paths.paths.iter().any(|path| !path.siblings.is_empty())),
+        "fixture should include at least one pruned Merkle sibling"
+    );
+
+    let compact_bytes = postcard::to_allocvec(&compact).expect("serialize compact proof");
+    assert!(
+        compact_bytes.len() < full_bytes.len(),
+        "path-pruned compact proof should be smaller: full={}, compact={}",
+        full_bytes.len(),
+        compact_bytes.len()
+    );
+
+    let debug_compact: GoldilocksTip5PathPrunedCompactBatchStarkProof =
+        postcard::from_bytes(&compact_bytes).expect("deserialize compact proof");
+    let GoldilocksTip5PathPrunedCompactBatchStarkProof {
+        proof: mut debug_proof,
+        fri_shape,
+        input_batch_paths,
+        commit_phase_paths,
+    } = debug_compact;
+    let (airs, pvs, effective_common) = prover
+        .rebuild_verifier_statement::<2>(
+            &debug_proof,
+            debug_proof.w_binomial,
+            &debug_proof.stark_common,
+            &[],
+        )
+        .expect("rebuild verifier statement");
+    prover
+        .restore_goldilocks_tip5_preprocessed_ood_openings::<2>(
+            &mut debug_proof.proof,
+            &airs,
+            &pvs,
+            &effective_common,
+            &circuit_prover_data,
+            fri_shape,
+        )
+        .expect("restore OOD openings");
+    prover
+        .restore_goldilocks_tip5_path_pruned_fri_openings::<2>(
+            &mut debug_proof.proof,
+            &airs,
+            &pvs,
+            &effective_common,
+            fri_shape,
+            &input_batch_paths,
+            &commit_phase_paths,
+        )
+        .expect("restore pruned Merkle paths");
+    prover
+        .restore_goldilocks_tip5_preprocessed_fri_input_batches::<2>(
+            &mut debug_proof.proof,
+            &airs,
+            &pvs,
+            &effective_common,
+            &circuit_prover_data,
+            fri_shape,
+        )
+        .expect("restore preprocessed FRI input batch");
+    let restored_bytes = postcard::to_allocvec(&debug_proof).expect("serialize restored proof");
+    assert_eq!(
+        restored_bytes, full_bytes,
+        "path-pruned compact restoration should exactly reproduce the original full proof"
+    );
+
+    let compact: GoldilocksTip5PathPrunedCompactBatchStarkProof =
+        postcard::from_bytes(&compact_bytes).expect("deserialize compact proof");
+    prover
+        .verify_all_tables(&compact.proof)
+        .expect_err("normal verifier must reject path-pruned compact proof");
+    let compact: GoldilocksTip5PathPrunedCompactBatchStarkProof =
+        postcard::from_bytes(&compact_bytes).expect("deserialize compact proof");
+    prover
+        .verify_goldilocks_tip5_path_pruned_preprocessed_compact(
+            compact,
+            &circuit_prover_data,
+        )
+        .expect("path-pruned compact verifier restores full proof before upstream verification");
+}
+
+#[test]
+fn test_goldilocks_tip5_path_pruned_compact_rejects_tampered_merkle_path() {
+    let (prover, proof, circuit_prover_data, fri_shape) =
+        prove_goldilocks_tip5_ext2_public_plus_const(None);
+    let compact = prover
+        .compact_goldilocks_tip5_path_pruned_preprocessed(
+            proof,
+            &circuit_prover_data,
+            fri_shape,
+        )
+        .expect("path-prune compact Goldilocks/Tip5 proof");
+    let compact_bytes = postcard::to_allocvec(&compact).expect("serialize compact proof");
+
+    let mut leaf_bad: GoldilocksTip5PathPrunedCompactBatchStarkProof =
+        postcard::from_bytes(&compact_bytes).expect("deserialize compact proof");
+    let mut leaf_tampered = false;
+    for path_set in leaf_bad
+        .input_batch_paths
+        .iter_mut()
+        .chain(leaf_bad.commit_phase_paths.iter_mut())
+    {
+        if let Some(path) = path_set.paths.paths.first_mut() {
+            path.leaf_index ^= 1;
+            leaf_tampered = true;
+            break;
+        }
+    }
+    assert!(leaf_tampered, "fixture should include a pruned path");
+    let err = prover
+        .verify_goldilocks_tip5_path_pruned_preprocessed_compact(
+            leaf_bad,
+            &circuit_prover_data,
+        )
+        .expect_err("tampered pruned Merkle leaf index must fail compact verification");
+    assert!(
+        format!("{err:?}").contains("leaf") || format!("{err:?}").contains("increasing"),
+        "unexpected error for leaf-index tamper: {err:?}"
+    );
+
+    let mut compact: GoldilocksTip5PathPrunedCompactBatchStarkProof =
+        postcard::from_bytes(&compact_bytes).expect("deserialize compact proof");
+    let mut tampered = false;
+    for path_set in compact.input_batch_paths.iter_mut() {
+        for path in path_set.paths.paths.iter_mut() {
+            if let Some(first) = path.siblings.first_mut() {
+                first[0] += Goldilocks::from_u64(1);
+                tampered = true;
+                break;
+            }
+        }
+        if tampered {
+            break;
+        }
+    }
+    if !tampered {
+        for path_set in compact.commit_phase_paths.iter_mut() {
+            for path in path_set.paths.paths.iter_mut() {
+                if let Some(first) = path.siblings.first_mut() {
+                    first[0] += Goldilocks::from_u64(1);
+                    tampered = true;
+                    break;
+                }
+            }
+            if tampered {
+                break;
+            }
+        }
+    }
+    assert!(tampered, "fixture should include a serialized pruned sibling");
+
+    prover
+        .verify_goldilocks_tip5_path_pruned_preprocessed_compact(
+            compact,
+            &circuit_prover_data,
+        )
+        .expect_err("tampered pruned Merkle path must fail upstream verification");
+}
+
 // --- Proof-metadata validation after deserialization ---------------------------
 //
 // `#[derive(Deserialize)]` bypasses the constructors that enforce structural

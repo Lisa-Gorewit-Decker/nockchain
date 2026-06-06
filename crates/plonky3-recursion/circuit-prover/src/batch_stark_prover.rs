@@ -37,7 +37,7 @@ use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::interpolation::Interpolate;
-use p3_merkle_tree::MerkleTreeMmcs;
+use p3_merkle_tree::{MerkleTreeMmcs, PrunedMerklePaths, PrunedPath};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_tip5_circuit_air::Tip5Perm;
 use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt, validate_degree_bits};
@@ -606,6 +606,8 @@ type GoldilocksTip5Hash = PaddingFreeSponge<Tip5Perm, 16, 10, 5>;
 type GoldilocksTip5Compress = TruncatedPermutation<Tip5Perm, 2, 5, 16>;
 type GoldilocksTip5ValMmcs =
     MerkleTreeMmcs<Goldilocks, Goldilocks, GoldilocksTip5Hash, GoldilocksTip5Compress, 2, 5>;
+type GoldilocksTip5MerkleDigest = [Goldilocks; 5];
+type GoldilocksTip5MerkleProof = Vec<GoldilocksTip5MerkleDigest>;
 
 /// Public FRI shape metadata needed to regenerate omitted Goldilocks/Tip5
 /// preprocessed input-batch openings.
@@ -726,6 +728,49 @@ impl GoldilocksTip5PreprocessedCompactBatchStarkProof {
     }
 }
 
+/// Pruned binary Merkle authentication paths for the concrete Goldilocks/Tip5
+/// MMCS used by the recursive production-candidate batch STARK.
+///
+/// `full_path_len` is verifier-bounded by the derived FRI global height before
+/// restoration. The leaf indices are used only to reconstruct the canonical
+/// full paths; upstream `p3-batch-stark` verification still derives and checks
+/// the query indices from Fiat-Shamir.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GoldilocksTip5PrunedMerklePaths {
+    pub full_path_len: usize,
+    pub paths: PrunedMerklePaths<Goldilocks, 5>,
+}
+
+/// Goldilocks/Tip5 compact projection that also prunes repeated Merkle
+/// authentication path material across FRI queries.
+///
+/// The wrapper removes:
+/// - verifier-deterministic preprocessed OOD openings;
+/// - verifier-deterministic preprocessed input-batch openings; and
+/// - Merkle authentication paths for the remaining input batches and FRI
+///   commit-phase openings.
+///
+/// The verifier restores all omitted paths and preprocessed openings before
+/// delegating to the normal upstream verifier. Opened values, FRI sibling
+/// values, commitments, log arities, final polynomial coefficients, and PoW
+/// witnesses remain in the inner proof and stay bound by the upstream
+/// Fiat-Shamir transcript.
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct GoldilocksTip5PathPrunedCompactBatchStarkProof {
+    pub proof: BatchStarkProof<GoldilocksTipsConfig>,
+    pub fri_shape: GoldilocksTip5FriShape,
+    pub input_batch_paths: Vec<GoldilocksTip5PrunedMerklePaths>,
+    pub commit_phase_paths: Vec<GoldilocksTip5PrunedMerklePaths>,
+}
+
+impl GoldilocksTip5PathPrunedCompactBatchStarkProof {
+    /// Consume the compact wrapper and return its inner proof object.
+    pub fn into_inner(self) -> BatchStarkProof<GoldilocksTipsConfig> {
+        self.proof
+    }
+}
+
 fn omit_preprocessed_ood_openings<SC>(proof: &mut BatchProof<SC>) -> usize
 where
     SC: StarkGenericConfig,
@@ -766,6 +811,248 @@ fn omit_goldilocks_tip5_preprocessed_fri_input_batches(
     }
 
     Ok(())
+}
+
+fn prune_goldilocks_tip5_merkle_paths(
+    leaf_indices: &[usize],
+    full_paths: &[GoldilocksTip5MerkleProof],
+) -> Result<GoldilocksTip5PrunedMerklePaths, BatchStarkProverError> {
+    if leaf_indices.len() != full_paths.len() {
+        return Err(BatchStarkProverError::Verify(format!(
+            "Goldilocks/Tip5 path-pruned proof leaf/path count mismatch: {} leaves, {} paths",
+            leaf_indices.len(),
+            full_paths.len()
+        )));
+    }
+
+    let full_path_len = full_paths.first().map_or(0, Vec::len);
+    for (query, path) in full_paths.iter().enumerate() {
+        if path.len() != full_path_len {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 query {query} Merkle path length mismatch: expected {full_path_len}, got {}",
+                path.len()
+            )));
+        }
+    }
+
+    let mut sorted = leaf_indices
+        .iter()
+        .copied()
+        .zip(full_paths.iter())
+        .enumerate()
+        .collect::<Vec<_>>();
+    sorted.sort_by_key(|(_, (leaf_index, _))| *leaf_index);
+
+    let mut original_order = vec![0_u32; full_paths.len()];
+    let mut pruned_paths = Vec::new();
+    let mut previous_leaf = None;
+    let mut previous_full_path: Option<&GoldilocksTip5MerkleProof> = None;
+
+    for (original_query, (leaf_index, full_path)) in sorted {
+        if let Some(prev_leaf) = previous_leaf {
+            if leaf_index == prev_leaf {
+                let Some(prev_path) = previous_full_path else {
+                    return Err(BatchStarkProverError::Verify(String::from(
+                        "Goldilocks/Tip5 duplicate Merkle leaf without previous path",
+                    )));
+                };
+                if full_path != prev_path {
+                    return Err(BatchStarkProverError::Verify(format!(
+                        "Goldilocks/Tip5 duplicate Merkle leaf {leaf_index} has inconsistent authentication paths",
+                    )));
+                }
+                let sorted_index = pruned_paths
+                    .len()
+                    .checked_sub(1)
+                    .ok_or_else(|| {
+                        BatchStarkProverError::Verify(String::from(
+                            "Goldilocks/Tip5 duplicate Merkle leaf before first path",
+                        ))
+                    })?;
+                original_order[original_query] =
+                    u32::try_from(sorted_index).map_err(|_| {
+                        BatchStarkProverError::Verify(String::from(
+                            "Goldilocks/Tip5 pruned Merkle path index exceeds u32",
+                        ))
+                    })?;
+                continue;
+            }
+        }
+
+        let keep_len = previous_leaf.map_or(full_path_len, |prev_leaf| {
+            goldilocks_tip5_binary_unique_prefix_len(prev_leaf, leaf_index, full_path_len)
+        });
+        pruned_paths.push(PrunedPath {
+            leaf_index,
+            siblings: full_path[..keep_len].to_vec(),
+        });
+        original_order[original_query] =
+            u32::try_from(pruned_paths.len() - 1).map_err(|_| {
+                BatchStarkProverError::Verify(String::from(
+                    "Goldilocks/Tip5 pruned Merkle path index exceeds u32",
+                ))
+            })?;
+        previous_leaf = Some(leaf_index);
+        previous_full_path = Some(full_path);
+    }
+
+    Ok(GoldilocksTip5PrunedMerklePaths {
+        full_path_len,
+        paths: PrunedMerklePaths {
+            original_order,
+            paths: pruned_paths,
+        },
+    })
+}
+
+fn restore_goldilocks_tip5_merkle_paths(
+    pruned: &GoldilocksTip5PrunedMerklePaths,
+    expected_paths: usize,
+    expected_leaf_indices: &[usize],
+    max_path_len: usize,
+    label: &str,
+) -> Result<Vec<GoldilocksTip5MerkleProof>, BatchStarkProverError> {
+    if pruned.full_path_len > max_path_len {
+        return Err(BatchStarkProverError::Verify(format!(
+            "Goldilocks/Tip5 {label} pruned Merkle path length {} exceeds derived maximum {max_path_len}",
+            pruned.full_path_len,
+        )));
+    }
+    if pruned.paths.original_order.len() != expected_paths {
+        return Err(BatchStarkProverError::Verify(format!(
+            "Goldilocks/Tip5 {label} pruned Merkle original-order length mismatch: expected {expected_paths}, got {}",
+            pruned.paths.original_order.len()
+        )));
+    }
+    if expected_leaf_indices.len() != expected_paths {
+        return Err(BatchStarkProverError::Verify(format!(
+            "Goldilocks/Tip5 {label} expected leaf-index length mismatch: expected {expected_paths}, got {}",
+            expected_leaf_indices.len()
+        )));
+    }
+    if expected_paths == 0 {
+        if pruned.paths.paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err(BatchStarkProverError::Verify(format!(
+            "Goldilocks/Tip5 {label} pruned Merkle paths present for empty query set"
+        )));
+    }
+    if pruned.paths.paths.is_empty() {
+        return Err(BatchStarkProverError::Verify(format!(
+            "Goldilocks/Tip5 {label} pruned Merkle proof has no paths"
+        )));
+    }
+
+    let mut restored_sorted: Vec<GoldilocksTip5MerkleProof> =
+        Vec::with_capacity(pruned.paths.paths.len());
+    let mut previous_leaf = None;
+    for (sorted_index, path) in pruned.paths.paths.iter().enumerate() {
+        let keep_len = if let Some(prev_leaf) = previous_leaf {
+            if path.leaf_index <= prev_leaf {
+                return Err(BatchStarkProverError::Verify(format!(
+                    "Goldilocks/Tip5 {label} pruned Merkle leaves are not strictly increasing",
+                )));
+            }
+            goldilocks_tip5_binary_unique_prefix_len(
+                prev_leaf,
+                path.leaf_index,
+                pruned.full_path_len,
+            )
+        } else {
+            pruned.full_path_len
+        };
+
+        if path.siblings.len() != keep_len {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 {label} pruned Merkle path {sorted_index} sibling length mismatch: expected {keep_len}, got {}",
+                path.siblings.len()
+            )));
+        }
+
+        let mut restored = path.siblings.clone();
+        if let Some(previous_path) = restored_sorted.last() {
+            restored.extend_from_slice(&previous_path[keep_len..]);
+        }
+        if restored.len() != pruned.full_path_len {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 {label} restored Merkle path {sorted_index} length mismatch: expected {}, got {}",
+                pruned.full_path_len,
+                restored.len()
+            )));
+        }
+
+        restored_sorted.push(restored);
+        previous_leaf = Some(path.leaf_index);
+    }
+
+    for (query, (&sorted_index, &expected_leaf_index)) in pruned
+        .paths
+        .original_order
+        .iter()
+        .zip(expected_leaf_indices.iter())
+        .enumerate()
+    {
+        let sorted_index = sorted_index as usize;
+        let Some(path) = pruned.paths.paths.get(sorted_index) else {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 {label} pruned Merkle query {query} references missing sorted path {sorted_index}",
+            )));
+        };
+        if path.leaf_index != expected_leaf_index {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 {label} query {query} leaf index mismatch: expected {expected_leaf_index}, got {}",
+                path.leaf_index
+            )));
+        }
+    }
+
+    pruned
+        .paths
+        .original_order
+        .iter()
+        .enumerate()
+        .map(|(query, &sorted_index)| {
+            let sorted_index = sorted_index as usize;
+            restored_sorted
+                .get(sorted_index)
+                .cloned()
+                .ok_or_else(|| {
+                    BatchStarkProverError::Verify(format!(
+                        "Goldilocks/Tip5 {label} pruned Merkle query {query} references missing sorted path {sorted_index}",
+                    ))
+                })
+        })
+        .collect()
+}
+
+fn goldilocks_tip5_input_batch_leaf_indices(
+    query_indices: &[usize],
+    log_global_max_height: usize,
+    full_path_len: usize,
+    cap_height: usize,
+) -> Result<Vec<usize>, BatchStarkProverError> {
+    if full_path_len > log_global_max_height {
+        return Err(BatchStarkProverError::Verify(format!(
+            "Goldilocks/Tip5 input Merkle path length {full_path_len} exceeds FRI global height log {log_global_max_height}",
+        )));
+    }
+    let log_batch_height = full_path_len
+        .saturating_add(cap_height)
+        .min(log_global_max_height);
+    Ok(query_indices
+        .iter()
+        .map(|index| index >> (log_global_max_height - log_batch_height))
+        .collect())
+}
+
+fn goldilocks_tip5_binary_unique_prefix_len(
+    previous_leaf: usize,
+    leaf_index: usize,
+    full_path_len: usize,
+) -> usize {
+    let differing_bits = (previous_leaf ^ leaf_index).ilog2() as usize + 1;
+    differing_bits.min(full_path_len)
 }
 
 fn goldilocks_tip5_val_mmcs(cap_height: usize) -> GoldilocksTip5ValMmcs {
@@ -2271,6 +2558,202 @@ where
 }
 
 impl BatchStarkProver<GoldilocksTipsConfig> {
+    /// Build a path-pruned Goldilocks/Tip5 compact proof from a full proof.
+    ///
+    /// The constructor replays the verifier transcript to derive FRI query
+    /// indices, prunes only Merkle authentication paths, and then omits
+    /// verifier-deterministic preprocessed openings. It never serializes
+    /// prover-chosen query indices.
+    pub fn compact_goldilocks_tip5_path_pruned_preprocessed(
+        &self,
+        proof: BatchStarkProof<GoldilocksTipsConfig>,
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+        fri_shape: GoldilocksTip5FriShape,
+    ) -> Result<GoldilocksTip5PathPrunedCompactBatchStarkProof, BatchStarkProverError>
+    where
+        <GoldilocksTipsConfig as StarkGenericConfig>::Pcs: Pcs<
+                GoldilocksTip5Challenge,
+                <GoldilocksTipsConfig as StarkGenericConfig>::Challenger,
+                Commitment = <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment,
+            >,
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        self.compact_goldilocks_tip5_path_pruned_preprocessed_with_public_values(
+            proof,
+            &[],
+            canonical_setup,
+            fri_shape,
+        )
+    }
+
+    /// Build a path-pruned Goldilocks/Tip5 compact proof while binding leading
+    /// Public-table lanes to caller-supplied STARK public values.
+    pub fn compact_goldilocks_tip5_path_pruned_preprocessed_with_public_values(
+        &self,
+        proof: BatchStarkProof<GoldilocksTipsConfig>,
+        public_values: &[Goldilocks],
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+        fri_shape: GoldilocksTip5FriShape,
+    ) -> Result<GoldilocksTip5PathPrunedCompactBatchStarkProof, BatchStarkProverError>
+    where
+        <GoldilocksTipsConfig as StarkGenericConfig>::Pcs: Pcs<
+                GoldilocksTip5Challenge,
+                <GoldilocksTipsConfig as StarkGenericConfig>::Challenger,
+                Commitment = <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment,
+            >,
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        proof.validate()?;
+        fri_shape.validate()?;
+        if !common_preprocessed_binding_eq(
+            &proof.stark_common,
+            &canonical_setup.prover_data.common,
+        ) {
+            return Err(BatchStarkProverError::Verify(String::from(
+                "Goldilocks/Tip5 path-pruned compact proof does not match canonical setup binding",
+            )));
+        }
+
+        let ext_degree = proof.ext_degree;
+        let w_binomial = proof.w_binomial;
+        match ext_degree {
+            1 => self.compact_goldilocks_tip5_path_pruned_preprocessed_inner::<1>(
+                proof,
+                None,
+                public_values,
+                canonical_setup,
+                fri_shape,
+            ),
+            2 => self.compact_goldilocks_tip5_path_pruned_preprocessed_inner::<2>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+                fri_shape,
+            ),
+            4 => self.compact_goldilocks_tip5_path_pruned_preprocessed_inner::<4>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+                fri_shape,
+            ),
+            5 => self.compact_goldilocks_tip5_path_pruned_preprocessed_inner::<5>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+                fri_shape,
+            ),
+            6 => self.compact_goldilocks_tip5_path_pruned_preprocessed_inner::<6>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+                fri_shape,
+            ),
+            8 => self.compact_goldilocks_tip5_path_pruned_preprocessed_inner::<8>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+                fri_shape,
+            ),
+            d => Err(BatchStarkProverError::UnsupportedDegree(d)),
+        }
+    }
+
+    /// Verify a path-pruned Goldilocks/Tip5 compact proof.
+    pub fn verify_goldilocks_tip5_path_pruned_preprocessed_compact(
+        &self,
+        proof: GoldilocksTip5PathPrunedCompactBatchStarkProof,
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <GoldilocksTipsConfig as StarkGenericConfig>::Pcs: Pcs<
+                GoldilocksTip5Challenge,
+                <GoldilocksTipsConfig as StarkGenericConfig>::Challenger,
+                Commitment = <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment,
+            >,
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        self.verify_goldilocks_tip5_path_pruned_preprocessed_compact_with_public_values(
+            proof,
+            &[],
+            canonical_setup,
+        )
+    }
+
+    /// Verify a path-pruned Goldilocks/Tip5 compact proof while binding leading
+    /// Public-table lanes to caller-supplied STARK public values.
+    pub fn verify_goldilocks_tip5_path_pruned_preprocessed_compact_with_public_values(
+        &self,
+        proof: GoldilocksTip5PathPrunedCompactBatchStarkProof,
+        public_values: &[Goldilocks],
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <GoldilocksTipsConfig as StarkGenericConfig>::Pcs: Pcs<
+                GoldilocksTip5Challenge,
+                <GoldilocksTipsConfig as StarkGenericConfig>::Challenger,
+                Commitment = <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment,
+            >,
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        proof.proof.validate()?;
+        proof.fri_shape.validate()?;
+        if !common_preprocessed_binding_eq(
+            &proof.proof.stark_common,
+            &canonical_setup.prover_data.common,
+        ) {
+            return Err(BatchStarkProverError::Verify(String::from(
+                "Goldilocks/Tip5 path-pruned compact proof does not match canonical setup binding",
+            )));
+        }
+
+        let ext_degree = proof.proof.ext_degree;
+        let w_binomial = proof.proof.w_binomial;
+        match ext_degree {
+            1 => self.verify_goldilocks_tip5_path_pruned_preprocessed_compact_inner::<1>(
+                proof,
+                None,
+                public_values,
+                canonical_setup,
+            ),
+            2 => self.verify_goldilocks_tip5_path_pruned_preprocessed_compact_inner::<2>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+            ),
+            4 => self.verify_goldilocks_tip5_path_pruned_preprocessed_compact_inner::<4>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+            ),
+            5 => self.verify_goldilocks_tip5_path_pruned_preprocessed_compact_inner::<5>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+            ),
+            6 => self.verify_goldilocks_tip5_path_pruned_preprocessed_compact_inner::<6>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+            ),
+            8 => self.verify_goldilocks_tip5_path_pruned_preprocessed_compact_inner::<8>(
+                proof,
+                w_binomial,
+                public_values,
+                canonical_setup,
+            ),
+            d => Err(BatchStarkProverError::UnsupportedDegree(d)),
+        }
+    }
+
     /// Verify a Goldilocks/Tip5 compact proof whose verifier-deterministic
     /// preprocessed OOD values and FRI input-batch openings were omitted.
     pub fn verify_goldilocks_tip5_preprocessed_compact(
@@ -2361,6 +2844,121 @@ impl BatchStarkProver<GoldilocksTipsConfig> {
             ),
             d => Err(BatchStarkProverError::UnsupportedDegree(d)),
         }
+    }
+
+    fn compact_goldilocks_tip5_path_pruned_preprocessed_inner<const D: usize>(
+        &self,
+        mut proof: BatchStarkProof<GoldilocksTipsConfig>,
+        w_binomial: Option<Goldilocks>,
+        public_values: &[Goldilocks],
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+        fri_shape: GoldilocksTip5FriShape,
+    ) -> Result<GoldilocksTip5PathPrunedCompactBatchStarkProof, BatchStarkProverError>
+    where
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        let (airs, pvs, effective_common) = self.rebuild_verifier_statement::<D>(
+            &proof,
+            w_binomial,
+            &proof.stark_common,
+            public_values,
+        )?;
+        let (query_indices, log_global_max_height) = self
+            .derive_goldilocks_tip5_fri_query_indices::<D>(
+                &proof.proof,
+                &airs,
+                &pvs,
+                &effective_common,
+                fri_shape,
+            )?;
+
+        let (input_batch_paths, commit_phase_paths) =
+            self.prune_goldilocks_tip5_fri_merkle_paths(
+                &mut proof.proof,
+                &effective_common,
+                &query_indices,
+                log_global_max_height,
+                fri_shape,
+            )?;
+        omit_preprocessed_ood_openings(&mut proof.proof);
+        omit_goldilocks_tip5_preprocessed_fri_input_batches(
+            &mut proof.proof,
+            &effective_common,
+        )?;
+
+        if !common_preprocessed_binding_eq(
+            &effective_common,
+            &canonical_setup.prover_data.common,
+        ) {
+            return Err(BatchStarkProverError::Verify(String::from(
+                "canonical setup preprocessed binding changed during Goldilocks/Tip5 path-pruned compaction",
+            )));
+        }
+
+        Ok(GoldilocksTip5PathPrunedCompactBatchStarkProof {
+            proof,
+            fri_shape,
+            input_batch_paths,
+            commit_phase_paths,
+        })
+    }
+
+    fn verify_goldilocks_tip5_path_pruned_preprocessed_compact_inner<const D: usize>(
+        &self,
+        proof: GoldilocksTip5PathPrunedCompactBatchStarkProof,
+        w_binomial: Option<Goldilocks>,
+        public_values: &[Goldilocks],
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        let GoldilocksTip5PathPrunedCompactBatchStarkProof {
+            mut proof,
+            fri_shape,
+            input_batch_paths,
+            commit_phase_paths,
+        } = proof;
+        let (airs, pvs, effective_common) = self.rebuild_verifier_statement::<D>(
+            &proof,
+            w_binomial,
+            &proof.stark_common,
+            public_values,
+        )?;
+        self.restore_goldilocks_tip5_preprocessed_ood_openings::<D>(
+            &mut proof.proof,
+            &airs,
+            &pvs,
+            &effective_common,
+            canonical_setup,
+            fri_shape,
+        )?;
+        self.restore_goldilocks_tip5_path_pruned_fri_openings::<D>(
+            &mut proof.proof,
+            &airs,
+            &pvs,
+            &effective_common,
+            fri_shape,
+            &input_batch_paths,
+            &commit_phase_paths,
+        )?;
+        self.restore_goldilocks_tip5_preprocessed_fri_input_batches::<D>(
+            &mut proof.proof,
+            &airs,
+            &pvs,
+            &effective_common,
+            canonical_setup,
+            fri_shape,
+        )?;
+
+        p3_batch_stark::verify_batch(
+            &self.config,
+            &airs,
+            &proof.proof,
+            &pvs,
+            &effective_common,
+        )
+        .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
     }
 
     fn verify_goldilocks_tip5_preprocessed_compact_inner<const D: usize>(
@@ -2599,6 +3197,278 @@ impl BatchStarkProver<GoldilocksTipsConfig> {
             let reduced_index = query_index >> (log_global_max_height - preprocessed_log_max_height);
             let opening = val_mmcs.open_batch(reduced_index, preprocessed_prover_data);
             query_proof.input_proof.insert(preprocessed_idx, opening);
+        }
+
+        Ok(())
+    }
+
+    fn prune_goldilocks_tip5_fri_merkle_paths(
+        &self,
+        proof: &mut BatchProof<GoldilocksTipsConfig>,
+        common: &CommonData<GoldilocksTipsConfig>,
+        query_indices: &[usize],
+        log_global_max_height: usize,
+        fri_shape: GoldilocksTip5FriShape,
+    ) -> Result<
+        (
+            Vec<GoldilocksTip5PrunedMerklePaths>,
+            Vec<GoldilocksTip5PrunedMerklePaths>,
+        ),
+        BatchStarkProverError,
+    > {
+        let query_count = proof.opening_proof.query_proofs.len();
+        if query_indices.len() != query_count {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 path-pruned query index count mismatch: expected {query_count}, got {}",
+                query_indices.len()
+            )));
+        }
+
+        let expected_full_batches = goldilocks_tip5_full_fri_input_batch_count(proof, common);
+        let preprocessed_idx = common
+            .preprocessed
+            .as_ref()
+            .map(|_| goldilocks_tip5_preprocessed_trace_idx());
+        if let Some(idx) = preprocessed_idx {
+            if idx >= expected_full_batches {
+                return Err(BatchStarkProverError::Verify(format!(
+                    "Goldilocks/Tip5 preprocessed batch index {idx} exceeds expected input batches {expected_full_batches}",
+                )));
+            }
+        }
+
+        for (query, query_proof) in proof.opening_proof.query_proofs.iter().enumerate() {
+            if query_proof.input_proof.len() != expected_full_batches {
+                return Err(BatchStarkProverError::Verify(format!(
+                    "Goldilocks/Tip5 full query {query} input batch count mismatch: expected {expected_full_batches}, got {}",
+                    query_proof.input_proof.len()
+                )));
+            }
+        }
+
+        let kept_input_batches = (0..expected_full_batches)
+            .filter(|&batch| Some(batch) != preprocessed_idx)
+            .collect::<Vec<_>>();
+        let mut input_batch_paths = Vec::with_capacity(kept_input_batches.len());
+        for &batch in &kept_input_batches {
+            let full_paths = proof
+                .opening_proof
+                .query_proofs
+                .iter()
+                .map(|query_proof| query_proof.input_proof[batch].opening_proof.clone())
+                .collect::<Vec<_>>();
+            let full_path_len = full_paths.first().map_or(0, Vec::len);
+            let leaf_indices = goldilocks_tip5_input_batch_leaf_indices(
+                query_indices,
+                log_global_max_height,
+                full_path_len,
+                fri_shape.cap_height,
+            )?;
+            input_batch_paths.push(prune_goldilocks_tip5_merkle_paths(
+                &leaf_indices,
+                &full_paths,
+            )?);
+        }
+
+        for query_proof in &mut proof.opening_proof.query_proofs {
+            for &batch in &kept_input_batches {
+                query_proof.input_proof[batch].opening_proof.clear();
+            }
+        }
+
+        let expected_rounds = proof.opening_proof.commit_phase_commits.len();
+        let mut domain_indices = query_indices.to_vec();
+        let mut commit_phase_paths = Vec::with_capacity(expected_rounds);
+        for round in 0..expected_rounds {
+            let log_arity = proof
+                .opening_proof
+                .query_proofs
+                .first()
+                .and_then(|query| query.commit_phase_openings.get(round))
+                .map(|opening| opening.log_arity as usize)
+                .ok_or_else(|| {
+                    BatchStarkProverError::Verify(format!(
+                        "Goldilocks/Tip5 path-pruned proof missing commit phase round {round}",
+                    ))
+                })?;
+            if !(1..=fri_shape.max_log_arity).contains(&log_arity) {
+                return Err(BatchStarkProverError::Verify(format!(
+                    "Goldilocks/Tip5 FRI invalid log arity {log_arity} in round {round}; max {}",
+                    fri_shape.max_log_arity
+                )));
+            }
+
+            let mut full_paths = Vec::with_capacity(query_count);
+            for (query, query_proof) in proof.opening_proof.query_proofs.iter().enumerate() {
+                if query_proof.commit_phase_openings.len() != expected_rounds {
+                    return Err(BatchStarkProverError::Verify(format!(
+                        "Goldilocks/Tip5 FRI query {query} commit phase count mismatch: expected {expected_rounds}, got {}",
+                        query_proof.commit_phase_openings.len()
+                    )));
+                }
+                let opening = &query_proof.commit_phase_openings[round];
+                if opening.log_arity as usize != log_arity {
+                    return Err(BatchStarkProverError::Verify(format!(
+                        "Goldilocks/Tip5 FRI query {query} log arity mismatch in round {round}",
+                    )));
+                }
+                full_paths.push(opening.opening_proof.clone());
+            }
+
+            let leaf_indices = domain_indices
+                .iter()
+                .map(|index| index >> log_arity)
+                .collect::<Vec<_>>();
+            commit_phase_paths.push(prune_goldilocks_tip5_merkle_paths(
+                &leaf_indices,
+                &full_paths,
+            )?);
+            for index in &mut domain_indices {
+                *index >>= log_arity;
+            }
+        }
+
+        for query_proof in &mut proof.opening_proof.query_proofs {
+            for opening in &mut query_proof.commit_phase_openings {
+                opening.opening_proof.clear();
+            }
+        }
+
+        Ok((input_batch_paths, commit_phase_paths))
+    }
+
+    fn restore_goldilocks_tip5_path_pruned_fri_openings<const D: usize>(
+        &self,
+        proof: &mut BatchProof<GoldilocksTipsConfig>,
+        airs: &[CircuitTableAir<GoldilocksTipsConfig, D>],
+        public_values: &[Vec<Goldilocks>],
+        common: &CommonData<GoldilocksTipsConfig>,
+        fri_shape: GoldilocksTip5FriShape,
+        input_batch_paths: &[GoldilocksTip5PrunedMerklePaths],
+        commit_phase_paths: &[GoldilocksTip5PrunedMerklePaths],
+    ) -> Result<(), BatchStarkProverError> {
+        let (query_indices, log_global_max_height) = self
+            .derive_goldilocks_tip5_fri_query_indices::<D>(
+                proof,
+                airs,
+                public_values,
+                common,
+                fri_shape,
+            )?;
+        let query_count = proof.opening_proof.query_proofs.len();
+        if query_indices.len() != query_count {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 path-pruned query index count mismatch: expected {query_count}, got {}",
+                query_indices.len()
+            )));
+        }
+
+        let expected_full_batches = goldilocks_tip5_full_fri_input_batch_count(proof, common);
+        let expected_compact_batches =
+            expected_full_batches
+                .checked_sub(usize::from(common.preprocessed.is_some()))
+                .ok_or_else(|| {
+                    BatchStarkProverError::Verify(String::from(
+                        "Goldilocks/Tip5 path-pruned input batch count underflow",
+                    ))
+                })?;
+        if input_batch_paths.len() != expected_compact_batches {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 path-pruned input batch dictionary count mismatch: expected {expected_compact_batches}, got {}",
+                input_batch_paths.len()
+            )));
+        }
+        for (query, query_proof) in proof.opening_proof.query_proofs.iter().enumerate() {
+            if query_proof.input_proof.len() != expected_compact_batches {
+                return Err(BatchStarkProverError::Verify(format!(
+                    "Goldilocks/Tip5 path-pruned query {query} input batch count mismatch: expected {expected_compact_batches}, got {}",
+                    query_proof.input_proof.len()
+                )));
+            }
+            for (batch, opening) in query_proof.input_proof.iter().enumerate() {
+                if !opening.opening_proof.is_empty() {
+                    return Err(BatchStarkProverError::Verify(format!(
+                        "Goldilocks/Tip5 path-pruned query {query} input batch {batch} carried an unpruned opening proof",
+                    )));
+                }
+            }
+        }
+
+        for (batch, pruned) in input_batch_paths.iter().enumerate() {
+            let label = format!("input batch {batch}");
+            let expected_leaf_indices = goldilocks_tip5_input_batch_leaf_indices(
+                &query_indices,
+                log_global_max_height,
+                pruned.full_path_len,
+                fri_shape.cap_height,
+            )?;
+            let restored = restore_goldilocks_tip5_merkle_paths(
+                pruned,
+                query_count,
+                &expected_leaf_indices,
+                log_global_max_height,
+                &label,
+            )?;
+            for (query, path) in restored.into_iter().enumerate() {
+                proof.opening_proof.query_proofs[query].input_proof[batch].opening_proof = path;
+            }
+        }
+
+        let expected_rounds = proof.opening_proof.commit_phase_commits.len();
+        if commit_phase_paths.len() != expected_rounds {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 path-pruned commit phase dictionary count mismatch: expected {expected_rounds}, got {}",
+                commit_phase_paths.len()
+            )));
+        }
+        for (query, query_proof) in proof.opening_proof.query_proofs.iter().enumerate() {
+            if query_proof.commit_phase_openings.len() != expected_rounds {
+                return Err(BatchStarkProverError::Verify(format!(
+                    "Goldilocks/Tip5 path-pruned query {query} commit phase count mismatch: expected {expected_rounds}, got {}",
+                    query_proof.commit_phase_openings.len()
+                )));
+            }
+            for (round, opening) in query_proof.commit_phase_openings.iter().enumerate() {
+                if !opening.opening_proof.is_empty() {
+                    return Err(BatchStarkProverError::Verify(format!(
+                        "Goldilocks/Tip5 path-pruned query {query} commit phase {round} carried an unpruned opening proof",
+                    )));
+                }
+            }
+        }
+
+        let mut domain_indices = query_indices;
+        for (round, pruned) in commit_phase_paths.iter().enumerate() {
+            let label = format!("commit phase {round}");
+            let log_arity = proof
+                .opening_proof
+                .query_proofs
+                .first()
+                .and_then(|query| query.commit_phase_openings.get(round))
+                .map(|opening| opening.log_arity as usize)
+                .ok_or_else(|| {
+                    BatchStarkProverError::Verify(format!(
+                        "Goldilocks/Tip5 path-pruned proof missing commit phase round {round}",
+                    ))
+                })?;
+            let expected_leaf_indices = domain_indices
+                .iter()
+                .map(|index| index >> log_arity)
+                .collect::<Vec<_>>();
+            let restored = restore_goldilocks_tip5_merkle_paths(
+                pruned,
+                query_count,
+                &expected_leaf_indices,
+                log_global_max_height,
+                &label,
+            )?;
+            for (query, path) in restored.into_iter().enumerate() {
+                proof.opening_proof.query_proofs[query].commit_phase_openings[round]
+                    .opening_proof = path;
+            }
+            for index in &mut domain_indices {
+                *index >>= log_arity;
+            }
         }
 
         Ok(())
