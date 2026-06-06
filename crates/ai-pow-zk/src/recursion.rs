@@ -29,8 +29,9 @@ use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::public_inputs::BatchStarkVerifierInputsBuilder;
 use p3_recursion::terminal::{NativeTerminalCompiler, NativeTerminalVerifyError};
 use p3_recursion::{
-    verify_batch_circuit, RecursiveAir, TerminalCertificate, TerminalCircuitFingerprint,
-    TerminalProofParameters, TerminalWitness, VerificationError,
+    verify_batch_circuit, BatchProofTargets, CommonDataTargets, Recursive, RecursiveAir,
+    TerminalCertificate, TerminalCircuitFingerprint, TerminalProofParameters, TerminalWitness,
+    VerificationError,
 };
 use p3_symmetric::Permutation;
 use p3_tip5_circuit_air::Tip5Perm as RecTip5Perm;
@@ -891,6 +892,29 @@ pub struct CompositeTerminalRelationMetrics {
     pub external_npo_validity_components: usize,
 }
 
+/// Public/private input footprint of the current composite-L1 verifier circuit.
+///
+/// Pearl keeps the inner STARK proof as witness material and exposes a small
+/// fixed public input vector plus preprocessed-data bindings. The current
+/// Plonky3 recursion path exposes commitments, FRI public pieces, global lookup
+/// cumulative sums, and common-data commitments as L1 public inputs. This
+/// diagnostic makes that split explicit before attempting a Pearl-shaped
+/// compact final backend.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompositeL1VerifierInputFootprint {
+    pub l1_circuit_build_ms: u128,
+    pub circuit_fingerprint: TerminalCircuitFingerprint,
+    pub statement_digest_values: usize,
+    pub air_public_values: usize,
+    pub proof_public_values: usize,
+    pub common_public_values: usize,
+    pub verifier_public_values: usize,
+    pub total_public_values: usize,
+    pub proof_private_values: usize,
+    pub total_private_values: usize,
+    pub total_public_input_bytes: usize,
+}
+
 /// **Batch-STARK recursive checkpoint caller** — the full ai-pow-zk →
 /// Plonky3-recursion
 /// pipeline for one composite proof, end to end:
@@ -1188,6 +1212,87 @@ pub fn prove_terminal_certificate_from_chain_verified_composite_proof(
         terminal_prove_ms,
         terminal_verify_ms,
         terminal_cert,
+    })
+}
+
+/// Measure the public/private input split of the current composite-L1 verifier
+/// circuit without running the terminal compiler or prover.
+pub fn measure_composite_l1_verifier_input_footprint(
+    zk_params: &crate::params::ZkParams,
+    profile: &crate::circuit::CircuitConfig,
+    verified: &ChainVerifiedCompositeProof<'_>,
+) -> Result<CompositeL1VerifierInputFootprint, VerificationError> {
+    use std::time::Instant;
+
+    let cfg = crate::composite_proof::build_config(zk_params, profile);
+    let t = Instant::now();
+    let air = CompositeFullAirWithLookupsPinned::new_with(verified.program.clone(), true);
+    let pd = crate::composite_proof::logup_common_for(&cfg, &verified.program, true);
+    let built = build_composite_l1_verifier_circuit(
+        &cfg,
+        &air,
+        &verified.proof,
+        &pd.common,
+        &verified.public_inputs.to_vec(),
+        profile,
+    )?;
+    let l1_circuit_build_ms = t.elapsed().as_millis();
+
+    let air_public_values = verified.public_inputs.to_vec().len();
+    let proof_public_values =
+        <BatchProofTargets<AiPowStarkConfig, CompositeComm, InnerFri> as Recursive<
+            Challenge,
+        >>::get_values(&verified.proof)
+        .len();
+    let proof_private_values =
+        <BatchProofTargets<AiPowStarkConfig, CompositeComm, InnerFri> as Recursive<
+            Challenge,
+        >>::get_private_values(&verified.proof)
+        .len();
+    let common_public_values = <CommonDataTargets<AiPowStarkConfig, CompositeComm> as Recursive<
+        Challenge,
+    >>::get_values(&pd.common)
+    .len();
+    let verifier_public_values = air_public_values + proof_public_values + common_public_values;
+    let total_public_values = built.public_inputs.len();
+    let total_private_values = built.private_inputs.len();
+
+    let expected_total_public_values = DIGEST_ELEMS + verifier_public_values;
+    if total_public_values != expected_total_public_values {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "AI-PoW composite L1 public input footprint mismatch: built {} \
+             values but split accounts for {}",
+            total_public_values, expected_total_public_values
+        )));
+    }
+    if total_private_values != proof_private_values {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "AI-PoW composite L1 private input footprint mismatch: built {} \
+             values but proof-private split accounts for {}",
+            total_private_values, proof_private_values
+        )));
+    }
+
+    let total_public_input_bytes = postcard::to_allocvec(&built.public_inputs)
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW L1 verifier public input measurement failed: {e:?}"
+            ))
+        })?
+        .len();
+
+    Ok(CompositeL1VerifierInputFootprint {
+        l1_circuit_build_ms,
+        circuit_fingerprint: TerminalCircuitFingerprint::from_circuit(&built.circuit),
+        statement_digest_values: DIGEST_ELEMS,
+        air_public_values,
+        proof_public_values,
+        common_public_values,
+        verifier_public_values,
+        total_public_values,
+        proof_private_values,
+        total_private_values,
+        total_public_input_bytes,
     })
 }
 
@@ -2757,6 +2862,44 @@ mod tests {
             .expect("terminal relation metrics must build without terminal proving")
     }
 
+    fn measure_baseline_l1_verifier_input_footprint(
+        profile: CircuitConfig,
+    ) -> CompositeL1VerifierInputFootprint {
+        let zk = test_zk_params();
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program, proof, &pis,
+            )
+        };
+        measure_composite_l1_verifier_input_footprint(&zk, &profile, &verified)
+            .expect("L1 verifier input footprint must build without terminal proving")
+    }
+
+    fn print_l1_verifier_input_footprint(
+        label: &str,
+        footprint: &CompositeL1VerifierInputFootprint,
+    ) {
+        eprintln!(
+            "ai-pow composite L1 verifier input footprint [{label}]: build_ms={} statement_digest_values={} air_public_values={} proof_public_values={} common_public_values={} verifier_public_values={} total_public_values={} proof_private_values={} total_private_values={} total_public_bytes={} fingerprint={:?}",
+            footprint.l1_circuit_build_ms,
+            footprint.statement_digest_values,
+            footprint.air_public_values,
+            footprint.proof_public_values,
+            footprint.common_public_values,
+            footprint.verifier_public_values,
+            footprint.total_public_values,
+            footprint.proof_private_values,
+            footprint.total_private_values,
+            footprint.total_public_input_bytes,
+            footprint.circuit_fingerprint,
+        );
+    }
+
     fn print_terminal_relation_metrics(label: &str, metrics: &CompositeTerminalRelationMetrics) {
         eprintln!(
             "ai-pow composite terminal relation metrics [{label}]: build_ms={} compile_ms={} public_values={} public_bytes={} private_values={} ops={} primitive_ops={} const_ops={} public_ops={} alu_add_ops={} alu_mul_ops={} alu_bool_ops={} alu_mul_add_ops={} alu_horner_ops={} hints={} npos={} constraints={} tip5_rows={} recompose_rows={} recompose_coeff_rows={} npo_rows={} npo_in_slots={} npo_out_slots={} npo_residuals={} fingerprint={:?} npo_types={:?}",
@@ -2815,6 +2958,35 @@ mod tests {
             metrics.tip5_rows + metrics.recompose_rows + metrics.recompose_coeff_rows
         );
         assert!(metrics.external_npo_validity_components >= metrics.npo_rows);
+    }
+
+    #[test]
+    #[ignore = "Pearl-shaped L1 verifier input footprint diagnostic is opt-in"]
+    fn l1_verifier_input_footprint_for_pure_query_lb6_nq10_composite_is_available() {
+        let profile = CircuitConfig {
+            log_blowup: 6,
+            pow_bits: 0,
+            num_queries: 10,
+        };
+        assert_eq!(profile.johnson_fri_bits(), 60);
+
+        let footprint = measure_baseline_l1_verifier_input_footprint(profile);
+        print_l1_verifier_input_footprint("PURE_QUERY_LB6_NQ10", &footprint);
+
+        assert_eq!(footprint.statement_digest_values, DIGEST_ELEMS);
+        assert_eq!(
+            footprint.air_public_values,
+            crate::composite_public::NUM_PUBLIC_VALUES
+        );
+        assert!(footprint.proof_public_values > footprint.air_public_values);
+        assert_eq!(
+            footprint.total_public_values,
+            footprint.statement_digest_values + footprint.verifier_public_values
+        );
+        assert_eq!(
+            footprint.proof_private_values,
+            footprint.total_private_values
+        );
     }
 
     #[test]

@@ -337,6 +337,28 @@ verifier and then authenticate tens of thousands of verifier-assignment values.
 It proves a purpose-built AIR, recursively compresses that proof twice, and
 puts only the compact second-recursion proof on the wire.
 
+The current Plonky3 L1 verifier input split is now measured explicitly by
+`l1_verifier_input_footprint_for_pure_query_lb6_nq10_composite_is_available`.
+For the reduced pure-query profile (`lb=6,nq=10,pow=0`) the release/native run
+prints:
+
+| L1 verifier footprint component | Count / Bytes |
+|---|---:|
+| Statement digest public values | `5` |
+| Layer-0 AIR public values | `60` |
+| Proof-derived public values | `389` |
+| Common-data public values | `5` |
+| Total terminal public values | `459` |
+| Terminal public input serialization | `5,180` bytes |
+| Proof-derived private values | `30,648` |
+| L1 circuit fingerprint | `witness_count=168,292`, `ops_len=96,319` |
+
+This refines the Pearl comparison: the current terminal miss is not mainly a
+large public-input vector. Most Layer-0 proof openings are already private
+witness values in the L1 verifier circuit. The expensive part is proving the
+generic verifier relation itself with the native terminal backend, especially
+the NPO-heavy Tip5/recompose checks and the exhaustive assignment-opening proof.
+
 The exact Pearl parameters are not directly portable to Nockchain's stated
 soundness policy. Pearl's defaults are `pow_bits=[18,18,22]` and
 `rate_bits=[1 or 2,3,7]`, with `num_query_rounds =
@@ -367,13 +389,18 @@ Viable Nockchain tracks that do not use Plonky2 directly are:
    polynomials, public binding of verifier digests/caps, strict verifier-key
    reconstruction, and explicit tests that stale cached polynomials, swapped
    caps, wrong circuit digests, and malformed compact openings are rejected.
+   This route must avoid simply wrapping the current L1 verifier in another
+   batch-STARK; the measured L2 batch-STARK proof remains above the relaxed size
+   target and too slow once the required L1 proof is included.
 3. **Preprocessed-program binding instead of assignment-value revelation.**
    Move deterministic verifier/program data out of terminal assignment openings
    and into digest-bound preprocessed columns whose evaluations at verifier
    challenge points are recomputed by the verifier. This is a narrower form of
-   the Pearl design and could reduce the current exhaustive NPO multiproof, but
-   it is sound only if every omitted value is either deterministically
-   reconstructable or still proven derived from committed witness columns.
+   the Pearl design, but the new L1 footprint measurement shows it cannot by
+   itself close the current gap: public/proof-value exposure is far smaller
+   than the exhaustive NPO assignment-opening cost. It remains useful only for
+   deterministic verifier-key data that can be omitted from a compact final
+   proof without weakening the transcript binding.
 4. **Unified STARK/IOP for terminal NPO data.** Continue the Direction 1 work,
    but treat Pearl as evidence that the final proof should be one compact
    recursively compressed object rather than two independent terminal FRI
@@ -974,9 +1001,11 @@ I would pursue five tracks in this order:
 1. **Prototype the Pearl-shaped Plonky3 route: specialized AI-PoW AIR plus
    two-stage compact recursion.** This is the most plausible path to the Pearl
    class of proof sizes without importing Plonky2 or counting proof-system PoW.
-   The prototype should first measure final compact recursive proof size under
-   `pow_bits=0`, then add soundness documentation for every public,
-   preprocessed, verifier-key, and cached-polynomial binding.
+   The prototype should first define the compact final proof format and cached
+   verifier-key binding under `pow_bits=0`, then measure final recursive proof
+   size. The new L1 footprint diagnostic shows that reducing ordinary public
+   input exposure is not enough; the compact proof must avoid the current
+   generic-terminal NPO assignment-opening cost.
 2. **Keep exhaustive NPO as the leading native-terminal fallback, but do not
    call it fully production-integrated yet.** It is the only current native
    terminal fixture measured below 100 KiB and below 30s, but the actual
@@ -984,9 +1013,10 @@ I would pursue five tracks in this order:
 3. **Reduce the full composite L1 terminal relation only if we keep pursuing
    the generic-verifier terminal route.** The current blocker is relation size:
    `106,349` primitive operations and `14,049` supported NPO rows in the PROD
-   baseline. The primitive reduction should focus first on generic FRI/PCS
-   verifier Horner work; the NPO reduction should focus on Tip5 and
-   recompose/coeff callsite count without removing their bindings.
+   baseline, not a large terminal public input vector. The primitive reduction
+   should focus first on generic FRI/PCS verifier Horner work; the NPO
+   reduction should focus on Tip5 and recompose/coeff callsite count without
+   removing their bindings.
 4. **Continue the unified NPO proof as hardening/future work.** It would reduce
    witness leakage if it can share one FRI payload and stay under target, but
    the current full-composite integrated candidate is too slow.
