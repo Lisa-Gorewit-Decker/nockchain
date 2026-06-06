@@ -11,7 +11,7 @@
 //! let config = config::baby_bear();
 //! ```
 
-use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
+use p3_baby_bear::{default_babybear_poseidon2_16, BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
@@ -19,7 +19,7 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
 use p3_fri::{FriParameters, TwoAdicFriPcs};
 use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
-use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_16};
+use p3_koala_bear::{default_koalabear_poseidon2_16, KoalaBear, Poseidon2KoalaBear};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CryptographicPermutation, PaddingFreeSponge, TruncatedPermutation};
 use p3_tip5_circuit_air::Tip5Perm;
@@ -430,7 +430,7 @@ pub fn goldilocks_tip5_pure_query_60bit() -> GoldilocksTipsConfig {
 /// The caller supplies only the Johnson-relevant query shape. The
 /// soundness-neutral compression levers and Merkle cap match
 /// [`goldilocks_tip5_pure_query_60bit`]. This intentionally panics unless
-/// `log_blowup * num_queries == 60`, so diagnostics cannot accidentally
+/// `log_blowup * num_queries >= 60`, so diagnostics cannot accidentally
 /// compare a weaker profile as a production candidate.
 #[inline]
 pub fn goldilocks_tip5_pure_query_60bit_with_shape(
@@ -450,7 +450,7 @@ pub fn goldilocks_tip5_pure_query_60bit_with_shape(
 /// This is a diagnostic/profiling variant of
 /// [`goldilocks_tip5_pure_query_60bit_with_shape`]. The Merkle cap height is a
 /// proof-size/prover-time trade-off and is not counted toward Johnson
-/// soundness, so the same exact 60-bit query-only assertion is retained.
+/// soundness, so the same at-least-60-bit query-only assertion is retained.
 #[inline]
 pub fn goldilocks_tip5_pure_query_60bit_with_shape_and_cap(
     log_blowup: usize,
@@ -471,7 +471,7 @@ pub fn goldilocks_tip5_pure_query_60bit_with_shape_and_cap(
 ///
 /// `log_final_poly_len`, `max_log_arity`, and `cap_height` change proof shape
 /// and size but are not counted as Johnson soundness bits. The function retains
-/// the exact `log_blowup * num_queries == 60` assertion so callers cannot
+/// the `log_blowup * num_queries >= 60` assertion so callers cannot
 /// accidentally benchmark a weaker no-PoW candidate as production-equivalent.
 #[inline]
 pub fn goldilocks_tip5_pure_query_60bit_with_fri_shape(
@@ -481,10 +481,9 @@ pub fn goldilocks_tip5_pure_query_60bit_with_fri_shape(
     max_log_arity: usize,
     cap_height: usize,
 ) -> GoldilocksTipsConfig {
-    assert_eq!(
-        log_blowup * num_queries,
-        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS,
-        "pure-query recursive Tip5 profile must provide exactly 60 Johnson bits"
+    assert!(
+        log_blowup * num_queries >= GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS,
+        "pure-query recursive Tip5 profile must provide at least 60 Johnson bits"
     );
     goldilocks_tip5_with_fri_params(
         log_blowup,
@@ -571,5 +570,16 @@ mod tests {
         assert_eq!(GOLDILOCKS_TIP5_RECURSIVE_QUERY_POW_BITS, 24);
         assert_eq!(GOLDILOCKS_TIP5_RECURSIVE_JOHNSON_BITS, 60);
         assert!(GOLDILOCKS_TIP5_RECURSIVE_JOHNSON_BITS >= 60);
+    }
+
+    #[test]
+    fn pure_query_profile_accepts_stronger_johnson_bits() {
+        let _ = goldilocks_tip5_pure_query_60bit_with_fri_shape(7, 9, 2, 3, 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "at least 60 Johnson bits")]
+    fn pure_query_profile_rejects_weaker_johnson_bits() {
+        let _ = goldilocks_tip5_pure_query_60bit_with_fri_shape(7, 8, 2, 3, 4);
     }
 }

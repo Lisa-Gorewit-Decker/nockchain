@@ -285,6 +285,37 @@ internal nodes from opened values plus frontier siblings, or replace the
 upstream verifier path, rather than simply restoring ordinary per-query
 authentication paths.
 
+Pearl's checked-in proof fixture gives a concrete reference point:
+`pearl/zk-pow/fixures/stark_proof.bin` is `59,724` bytes total, split into
+`164` bytes of public data, a `22` byte proof preamble, and `59,538` bytes of
+compact final Plonky2 proof. Its preamble records `pow_bits=[18,18,22]` and
+`rate_bits=[2,3,7]`. Pearl's compact proof omits the final Plonky2
+constants/sigmas oracle openings and Merkle proofs, then verifies against
+cached verifier data and verifier-recomputed public inputs. That maps to the
+same sound pattern as our canonical-metadata and preprocessed-oracle omission:
+omitted data must be verifier-deterministic and recomputed from pinned
+verifier state, not supplied as prover hints.
+
+The analogous verifier-deterministic oracle in the current Plonky3
+batch-STARK L2 body is already omitted. The remaining input batches are
+prover-dependent trace, quotient, permutation, and random oracles. To test
+Pearl's high-blowup final-stage clue without relying on proof-system PoW, the
+pure-query profile factory was relaxed to reject weaker profiles but allow
+stronger ones. The measured no-PoW `rate_bits=7` analogue uses `lb=7,nq=9`
+for `63` Johnson bits:
+
+| L2 high-blowup row over L1 `lb=6,nq=10,cap=4,pow=0` | Metadata-free compact body | Core compact `BatchProof` | Restoration payload | Path sets | Pruned siblings | Ideal frontier siblings | L2 prove |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `lb=7,nq=9,lfp=2,mla=3,cap=4,pow=0` | `120,722` bytes | `72,415` bytes | `48,307` bytes | `9` | `1,008` | `972` | `97.358s` |
+
+This is the smallest measured Plonky3 batch-STARK final body so far, but it
+still misses both production gates: it is above the hard `~100 KiB` target and
+the final-layer proof alone is over three times the `30s` time budget. The
+shared L1 witness proof in the same run took `196.064s`. Pearl's small fixture
+therefore does not translate as "use rate 7" in this stack; the larger gap is
+the proof system and recursive-relation shape, plus Pearl's explicit use of
+proof-system PoW in its production parameters.
+
 The fast-L1 follow-up with L1 `lb=3,nq=20,cap=4,pow=0` also completes and
 verifies after the Tip5 MMCS direction-binding fix:
 

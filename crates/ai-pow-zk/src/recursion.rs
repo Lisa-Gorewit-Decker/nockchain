@@ -2717,7 +2717,10 @@ mod tests {
         use p3_circuit::ops::Tip5Config;
         use p3_circuit_prover::BatchStarkProver;
 
-        assert_eq!(l1_log_blowup * l1_num_queries, 60);
+        assert!(
+            l1_log_blowup * l1_num_queries >= 60,
+            "L1 pure-query diagnostic must carry at least 60 Johnson bits"
+        );
         assert_eq!(
             p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
             0
@@ -2812,7 +2815,10 @@ mod tests {
             l2_cap_height,
         ) in l2_shapes.iter().copied()
         {
-            assert_eq!(l2_log_blowup * l2_num_queries, 60);
+            assert!(
+                l2_log_blowup * l2_num_queries >= 60,
+                "L2 pure-query diagnostic must carry at least 60 Johnson bits"
+            );
             let l2_config = pure_query_l1_stark_config_with_fri_shape(
                 l2_log_blowup, l2_num_queries, l2_log_final_poly_len, l2_max_log_arity,
                 l2_cap_height,
@@ -3110,6 +3116,19 @@ mod tests {
             4,
             2,
             &[("lb5_nq12_lfp2_mla3_cap4", 5, 12, 2, 3, 4)],
+        );
+    }
+
+    #[test]
+    #[ignore = "Pearl-inspired high-blowup pure-query AI-PoW L2 measurement is opt-in"]
+    fn pure_query_l2_over_l1_l2_pearl_rate7_final_shape_for_test_pearl() {
+        run_pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl(
+            "lb6_nq10_cap4",
+            6,
+            10,
+            4,
+            2,
+            &[("lb7_nq9_lfp2_mla3_cap4", 7, 9, 2, 3, 4)],
         );
     }
 
