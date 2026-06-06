@@ -13,12 +13,12 @@ the persisted block artifact.
 > recursive proof path, proof shape, FRI parameters, certificate wire format, or
 > packed Tip5/NPO bridge code, read the live checkpoint summary:
 > [Current Production-Proof Summary](../../docs/ai-pow-integration/2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md#current-production-proof-summary).
-> The active route is native terminal plus fused FRI-native NPO work with
-> packed Tip5 AIR/LogUp/value-bridge bindings and a lane-selector selected
-> NPO-value to packed trace-lane bridge under a shared packed-trace opening. The
-> batch-STARK recursive certificate remains a sound checkpoint/fallback, not
-> the production wire target, and the relaxed production milestone is not yet
-> claimed.
+> The active route remains native terminal plus fused FRI-native NPO work, but
+> the measured shared packed-trace AIR+LogUp/bridge theorem is still too large;
+> the next step is a leaner algebraic packed Tip5 binding folded into the
+> merged value-bridge theorem. The batch-STARK recursive certificate remains a
+> sound checkpoint/fallback, not the production wire target, and the relaxed
+> production milestone is not yet claimed.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 

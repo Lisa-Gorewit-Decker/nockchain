@@ -6373,6 +6373,264 @@ mod tests {
         );
     }
 
+    fn measure_terminal_packed_tip5_air_logup_selected_trace_bridge_candidate_for_profile(
+        label: &str,
+        profile: CircuitConfig,
+    ) {
+        init_terminal_prover_profile_tracing();
+        assert_eq!(profile.johnson_fri_bits(), 60);
+
+        let total_start = std::time::Instant::now();
+        let zk = test_zk_params();
+        let cfg = build_config(&zk, &profile);
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let l0_prove_start = std::time::Instant::now();
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        eprintln!(
+            "native terminal packed Tip5 AIR+LogUp selected trace bridge candidate phase [{label}]: l0_prove_ms={}",
+            l0_prove_start.elapsed().as_millis()
+        );
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program.clone(),
+                proof,
+                &pis,
+            )
+        };
+
+        let l1_build_start = std::time::Instant::now();
+        let air = CompositeFullAirWithLookupsPinned::new_with(program, true);
+        let pd = logup_common_for(&cfg, &verified.program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &verified.proof,
+            &pd.common,
+            &verified.public_inputs.to_vec(),
+            &profile,
+        )
+        .expect("packed AIR+LogUp selected trace bridge diagnostic must build L1 verifier circuit");
+        eprintln!(
+            "native terminal packed Tip5 AIR+LogUp selected trace bridge candidate phase [{label}]: l1_circuit_build_ms={}",
+            l1_build_start.elapsed().as_millis()
+        );
+
+        let l1_verify_start = std::time::Instant::now();
+        let traces = run_composite_l1_verifier_traces(&built, &verified.proof).expect(
+            "packed AIR+LogUp selected trace bridge diagnostic must run L1 verifier traces",
+        );
+        let l1_verify_elapsed = l1_verify_start.elapsed();
+        eprintln!(
+            "native terminal packed Tip5 AIR+LogUp selected trace bridge candidate phase [{label}]: l1_trace_verify_ms={}",
+            l1_verify_elapsed.as_millis()
+        );
+
+        let compiler = terminal_compiler();
+        let compile_start = std::time::Instant::now();
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&built.circuit).expect(
+            "packed AIR+LogUp selected trace bridge diagnostic must compile terminal circuit",
+        );
+        compiler
+            .validate_goldilocks_production_query_domains(
+                &vk,
+                TerminalProofParameters::production_60bit(),
+            )
+            .expect(
+                "packed AIR+LogUp selected trace bridge diagnostic must use production query domains",
+            );
+        let compile_elapsed = compile_start.elapsed();
+        eprintln!(
+            "native terminal packed Tip5 AIR+LogUp selected trace bridge candidate phase [{label}]: terminal_compile_ms={}",
+            compile_elapsed.as_millis()
+        );
+
+        let witness = TerminalWitness {
+            fingerprint: TerminalCircuitFingerprint::from_circuit(&built.circuit),
+            public_inputs: built.public_inputs.clone(),
+            private_inputs: built.private_inputs.clone(),
+            traces,
+        };
+
+        let columns_start = std::time::Instant::now();
+        let columns = compiler
+            .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
+            .expect("packed AIR+LogUp selected trace bridge diagnostic must build NPO columns");
+        let columns_elapsed = columns_start.elapsed();
+        eprintln!(
+            "native terminal packed Tip5 AIR+LogUp selected trace bridge candidate phase [{label}]: npo_columns_ms={} rows={} padded_rows={} columns={}",
+            columns_elapsed.as_millis(),
+            columns.layout.rows,
+            1usize << columns.layout.log_rows,
+            columns.layout.column_count,
+        );
+
+        let trace_start = std::time::Instant::now();
+        let (_, packed_profile, packed_trace) = compiler
+            .terminal_npo_tip5_packed_lookup_trace_goldilocks(&vk, &witness)
+            .expect(
+                "packed AIR+LogUp selected trace bridge diagnostic must build packed lookup trace",
+            );
+        let trace_elapsed = trace_start.elapsed();
+        eprintln!(
+            "native terminal packed Tip5 AIR+LogUp selected trace bridge candidate phase [{label}]: packed_trace_ms={} packed_rows={} packed_padded_rows={} packed_width={} logup_tuples={}",
+            trace_elapsed.as_millis(),
+            packed_profile.rows,
+            packed_profile.padded_rows,
+            packed_profile.main_width,
+            packed_profile.logup_query_tuples,
+        );
+
+        let root_start = std::time::Instant::now();
+        let prelude_roots =
+            NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_prelude_commitments_goldilocks(
+                &vk,
+                &columns,
+                &packed_profile,
+                &packed_trace,
+            )
+            .expect("packed AIR+LogUp selected trace bridge diagnostic must commit endpoints");
+        let root_elapsed = root_start.elapsed();
+        eprintln!(
+            "native terminal packed Tip5 AIR+LogUp selected trace bridge candidate phase [{label}]: shared_endpoint_root_ms={}",
+            root_elapsed.as_millis()
+        );
+
+        let prelude_start = std::time::Instant::now();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &witness.public_inputs,
+                TerminalProofParameters::production_60bit(),
+                prelude_roots,
+            )
+            .expect(
+                "packed AIR+LogUp selected trace bridge diagnostic must build terminal prelude",
+            );
+        let prelude_elapsed = prelude_start.elapsed();
+        eprintln!(
+            "native terminal packed Tip5 AIR+LogUp selected trace bridge candidate phase [{label}]: prelude_ms={}",
+            prelude_elapsed.as_millis()
+        );
+
+        let prove_start = std::time::Instant::now();
+        let shared_proof = compiler
+            .prove_terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_goldilocks(
+                &vk, &witness.public_inputs, &witness, &prelude,
+            )
+            .expect("packed AIR+LogUp selected trace bridge proof must build");
+        let prove_elapsed = prove_start.elapsed();
+        eprintln!(
+            "native terminal packed Tip5 AIR+LogUp selected trace bridge candidate phase [{label}]: prove_ms={}",
+            prove_elapsed.as_millis()
+        );
+
+        let verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_goldilocks::<Challenge>(
+                &vk,
+                &witness.public_inputs,
+                &prelude,
+                &shared_proof,
+            )
+            .expect("packed AIR+LogUp selected trace bridge proof must verify");
+        let verify_elapsed = verify_start.elapsed();
+
+        let proof_bytes = postcard_len(
+            &shared_proof, "packed AIR+LogUp selected trace bridge proof",
+        );
+        let compact_fri_bytes = postcard_len(
+            &shared_proof.proof, "packed AIR+LogUp selected trace bridge compact FRI proof",
+        );
+        let opened_selected_lookup_bytes = postcard_len(
+            &shared_proof.opened_selected_lookup_basis,
+            "packed AIR+LogUp selected trace bridge opened selected lookup",
+        );
+        let opened_packed_trace_bytes = postcard_len(
+            &shared_proof.opened_packed_trace_basis,
+            "packed AIR+LogUp selected trace bridge opened packed trace",
+        );
+        let opened_air_quotient_bytes = postcard_len(
+            &shared_proof.opened_air_quotient_basis,
+            "packed AIR+LogUp selected trace bridge opened AIR quotient",
+        );
+        let opened_logup_table_bytes = postcard_len(
+            &shared_proof.opened_logup_table_basis,
+            "packed AIR+LogUp selected trace bridge opened LogUp table",
+        );
+        let opened_logup_accumulator_bytes = postcard_len(
+            &shared_proof.opened_logup_accumulator_points_basis,
+            "packed AIR+LogUp selected trace bridge opened LogUp accumulator",
+        );
+        let opened_logup_quotient_bytes = postcard_len(
+            &shared_proof.opened_logup_quotient_basis,
+            "packed AIR+LogUp selected trace bridge opened LogUp quotient",
+        );
+        let opened_selected_bridge_accumulator_bytes = postcard_len(
+            &shared_proof.opened_selected_bridge_accumulator_points_basis,
+            "packed AIR+LogUp selected trace bridge opened selected bridge accumulator",
+        );
+        let opened_packed_bridge_accumulator_bytes = postcard_len(
+            &shared_proof.opened_packed_bridge_accumulator_points_basis,
+            "packed AIR+LogUp selected trace bridge opened packed bridge accumulator",
+        );
+        let opened_selected_bridge_quotient_bytes = postcard_len(
+            &shared_proof.opened_selected_bridge_quotient_basis,
+            "packed AIR+LogUp selected trace bridge opened selected bridge quotient",
+        );
+        let opened_packed_bridge_quotient_bytes = postcard_len(
+            &shared_proof.opened_packed_bridge_quotient_basis,
+            "packed AIR+LogUp selected trace bridge opened packed bridge quotient",
+        );
+        eprintln!(
+            "native terminal packed Tip5 AIR+LogUp selected trace bridge candidate over ai-pow composite verifier [{label}]: proof={} bytes compact_fri={} opened_selected_lookup={} opened_packed_trace={} opened_air_quotient={} opened_logup_table={} opened_logup_accumulator={} opened_logup_quotient={} opened_selected_bridge_accumulator={} opened_packed_bridge_accumulator={} opened_selected_bridge_quotient={} opened_packed_bridge_quotient={} selected_rows={} selected_padded_rows={} packed_rows={} packed_padded_rows={} packed_width={} logup_tuples={} air_quotient_rows={} logup_table_columns={} logup_accumulator_columns={} logup_quotient_rows={} selected_bridge_accumulator_columns={} packed_bridge_accumulator_columns={} selected_bridge_quotient_rows={} packed_bridge_quotient_rows={} l1_verify_ms={} compile_ms={} npo_columns_ms={} packed_trace_ms={} shared_endpoint_root_ms={} prelude_ms={} prove_ms={} verify_ms={} total_wall_ms={}",
+            proof_bytes,
+            compact_fri_bytes,
+            opened_selected_lookup_bytes,
+            opened_packed_trace_bytes,
+            opened_air_quotient_bytes,
+            opened_logup_table_bytes,
+            opened_logup_accumulator_bytes,
+            opened_logup_quotient_bytes,
+            opened_selected_bridge_accumulator_bytes,
+            opened_packed_bridge_accumulator_bytes,
+            opened_selected_bridge_quotient_bytes,
+            opened_packed_bridge_quotient_bytes,
+            shared_proof.selected_profile.rows,
+            shared_proof.selected_profile.padded_rows,
+            shared_proof.packed_trace_profile.rows,
+            shared_proof.packed_trace_profile.padded_rows,
+            shared_proof.packed_trace_profile.main_width,
+            shared_proof.packed_trace_profile.logup_query_tuples,
+            shared_proof.air_quotient_profile.padded_rows,
+            shared_proof.logup_table_profile.basis_columns,
+            shared_proof.logup_accumulator_profile.basis_columns,
+            shared_proof.logup_quotient_profile.padded_rows,
+            shared_proof.selected_bridge_accumulator_profile.basis_columns,
+            shared_proof.packed_bridge_accumulator_profile.basis_columns,
+            shared_proof.selected_bridge_quotient_profile.padded_rows,
+            shared_proof.packed_bridge_quotient_profile.padded_rows,
+            l1_verify_elapsed.as_millis(),
+            compile_elapsed.as_millis(),
+            columns_elapsed.as_millis(),
+            trace_elapsed.as_millis(),
+            root_elapsed.as_millis(),
+            prelude_elapsed.as_millis(),
+            prove_elapsed.as_millis(),
+            verify_elapsed.as_millis(),
+            total_start.elapsed().as_millis(),
+        );
+    }
+
+    #[test]
+    #[ignore = "full composite packed Tip5 AIR+LogUp selected trace bridge measurement is opt-in"]
+    fn terminal_packed_tip5_air_logup_selected_trace_bridge_candidate_for_prod_baseline_measures() {
+        measure_terminal_packed_tip5_air_logup_selected_trace_bridge_candidate_for_profile(
+            "PROD",
+            CircuitConfig::PROD,
+        );
+    }
+
     fn measure_terminal_packed_tip5_logup_candidate_for_profile(
         label: &str,
         profile: CircuitConfig,
