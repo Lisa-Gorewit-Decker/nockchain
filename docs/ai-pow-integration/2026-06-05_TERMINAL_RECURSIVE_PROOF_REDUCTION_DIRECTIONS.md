@@ -362,6 +362,40 @@ backend remains valuable as a verifier-relation diagnostic and fallback, but
 its full composite path is paying costs that Pearl's architecture avoids
 entirely.
 
+### Current Specialized Layer-0 Proof Baseline
+
+The tree now has an ignored Layer-0 pinned+LogUp size diagnostic,
+`composite_pinned_logup_*_l0_size_breakdown`, to quantify the proof object that
+a Pearl-shaped compressor would consume if we start from the existing
+specialized AI-PoW AIR instead of the generic terminal verifier relation. The
+diagnostic proves and verifies `CompositeTrace::baseline_min()` with
+`composite_prove_pinned_logup`, checks `pow_bits=0`, and prints component
+sizes for the proof fields.
+
+Release/native measurements on 2026-06-05:
+
+| Layer-0 pinned+LogUp profile | Prove | Verify | Bincode proof | Bincode opening proof | Bincode opened values | Global lookup data |
+|---|---:|---:|---:|---:|---:|---:|
+| `lb=4,nq=15,pow=0` | `8.695s` | `0.118s` | `260,987` bytes / `254.9 KiB` | `229,849` bytes | `24,188` bytes | `6,808` bytes |
+| `lb=6,nq=10,pow=0` | `32.314s` | `0.381s` | `199,882` bytes / `195.2 KiB` | `168,744` bytes | `24,188` bytes | `6,808` bytes |
+
+Postcard sizes for the same two proofs were `273,043` bytes and `208,726`
+bytes. The component split shows that the base proof is still dominated by FRI
+opening material. Increasing blowup and reducing queries lowers the base proof
+by about `61 KiB`, but it also makes this baseline proof about `3.7x` slower.
+
+Consequences for the Pearl-shaped route:
+
+- Directly serializing the existing Layer-0 proof is not enough; even the
+  `lb=6,nq=10,pow=0` diagnostic is about `195 KiB` before any recursive
+  certificate framing.
+- A production-sized recursive path has to replace the Layer-0 FRI opening
+  proof on the wire with a compact recursive proof that verifies it, not merely
+  re-encode the Layer-0 proof.
+- The existing specialized AIR is a plausible base statement for the
+  Pearl-shaped route, but the final compressor must stay pure-query and avoid
+  importing Pearl's proof-system PoW accounting.
+
 ## Direction 1: Unified Production NPO FRI/IOP
 
 Build one production NPO proof that combines the current

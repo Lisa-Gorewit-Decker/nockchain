@@ -510,6 +510,99 @@ mod tests {
         }
     }
 
+    fn bincode_len<T: serde::Serialize>(value: &T, label: &str) -> usize {
+        bincode::serde::encode_to_vec(value, bincode::config::standard())
+            .unwrap_or_else(|err| panic!("{label} must bincode-serialize: {err:?}"))
+            .len()
+    }
+
+    fn postcard_len<T: serde::Serialize>(value: &T, label: &str) -> usize {
+        postcard::to_allocvec(value)
+            .unwrap_or_else(|err| panic!("{label} must postcard-serialize: {err:?}"))
+            .len()
+    }
+
+    fn measure_pinned_logup_l0_size_breakdown(label: &str, profile: CircuitConfig) {
+        assert_eq!(
+            profile.johnson_fri_bits(),
+            60,
+            "{label} must remain a 60-bit pure-query diagnostic"
+        );
+        assert_eq!(
+            profile.pow_bits, 0,
+            "{label} must not count proof-system PoW"
+        );
+
+        let cfg = build_config(&test_zk_params(), &profile);
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+
+        let prove_start = std::time::Instant::now();
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let prove_ms = prove_start.elapsed().as_millis();
+
+        let verify_start = std::time::Instant::now();
+        composite_verify_pinned_logup(&cfg, &program, &proof, &pis)
+            .expect("production Layer-0 pinned+LogUp proof must verify");
+        let verify_ms = verify_start.elapsed().as_millis();
+
+        let bincode_total = bincode_len(&proof, "Layer-0 batch proof");
+        let bincode_commitments = bincode_len(&proof.commitments, "Layer-0 commitments");
+        let bincode_opened_values = bincode_len(&proof.opened_values, "Layer-0 opened values");
+        let bincode_opening_proof = bincode_len(&proof.opening_proof, "Layer-0 opening proof");
+        let bincode_global_lookup_data =
+            bincode_len(&proof.global_lookup_data, "Layer-0 global lookup data");
+        let bincode_component_sum = bincode_commitments
+            + bincode_opened_values
+            + bincode_opening_proof
+            + bincode_global_lookup_data;
+
+        let postcard_total = postcard_len(&proof, "Layer-0 batch proof");
+        let postcard_commitments = postcard_len(&proof.commitments, "Layer-0 commitments");
+        let postcard_opened_values = postcard_len(&proof.opened_values, "Layer-0 opened values");
+        let postcard_opening_proof = postcard_len(&proof.opening_proof, "Layer-0 opening proof");
+        let postcard_global_lookup_data =
+            postcard_len(&proof.global_lookup_data, "Layer-0 global lookup data");
+        let postcard_component_sum = postcard_commitments
+            + postcard_opened_values
+            + postcard_opening_proof
+            + postcard_global_lookup_data;
+
+        let table_count = proof.opened_values.instances.len();
+        let global_lookup_entries: usize = proof.global_lookup_data.iter().map(Vec::len).sum();
+
+        eprintln!(
+            "ai-pow Layer-0 pinned+LogUp size breakdown [{label}]: profile=lb{} nq{} pow{} prove_ms={} verify_ms={} tables={} global_lookup_entries={}",
+            profile.log_blowup,
+            profile.num_queries,
+            profile.pow_bits,
+            prove_ms,
+            verify_ms,
+            table_count,
+            global_lookup_entries,
+        );
+        eprintln!(
+            "ai-pow Layer-0 pinned+LogUp bincode bytes [{label}]: total={} commitments={} opened_values={} opening_proof={} global_lookup_data={} component_sum={} serde_overhead={}",
+            bincode_total,
+            bincode_commitments,
+            bincode_opened_values,
+            bincode_opening_proof,
+            bincode_global_lookup_data,
+            bincode_component_sum,
+            bincode_total.saturating_sub(bincode_component_sum),
+        );
+        eprintln!(
+            "ai-pow Layer-0 pinned+LogUp postcard bytes [{label}]: total={} commitments={} opened_values={} opening_proof={} global_lookup_data={} component_sum={} serde_overhead={}",
+            postcard_total,
+            postcard_commitments,
+            postcard_opened_values,
+            postcard_opening_proof,
+            postcard_global_lookup_data,
+            postcard_component_sum,
+            postcard_total.saturating_sub(postcard_component_sum),
+        );
+    }
+
     #[test]
     fn composite_prove_verify_round_trip() {
         let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
@@ -1730,5 +1823,24 @@ mod tests {
         println!("  prove    : {prove_ms} ms");
         println!("  verify   : {verify_ms} ms");
         println!("  proof    : {proof_bytes} bytes");
+    }
+
+    #[test]
+    #[ignore = "Layer-0 production proof size diagnostic — expensive; run with --ignored"]
+    fn composite_pinned_logup_prod_l0_size_breakdown() {
+        measure_pinned_logup_l0_size_breakdown("PROD_LB4_NQ15", CircuitConfig::PROD);
+    }
+
+    #[test]
+    #[ignore = "Layer-0 pure-query reduced-query proof size diagnostic — expensive; run with --ignored"]
+    fn composite_pinned_logup_lb6_nq10_l0_size_breakdown() {
+        measure_pinned_logup_l0_size_breakdown(
+            "PURE_QUERY_LB6_NQ10",
+            CircuitConfig {
+                log_blowup: 6,
+                pow_bits: 0,
+                num_queries: 10,
+            },
+        );
     }
 }
