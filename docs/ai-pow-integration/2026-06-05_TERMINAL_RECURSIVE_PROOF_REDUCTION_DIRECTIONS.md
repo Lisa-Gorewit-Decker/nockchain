@@ -16,6 +16,63 @@ undocumented or unproven soundness shortcut.
 
 ## Current Most Viable Path (2026-06-06)
 
+### Current Production-Proof Summary
+
+The current most viable production route is a native terminal certificate, not
+the batch-STARK recursive certificate. The target is the relaxed milestone of
+about `150 KiB` total recursive proof size and about `30s` total release
+proving time, while keeping soundness at 60 pure FRI query bits
+(`log_blowup=4`, `num_queries=15`, `query_pow_bits=0`).
+
+The proof shape that still looks viable is one fused FRI-native theorem that
+shares the packed Tip5 trace opening across:
+
+- the merged terminal NPO value bridge;
+- packed one-row-per-permutation Tip5 AIR algebra;
+- packed byte-table LogUp membership;
+- lane-selector-aware selected NPO-value to packed trace-lane binding.
+
+What is done and verified:
+
+- The merged residual-zero/recompose/padding/value-bridge checkpoint verifies
+  over the actual full `ai-pow-zk` composite verifier relation at
+  `151,448` bytes / `147.9 KiB` with `14.914s` post-prelude proof-body
+  construction. It is sound for its included relations, including
+  Merkle-direction-aware `mmcs_bit` value projection, but it intentionally does
+  not yet bind internal Tip5 AIR/LogUp work.
+- The standalone packed Tip5 AIR algebra checkpoint verifies at `136,810`
+  bytes and `22.718s` proving.
+- The standalone packed byte-table LogUp checkpoint verifies at `167,018`
+  bytes and `22.442s` proving.
+- The standalone lane-selector selected-to-packed NPO-IO bridge verifies at
+  `137,355` bytes and `28.526s` proving.
+- The direct selected-to-packed-trace bridge verifies at `213,546` bytes and
+  `31.997s` proving, deriving the 26 NPO-IO lanes directly from the opened
+  packed trace instead of carrying a separate projection commitment.
+- The naive projection-plus-selected bridge fusion verifies, but measures
+  `243,516` bytes and `35.423s` proving, so it is negative evidence against
+  simply batching more standalone proof components into one opening proof.
+
+What remains:
+
+- Build and measure the shared packed-trace theorem that opens the packed
+  trace once for packed AIR, packed LogUp, and the direct selected-value bridge.
+- Fold that theorem into the merged value-bridge proof instead of appending
+  another standalone packed proof body.
+- Reuse prepared terminal compile output, NPO columns, packed traces,
+  commitment roots, and prelude material so the measured production pipeline is
+  the total path a miner would actually run.
+- Add negative tests for stale packed trace roots, stale table/profile data,
+  wrong selected-value bridge roots, wrong `mmcs_bit` projection, malformed
+  compact FRI payloads, and transcript/prelude substitutions.
+- Remeasure the full production path with release flags and native CPU codegen.
+
+The relaxed milestone is therefore not yet claimed. The verified checkpoints
+show a plausible route to the target, but the remaining proof-compression step
+must remove duplicated FRI/opening material; standalone packed proofs cannot be
+added to the `151,448` byte merged value-bridge checkpoint and still meet the
+budget.
+
 ### Production Status Summary
 
 | Question | Current answer |
@@ -30,14 +87,6 @@ undocumented or unproven soundness shortcut.
 | Negative fusion result | Naively fusing packed projection plus selected bridge verifies, but measures `243,516` bytes / `237.8 KiB` and `35.423s` proving because compact-FRI/opening material grows |
 | Main current blocker | All required packed Tip5/NPO subtheorems now verify, but any proof that opens the packed trace as a separate standalone component duplicates compact-FRI and row-opening material and misses the total size/time target |
 | Next implementation step | Fuse packed AIR algebra, packed byte LogUp, and direct selected-value-to-packed-trace binding under one packed-trace opening schedule, then fold that into the merged value-bridge theorem |
-
-In short: the current most viable path is still native terminal recursion,
-not the batch-STARK recursive certificate. What is done and verified is the
-soundness-critical set of standalone packed Tip5/NPO bindings plus the merged
-value-bridge base. What remains is the production compression step: combine
-those verified relations into one algebraic terminal theorem without carrying
-the standalone proof duplication that made the first fused projection+bridge
-diagnostic too large and too slow.
 
 ### Decision
 
