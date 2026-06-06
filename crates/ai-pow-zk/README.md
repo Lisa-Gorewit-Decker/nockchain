@@ -14,10 +14,10 @@ the persisted block artifact.
 > packed Tip5/NPO bridge code, read the live status summary:
 > [Production Status Summary](../../docs/ai-pow-integration/2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md#production-status-summary).
 > The active route is native terminal plus fused FRI-native NPO work with
-> packed Tip5 AIR/LogUp/projection/value-bridge bindings, including the
-> lane-selector-aware selected-to-packed NPO-IO bridge described there. The
-> batch-STARK recursive certificate remains a sound checkpoint/fallback, not the
-> production wire target, and the relaxed production milestone is not yet
+> packed Tip5 AIR/LogUp/value-bridge bindings and a lane-selector selected
+> NPO-value to packed trace-lane bridge under a shared packed-trace opening. The
+> batch-STARK recursive certificate remains a sound checkpoint/fallback, not
+> the production wire target, and the relaxed production milestone is not yet
 > claimed.
 
 ## Cryptographic assumptions (the load-bearing primitives)

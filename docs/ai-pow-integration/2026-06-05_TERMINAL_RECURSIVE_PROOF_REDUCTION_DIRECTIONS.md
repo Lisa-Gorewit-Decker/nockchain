@@ -23,12 +23,13 @@ undocumented or unproven soundness shortcut.
 | Production recursive proof path | Native terminal certificate, not the batch-STARK recursive certificate |
 | Relaxed target | About `150 KiB` recursive proof artifact and about `30s` total release proving |
 | Soundness target | 60 pure FRI query bits with `log_blowup=4`, `num_queries=15`, `query_pow_bits=0` |
-| Most viable shape | One fused FRI-native terminal theorem over the merged NPO/value bridge plus packed Tip5 AIR, packed byte LogUp, packed trace-to-NPO-IO projection, and selected-value-to-packed-NPO-IO bridge |
+| Most viable shape | One fused FRI-native terminal theorem over the merged NPO/value bridge plus packed Tip5 AIR, packed byte LogUp, and a lane-selector selected-value-to-packed-trace bridge that derives NPO-IO lanes from the shared packed trace opening |
 | Best measured complete base | Merged padding/value-bridge checkpoint at `151,448` bytes / `147.9 KiB`, post-prelude proof body `14.914s`; sound for its included relations, but missing internal Tip5 binding |
 | Best near-target standalone missing binding | Lane-selector-aware selected-to-packed NPO-IO bridge at `137,355` bytes / `134.1 KiB`, prove `28.526s`, verify `14.510s` |
+| Direct bridge diagnostic | Binding selected NPO values directly to packed trace lanes verifies at `213,546` bytes / `208.5 KiB`, prove `31.997s`; it removes the projection commitment/domain but is too large standalone because it opens the full `500`-column packed trace |
 | Negative fusion result | Naively fusing packed projection plus selected bridge verifies, but measures `243,516` bytes / `237.8 KiB` and `35.423s` proving because compact-FRI/opening material grows |
-| Main current blocker | All required packed Tip5/NPO subtheorems now verify standalone, but appending or naively batching them duplicates compact-FRI and opening material and misses the total size/time target |
-| Next implementation step | Build an algebraically fused/domain-reduced theorem for the merged value bridge, packed AIR, packed byte LogUp, packed NPO-IO projection, and lane-selector bridge under one transcript and one opening schedule |
+| Main current blocker | All required packed Tip5/NPO subtheorems now verify, but any proof that opens the packed trace as a separate standalone component duplicates compact-FRI and row-opening material and misses the total size/time target |
+| Next implementation step | Fuse packed AIR algebra, packed byte LogUp, and direct selected-value-to-packed-trace binding under one packed-trace opening schedule, then fold that into the merged value-bridge theorem |
 
 In short: the current most viable path is still native terminal recursion,
 not the batch-STARK recursive certificate. What is done and verified is the
@@ -57,8 +58,9 @@ single fused NPO theorem that contains:
   and `mmcs_bit` constraints;
 - packed one-row-per-permutation Tip5 AIR algebra;
 - packed byte-table LogUp;
-- packed trace to packed NPO-IO projection binding;
-- lane-selector-aware selected NPO-value to packed NPO-IO projection bridge;
+- lane-selector-aware selected NPO-value to packed trace-lane binding, deriving
+  the 16 input lanes and 10 final-output lanes from the same packed trace
+  opening used by packed AIR/LogUp;
 - one shared prelude, transcript, FRI point, and opening shape so trace
   openings are not duplicated across standalone proof components.
 
@@ -123,13 +125,25 @@ negative evidence: the final production fusion has to reduce or algebraically
 combine opened domains/quotients, not just batch more standalone matrices into
 one PCS opening.
 
+The direct selected-to-packed-trace bridge now verifies as a sharper
+diagnostic. It removes the intermediate packed NPO-IO projection commitment and
+projection quotient domain entirely: the prover commits to the selected lookup
+and packed trace, and the verifier derives the 26 NPO-IO lanes from the opened
+packed trace at `zeta`. On the full PROD composite relation it measures
+`213,546` bytes / `208.5 KiB`, compact FRI `199,459` bytes, full packed-trace
+opening `10,021` bytes, prove `31.997s`, and verify `14.054s`. This is
+smaller than the naive projection+selected fusion, but still not production
+viable standalone. The full `500`-column packed trace opening is too expensive
+unless it is shared with packed AIR algebra and packed byte LogUp in the same
+FRI theorem.
+
 Those standalone proofs are evidence, not an appendable production proof.
 Appending any standalone packed proof to the `151,448` byte merged
 value-bridge checkpoint would exceed the relaxed size target because it would
 duplicate full-trace and FRI opening material. The remaining opportunity is to
-fuse packed AIR algebra, packed LogUp, packed NPO-IO projection, and the
-selected-value bridge into the same transcript and opening set as the merged
-value bridge.
+fuse packed AIR algebra, packed LogUp, and the direct selected-value-to-packed
+trace bridge into the same transcript and opening set as the merged value
+bridge.
 
 The selected-to-packed bridge should compare only lanes that are semantically
 present. The selected value bridge masks final-output lanes by
@@ -175,16 +189,24 @@ masked projection commitment.
   semantically present lanes, reject stale endpoint commitments/profiles,
   reject malformed openings, reject tampered selected openings, and reject a
   stale prelude for a changed packed projection endpoint.
+- The direct selected-to-packed-trace bridge checkpoint verifies. Its tests
+  round-trip the proof, require the selected endpoint to match the merged
+  value-bridge root and the packed endpoint to match the packed trace root,
+  derive the packed NPO-IO lanes from the opened packed trace, reject stale
+  endpoint commitments/profiles, reject malformed packed trace openings, reject
+  tampered packed trace openings, and reject a stale prelude for a changed
+  packed trace.
 - The production soundness policy is explicit: 60 bits must come from FRI query
   soundness at `pow=0`, not from proof-system grinding.
 
 ### Remaining Work
 
-- Fuse packed AIR algebra, packed byte-table LogUp, packed NPO-IO projection,
-  and selected-value bridge openings with the merged value-bridge proof under
-  one transcript and one shared opening schedule. The failed
-  projection+selected-bridge fusion shows this must be an algebraic composition
-  and domain-reduction step, not a naive multi-domain opening batch.
+- Fuse packed AIR algebra, packed byte-table LogUp, and direct selected-value
+  to packed-trace bridge openings with the merged value-bridge proof under one
+  transcript and one shared opening schedule. The failed projection+selected
+  fusion and the still-too-large standalone direct bridge show this must share
+  the packed trace opening across all packed trace relations, not serialize
+  another standalone proof.
 - Remove duplicated production prover setup by reusing terminal compile
   outputs, prepared NPO columns, packed traces, roots, and prelude material
   wherever verifier key and public inputs are unchanged.
