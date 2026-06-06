@@ -314,6 +314,20 @@ pub fn build_composite_l1_verifier_circuit(
     public_values: &[Val],
     profile: &crate::circuit::CircuitConfig,
 ) -> Result<BuiltCompositeL1, VerificationError> {
+    build_composite_l1_verifier_circuit_with_recompose_coeff_ctl(
+        config, composite_air, proof, common_data, public_values, profile, true,
+    )
+}
+
+fn build_composite_l1_verifier_circuit_with_recompose_coeff_ctl(
+    config: &AiPowStarkConfig,
+    composite_air: &CompositeFullAirWithLookupsPinned,
+    proof: &BatchProof<AiPowStarkConfig>,
+    common_data: &CommonData<AiPowStarkConfig>,
+    public_values: &[Val],
+    profile: &crate::circuit::CircuitConfig,
+    recompose_coeff_ctl_for_decompose_links: bool,
+) -> Result<BuiltCompositeL1, VerificationError> {
     let mut cb = CircuitBuilder::<Challenge>::new();
     // In-circuit Tip5 permutation NPO + the recompose link (mirror of
     // the validated Layer-0 verifier circuit, `test_tip5_layer0_
@@ -322,7 +336,7 @@ pub fn build_composite_l1_verifier_circuit(
         generate_tip5_trace::<Challenge, Tip5Goldilocks>, LiftTip5,
     );
     cb.enable_recompose::<Val>(generate_recompose_trace::<Val, Challenge>);
-    cb.set_recompose_coeff_ctl_for_decompose_links(true);
+    cb.set_recompose_coeff_ctl_for_decompose_links(recompose_coeff_ctl_for_decompose_links);
 
     // ai-pow-zk Layer-0 FRI verifier params — derived from the same
     // `CircuitConfig` `build_stark_config` used to prove the
@@ -1312,19 +1326,31 @@ pub fn measure_composite_l1_terminal_relation(
     profile: &crate::circuit::CircuitConfig,
     verified: &ChainVerifiedCompositeProof<'_>,
 ) -> Result<CompositeTerminalRelationMetrics, VerificationError> {
+    measure_composite_l1_terminal_relation_with_recompose_coeff_ctl(
+        zk_params, profile, verified, true,
+    )
+}
+
+fn measure_composite_l1_terminal_relation_with_recompose_coeff_ctl(
+    zk_params: &crate::params::ZkParams,
+    profile: &crate::circuit::CircuitConfig,
+    verified: &ChainVerifiedCompositeProof<'_>,
+    recompose_coeff_ctl_for_decompose_links: bool,
+) -> Result<CompositeTerminalRelationMetrics, VerificationError> {
     use std::time::Instant;
 
     let cfg = crate::composite_proof::build_config(zk_params, profile);
     let t = Instant::now();
     let air = CompositeFullAirWithLookupsPinned::new_with(verified.program.clone(), true);
     let pd = crate::composite_proof::logup_common_for(&cfg, &verified.program, true);
-    let built = build_composite_l1_verifier_circuit(
+    let built = build_composite_l1_verifier_circuit_with_recompose_coeff_ctl(
         &cfg,
         &air,
         &verified.proof,
         &pd.common,
         &verified.public_inputs.to_vec(),
         profile,
+        recompose_coeff_ctl_for_decompose_links,
     )?;
     let l1_circuit_build_ms = t.elapsed().as_millis();
 
@@ -3202,6 +3228,13 @@ mod tests {
     fn measure_baseline_composite_terminal_relation(
         profile: CircuitConfig,
     ) -> CompositeTerminalRelationMetrics {
+        measure_baseline_composite_terminal_relation_with_recompose_coeff_ctl(profile, true)
+    }
+
+    fn measure_baseline_composite_terminal_relation_with_recompose_coeff_ctl(
+        profile: CircuitConfig,
+        recompose_coeff_ctl_for_decompose_links: bool,
+    ) -> CompositeTerminalRelationMetrics {
         let zk = test_zk_params();
         let cfg = build_config(&zk, &profile);
 
@@ -3213,8 +3246,38 @@ mod tests {
                 program, proof, &pis,
             )
         };
-        measure_composite_l1_terminal_relation(&zk, &profile, &verified)
-            .expect("terminal relation metrics must build without terminal proving")
+        measure_composite_l1_terminal_relation_with_recompose_coeff_ctl(
+            &zk, &profile, &verified, recompose_coeff_ctl_for_decompose_links,
+        )
+        .expect("terminal relation metrics must build without terminal proving")
+    }
+
+    fn measure_baseline_composite_terminal_relation_recompose_ctl_pair(
+        profile: CircuitConfig,
+    ) -> (
+        CompositeTerminalRelationMetrics,
+        CompositeTerminalRelationMetrics,
+    ) {
+        let zk = test_zk_params();
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program, proof, &pis,
+            )
+        };
+        let sound = measure_composite_l1_terminal_relation_with_recompose_coeff_ctl(
+            &zk, &profile, &verified, true,
+        )
+        .expect("sound terminal relation metrics must build");
+        let unsafe_floor = measure_composite_l1_terminal_relation_with_recompose_coeff_ctl(
+            &zk, &profile, &verified, false,
+        )
+        .expect("unsafe lower-bound terminal relation metrics must build");
+        (sound, unsafe_floor)
     }
 
     fn measure_baseline_l1_verifier_input_footprint(
@@ -3348,6 +3411,63 @@ mod tests {
     #[ignore = "production-profile terminal relation metrics are opt-in"]
     fn terminal_relation_metrics_for_prod_baseline_composite_are_available() {
         measure_and_assert_terminal_relation_for_profile("PROD", CircuitConfig::PROD);
+    }
+
+    #[test]
+    #[ignore = "unsound lower-bound relation-size diagnostic is opt-in"]
+    fn terminal_relation_metrics_recompose_ctl_lower_bound_for_prod_baseline_composite() {
+        let (sound, unsafe_floor) =
+            measure_baseline_composite_terminal_relation_recompose_ctl_pair(CircuitConfig::PROD);
+        print_terminal_relation_metrics("PROD_RECOMPOSE_CTL_SOUND", &sound);
+        print_terminal_relation_metrics("PROD_RECOMPOSE_CTL_DISABLED_UNSOUND_FLOOR", &unsafe_floor);
+        eprintln!(
+            "ai-pow composite terminal relation recompose ctl delta [PROD]: ops={} primitive_ops={} npo_rows={} recompose_rows={} recompose_coeff_rows={} npo_residuals={}",
+            sound
+                .terminal_operation_count
+                .saturating_sub(unsafe_floor.terminal_operation_count),
+            sound
+                .primitive_operation_count
+                .saturating_sub(unsafe_floor.primitive_operation_count),
+            sound.npo_rows.saturating_sub(unsafe_floor.npo_rows),
+            unsafe_floor
+                .recompose_rows
+                .saturating_sub(sound.recompose_rows),
+            sound
+                .recompose_coeff_rows
+                .saturating_sub(unsafe_floor.recompose_coeff_rows),
+            sound
+                .external_npo_validity_components
+                .saturating_sub(unsafe_floor.external_npo_validity_components),
+        );
+
+        assert_eq!(
+            sound.terminal_public_input_values,
+            unsafe_floor.terminal_public_input_values
+        );
+        assert_eq!(
+            sound.tip5_rows, unsafe_floor.tip5_rows,
+            "disabling recompose coeff CTL must not change Tip5 rows"
+        );
+        assert_eq!(
+            unsafe_floor.recompose_coeff_rows, 0,
+            "lower-bound diagnostic should remove the coeff-control table"
+        );
+        assert!(
+            unsafe_floor.recompose_rows > sound.recompose_rows,
+            "disabling coeff control should replace most coeff rows with plain recompose rows"
+        );
+        assert_eq!(
+            unsafe_floor.primitive_operation_count, sound.primitive_operation_count,
+            "the coeff-control toggle should not change primitive verifier arithmetic"
+        );
+        assert!(
+            unsafe_floor.terminal_operation_count < sound.terminal_operation_count,
+            "without a replacement binding this only measures an unsound total-op floor"
+        );
+        assert!(
+            unsafe_floor.npo_rows < sound.npo_rows,
+            "without a replacement binding this only measures an unsound NPO floor"
+        );
     }
 
     #[test]

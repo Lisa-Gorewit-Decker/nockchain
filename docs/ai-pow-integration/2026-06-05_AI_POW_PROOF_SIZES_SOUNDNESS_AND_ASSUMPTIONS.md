@@ -43,6 +43,7 @@ must not be treated as the production block/wire artifact.
 | Full `ai-pow-zk` composite-verifier native terminal path | Opt-in diagnostic path for the actual composite L1 verifier circuit; not yet production-qualified because it misses both size and time gates | `lb=6,nq=10,pow=0` reduced-profile run after compact known-index proof encoding: terminal certificate `766,069` bytes / `748.1 KiB`; terminal public inputs `5,180` bytes; postcard wire certificate `771,249` bytes / `753.2 KiB`; release prove `80.829s`, verify `58.825s` | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_recursive_certificate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed size measurement. First release/native command compiled in `1m57s`, then the test binary ran for more than `7m35s` without reaching the final size/timing print and was stopped. A phase-instrumented rerun compiled in `1m42s` and showed `38.235s` primitive prove plus `51.902s` merged value-bridge prove before the integrated Tip5 LogUp subproof finished | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier terminal relation metrics | Non-proving diagnostic for the same path | PROD baseline: `125,961` ops, `221,989` witnesses, `43,443` terminal private inputs, `14,049` NPO rows, `242,798` NPO residual components, `5,319` bytes of terminal public inputs, terminal compile `20.943s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_for_prod_baseline_composite_are_available -- --ignored --nocapture`, 2026-06-05 |
+| Recompose/coeff terminal relation lower bound | Unsound diagnostic only; disables the D=2 coefficient-control binding to quantify whether replacing that table could be a primary size lever | Production binding: `125,961` ops, `106,349` primitive ops, `14,049` NPO rows, `5,743` recompose/coeff rows. Disabled binding: `125,571` ops, same `106,349` primitive ops, `13,659` NPO rows, `0` recompose/coeff rows but `5,578` ordinary recompose rows. Net unsound saving: only `390` ops/NPO rows and no primitive arithmetic | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_recompose_ctl_lower_bound_for_prod_baseline_composite -- --ignored --nocapture`, 2026-06-06 |
 | Layer-0 pinned+LogUp baseline proof breakdown | Diagnostic for the specialized AI-PoW AIR that a Pearl-shaped recursive compressor would consume; not a production wire artifact | `lb=4,nq=15,pow=0`: bincode proof `260,987` bytes / `254.9 KiB`, opening proof `229,849` bytes, prove `8.695s`; `lb=6,nq=10,pow=0`: bincode proof `199,882` bytes / `195.2 KiB`, opening proof `168,744` bytes, prove `32.314s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release composite_pinned_logup_prod_l0_size_breakdown -- --ignored --nocapture` and `... composite_pinned_logup_lb6_nq10_l0_size_breakdown ...`, 2026-06-05 |
 
 The active production target is therefore:
@@ -499,6 +500,16 @@ coefficient recompose links (`5,743` rows). The recompose/coeff table is
 currently part of the D=2 recursive-verifier construction and is enabled at
 `build_composite_l1_verifier_circuit`; removing it would be a new soundness
 change, not a serialization or performance tweak.
+
+The 2026-06-06 lower-bound diagnostic quantifies that temptation and rules it
+out as the main lever. Compiling the same PROD relation with
+`set_recompose_coeff_ctl_for_decompose_links(false)` is unsound without a
+replacement binding, and it saves only **390** terminal operations/NPO rows,
+with **0** primitive-operation reduction. Most of the removed
+`recompose/coeff` rows become ordinary `recompose` rows (`225` to `5,578`).
+The production path must keep the coefficient binding unless a replacement is
+proven, and even a perfect replacement would not close the size/time gap by
+itself.
 
 ## Current Native Terminal Size And Runtime Breakdown
 

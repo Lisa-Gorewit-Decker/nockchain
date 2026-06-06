@@ -83,6 +83,24 @@ production reduction unless there is a replacement proof that every hinted
 extension-field decomposition remains connected to a creator and every affected
 WitnessChecks bus entry is sound.
 
+The opt-in recompose-control lower-bound diagnostic makes that tradeoff
+concrete. It builds the same production-profile composite proof once, then
+compiles the terminal relation with the production binding enabled and with the
+binding disabled:
+
+| PROD terminal relation toggle | Ops | Primitive ops | Tip5 rows | Recompose rows | Recompose/coeff rows | NPO rows | NPO residuals | Compile |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Production `recompose_coeff_ctl=true` | `125,961` | `106,349` | `8,081` | `225` | `5,743` | `14,049` | `242,798` | `21.045s` |
+| Unsound floor `recompose_coeff_ctl=false` | `125,571` | `106,349` | `8,081` | `5,578` | `0` | `13,659` | `240,458` | `20.596s` |
+| Delta | `390` | `0` | `0` | `+5,353` | `-5,743` | `390` | `2,340` | `0.449s` |
+
+This rules out "remove or replace the recompose/coeff table" as a primary
+size lever. The disabled-table row is unsound and still saves only `390`
+terminal operations, no primitive verifier arithmetic, and `390` supported NPO
+rows because most coefficient-control calls become ordinary recompose rows.
+The hard blocker remains the generic verifier relation and assignment-opening
+shape, not the marginal overhead of this specific coefficient-binding table.
+
 The current `CircuitConfig::PROD` profile is now exactly 60 pure-query bits
 (`log_blowup=4`, `num_queries=15`, `pow_bits=0`). Removing the previous
 one-bit commit/query proof-system PoW hooks was the right soundness-policy
@@ -1290,8 +1308,9 @@ I would pursue five tracks in this order:
    `106,349` primitive operations and `14,049` supported NPO rows in the PROD
    baseline, not a large terminal public input vector. The primitive reduction
    should focus first on generic FRI/PCS verifier Horner work; the NPO
-   reduction should focus on Tip5 and recompose/coeff callsite count without
-   removing their bindings.
+   reduction should focus on reducing Tip5/recompose callsite count or changing
+   the terminal proof shape, not on removing the recompose/coeff binding table
+   by itself.
 4. **Continue the unified NPO proof as hardening/future work.** It would reduce
    witness leakage if it can share one FRI payload and stay under target, but
    the current full-composite integrated candidate is too slow.
