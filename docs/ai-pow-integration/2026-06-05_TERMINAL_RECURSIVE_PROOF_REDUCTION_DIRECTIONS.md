@@ -148,9 +148,9 @@ row-product proof:
 | Serialized body | `150,006` bytes / `146.5 KiB` |
 | Prelude / primitive / merged NPO proof | `240` / `57,501` / `92,265` bytes |
 | Merged compact FRI payload | `90,109` bytes |
-| Primitive prove / merged prove / total prove | `50.110s` / `55.318s` / `105.429s` |
-| Primitive verify / merged verify / total verify | `33.125s` / `14.670s` / `47.795s` |
-| Total diagnostic wall | `213.565s` |
+| Primitive prove / merged prove / total prove | `50.169s` / `56.701s` / `106.871s` |
+| Primitive verify / merged verify / total verify | `33.081s` / `14.701s` / `47.783s` |
+| Total diagnostic wall | `214.986s` |
 | Verification status | `verified` |
 
 This is the first full-composite polynomial NPO checkpoint that is both close
@@ -162,6 +162,18 @@ profile, so the final theorem must separately include the `mmcs_bit`
 zero-when-absent, booleanity, and row-padding constraints. The timing result
 makes the next blocker explicit: the primitive row-product proof alone is
 already over the `<30s` gate, and the merged NPO proof roughly doubles that.
+
+The primitive proof is not dominated by scalar sumcheck messages. The PROD
+sparse R1CS relation has `106,604` rows, `222,449` variables, and `489,990`
+entries. The `57,501` byte primitive proof contains only `1,327` bytes of
+row-product rounds and `1,088` bytes of matrix-sumcheck rounds. Its assignment
+evaluation proof is `55,025` bytes, including `53,586` bytes of fold-round
+openings and `48,462` bytes / `1,211` nodes of Merkle frontier material across
+the 18 assignment fold layers. A follow-up equality-table precomputation for
+sparse R1CS evaluation preserved proof shape but did not materially change
+release timing (`50.169s` primitive prove, `33.081s` primitive verify), so the
+primitive route needs a different assignment-opening/proximity backend rather
+than more sumcheck serialization cleanup.
 
 The current `CircuitConfig::PROD` profile is now exactly 60 pure-query bits
 (`log_blowup=4`, `num_queries=15`, `pow_bits=0`). Removing the previous
@@ -532,7 +544,7 @@ about `90s`, and the integrated Tip5 LogUp proof had not completed.
 
 A later PROD merged value-bridge run fixes the Merkle-direction value
 projection and reaches a verifier-accepted body, but confirms the same timing
-blocker with current code: `50.110s` primitive prove plus `55.318s` merged
+blocker with current code: `50.169s` primitive prove plus `56.701s` merged
 residual-zero/recompose/value-bridge prove. Its serialized
 `(prelude, primitive, merged NPO)` body is `150,006` bytes, with a `92,265`
 byte merged proof and `90,109` bytes of compact FRI material. That makes it a
@@ -1098,8 +1110,8 @@ solution:
 - The full-composite merged residual-zero/recompose/value-bridge checkpoint now
   verifies at `150,006` bytes for `(prelude, primitive, merged NPO)`, with a
   `92,265` byte merged NPO proof and `90,109` byte compact FRI payload. It is
-  still not production-qualified: total diagnostic prove time is `105.429s`,
-  the primitive proof alone is `50.110s`, and the internal Tip5 lookup/AIR/LogUp
+  still not production-qualified: total diagnostic prove time is `106.871s`,
+  the primitive proof alone is `50.169s`, and the internal Tip5 lookup/AIR/LogUp
   relation plus explicit `mmcs_bit` padding/boolean/present constraints remain
   outside this proof.
 - The full composite integrated diagnostic ran for more than `7m35s` after

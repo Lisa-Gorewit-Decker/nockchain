@@ -44,7 +44,7 @@ must not be treated as the production block/wire artifact.
 | Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed size measurement. First release/native command compiled in `1m57s`, then the test binary ran for more than `7m35s` without reaching the final size/timing print and was stopped. A phase-instrumented rerun compiled in `1m42s` and showed `38.235s` primitive prove plus `51.902s` merged value-bridge prove before the integrated Tip5 LogUp subproof finished | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier terminal relation metrics | Non-proving diagnostic for the same path | PROD baseline: `125,961` ops, `221,989` witnesses, `43,443` terminal private inputs, `14,049` NPO rows, `242,798` NPO residual components, `5,319` bytes of terminal public inputs, terminal compile `20.943s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_for_prod_baseline_composite_are_available -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier FRI-native NPO residual-zero floor | Diagnostic only; measures the actual composite L1 verifier NPO polynomial layout and the FRI-native residual-zero body. After the terminal Tip5 Merkle-direction mapping fix, this residual-zero layer verifies, but it is not by itself a production-sound recursive proof because the remaining NPO quotient/value-bridge/lookup and primitive-row relations still have to be included or replaced by documented bindings. | Layout: `14,049` NPO rows, `16,384` padded rows, `89` prover-dependent field columns / `178` basis columns, residual-zero opened-column floor `180` basis columns. Proof body `55,344` bytes with `54,023` bytes compact FRI; `0` nonzero residual values; status `verified`; prove `19.635s`, verify `11.930s`, total diagnostic wall `87.229s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_fri_native_residual_zero_candidate_for_prod_baseline_measures -- --ignored --nocapture`, 2026-06-06 |
-| Full `ai-pow-zk` composite-verifier FRI-native merged value-bridge candidate | Diagnostic only; serializes the terminal prelude, primitive R1CS row-product proof, and one merged residual-zero/recompose/value-bridge NPO proof over the actual composite L1 verifier relation. It verifies after the direction-aware value-bridge fix, but is not production-qualified because the Tip5 lookup/AIR/LogUp binding and explicit `mmcs_bit` padding/boolean/present constraints still have to be in the final theorem. | Body `150,006` bytes / `146.5 KiB`: prelude `240`, primitive R1CS `57,501`, merged value bridge `92,265`, merged compact FRI `90,109`. Prove `105.429s` total: primitive `50.110s`, merged value bridge `55.318s`; verify `47.795s` total; total diagnostic wall `213.565s`; status `verified` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_merged_value_bridge_candidate_for_prod_baseline_measures -- --ignored --nocapture`, 2026-06-06 |
+| Full `ai-pow-zk` composite-verifier FRI-native merged value-bridge candidate | Diagnostic only; serializes the terminal prelude, primitive R1CS row-product proof, and one merged residual-zero/recompose/value-bridge NPO proof over the actual composite L1 verifier relation. It verifies after the direction-aware value-bridge fix, but is not production-qualified because the Tip5 lookup/AIR/LogUp binding and explicit `mmcs_bit` padding/boolean/present constraints still have to be in the final theorem. | Body `150,006` bytes / `146.5 KiB`: prelude `240`, primitive R1CS `57,501`, merged value bridge `92,265`, merged compact FRI `90,109`. Prove `106.871s` total: primitive `50.169s`, merged value bridge `56.701s`; verify `47.783s` total; total diagnostic wall `214.986s`; status `verified`. Primitive split: assignment evaluation `55,025` bytes, including `53,586` bytes of fold-round openings and `48,462` bytes / `1,211` nodes of Merkle frontier. | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_merged_value_bridge_candidate_for_prod_baseline_measures -- --ignored --nocapture`, 2026-06-06 |
 | Recompose/coeff terminal relation lower bound | Unsound diagnostic only; disables the D=2 coefficient-control binding to quantify whether replacing that table could be a primary size lever | Production binding: `125,961` ops, `106,349` primitive ops, `14,049` NPO rows, `5,743` recompose/coeff rows. Disabled binding: `125,571` ops, same `106,349` primitive ops, `13,659` NPO rows, `0` recompose/coeff rows but `5,578` ordinary recompose rows. Net unsound saving: only `390` ops/NPO rows and no primitive arithmetic | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_recompose_ctl_lower_bound_for_prod_baseline_composite -- --ignored --nocapture`, 2026-06-06 |
 | Layer-0 pinned+LogUp baseline proof breakdown | Diagnostic for the specialized AI-PoW AIR that a Pearl-shaped recursive compressor would consume; not a production wire artifact | `lb=4,nq=15,pow=0`: bincode proof `260,987` bytes / `254.9 KiB`, opening proof `229,849` bytes, prove `8.695s`; `lb=6,nq=10,pow=0`: bincode proof `199,882` bytes / `195.2 KiB`, opening proof `168,744` bytes, prove `32.314s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release composite_pinned_logup_prod_l0_size_breakdown -- --ignored --nocapture` and `... composite_pinned_logup_lb6_nq10_l0_size_breakdown ...`, 2026-06-05 |
 
@@ -94,8 +94,8 @@ The active production target is therefore:
   merged residual-zero/recompose/value-bridge)`. The merged NPO proof alone is
   **92,265 bytes** with a **90,109 byte** compact FRI payload. This is close to
   the relaxed `150 KiB` size gate, but the primitive component is already
-  **57,501 bytes** and **50.110s**, the merged value-bridge proof takes
-  **55.318s**, and the total diagnostic prove time is **105.429s**. It is also
+  **57,501 bytes** and **50.169s**, the merged value-bridge proof takes
+  **56.701s**, and the total diagnostic prove time is **106.871s**. It is also
   still not the production theorem: it binds the `mmcs_bit`-selected
   bus-to-trace value projection, but the final stack must also include the
   Tip5 lookup/AIR/LogUp relation and the separate `mmcs_bit`
@@ -446,15 +446,27 @@ then serializes it with the same terminal prelude and primitive row-product
 component. It verifies over the full composite relation with body `150,006`
 bytes: `240` bytes of prelude, `57,501` bytes of primitive proof, and `92,265`
 bytes of merged NPO proof with `90,109` bytes of compact FRI material. The
-prove time is still outside the production gate: `50.110s` for the primitive
-row-product proof plus `55.318s` for the merged value-bridge proof, for
-`105.429s` of diagnostic prove time and `213.565s` wall time including setup.
+prove time is still outside the production gate: `50.169s` for the primitive
+row-product proof plus `56.701s` for the merged value-bridge proof, for
+`106.871s` of diagnostic prove time and `214.986s` wall time including setup.
 The bridge now uses the committed `mmcs_bit` to select the bus-to-trace
 projection for Merkle Tip5 rows, so `mmcs_bit=1` swaps the input and hidden
 lanes consistently with the lookup/AIR trace. Keeping this quotient inside the
 existing degree profile means the final production stack must separately prove
 that `mmcs_bit` is boolean, zero when not present, and padded consistently with
 the row mode; the value bridge alone should not be read as that padding proof.
+
+The same run breaks down the primitive bottleneck. The sparse R1CS relation has
+`106,604` rows, `222,449` variables, and `489,990` entries. The row-product and
+matrix-sumcheck round messages are small (`1,327` and `1,088` bytes). The
+assignment evaluation proof is the primitive proof body: `55,025` of `57,501`
+bytes, with `53,586` bytes of fold-round openings. Those openings are dominated
+by `48,462` bytes of Merkle frontier material, `1,211` 5-round Tip5 digest
+nodes across the 18 assignment fold layers. Precomputing equality-polynomial
+tables for sparse R1CS evaluation left the release timing essentially
+unchanged, so the next primitive reduction must change the assignment-opening
+PCS shape or merge it into a shared proximity backend; scalar sumcheck
+serialization is not the lever.
 
 A phase-instrumented rerun made the failure mode more concrete:
 

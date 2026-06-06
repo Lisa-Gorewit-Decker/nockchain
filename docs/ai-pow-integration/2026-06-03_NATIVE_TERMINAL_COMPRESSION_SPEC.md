@@ -883,7 +883,7 @@ for this route.
   `240` bytes of prelude, `57,501` bytes of primitive proof, and `92,265`
   bytes of merged NPO proof with `90,109` bytes of compact FRI payload. It
   verifies over the actual composite L1 verifier relation, with prove times of
-  `50.110s` for primitive R1CS and `55.318s` for the merged NPO proof. The
+  `50.169s` for primitive R1CS and `56.701s` for the merged NPO proof. The
   value bridge is now Merkle-direction aware: it uses the committed `mmcs_bit`
   to select the bus-limb expression that feeds each Tip5 trace lane. This keeps
   the quotient inside the existing degree profile, so the final production
@@ -1597,7 +1597,7 @@ Tip5-L0 verifier circuit produced:
 | selected-column compact residual-zero FRI candidate, opt-in real Tip5-L0 measurement | 376,642 | - | 48,495 | 26.304 s | 2.273 s |
 | FRI-native compact residual-zero candidate, opt-in real Tip5-L0 measurement | 61,683 | - | 60,372 | 1.567 s | 0.496 s |
 | FRI-native compact residual-zero candidate, full AI-PoW composite measurement, verified residual-zero layer | 55,344 | - | 54,023 | 19.635 s | 11.930 s |
-| FRI-native merged residual-zero/recompose/value-bridge candidate, full AI-PoW composite measurement, verified with primitive/prelude body `150,006` bytes | 92,265 | - | 90,109 | 55.318 s | 14.670 s |
+| FRI-native merged residual-zero/recompose/value-bridge candidate, full AI-PoW composite measurement, verified with primitive/prelude body `150,006` bytes | 92,265 | - | 90,109 | 56.701 s | 14.701 s |
 | recompose residual-relation quotient candidate, opt-in real Tip5-L0 measurement | 81,266 | - | 79,916 | 1.852 s | 0.601 s |
 
 The full-table FRI candidate is too large to combine with the primitive
@@ -1643,13 +1643,26 @@ The merged residual-zero/recompose/value-bridge full-composite measurement
 confirms that the next NPO identity layer can still fit near the relaxed byte
 target, but not the time target. The merged proof body is `92,265` bytes with
 `90,109` bytes of compact FRI material; the complete diagnostic body including
-prelude and primitive proof is `150,006` bytes. Proving takes `105.429s`
-total, split between `50.110s` primitive R1CS row product and `55.318s` merged
+prelude and primitive proof is `150,006` bytes. Proving takes `106.871s`
+total, split between `50.169s` primitive R1CS row product and `56.701s` merged
 NPO proof. The bridge binds Merkle direction by selecting the value expression
 with the committed `mmcs_bit`; because that keeps the quotient within the
 current degree profile, the final production composition still has to prove the
 separate `mmcs_bit` zero/boolean/padding constraints and the internal Tip5
 lookup/AIR/LogUp relation.
+
+The same full-composite run explains why the primitive R1CS component is now a
+first-class blocker. The sparse R1CS relation has `106,604` rows, `222,449`
+variables, and `489,990` entries. The `57,501` byte primitive proof is
+dominated by its `55,025` byte assignment evaluation proof, not by sumcheck
+rounds: row-product rounds are `1,327` bytes and matrix-sumcheck rounds are
+`1,088` bytes. Assignment fold-round openings are `53,586` bytes, of which
+`48,462` bytes are the `1,211` Merkle frontier nodes needed to authenticate 15
+query-derived fold paths across 18 assignment fold layers. Precomputing
+equality-polynomial tables for sparse R1CS evaluation did not materially change
+the release measurement; the primitive proving path remains dominated by
+assignment folding/opening work and the primitive proof size remains dominated
+by Merkle frontier material.
 
 The next viable direction is a shared/batched terminal proximity backend that
 commits the NPO row columns through one low-degree object and amortizes FRI

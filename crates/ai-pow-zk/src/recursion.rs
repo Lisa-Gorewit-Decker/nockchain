@@ -1710,6 +1710,7 @@ mod tests {
         NativeTerminalConstraint, NativeTerminalVerifyingKey, TerminalNpoPolynomialFriColumnSet,
         TerminalNpoPolynomialTable, TerminalNpoPolynomialTableRow, TerminalNpoRowKind,
         TerminalProductionNpoPolynomialProof, TerminalProductionProof,
+        TerminalR1csRowProductSumcheckProof, TerminalSparseR1csRelation,
     };
 
     use super::*;
@@ -4512,6 +4513,132 @@ mod tests {
         );
     }
 
+    fn log_terminal_primitive_r1cs_proof_breakdown(
+        label: &str,
+        relation: &TerminalSparseR1csRelation<Challenge>,
+        proof: &TerminalR1csRowProductSumcheckProof,
+    ) {
+        let primitive_bytes = postcard_len(proof, "primitive r1cs proof");
+        let primitive_rounds_bytes =
+            postcard_len(&proof.rounds, "primitive r1cs row-product rounds");
+        let matrix_sumcheck_bytes =
+            postcard_len(&proof.matrix_sumcheck, "primitive r1cs matrix sumcheck");
+        let matrix_rounds_bytes = postcard_len(
+            &proof.matrix_sumcheck.rounds, "primitive r1cs matrix sumcheck rounds",
+        );
+        let assignment_eval = &proof.matrix_sumcheck.assignment_evaluation;
+        let assignment_eval_bytes =
+            postcard_len(assignment_eval, "primitive r1cs assignment evaluation");
+        let assignment_prefix_bytes = postcard_len(
+            &assignment_eval.public_prefix_proof, "primitive r1cs assignment public prefix proof",
+        );
+        let assignment_fold_roots_bytes = postcard_len(
+            &assignment_eval.fold_commitment_roots, "primitive r1cs assignment fold roots",
+        );
+        let assignment_final_value_bytes = postcard_len(
+            &assignment_eval.final_value_basis, "primitive r1cs assignment final value",
+        );
+        let assignment_round_openings_bytes = postcard_len(
+            &assignment_eval.round_openings, "primitive r1cs assignment round openings",
+        );
+        let assignment_opening_value_bytes: usize = assignment_eval
+            .round_openings
+            .iter()
+            .map(|opening| {
+                postcard_len(
+                    &opening.value_basis_flat, "primitive r1cs assignment opening values",
+                )
+            })
+            .sum();
+        let assignment_opening_mask_bytes: usize = assignment_eval
+            .round_openings
+            .iter()
+            .map(|opening| {
+                postcard_len(
+                    &opening.value_basis_nonzero_masks,
+                    "primitive r1cs assignment opening nonzero masks",
+                )
+            })
+            .sum();
+        let assignment_opening_boolean_bytes: usize = assignment_eval
+            .round_openings
+            .iter()
+            .map(|opening| {
+                postcard_len(
+                    &opening.boolean_value_bits, "primitive r1cs assignment opening boolean bits",
+                )
+            })
+            .sum();
+        let assignment_opening_frontier_bytes: usize = assignment_eval
+            .round_openings
+            .iter()
+            .map(|opening| {
+                postcard_len(
+                    &opening.frontier, "primitive r1cs assignment opening frontier",
+                )
+            })
+            .sum();
+        let assignment_opening_value_limbs: usize = assignment_eval
+            .round_openings
+            .iter()
+            .map(|opening| opening.value_basis_flat.len())
+            .sum();
+        let assignment_opening_masks: usize = assignment_eval
+            .round_openings
+            .iter()
+            .map(|opening| opening.value_basis_nonzero_masks.len())
+            .sum();
+        let assignment_opening_boolean_bits: usize = assignment_eval
+            .round_openings
+            .iter()
+            .map(|opening| opening.boolean_value_bits.len())
+            .sum();
+        let assignment_opening_frontier_nodes: usize = assignment_eval
+            .round_openings
+            .iter()
+            .map(|opening| opening.frontier.len())
+            .sum();
+
+        eprintln!(
+            "native terminal primitive R1CS relation [{label}]: rows={} log_rows={} variables={} log_variables={} public={} witness={} entries={} row_product_rounds={} matrix_rounds={} assignment_fold_rounds={} assignment_fold_roots={}",
+            relation.rows,
+            relation.log_rows,
+            relation.variables,
+            relation.log_variables,
+            relation.public_count,
+            relation.witness_count,
+            relation.entries.len(),
+            proof.rounds.len(),
+            proof.matrix_sumcheck.rounds.len(),
+            assignment_eval.round_openings.len(),
+            assignment_eval.fold_commitment_roots.len(),
+        );
+        eprintln!(
+            "native terminal primitive R1CS proof components [{label}]: primitive_r1cs={} row_product_rounds={} matrix_sumcheck={} matrix_rounds={} assignment_eval={} assignment_prefix={} assignment_fold_roots={} assignment_final_value={} assignment_round_openings={}",
+            primitive_bytes,
+            primitive_rounds_bytes,
+            matrix_sumcheck_bytes,
+            matrix_rounds_bytes,
+            assignment_eval_bytes,
+            assignment_prefix_bytes,
+            assignment_fold_roots_bytes,
+            assignment_final_value_bytes,
+            assignment_round_openings_bytes,
+        );
+        eprintln!(
+            "native terminal primitive R1CS assignment openings [{label}]: values_bytes={} masks_bytes={} boolean_bytes={} frontier_bytes={} value_limbs={} mask_bytes={} boolean_bytes_len={} frontier_nodes={} public_prefix_frontier_nodes={}",
+            assignment_opening_value_bytes,
+            assignment_opening_mask_bytes,
+            assignment_opening_boolean_bytes,
+            assignment_opening_frontier_bytes,
+            assignment_opening_value_limbs,
+            assignment_opening_masks,
+            assignment_opening_boolean_bits,
+            assignment_opening_frontier_nodes,
+            assignment_eval.public_prefix_proof.frontier.len(),
+        );
+    }
+
     #[test]
     #[ignore = "native terminal proof over the full composite verifier is an opt-in measurement"]
     fn terminal_recursive_certificate_round_trip_verifies() {
@@ -4912,6 +5039,10 @@ mod tests {
             "native terminal merged value-bridge candidate phase [{label}]: primitive_prove_ms={}",
             primitive_prove_elapsed.as_millis()
         );
+        let sparse_relation = vk
+            .primitive_sparse_r1cs_relation()
+            .expect("merged value-bridge diagnostic must derive primitive sparse R1CS relation");
+        log_terminal_primitive_r1cs_proof_breakdown(label, &sparse_relation, &primitive_r1cs_proof);
 
         let merged_prove_start = std::time::Instant::now();
         let merged_value_bridge_proof = compiler

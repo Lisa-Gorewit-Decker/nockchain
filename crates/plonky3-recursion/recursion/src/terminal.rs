@@ -17480,6 +17480,7 @@ impl NativeTerminalCompiler {
         let mut a = F::ZERO;
         let mut b = F::ZERO;
         let mut c = F::ZERO;
+        let row_eq_values = Self::terminal_eq_table(row_point);
         for entry in &relation.entries {
             let assignment = assignment_values.get(entry.variable_index).copied().ok_or(
                 NativeTerminalVerifyError::TerminalConstraintOpeningWitnessMismatch {
@@ -17489,8 +17490,7 @@ impl NativeTerminalCompiler {
                     got: assignment_values.len(),
                 },
             )?;
-            let term =
-                entry.coeff * Self::terminal_eq_index_point(entry.row, row_point) * assignment;
+            let term = entry.coeff * row_eq_values[entry.row] * assignment;
             match entry.matrix {
                 TerminalSparseR1csMatrix::A => a += term,
                 TerminalSparseR1csMatrix::B => b += term,
@@ -17510,14 +17510,14 @@ impl NativeTerminalCompiler {
     {
         let alpha_sq = alpha.square();
         let mut values = vec![F::ZERO; 1usize << relation.log_variables];
+        let row_eq_values = Self::terminal_eq_table(row_point);
         for entry in &relation.entries {
             let matrix_weight = match entry.matrix {
                 TerminalSparseR1csMatrix::A => F::ONE,
                 TerminalSparseR1csMatrix::B => alpha,
                 TerminalSparseR1csMatrix::C => alpha_sq,
             };
-            values[entry.variable_index] +=
-                entry.coeff * matrix_weight * Self::terminal_eq_index_point(entry.row, row_point);
+            values[entry.variable_index] += entry.coeff * matrix_weight * row_eq_values[entry.row];
         }
         values
     }
@@ -17558,9 +17558,8 @@ impl NativeTerminalCompiler {
         F: Field + Copy,
     {
         let row_domain_len = 1usize << relation.log_rows;
-        let eq_values = (0..row_domain_len)
-            .map(|row| Self::terminal_eq_index_point(row, anchor_point))
-            .collect::<Vec<_>>();
+        let eq_values = Self::terminal_eq_table(anchor_point);
+        debug_assert_eq!(eq_values.len(), row_domain_len);
         let mut a_values = vec![F::ZERO; row_domain_len];
         let mut b_values = vec![F::ZERO; row_domain_len];
         let mut c_values = vec![F::ZERO; row_domain_len];
@@ -17648,6 +17647,8 @@ impl NativeTerminalCompiler {
     {
         let alpha_sq = alpha.square();
         let mut acc = F::ZERO;
+        let row_eq_values = Self::terminal_eq_table(row_point);
+        let variable_eq_values = Self::terminal_eq_table(variable_point);
         for entry in &relation.entries {
             let matrix_weight = match entry.matrix {
                 TerminalSparseR1csMatrix::A => F::ONE,
@@ -17656,8 +17657,8 @@ impl NativeTerminalCompiler {
             };
             acc += entry.coeff
                 * matrix_weight
-                * Self::terminal_eq_index_point(entry.row, row_point)
-                * Self::terminal_eq_index_point(entry.variable_index, variable_point);
+                * row_eq_values[entry.row]
+                * variable_eq_values[entry.variable_index];
         }
         acc
     }
@@ -17697,6 +17698,7 @@ impl NativeTerminalCompiler {
         out
     }
 
+    #[cfg(test)]
     fn terminal_eq_index_point<F>(index: usize, point: &[F]) -> F
     where
         F: Field + Copy,
@@ -17704,6 +17706,26 @@ impl NativeTerminalCompiler {
         Self::terminal_eq_index_point_prefix(index, point)
     }
 
+    fn terminal_eq_table<F>(point: &[F]) -> Vec<F>
+    where
+        F: Field + Copy,
+    {
+        let mut values = Vec::with_capacity(1usize << point.len());
+        values.push(F::ONE);
+        for challenge in point.iter().copied() {
+            let old_len = values.len();
+            let one_minus_challenge = F::ONE - challenge;
+            values.reserve(old_len);
+            for index in 0..old_len {
+                let previous = values[index];
+                values[index] = previous * one_minus_challenge;
+                values.push(previous * challenge);
+            }
+        }
+        values
+    }
+
+    #[cfg(test)]
     fn terminal_eq_index_point_prefix<F>(index: usize, point: &[F]) -> F
     where
         F: Field + Copy,
@@ -42602,6 +42624,25 @@ mod tests {
             NativeTerminalVerifyError::TerminalOracleOpeningRootMismatch { .. }
                 | NativeTerminalVerifyError::RecomposeOutputMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn goldilocks_terminal_eq_table_matches_index_evaluation() {
+        let point = vec![
+            Goldilocks::from_u64(3),
+            Goldilocks::from_u64(5),
+            Goldilocks::from_u64(7),
+            Goldilocks::from_u64(11),
+        ];
+        let table = NativeTerminalCompiler::terminal_eq_table(&point);
+        assert_eq!(table.len(), 1usize << point.len());
+        for (index, value) in table.iter().copied().enumerate() {
+            assert_eq!(
+                value,
+                NativeTerminalCompiler::terminal_eq_index_point(index, &point),
+                "equality table entry {index} must match scalar evaluation"
+            );
+        }
     }
 
     #[test]
