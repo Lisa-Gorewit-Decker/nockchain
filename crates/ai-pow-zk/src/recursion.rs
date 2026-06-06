@@ -4790,6 +4790,208 @@ mod tests {
         );
     }
 
+    fn measure_terminal_merged_value_bridge_candidate_for_profile(
+        label: &str,
+        profile: CircuitConfig,
+    ) {
+        init_terminal_prover_profile_tracing();
+        assert_eq!(profile.johnson_fri_bits(), 60);
+
+        let total_start = std::time::Instant::now();
+        let zk = test_zk_params();
+        let cfg = build_config(&zk, &profile);
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let l0_prove_start = std::time::Instant::now();
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        eprintln!(
+            "native terminal merged value-bridge candidate phase [{label}]: l0_prove_ms={}",
+            l0_prove_start.elapsed().as_millis()
+        );
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program.clone(),
+                proof,
+                &pis,
+            )
+        };
+        let l1_build_start = std::time::Instant::now();
+        let air = CompositeFullAirWithLookupsPinned::new_with(program, true);
+        let pd = logup_common_for(&cfg, &verified.program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &verified.proof,
+            &pd.common,
+            &verified.public_inputs.to_vec(),
+            &profile,
+        )
+        .expect("merged value-bridge diagnostic must build L1 verifier circuit");
+        eprintln!(
+            "native terminal merged value-bridge candidate phase [{label}]: l1_circuit_build_ms={}",
+            l1_build_start.elapsed().as_millis()
+        );
+
+        let l1_verify_start = std::time::Instant::now();
+        let traces = run_composite_l1_verifier_traces(&built, &verified.proof)
+            .expect("merged value-bridge diagnostic must run L1 verifier traces");
+        let l1_verify_elapsed = l1_verify_start.elapsed();
+        eprintln!(
+            "native terminal merged value-bridge candidate phase [{label}]: l1_trace_verify_ms={}",
+            l1_verify_elapsed.as_millis()
+        );
+
+        let compiler = terminal_compiler();
+        let compile_start = std::time::Instant::now();
+        let (_pk, vk) = compiler
+            .compile_goldilocks_terminal(&built.circuit)
+            .expect("merged value-bridge diagnostic must compile terminal circuit");
+        compiler
+            .validate_goldilocks_production_query_domains(
+                &vk,
+                TerminalProofParameters::production_60bit(),
+            )
+            .expect("merged value-bridge diagnostic must use production query domains");
+        let compile_elapsed = compile_start.elapsed();
+        eprintln!(
+            "native terminal merged value-bridge candidate phase [{label}]: terminal_compile_ms={}",
+            compile_elapsed.as_millis()
+        );
+
+        let witness = TerminalWitness {
+            fingerprint: TerminalCircuitFingerprint::from_circuit(&built.circuit),
+            public_inputs: built.public_inputs.clone(),
+            private_inputs: built.private_inputs.clone(),
+            traces,
+        };
+
+        let assignment_commit_start = std::time::Instant::now();
+        let assignment_oracle = compiler
+            .commit_terminal_assignment_goldilocks(&vk, &witness.public_inputs, &witness)
+            .expect("merged value-bridge diagnostic must commit terminal assignment");
+        let assignment_commitment = assignment_oracle.commitment();
+        eprintln!(
+            "native terminal merged value-bridge candidate phase [{label}]: assignment_commit_ms={}",
+            assignment_commit_start.elapsed().as_millis()
+        );
+        let merged_root_start = std::time::Instant::now();
+        let merged_roots = compiler
+            .terminal_npo_fri_residual_zero_recompose_value_bridge_prelude_commitments_from_witness_goldilocks(
+                &vk,
+                &witness,
+            )
+            .expect("merged value-bridge diagnostic must bind merged NPO root");
+        eprintln!(
+            "native terminal merged value-bridge candidate phase [{label}]: merged_npo_root_ms={}",
+            merged_root_start.elapsed().as_millis()
+        );
+        let mut prelude_roots = vec![assignment_commitment.root];
+        prelude_roots.extend(merged_roots);
+        let prelude_start = std::time::Instant::now();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &witness.public_inputs,
+                TerminalProofParameters::production_60bit(),
+                prelude_roots,
+            )
+            .expect("merged value-bridge diagnostic must build terminal prelude");
+        eprintln!(
+            "native terminal merged value-bridge candidate phase [{label}]: prelude_ms={}",
+            prelude_start.elapsed().as_millis()
+        );
+
+        let primitive_prove_start = std::time::Instant::now();
+        let primitive_r1cs_proof = compiler
+            .prove_terminal_r1cs_row_product_sumcheck_goldilocks(
+                &vk, &witness.public_inputs, &prelude, &assignment_oracle, &witness,
+            )
+            .expect("merged value-bridge diagnostic must prove primitive R1CS");
+        let primitive_prove_elapsed = primitive_prove_start.elapsed();
+        eprintln!(
+            "native terminal merged value-bridge candidate phase [{label}]: primitive_prove_ms={}",
+            primitive_prove_elapsed.as_millis()
+        );
+
+        let merged_prove_start = std::time::Instant::now();
+        let merged_value_bridge_proof = compiler
+            .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks(
+                &vk, &witness.public_inputs, &witness, &prelude,
+            )
+            .expect("merged value-bridge diagnostic must prove merged NPO value bridge");
+        let merged_prove_elapsed = merged_prove_start.elapsed();
+        eprintln!(
+            "native terminal merged value-bridge candidate phase [{label}]: merged_value_bridge_prove_ms={}",
+            merged_prove_elapsed.as_millis()
+        );
+
+        let primitive_verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_r1cs_row_product_sumcheck_goldilocks(
+                &vk, &witness.public_inputs, &prelude, &assignment_commitment,
+                &primitive_r1cs_proof,
+            )
+            .expect("merged value-bridge diagnostic primitive proof must verify");
+        let primitive_verify_elapsed = primitive_verify_start.elapsed();
+        eprintln!(
+            "native terminal merged value-bridge candidate phase [{label}]: primitive_verify_ms={}",
+            primitive_verify_elapsed.as_millis()
+        );
+        let merged_verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks(
+                &vk, &witness.public_inputs, &prelude, &merged_value_bridge_proof,
+            )
+            .expect("merged value-bridge diagnostic NPO proof must verify");
+        let merged_verify_elapsed = merged_verify_start.elapsed();
+        eprintln!(
+            "native terminal merged value-bridge candidate phase [{label}]: merged_value_bridge_verify_ms={}",
+            merged_verify_elapsed.as_millis()
+        );
+
+        let candidate_body = (
+            prelude.clone(),
+            primitive_r1cs_proof.clone(),
+            merged_value_bridge_proof.clone(),
+        );
+        let body_bytes = postcard_len(&candidate_body, "merged value-bridge candidate body");
+        let prelude_bytes = postcard_len(&prelude, "merged value-bridge candidate prelude");
+        let primitive_bytes = postcard_len(
+            &primitive_r1cs_proof, "merged value-bridge candidate primitive proof",
+        );
+        let merged_bytes = postcard_len(
+            &merged_value_bridge_proof, "merged value-bridge candidate NPO proof",
+        );
+        let merged_fri_bytes = postcard_len(
+            &merged_value_bridge_proof.proof, "merged value-bridge candidate compact FRI",
+        );
+        let total_prove_elapsed = primitive_prove_elapsed + merged_prove_elapsed;
+        let total_verify_elapsed = primitive_verify_elapsed + merged_verify_elapsed;
+        eprintln!(
+            "native terminal merged value-bridge candidate over ai-pow composite verifier [{label}]: body={} bytes prelude={} primitive_r1cs={} merged_value_bridge={} merged_value_bridge_fri={} l1_verify_ms={} compile_ms={} primitive_prove_ms={} merged_value_bridge_prove_ms={} total_prove_ms={} primitive_verify_ms={} merged_value_bridge_verify_ms={} total_verify_ms={} total_wall_ms={}",
+            body_bytes,
+            prelude_bytes,
+            primitive_bytes,
+            merged_bytes,
+            merged_fri_bytes,
+            l1_verify_elapsed.as_millis(),
+            compile_elapsed.as_millis(),
+            primitive_prove_elapsed.as_millis(),
+            merged_prove_elapsed.as_millis(),
+            total_prove_elapsed.as_millis(),
+            primitive_verify_elapsed.as_millis(),
+            merged_verify_elapsed.as_millis(),
+            total_verify_elapsed.as_millis(),
+            total_start.elapsed().as_millis(),
+        );
+    }
+
+    #[test]
+    #[ignore = "full composite merged value-bridge terminal candidate measurement is opt-in"]
+    fn terminal_merged_value_bridge_candidate_for_prod_baseline_measures() {
+        measure_terminal_merged_value_bridge_candidate_for_profile("PROD", CircuitConfig::PROD);
+    }
+
     fn measure_terminal_integrated_logup_candidate_for_profile(
         label: &str,
         profile: CircuitConfig,

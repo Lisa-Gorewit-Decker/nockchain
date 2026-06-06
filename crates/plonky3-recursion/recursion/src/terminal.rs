@@ -11715,16 +11715,33 @@ impl NativeTerminalCompiler {
                 )?;
                 Ok(value_domain.evaluate_polynomial_at(&evals, opened.zeta))
             };
+        let product_selector_at =
+            |labels: &[&str]| -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
+                let evals = Self::terminal_npo_polynomial_product_selector_evals(
+                    verifier_columns,
+                    value_profile,
+                    labels,
+                )?;
+                Ok(value_domain.evaluate_polynomial_at(&evals, opened.zeta))
+            };
+        let tip5_selector = product_selector_at(&["is_tip5"])?;
+        let mmcs_selector = opened_value("mmcs_bit");
 
         let mut relation = TerminalFriChallenge::ZERO;
         let mut coeff = TerminalFriChallenge::ONE;
         for limb in 0..16 {
-            let input_label = format!("input_value_{limb}");
             let hidden_label = format!("hidden_tip5_value_{limb}");
-            let expected = selector_at(&format!("input_present_{limb}"))?
-                * opened_value(&input_label)
-                + selector_at(&format!("hidden_tip5_present_{limb}"))?
-                    * opened_value(&hidden_label);
+            let hidden_value = opened_value(&hidden_label);
+            let expected_for_bus =
+                |bus_limb: usize| -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
+                    let input_selector = selector_at(&format!("input_present_{bus_limb}"))?;
+                    let input_label = format!("input_value_{bus_limb}");
+                    Ok(input_selector * opened_value(&input_label)
+                        + (tip5_selector - input_selector) * hidden_value)
+                };
+            let normal = expected_for_bus(limb)?;
+            let swapped = expected_for_bus(Self::terminal_tip5_merkle_swapped_limb(limb))?;
+            let expected = normal + mmcs_selector * (swapped - normal);
             relation += coeff * (opened_lookup_io[limb] - expected);
             coeff *= alpha;
         }
@@ -20656,18 +20673,22 @@ impl NativeTerminalCompiler {
         for limb in 0..10 {
             batched_columns.push(value_evals_for(&format!("output_value_{limb}")));
         }
+        let mmcs_bit_offset = batched_columns.len();
+        batched_columns.push(value_evals_for("mmcs_bit"));
         let input_selector_offset = batched_columns.len();
         for limb in 0..16 {
             batched_columns.push(selector_evals_for(&format!("input_present_{limb}"))?);
-        }
-        let hidden_selector_offset = batched_columns.len();
-        for limb in 0..16 {
-            batched_columns.push(selector_evals_for(&format!("hidden_tip5_present_{limb}"))?);
         }
         let output_selector_offset = batched_columns.len();
         for limb in 0..10 {
             batched_columns.push(selector_evals_for(&format!("output_present_{limb}"))?);
         }
+        let tip5_selector_offset = batched_columns.len();
+        batched_columns.push(Self::terminal_npo_polynomial_product_selector_evals(
+            verifier_columns,
+            value_profile,
+            &["is_tip5"],
+        )?);
         let batched_width = batched_columns.len();
         let mut batched_values = Vec::with_capacity(value_profile.padded_rows * batched_width);
         for row in 0..value_profile.padded_rows {
@@ -20685,9 +20706,15 @@ impl NativeTerminalCompiler {
             let mut coeff = TerminalFriChallenge::ONE;
             for limb in 0..16 {
                 let lookup = opened[limb];
-                let expected = opened[input_selector_offset + limb]
-                    * opened[input_value_offset + limb]
-                    + opened[hidden_selector_offset + limb] * opened[hidden_value_offset + limb];
+                let expected_for_bus = |bus_limb: usize| {
+                    let input_selector = opened[input_selector_offset + bus_limb];
+                    input_selector * opened[input_value_offset + bus_limb]
+                        + (opened[tip5_selector_offset] - input_selector)
+                            * opened[hidden_value_offset + limb]
+                };
+                let normal = expected_for_bus(limb);
+                let swapped = expected_for_bus(Self::terminal_tip5_merkle_swapped_limb(limb));
+                let expected = normal + opened[mmcs_bit_offset] * (swapped - normal);
                 relation += coeff * (lookup - expected);
                 coeff *= alpha;
             }
@@ -20740,12 +20767,34 @@ impl NativeTerminalCompiler {
     fn terminal_npo_polynomial_tip5_input_lane_base_value<F>(
         columns: &TerminalNpoPolynomialColumns<F>,
         row: usize,
-        limb: usize,
+        trace_limb: usize,
     ) -> Result<Goldilocks, NativeTerminalVerifyError>
     where
         F: BasedVectorSpace<Goldilocks>,
     {
-        let input_present_label = format!("input_present_{limb}");
+        let mode_merkle_path = Self::terminal_npo_polynomial_column_base_value(
+            columns,
+            Self::terminal_npo_polynomial_column_index(columns, "mode_merkle_path")?,
+            row,
+            "mode_merkle_path",
+        )? != Goldilocks::ZERO;
+        let mmcs_bit = if mode_merkle_path {
+            Self::terminal_npo_polynomial_column_base_value(
+                columns,
+                Self::terminal_npo_polynomial_column_index(columns, "mmcs_bit")?,
+                row,
+                "mmcs_bit",
+            )? == Goldilocks::ONE
+        } else {
+            false
+        };
+        let mode = Tip5TerminalMode {
+            new_start: false,
+            merkle_path: mode_merkle_path,
+        };
+        let bus_limb = Self::terminal_tip5_bus_limb_from_trace_limb(mode, mmcs_bit, trace_limb);
+
+        let input_present_label = format!("input_present_{bus_limb}");
         if let Ok(input_present_index) =
             Self::terminal_npo_polynomial_column_index(columns, &input_present_label)
         {
@@ -20756,7 +20805,7 @@ impl NativeTerminalCompiler {
                 &input_present_label,
             )?;
             if input_present != Goldilocks::ZERO {
-                let input_label = format!("input_value_{limb}");
+                let input_label = format!("input_value_{bus_limb}");
                 let input_index =
                     Self::terminal_npo_polynomial_column_index(columns, &input_label)?;
                 return Self::terminal_npo_polynomial_column_base_value(
@@ -20767,7 +20816,7 @@ impl NativeTerminalCompiler {
                 );
             }
         }
-        let hidden_present_label = format!("hidden_tip5_present_{limb}");
+        let hidden_present_label = format!("hidden_tip5_present_{trace_limb}");
         if let Ok(hidden_present_index) =
             Self::terminal_npo_polynomial_column_index(columns, &hidden_present_label)
         {
@@ -20778,7 +20827,7 @@ impl NativeTerminalCompiler {
                 &hidden_present_label,
             )?;
             if hidden_present != Goldilocks::ZERO {
-                let hidden_label = format!("hidden_tip5_value_{limb}");
+                let hidden_label = format!("hidden_tip5_value_{trace_limb}");
                 let hidden_index =
                     Self::terminal_npo_polynomial_column_index(columns, &hidden_label)?;
                 return Self::terminal_npo_polynomial_column_base_value(
@@ -27248,13 +27297,30 @@ impl NativeTerminalCompiler {
                 )?;
                 Ok(value_domain.evaluate_polynomial_at(&evals, zeta))
             };
+        let product_selector_at =
+            |labels: &[&str]| -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
+                let evals = Self::terminal_npo_polynomial_product_selector_evals(
+                    &verifier_columns,
+                    &proof.value_profile,
+                    labels,
+                )?;
+                Ok(value_domain.evaluate_polynomial_at(&evals, zeta))
+            };
+        let tip5_selector = product_selector_at(&["is_tip5"])?;
+        let mmcs_selector = opened_value("mmcs_bit");
         for limb in 0..16 {
-            let input_label = format!("input_value_{limb}");
             let hidden_label = format!("hidden_tip5_value_{limb}");
-            let expected = selector_at(&format!("input_present_{limb}"))?
-                * opened_value(&input_label)
-                + selector_at(&format!("hidden_tip5_present_{limb}"))?
-                    * opened_value(&hidden_label);
+            let hidden_value = opened_value(&hidden_label);
+            let expected_for_bus =
+                |bus_limb: usize| -> Result<TerminalFriChallenge, NativeTerminalVerifyError> {
+                    let input_selector = selector_at(&format!("input_present_{bus_limb}"))?;
+                    let input_label = format!("input_value_{bus_limb}");
+                    Ok(input_selector * opened_value(&input_label)
+                        + (tip5_selector - input_selector) * hidden_value)
+                };
+            let normal = expected_for_bus(limb)?;
+            let swapped = expected_for_bus(Self::terminal_tip5_merkle_swapped_limb(limb))?;
+            let expected = normal + mmcs_selector * (swapped - normal);
             relation += coeff * (opened_lookup_io[limb] - expected);
             coeff *= alpha;
         }
@@ -30786,15 +30852,19 @@ impl NativeTerminalCompiler {
         trace_limb: usize,
     ) -> usize {
         if mode.merkle_path && mmcs_bit {
-            if trace_limb < 5 {
-                trace_limb + 5
-            } else if trace_limb < 10 {
-                trace_limb - 5
-            } else {
-                trace_limb
-            }
+            Self::terminal_tip5_merkle_swapped_limb(trace_limb)
         } else {
             trace_limb
+        }
+    }
+
+    fn terminal_tip5_merkle_swapped_limb(limb: usize) -> usize {
+        if limb < 5 {
+            limb + 5
+        } else if limb < 10 {
+            limb - 5
+        } else {
+            limb
         }
     }
 
@@ -40282,6 +40352,173 @@ mod tests {
     }
 
     #[test]
+    fn goldilocks_npo_value_bridge_binds_merkle_direction_one_projection() {
+        let (circuit, mut public_inputs, private_data) = build_many_merkle_tip5_test_circuit(1);
+        set_many_merkle_tip5_public_direction(
+            &mut public_inputs,
+            &private_data,
+            0,
+            Goldilocks::ONE,
+        );
+        let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
+        let (_pk, vk) = compiler.compile_goldilocks_terminal(&circuit).unwrap();
+        let witness = execute_tip5_terminal_witness_with_private_data(
+            &circuit,
+            public_inputs.clone(),
+            private_data,
+        );
+        let columns = compiler
+            .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
+            .expect("direction-one NPO columns must build");
+        let verifier_columns = compiler
+            .terminal_npo_polynomial_verifier_derived_columns_goldilocks::<Goldilocks>(&vk)
+            .expect("direction-one verifier columns must build");
+        let (trace_profile, trace) = terminal_test_tip5_lookup_trace(&compiler, &vk, &witness);
+        let (_lookup_io_profile, lookup_io_matrix) =
+            NativeTerminalCompiler::terminal_npo_tip5_lookup_npo_rows_io_matrix_goldilocks(
+                &trace_profile,
+                &columns,
+                &trace,
+            )
+            .expect("direction-one lookup IO matrix must build");
+        let input_0 = npo_polynomial_column(&columns, "input_value_0")[0];
+        let hidden_0 = npo_polynomial_column(&columns, "hidden_tip5_value_0")[0];
+        assert_ne!(
+            input_0, hidden_0,
+            "test must distinguish running digest from sibling"
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "mmcs_bit")[0],
+            Goldilocks::ONE
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "input_present_0")[0],
+            Goldilocks::ONE
+        );
+        assert_eq!(
+            npo_polynomial_column(&columns, "hidden_tip5_present_0")[0],
+            Goldilocks::ONE
+        );
+        assert_eq!(
+            lookup_io_matrix.values[0],
+            hidden_0,
+            "direction-one trace lane 0 must read the hidden sibling, not input_value_0"
+        );
+        assert_eq!(
+            lookup_io_matrix.values[5],
+            input_0,
+            "direction-one trace lane 5 must read bus input_value_0"
+        );
+        assert_eq!(
+            NativeTerminalCompiler::terminal_npo_polynomial_tip5_input_lane_base_value(
+                &columns, 0, 0,
+            )
+            .expect("direction-one lane 0 projection must read"),
+            hidden_0
+        );
+        assert_eq!(
+            NativeTerminalCompiler::terminal_npo_polynomial_tip5_input_lane_base_value(
+                &columns, 0, 5,
+            )
+            .expect("direction-one lane 5 projection must read"),
+            input_0
+        );
+
+        let standalone_prelude = terminal_test_tip5_lookup_npo_rows_value_bridge_prelude(
+            &compiler,
+            &vk,
+            &public_inputs,
+            &columns,
+            &trace_profile,
+            &trace,
+        );
+        let standalone_proof = compiler
+            .prove_terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &standalone_prelude,
+            )
+            .expect("direction-one standalone value bridge proof must build");
+        compiler
+            .verify_terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_goldilocks::<
+                Goldilocks,
+            >(&vk, &public_inputs, &standalone_prelude, &standalone_proof)
+            .expect("direction-one standalone value bridge proof must verify");
+
+        let merged_roots =
+            NativeTerminalCompiler::terminal_npo_fri_residual_zero_recompose_value_bridge_prelude_commitments_goldilocks(
+                &trace_profile,
+                &columns,
+                &trace,
+            )
+            .expect("direction-one merged value-bridge roots must build");
+        let merged_prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &public_inputs,
+                TerminalProofParameters::production_60bit(),
+                merged_roots,
+            )
+            .expect("direction-one merged prelude must build");
+        let merged_proof = compiler
+            .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks(
+                &vk,
+                &public_inputs,
+                &witness,
+                &merged_prelude,
+            )
+            .expect("direction-one merged value-bridge proof must build");
+        compiler
+            .verify_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks::<
+                Goldilocks,
+            >(&vk, &public_inputs, &merged_prelude, &merged_proof)
+            .expect("direction-one merged value-bridge proof must verify");
+
+        let mut bad_columns = columns.clone();
+        let input_column = bad_columns
+            .labels
+            .iter()
+            .position(|label| label == "input_value_0")
+            .expect("input_value_0 column must exist");
+        bad_columns.columns[input_column][0] += Goldilocks::ONE;
+        let bad_prelude =
+            NativeTerminalCompiler::terminal_npo_fri_residual_zero_recompose_value_bridge_prelude_commitments_goldilocks(
+                &trace_profile,
+                &bad_columns,
+                &trace,
+            )
+            .and_then(|roots| {
+                compiler.build_proof_prelude_goldilocks(
+                    &vk,
+                    &public_inputs,
+                    TerminalProofParameters::production_60bit(),
+                    roots,
+                )
+            })
+            .expect("bad direction-one merged prelude must build");
+        let bad_proof =
+            NativeTerminalCompiler::prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_from_columns_goldilocks(
+                &bad_prelude,
+                &trace_profile,
+                &bad_columns,
+                &verifier_columns,
+                &trace,
+            )
+            .expect("FRI-valid but direction-one value-bridge-invalid proof must build");
+        let err = compiler
+            .verify_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks::<
+                Goldilocks,
+            >(&vk, &public_inputs, &bad_prelude, &bad_proof)
+            .expect_err("direction-one bridge must reject stale bus input_value_0");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { label }
+                if label == "tip5_lookup_npo_rows_value_bridge_quotient"
+        ));
+    }
+
+    #[test]
     fn goldilocks_d2_npo_merged_value_bridge_verifies_selected_columns() {
         let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(2);
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);
@@ -47838,6 +48075,29 @@ mod tests {
         }
 
         (builder.build().unwrap(), public_inputs, private_data)
+    }
+
+    fn set_many_merkle_tip5_public_direction(
+        public_inputs: &mut [Goldilocks],
+        private_data: &[(NonPrimitiveOpId, Vec<Goldilocks>)],
+        row: usize,
+        mmcs_bit: Goldilocks,
+    ) {
+        let base = row * 11;
+        let digest: [Goldilocks; 5] = core::array::from_fn(|limb| public_inputs[base + limb]);
+        let sibling = private_data[row].1.as_slice();
+        assert_eq!(sibling.len(), 5);
+        let mut state = [Goldilocks::ZERO; 16];
+        if mmcs_bit == Goldilocks::ONE {
+            state[..5].copy_from_slice(sibling);
+            state[5..10].copy_from_slice(&digest);
+        } else {
+            state[..5].copy_from_slice(&digest);
+            state[5..10].copy_from_slice(sibling);
+        }
+        let output = Tip5Perm.permute(state);
+        public_inputs[base + 5..base + 10].copy_from_slice(&output[..5]);
+        public_inputs[base + 10] = mmcs_bit;
     }
 
     fn build_npo_only_tip5_test_circuit() -> (Circuit<Goldilocks>, Vec<Goldilocks>) {
