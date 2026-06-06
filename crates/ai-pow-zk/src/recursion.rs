@@ -5375,12 +5375,12 @@ mod tests {
             merged_root_start.elapsed().as_millis()
         );
         let bundled_tip5_root_start = std::time::Instant::now();
-        prelude_roots.extend(
-            NativeTerminalCompiler::terminal_npo_tip5_lookup_trace_bundled_io_support_prelude_commitments_prepared_goldilocks(
+        let integrated_logup_prepared =
+            NativeTerminalCompiler::prepare_terminal_npo_tip5_lookup_air_logup_trace_io_support_npo_io_logup_goldilocks(
                 &merged_value_bridge_prepared,
             )
-            .expect("integrated LogUp diagnostic must bind bundled Tip5 root"),
-        );
+            .expect("integrated LogUp diagnostic must prepare bundled Tip5 proof data");
+        prelude_roots.extend(integrated_logup_prepared.prelude_commitments().to_vec());
         eprintln!(
             "native terminal integrated-LogUp candidate phase [{label}]: bundled_tip5_root_ms={}",
             bundled_tip5_root_start.elapsed().as_millis()
@@ -5432,9 +5432,10 @@ mod tests {
             "native terminal integrated-LogUp candidate phase [{label}]: integrated_logup_prove_start"
         );
         let integrated_logup_proof = compiler
-            .prove_terminal_npo_tip5_lookup_air_logup_trace_io_support_npo_io_logup_prepared_prelude_checked_goldilocks(
+            .prove_terminal_npo_tip5_lookup_air_logup_trace_io_support_npo_io_logup_trace_bundle_prepared_prelude_checked_goldilocks(
                 &prelude,
                 &merged_value_bridge_prepared,
+                &integrated_logup_prepared,
             )
             .expect("integrated LogUp diagnostic must prove bundled Tip5 LogUp");
         let integrated_logup_prove_elapsed = integrated_logup_prove_start.elapsed();

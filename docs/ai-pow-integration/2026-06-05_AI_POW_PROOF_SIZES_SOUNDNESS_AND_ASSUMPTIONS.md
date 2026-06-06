@@ -41,7 +41,7 @@ must not be treated as the production block/wire artifact.
 | Fast-L1 pure-query L2-over-L1 batch-STARK sweep | Diagnostic for pairing the only sub-30s L1 profile with the actual compact final-layer body; verifies after the Tip5 MMCS direction-binding fix, but still misses size/time jointly | Shared fast L1 `lb=3,nq=20,cap=4`: `279,719` bytes, L1 prove `25.178s`; compact-body L2 `lb=4,nq=15,cap=4`: `174,707` bytes, L2 prove `25.245s`; compact-body L2 `lb=5,nq=12,cap=4`: `145,695` bytes, L2 prove `48.530s`; compact-body L2 `lb=6,nq=10,cap=4`: `129,804` bytes, L2 prove `98.584s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_fast_l1_statement_bound_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
 | Native terminal certificate fixture | Recursion-crate terminal proof over the real Tip5 verifier-circuit fixture; proves the terminal backend can be small, but is not yet the full `ai-pow-zk` composite verifier path | `85,948` bytes / `83.9 KiB`; release prove `1.492s`, verify `1.181s` | `RUSTFLAGS="-C target-cpu=native" cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --release --test test_l1_outer_cert_tip5_unified terminal_production_certificate_measures_real_tip5_l0_verifier_circuit -- --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier native terminal path | Opt-in diagnostic path for the actual composite L1 verifier circuit; not yet production-qualified because it misses both size and time gates | `lb=6,nq=10,pow=0` reduced-profile run after compact known-index proof encoding: terminal certificate `766,069` bytes / `748.1 KiB`; terminal public inputs `5,180` bytes; postcard wire certificate `771,249` bytes / `753.2 KiB`; release prove `80.829s`, verify `58.825s` | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_recursive_certificate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
-| Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed full-composite size measurement. A prover-side batched-LDE quotient change improved the recursion-crate synthetic production-candidate checkpoint from `25.117s` to `19.356s` at the same `96,017` byte / `93.8 KiB` body. In the full-composite diagnostic, preparing NPO columns/trace once and reusing them for roots plus both NPO proofs reduced merged proof time from about `20.2s` to `6.433s`; bundled root construction fell to `6.381s`. The same run still had L0 prove `33.138s`, terminal compile `7.499s`, assignment commit `5.845s`, prepared merged root `10.860s`, prelude `7.424s`, primitive prove `14.606s`, and then the integrated Tip5 LogUp subproof stayed inside its first full-trace phase for several minutes before the run was stopped. | `NOCK_TERMINAL_PROFILE_PROVER=1 RUST_LOG=p3_recursion::terminal=info RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-06 |
+| Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed full-composite size measurement. Prepared selected+lookup and trace-bundle PCS data reuse plus a batched-LDE AIR quotient builder improved the recursion-crate synthetic production-candidate checkpoint to the same `96,017` byte / `93.8 KiB` body with `10.148s` total prove. In the full-composite diagnostic, selected+lookup reuse reduced merged value-bridge prove to `2.355s`; latest phase timings before the integrated proof were L0 `31.983s`, terminal compile `7.539s`, assignment commit `5.933s`, selected+lookup root `11.135s` with selected commit `4.16s`, trace-bundle root `6.678s` with trace commit `6.25s`, prelude `7.468s`, and primitive prove `14.702s`. The integrated proof still stayed inside `terminal_npo_integrated_logup.air_quotient_matrix` for more than two minutes after `integrated_logup_prove_start` and was stopped. | `NOCK_TERMINAL_PROFILE_PROVER=1 RUST_LOG=p3_recursion::terminal=info RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-06 |
 | Full `ai-pow-zk` composite-verifier terminal relation metrics | Non-proving diagnostic for the same path | PROD baseline: `125,961` ops, `221,989` witnesses, `43,443` terminal private inputs, `14,049` NPO rows, `242,798` NPO residual components, `5,319` bytes of terminal public inputs, terminal compile `20.943s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_for_prod_baseline_composite_are_available -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier FRI-native NPO residual-zero floor | Diagnostic only; measures the actual composite L1 verifier NPO polynomial layout and the FRI-native residual-zero body. After the terminal Tip5 Merkle-direction mapping fix, this residual-zero layer verifies, but it is not by itself a production-sound recursive proof because the remaining NPO quotient/value-bridge/lookup and primitive-row relations still have to be included or replaced by documented bindings. | Layout: `14,049` NPO rows, `16,384` padded rows, `89` prover-dependent field columns / `178` basis columns, residual-zero opened-column floor `180` basis columns. Proof body `55,344` bytes with `54,023` bytes compact FRI; `0` nonzero residual values; status `verified`; prove `19.635s`, verify `11.930s`, total diagnostic wall `87.229s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_fri_native_residual_zero_candidate_for_prod_baseline_measures -- --ignored --nocapture`, 2026-06-06 |
 | Full `ai-pow-zk` composite-verifier FRI-native merged padding/value-bridge candidate | Diagnostic only; serializes the terminal prelude, primitive R1CS row-product proof, and one merged residual-zero/recompose/padding/value-bridge NPO proof over the actual composite L1 verifier relation. It verifies after the direction-aware value bridge and dynamic hidden-selector padding fixes, but is not production-qualified because the Tip5 lookup/AIR/LogUp binding still has to be in the final theorem. | Body `151,448` bytes / `147.9 KiB`: prelude `240`, primitive R1CS `57,501`, merged NPO proof `93,707`, merged compact FRI `91,501`. The proof folds mixed value padding, `mmcs_bit` zero-when-absent and booleanity, dynamic hidden Tip5 padding, new-start zero constraints, Merkle capacity-zero constraints, recompose value semantics, residual-zero, recompose quotient, and the direction-aware value bridge into one NPO FRI proof with a combined padding+value-bridge quotient commitment. Post-prelude proof body construction is `14.914s` serial (`8.372s` primitive, `6.541s` merged NPO), verify `43.794s`, total diagnostic wall `108.606s`, status `verified`. Full diagnostic setup still includes terminal compile `10.153s`, assignment commitment `6.843s`, prepared merged NPO root `14.661s`, and prelude construction `10.031s`. Primitive split remains assignment evaluation `55,025` bytes, including `53,586` bytes of fold-round openings and `48,462` bytes / `1,211` nodes of Merkle frontier. | `NOCK_TERMINAL_PROFILE_PROVER=1 RUST_LOG=p3_recursion::terminal=info RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_merged_value_bridge_candidate_for_prod_baseline_measures -- --ignored --nocapture`, 2026-06-06 |
@@ -65,26 +65,23 @@ The active production target is therefore:
   **771,249 bytes / 753.2 KiB**, with release prove **80.829s** and verify
   **58.825s**, so this path misses both the about-100 KiB and `<30s` gates.
 - full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO
-  candidate: now has an opt-in measurement test and a prepared prover fast
-  path, but the release/native full-composite run still misses the proving-time
-  gate. The batched-LDE quotient builder makes the recursion-crate synthetic
-  backend promising: the production-candidate body remains **96,017 bytes /
-  93.8 KiB** while primitive+NPO prove time improves from **25.117s** to
-  **19.356s** in a focused run and **22.029s** in the broad `goldilocks_npo`
-  filter. On the full composite, preparing NPO columns and the Tip5 trace once
-  removes a real duplicated-work blocker: merged NPO proof time falls from
-  about **20.2s** to **6.433s**. This is not enough to claim production
-  success. The same run already spent **33.138s** in L0 proving before terminal
-  work, plus **7.499s** terminal compile, **5.845s** assignment commitment,
-  **10.860s** prepared merged-root construction, **6.381s** bundled Tip5-root
-  construction, **7.424s** prelude construction, and **14.606s** primitive
-  proving before the integrated Tip5 LogUp subproof remained in its first
-  full-trace phase and was stopped. The next sound optimization is deeper
-  prepared-data reuse of the integrated proof's full-main trace matrix,
-  NPO-IO matrix, selected lookup matrix, and PCS commitment data, followed by a
-  decision on whether the production timing budget includes L0 and terminal
-  setup. If it does, this path cannot meet **30s total** without reducing L0
-  and setup as well.
+  candidate: now has an opt-in measurement test, prepared selected+lookup and
+  trace-bundle PCS data reuse, and a batched-LDE AIR quotient builder. The
+  recursion-crate synthetic backend remains promising: the production-candidate
+  body is unchanged at **96,017 bytes / 93.8 KiB** while primitive+NPO prove
+  time improves to **10.148s** in the focused run. On the full composite,
+  selected+lookup reuse removes another duplicated-work blocker: merged
+  value-bridge proving falls to **2.355s** after the selected+lookup root has
+  already been prepared. This is still not enough to claim production success.
+  The latest full-composite diagnostic already spent **31.983s** in L0 proving
+  before terminal work, plus **7.539s** terminal compile, **5.933s** assignment
+  commitment, **11.135s** selected+lookup root construction, **6.678s**
+  trace-bundle root construction, **7.468s** prelude construction, and
+  **14.702s** primitive proving before the integrated Tip5 LogUp subproof
+  remained inside `terminal_npo_integrated_logup.air_quotient_matrix` for more
+  than two minutes and was stopped. The next sound optimization must reduce or
+  specialize the full Tip5 AIR quotient work; additional prelude commitment
+  caching alone will not make this candidate meet **30s total**.
 - full `ai-pow-zk` composite-verifier FRI-native NPO residual-zero floor: the
   actual composite relation has a plausible byte floor, with a **55,344 byte**
   residual-zero proof body and **54,023 byte** compact FRI payload over
@@ -430,18 +427,20 @@ not acceptable as an unqualified production default.
 The integrated-LogUp polynomial NPO backend is not a production escape hatch
 for this full composite path yet. In the recursion crate's synthetic NPO-only
 Tip5 test, the bundled checkpoint measures `95,201` bytes and the primitive
-plus NPO candidate body measures `96,017` bytes with `25.117s` total prove
-time. That is the strongest evidence for the proof shape: one native terminal
+plus NPO candidate body measures `96,017` bytes with `10.148s` total prove
+time after prepared selected+lookup reuse and the batched-LDE AIR quotient
+builder. That is the strongest evidence for the proof shape: one native terminal
 backend, one prelude, a merged padding/value bridge, and an integrated
 AIR+LogUp/support/NPO-IO LogUp proof with bundled masked IO. The full composite
 diagnostic binds the assignment root plus the merged NPO and bundled Tip5 FRI
 roots, then proves the primitive row-product component and attempts the
 integrated NPO proof over the actual AI-PoW L1 verifier relation. The
 release/native full-composite run did not reach its final size print; it
-already spent `14.546s` in primitive proving plus `20.271s` in the merged
-padding/value bridge before the integrated Tip5 LogUp subproof completed. It
-therefore remains the leading proof-shape direction, not the active production
-recursive certificate backend.
+already spent `14.702s` in primitive proving plus `2.355s` in the cached merged
+padding/value bridge before the integrated Tip5 LogUp subproof remained inside
+`terminal_npo_integrated_logup.air_quotient_matrix` for more than two minutes.
+It therefore remains the leading proof-shape direction, not the active
+production recursive certificate backend.
 
 The newer FRI-native compact residual-zero checkpoint is much more promising
 on bytes, and the full-composite residual-zero layer now verifies after fixing
@@ -536,27 +535,30 @@ primitive reduction needs a shared proximity/PCS design that supplies that
 binding, or a different primitive arithmetization that avoids the current
 assignment-evaluation obligation.
 
-A phase-instrumented rerun made the failure mode more concrete:
+A phase-instrumented rerun after selected+lookup/trace-bundle prepared-data
+reuse made the current failure mode more concrete:
 
 | Full composite integrated-LogUp phase | Time |
 |---|---:|
-| Layer-0 proof generation for the diagnostic fixture | `31.648s` |
-| L1 verifier-circuit build | `0.449s` |
+| Layer-0 proof generation for the diagnostic fixture | `31.983s` |
+| L1 verifier-circuit build | `0.469s` |
 | L1 verifier trace execution | `0.044s` |
-| Terminal compile | `7.393s` |
-| Assignment oracle commitment | `5.806s` |
-| Merged NPO prelude root construction | `9.623s` |
-| Bundled Tip5 prelude root construction | `11.607s` |
-| Terminal prelude build | `7.346s` |
-| Primitive R1CS row-product proof | `14.546s` |
-| Merged padding/value-bridge proof | `20.271s` |
-| Integrated Tip5 LogUp proof | still running when stopped |
+| Terminal compile | `7.539s` |
+| Assignment oracle commitment | `5.933s` |
+| Selected+lookup root construction | `11.135s` total, including `4.16s` selected+lookup commit |
+| Bundled trace root construction | `6.678s` total, including `6.25s` trace-bundle commit |
+| Terminal prelude build | `7.468s` |
+| Primitive R1CS row-product proof | `14.702s` |
+| Merged padding/value-bridge proof | `2.355s` |
+| Integrated Tip5 LogUp proof | stopped after more than two minutes inside `air_quotient_matrix` |
 
-The root-construction phases duplicate work that the current subproof provers
-redo internally, so prepared-data plumbing is still worth doing. It is not
-enough by itself: the primitive row-product and merged padding/value-bridge
-proofs alone already cost `34.817s`, before the integrated Tip5 LogUp proof
-completes.
+The selected+lookup prepared-data plumbing removed a real duplicate commitment:
+the merged proof now opens the prelude-fixed selected+lookup PCS data instead
+of rebuilding it. The trace-bundle prepared path similarly opens the already
+prepared full-main trace/NPO-IO bundle. This still does not make the full
+candidate production-ready: L0 alone exceeds `30s` at `lb=6,nq=10`, and the
+integrated proof's full Tip5 AIR quotient remains too slow on the actual
+composite relation.
 
 The proof-body split after compact known-index proof encoding is:
 
