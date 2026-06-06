@@ -574,20 +574,28 @@ then reruns the statement-bound L1-only object with `commit_pow_bits=0` and
 `query_pow_bits=0`. It sweeps the three 60-bit pure-query shapes that are most
 relevant to the current parameter discussion:
 
-| Pure-query statement-bound L1-only diagnostic (`TEST_PEARL`) | L1 outer | L1 proof body | Prove | Verify |
-|---|---:|---:|---:|---:|
-| `lb=4,nq=15,pow=0` | `226,542 bytes` | `224,897 bytes` | `49.290s` | `26ms` |
-| `lb=5,nq=12,pow=0` | `196,488 bytes` | `194,845 bytes` | `98.009s` | `22ms` |
-| `lb=6,nq=10,pow=0` | `176,362 bytes` | `174,727 bytes` | `195.574s` | `24ms` |
+| Pure-query statement-bound L1-only diagnostic (`TEST_PEARL`) | L1 outer | Path-only projection | Preprocessed-omitted projection | Prove | Verify |
+|---|---:|---:|---:|---:|---:|
+| `lb=4,nq=15,pow=0` | `226,542 bytes` | `222,826 bytes` | `177,535 bytes` | `48.834s` | `26ms` |
+| `lb=5,nq=12,pow=0` | `196,488 bytes` | `193,955 bytes` | `155,714 bytes` | `96.583s` | `23ms` |
+| `lb=6,nq=10,pow=0` | `176,362 bytes` | `174,409 bytes` | `140,856 bytes` | `193.636s` | `23ms` |
 
 All three variants bind five public lanes, use zero commit/query proof-system
 PoW, and reach 60 Johnson bits by `log_blowup * num_queries`. This closes the
 parameter-only version of the relaxed L1-only batch-STARK route: removing PoW
-from the soundness accounting pushes the proof well above `150 KiB`, and higher
-blowup reduces bytes only by spending far more prover time. The smallest
-measured pure-query variant is still `172.2 KiB` and takes `195.574s`, so the
-batch-STARK L1-only route needs structural compression or another recursive
-compression layer before it can satisfy the production policy.
+from the soundness accounting pushes the raw proof well above `150 KiB`, and
+higher blowup reduces bytes only by spending far more prover time.
+
+The compact-preprocessed projection is an important structural compression
+lever, but it still does not make the one-layer L1-only route production-ready.
+The fastest pure-query shape, `lb4,nq15`, still projects to `177,535` bytes and
+takes `48.834s`. The only L1-only row that projects below the relaxed `150 KiB`
+target is `lb6,nq10`, and it takes `193.636s`. Therefore a one-layer
+batch-STARK final proof cannot satisfy both the size and time targets even with
+verifier-deterministic preprocessed openings omitted. The remaining route has
+to either reduce the L1 verifier relation/prover work directly, or use a
+different compact recursion/compression proof that avoids this L1 batch-STARK
+proving cost.
 
 The cap-height diagnostic
 `relaxed_l1_only_pure_query_lb6_cap_height_candidate_size_breakdown_for_test_pearl`

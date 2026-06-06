@@ -2159,14 +2159,51 @@ mod tests {
             let l1_proof_body_bytes =
                 postcard_len(&outer.proof, "pure-query statement-bound L1 proof body");
             let l1_metadata_bytes = l1_outer_bytes.saturating_sub(l1_proof_body_bytes);
+            let cap_height =
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_CAP_HEIGHT;
+            let log_final_poly_len =
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN;
+            let path_estimate = merkle_path_compression_estimate_for_outer_proof(
+                &outer, log_blowup, log_final_poly_len, cap_height,
+            );
+            let path_pruned_projected_outer_bytes = l1_outer_bytes
+                .saturating_sub(path_estimate.mean_digest_savings_bytes.round() as usize);
+            let input_batches = fri_input_batch_byte_breakdown_for_outer_proof(&outer);
+            let preprocessed_input = input_batch_bytes_by_label(&input_batches, "preprocessed")
+                .expect("L1 proof should carry a preprocessed input batch");
+            let preprocessed_ood_bytes = preprocessed_ood_opening_bytes_for_outer_proof(&outer);
+            let path_without_preprocessed =
+                merkle_path_compression_estimate_for_outer_proof_with_omitted_input_batch(
+                    &outer,
+                    log_blowup,
+                    log_final_poly_len,
+                    cap_height,
+                    Some(preprocessed_input.index),
+                );
+            let preprocessed_omitted_projected_outer_bytes = l1_outer_bytes
+                .saturating_sub(preprocessed_ood_bytes)
+                .saturating_sub(preprocessed_input.total_bytes)
+                .saturating_sub(
+                    path_without_preprocessed.mean_digest_savings_bytes.round() as usize
+                );
             eprintln!(
-                "relaxed L1-only pure-query statement-bound candidate [TEST_PEARL {label}]: l1_outer={} l1_proof_body={} l1_metadata={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} prove_ms={} verify_ms={}",
+                "relaxed L1-only pure-query statement-bound candidate [TEST_PEARL {label}]: l1_outer={} l1_proof_body={} l1_metadata={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_preprocessed_ood={} l1_preprocessed_input_batch={} l1_preprocessed_input_opened_values={} l1_preprocessed_input_merkle={} l1_preprocessed_omitted_projected_outer={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} prove_ms={} verify_ms={}",
                 l1_outer_bytes,
                 l1_proof_body_bytes,
                 l1_metadata_bytes,
+                path_pruned_projected_outer_bytes,
+                path_estimate.raw_siblings,
+                path_estimate.mean_compressed_siblings.round() as usize,
+                path_estimate.mean_digest_savings_bytes.round() as usize,
+                preprocessed_ood_bytes,
+                preprocessed_input.total_bytes,
+                preprocessed_input.opened_values_bytes,
+                preprocessed_input.merkle_bytes,
+                preprocessed_omitted_projected_outer_bytes,
                 outer.public_binding_lanes,
                 log_blowup,
                 num_queries,
+                cap_height,
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS,
