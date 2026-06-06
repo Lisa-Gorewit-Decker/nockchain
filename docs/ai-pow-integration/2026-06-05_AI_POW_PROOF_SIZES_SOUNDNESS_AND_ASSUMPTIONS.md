@@ -67,6 +67,21 @@ The active production target is therefore:
   the Pearl-shaped conclusion: the final artifact needs recursive compression
   of the base proof, not re-serialization of the base proof.
 
+The Pearl comparison now points to a concrete non-Plonky2 route rather than a
+parameter retune of the current terminalized verifier. Pearl's small final
+certificate comes from proving a specialized work AIR, recursively compressing
+that proof twice, compactly serializing only the final proof, and explicitly
+binding verifier data such as the previous circuit digest and constants cap.
+The Plonky3-native production candidate should therefore be an L0 pinned+LogUp
+or narrower AI-PoW AIR proof, followed by an L1 verifier proof and an L2 compact
+compression proof. The compact format may omit only verifier-deterministic data
+that is reconstructed from pinned code/config and must have negative tests for
+stale verifier polynomials, swapped caps/roots, wrong circuit digests, wrong
+preprocessed commitments, wrong public inputs, and malformed compact openings.
+The current `lb=6,nq=10,pow=0` result is a lower-bound diagnostic for the
+generic terminal relation, not a production profile recommendation; `lb=4,nq=15`
+remains the current pure-query baseline until the proof shape changes.
+
 Verifier status after the 2026-06-05 hardening pass: the batch-STARK
 `AiPowRecursiveCertificate` verifier now calls
 `BatchStarkProver::verify_all_tables` for the submitted L1 outer proof. That

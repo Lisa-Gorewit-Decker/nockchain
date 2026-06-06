@@ -362,6 +362,59 @@ backend remains valuable as a verifier-relation diagnostic and fallback, but
 its full composite path is paying costs that Pearl's architecture avoids
 entirely.
 
+### Concrete Pearl-Shaped Plan Without Plonky2
+
+The important conclusion from Pearl is that the target is achievable by changing
+the proof shape, not by retuning the current generic terminalized verifier. A
+Plonky3-native route should copy the structural ideas below while keeping the
+Nockchain soundness policy (`pow_bits=0` for production accounting) and the
+existing Tip5/AI-PoW bindings.
+
+| Pearl ingredient | What Pearl gets | Plonky3-native analogue | Production acceptance gate |
+|---|---|---|---|
+| Specialized base AIR | The base proof is over the work statement, not over a generic verifier execution | Continue from `CompositeFullAirWithLookupsPinned` or replace it with a narrower dedicated AI-PoW AIR; do not put the final artifact on the raw L0 proof | Base proof verifies the matrix/noise/jackpot work, target hit, nonce/job binding, matrix commitments, and public params with no cache-only witness shortcut |
+| Two recursive compression layers | The final proof verifies a proof that already verified the base STARK | Build a first Plonky3 recursive verifier circuit for L0, then a second Plonky3 proof-compression layer over that verifier proof | The on-wire final object is only the L2 compact proof plus explicitly required public data, not L0 and not the L1 batch-STARK checkpoint |
+| Compact final proof format | Deterministic verifier-key material is cached and reconstructed by the verifier | Add a compact p3 proof format that omits only verifier-deterministic constants/preprocessed openings and reconstructs them from pinned verifier data | Tampering tests reject stale cached polynomials, swapped verifier caps, wrong circuit digest, wrong preprocessed commitment, wrong public inputs, and malformed compact openings |
+| Public verifier-data binding | Pearl exposes `constants_sigmas_cap` and `circuit_digest` because `verify_proof` alone is not enough | Every compact p3 recursive layer must expose or otherwise transcript-bind the previous verifier key digest, cap/root, parameter tuple, and public-input digest | The verifier recomputes those values from canonical code/config and rejects any mismatch before accepting proof bytes |
+| Preprocessed/program columns | Deterministic program/routing data is digest-bound and re-evaluated by the verifier | Move deterministic AI-PoW program data and verifier data into digest-bound preprocessed columns where possible | Every omitted value is either verifier-recomputable or still opened from a committed witness; no hidden witness value may become a verifier hint |
+| High-rate final layer | Pearl's final stage is small partly because it uses high rate and query PoW | Sweep pure-query final-layer parameters only after compact recursion exists | A candidate must meet at least 60 pure-query Johnson bits without counting proof-system PoW |
+
+This plan deliberately separates three concerns that the current terminal path
+mixes together:
+
+1. **Base statement soundness.** The L0 proof must prove the AI-PoW work itself:
+   matrix commitments, noised matrix strips, selected tile multiplication,
+   jackpot hash, target comparison, and all chain/public metadata bindings.
+2. **Recursive compression soundness.** L1/L2 proofs must prove verifier
+   execution and bind exactly the verifier parameters, verifier key,
+   transcript-visible commitments, and public inputs used by the previous
+   layer.
+3. **Serialization compactness.** Compact encoding may omit deterministic
+   verifier data, but it must never omit a witness value unless the verifier can
+   recompute it from public data or another proof obligation already binds it.
+
+The first implementation milestone should therefore not be another
+`lb=6,nq=10` terminal measurement. It should be a p3-native compression
+prototype over the existing pinned+LogUp L0 proof with the following outputs:
+
+- L1 proof size and proving time for verifying the current pinned+LogUp L0
+  proof.
+- L2/final proof size and proving time for verifying the L1 proof.
+- A compact-vs-full serialization split that identifies exactly which bytes
+  are omitted and which verifier-known values reconstruct them.
+- Negative tests for every omitted binding: stale verifier data, wrong
+  preprocessed commitment, wrong public input vector, wrong L0 proof
+  commitments, wrong L1 circuit digest, and wrong final proof public inputs.
+
+If that prototype still lands above `100 KiB`, the next lever is AIR
+specialization/narrowing, not higher `log_blowup` alone. The current
+`lb=6,nq=10,pow=0` row was useful only as a lower-bound diagnostic for the
+generic terminal relation. It should not be treated as the production
+inflection point: `lb=4,nq=15,pow=0` remains the current pure-query baseline,
+while `lb=3,nq=20` and `lb=4,nq=15` are the more plausible L0 proving-time
+profiles once recursion and compact serialization remove the raw opening proof
+from the wire.
+
 ### Current Specialized Layer-0 Proof Baseline
 
 The tree now has an ignored Layer-0 pinned+LogUp size diagnostic,
