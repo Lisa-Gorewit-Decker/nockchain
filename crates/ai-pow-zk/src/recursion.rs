@@ -1695,6 +1695,32 @@ mod tests {
         provers
     }
 
+    struct L2ProofForTestPearl {
+        proof: AiPowL1OuterProof,
+        circuit_prover_data:
+            p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksTipsConfig>,
+    }
+
+    fn pure_query_goldilocks_tip5_fri_shape(
+        log_blowup: usize,
+        num_queries: usize,
+        log_final_poly_len: usize,
+        cap_height: usize,
+    ) -> p3_circuit_prover::GoldilocksTip5FriShape {
+        p3_circuit_prover::GoldilocksTip5FriShape {
+            log_blowup,
+            log_final_poly_len,
+            max_log_arity:
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_MAX_LOG_ARITY,
+            num_queries,
+            commit_pow_bits:
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+            query_pow_bits:
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+            cap_height,
+        }
+    }
+
     fn l2_public_values_for_l1(
         l1: &AiPowL1OuterProof,
         statement_digest_public_values: &[Val],
@@ -1740,7 +1766,7 @@ mod tests {
         l2_config: p3_circuit_prover::config::GoldilocksTipsConfig,
         l2_log_blowup: usize,
         l2_log_final_poly_len: usize,
-    ) -> Result<AiPowL1OuterProof, String> {
+    ) -> Result<L2ProofForTestPearl, String> {
         use p3_batch_stark::ProverData;
         use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
         use p3_circuit_prover::{
@@ -1861,7 +1887,10 @@ mod tests {
         prover
             .verify_all_tables(&proof)
             .map_err(|e| format!("L2 verify_all_tables: {e:?}"))?;
-        Ok(proof)
+        Ok(L2ProofForTestPearl {
+            proof,
+            circuit_prover_data,
+        })
     }
 
     /// S3d — end-to-end: a real composite batch-STARK proof is
@@ -2786,17 +2815,21 @@ mod tests {
                 l2_log_blowup, l2_num_queries, L2_CAP_HEIGHT,
             );
             let l2_prove_start = Instant::now();
-            let l2 = prove_l2_over_l1_outer_for_test_pearl(
+            let l2_artifact = prove_l2_over_l1_outer_for_test_pearl(
                 &l1,
                 &statement_digest_public_values,
                 l1_config.clone(),
                 &pure_query_fri_verifier_params_for_l1(L1_LOG_BLOWUP, L1_LOG_FINAL_POLY_LEN),
-                l2_config,
+                l2_config.clone(),
                 l2_log_blowup,
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
             )
             .expect("pure-query L2 proof over statement-bound L1");
             let l2_prove_ms = l2_prove_start.elapsed().as_millis();
+            let L2ProofForTestPearl {
+                proof: l2,
+                circuit_prover_data: l2_circuit_prover_data,
+            } = l2_artifact;
 
             let l2_outer_bytes = postcard_len(&l2, "pure-query L2 diagnostic L2 outer proof");
             let l2_proof_body_bytes =
@@ -2842,9 +2875,47 @@ mod tests {
                         .mean_digest_savings_bytes
                         .round() as usize,
                 );
+            let l2_public_binding_lanes = l2.public_binding_lanes;
+
+            let l2_fri_shape = pure_query_goldilocks_tip5_fri_shape(
+                l2_log_blowup,
+                l2_num_queries,
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
+                L2_CAP_HEIGHT,
+            );
+            let mut l2_compact_verifier = BatchStarkProver::new(l2_config.clone())
+                .with_table_packing(
+                    p3_circuit_prover::TablePacking::new(DIGEST_ELEMS, 8)
+                        .with_fri_params(
+                            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
+                            l2_log_blowup,
+                        )
+                        .with_horner_pack_k(5),
+                );
+            l2_compact_verifier.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+            l2_compact_verifier.register_recompose_table::<2>(true);
+            let l2_compact_start = Instant::now();
+            let l2_compact = l2_compact_verifier
+                .compact_goldilocks_tip5_path_pruned_preprocessed(
+                    l2, &l2_circuit_prover_data, l2_fri_shape,
+                )
+                .expect("compact L2 proof with path-pruned preprocessed adapter");
+            let l2_compact_ms = l2_compact_start.elapsed().as_millis();
+            let l2_compact_bytes =
+                postcard_len(&l2_compact, "pure-query L2 diagnostic actual compact proof");
+            let l2_compact_proof_body_bytes = postcard_len(
+                &l2_compact.proof.proof, "pure-query L2 diagnostic actual compact proof body",
+            );
+            let l2_compact_verify_start = Instant::now();
+            l2_compact_verifier
+                .verify_goldilocks_tip5_path_pruned_preprocessed_compact(
+                    l2_compact, &l2_circuit_prover_data,
+                )
+                .expect("actual compact L2 proof must verify");
+            let l2_compact_verify_ms = l2_compact_verify_start.elapsed().as_millis();
 
             eprintln!(
-                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 lb6_nq10_cap4 -> L2 {l2_label}_cap4]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_preprocessed_ood={} l1_preprocessed_input_batch={} l1_preprocessed_input_opened_values={} l1_preprocessed_input_merkle={} l1_preprocessed_omitted_projected_outer={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_preprocessed_ood={} l2_preprocessed_input_batch={} l2_preprocessed_input_opened_values={} l2_preprocessed_input_merkle={} l2_preprocessed_omitted_projected_outer={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prove_ms={}",
+                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 lb6_nq10_cap4 -> L2 {l2_label}_cap4]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_preprocessed_ood={} l1_preprocessed_input_batch={} l1_preprocessed_input_opened_values={} l1_preprocessed_input_merkle={} l1_preprocessed_omitted_projected_outer={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_preprocessed_ood={} l2_preprocessed_input_batch={} l2_preprocessed_input_opened_values={} l2_preprocessed_input_merkle={} l2_preprocessed_omitted_projected_outer={} l2_actual_compact={} l2_actual_compact_proof_body={} l2_actual_compact_build_ms={} l2_actual_compact_verify_ms={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prove_ms={}",
                 l1_outer_bytes,
                 l1_proof_body_bytes,
                 l1_path_pruned_projected_outer_bytes,
@@ -2881,7 +2952,11 @@ mod tests {
                 l2_preprocessed_input.opened_values_bytes,
                 l2_preprocessed_input.merkle_bytes,
                 l2_preprocessed_omitted_projected_outer_bytes,
-                l2.public_binding_lanes,
+                l2_compact_bytes,
+                l2_compact_proof_body_bytes,
+                l2_compact_ms,
+                l2_compact_verify_ms,
+                l2_public_binding_lanes,
                 l2_log_blowup,
                 l2_num_queries,
                 L2_CAP_HEIGHT,
@@ -2892,12 +2967,16 @@ mod tests {
             );
 
             assert_eq!(
-                l2.public_binding_lanes, 0,
+                l2_public_binding_lanes, 0,
                 "diagnostic L2 proof currently binds its L1 statement through the verifier public inputs"
             );
             assert!(
                 l2_outer_bytes >= l2_proof_body_bytes,
                 "L2 metadata split must be well formed"
+            );
+            assert!(
+                l2_compact_bytes < l2_outer_bytes,
+                "actual compact L2 proof should be smaller than the full L2 proof"
             );
         }
     }

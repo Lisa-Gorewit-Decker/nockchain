@@ -237,21 +237,25 @@ The regression
 wrapper now accepts (`L1=185,821` bytes, `L2=188,541` bytes, full test
 `20.11s`).
 
-After that fix, the AI-PoW statement-bound L2 sweep completes again. New
-release/native measurements on 2026-06-06:
+After that fix, the AI-PoW statement-bound L2 sweep completes again. A
+release/native rerun on 2026-06-06 now measures the actual
+`GoldilocksTip5PathPrunedCompactBatchStarkProof` wrapper as well as the older
+projection:
 
-| Shape | Final L2 proof | Path-only projection | Preprocessed-omitted projection | L2 prove time | Shared L1 witness proof |
-|---|---:|---:|---:|---:|---:|
-| L2 `lb=4,nq=15,cap=4,pow=0` over L1 `lb=6,nq=10,cap=4,pow=0` | `209,802` bytes | `203,540` bytes | `158,800` bytes | `12.884s` | L1 `173,868` bytes, path-only `170,306`, preprocessed-omitted `136,081`, L1 prove `194.346s`, verify `23ms` |
-| L2 `lb=5,nq=12,cap=4,pow=0` over same L1 | `176,628` bytes | `172,820` bytes | `134,877` bytes | `24.516s` | same |
-| L2 `lb=6,nq=10,cap=4,pow=0` over same L1 | `160,762` bytes | `157,679` bytes | `124,344` bytes | `49.530s` | same |
+| Shape | Final L2 proof | Path-only projection | Preprocessed-omitted projection | Actual compact wrapper | L2 prove time | Shared L1 witness proof |
+|---|---:|---:|---:|---:|---:|---:|
+| L2 `lb=4,nq=15,cap=4,pow=0` over L1 `lb=6,nq=10,cap=4,pow=0` | `209,802` bytes | `203,540` bytes | `158,800` bytes | `160,826` bytes | `12.649s` | L1 `173,868` bytes, path-only `170,306`, preprocessed-omitted `136,081`, L1 prove `190.712s`, verify `23ms` |
+| L2 `lb=5,nq=12,cap=4,pow=0` over same L1 | `176,628` bytes | `172,820` bytes | `134,877` bytes | `138,707` bytes | `24.327s` | same |
+| L2 `lb=6,nq=10,cap=4,pow=0` over same L1 | `160,762` bytes | `157,679` bytes | `124,344` bytes | `127,133` bytes | `48.426s` | same |
 
-The soundness blocker is gone, but the production metric blocker is unchanged:
-the current batch-STARK L1 witness proof still takes about `194s`, and the
-only final-layer shape under `30s` (`lb=5,nq=12`) needs compact
-preprocessed/path omission to land near `135 KiB`. Raw final L2 is still above
-the relaxed `150 KiB` target; the smallest raw shape here is about `161 KiB`
-and takes about `49.5s`.
+The actual compact wrapper adds roughly `2-4 KiB` over the optimistic
+preprocessed-omitted projection, builds in about `3ms`, and verifies in
+`34-40ms` in this diagnostic. The soundness blocker is gone, but the production
+metric blocker is unchanged: the current batch-STARK L1 witness proof still
+takes about `191s`. The final-layer `lb=5,nq=12` actual compact proof is inside
+the relaxed `150 KiB` and `<30s` final-layer gates (`138,707` bytes,
+`24.327s`), but it is still above the hard `~100 KiB` target and the
+end-to-end pipeline is dominated by the L1 witness proof.
 
 Compact verifier artifacts now exist for the verifier-deterministic
 preprocessed material in that projection.
