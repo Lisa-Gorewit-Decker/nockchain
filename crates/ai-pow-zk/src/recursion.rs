@@ -738,6 +738,15 @@ fn verify_recursive_certificate_inner(
                 .to_string(),
         ));
     }
+    if !p3_circuit_prover::common_preprocessed_binding_eq(
+        &outer.stark_common, &expected_outer_proof.stark_common,
+    ) {
+        return Err(VerificationError::InvalidProofShape(
+            "AI-PoW recursive certificate outer proof preprocessed commitment \
+             binding is not the canonical L1 verifier circuit preprocessed binding"
+                .to_string(),
+        ));
+    }
 
     let expected_public_binding_lanes = 0;
     let expected_packing = production_l1_table_packing(expected_public_binding_lanes);
@@ -1729,6 +1738,8 @@ mod tests {
         l1_config: p3_circuit_prover::config::GoldilocksTipsConfig,
         l1_fri_verifier_params: &FriVerifierParams,
         l2_config: p3_circuit_prover::config::GoldilocksTipsConfig,
+        l2_log_blowup: usize,
+        l2_log_final_poly_len: usize,
     ) -> Result<AiPowL1OuterProof, String> {
         use p3_batch_stark::ProverData;
         use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
@@ -1779,7 +1790,9 @@ mod tests {
         let (public_inputs, private_inputs) =
             verifier_inputs.pack_values(&l1_public_values, &l1.proof, &l1.stark_common);
 
-        let l2_table_packing = TablePacking::new(DIGEST_ELEMS, 8).with_horner_pack_k(5);
+        let l2_table_packing = TablePacking::new(DIGEST_ELEMS, 8)
+            .with_fri_params(l2_log_final_poly_len, l2_log_blowup)
+            .with_horner_pack_k(5);
         let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
             vec![Box::new(Tip5Preprocessor), Box::new(RecomposePreprocessor::new(true))];
         let mut air_builders =
@@ -2779,6 +2792,8 @@ mod tests {
                 l1_config.clone(),
                 &pure_query_fri_verifier_params_for_l1(L1_LOG_BLOWUP, L1_LOG_FINAL_POLY_LEN),
                 l2_config,
+                l2_log_blowup,
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
             )
             .expect("pure-query L2 proof over statement-bound L1");
             let l2_prove_ms = l2_prove_start.elapsed().as_millis();
@@ -4141,6 +4156,39 @@ mod tests {
         cert.l1_outer_proof.non_primitives.clear();
         verify_recursive_certificate(&cert, &zk, &profile, &pis)
             .expect_err("recursive verifier must reject non-canonical L1 circuit metadata");
+    }
+
+    #[test]
+    fn recursive_certificate_rejects_outer_preprocessed_binding_tamper() {
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+        let outer =
+            prove_composite_l1_outer_cert(&built, &proof).expect("honest recursive certificate");
+        let mut cert = AiPowRecursiveCertificate::new(proof, program, outer);
+
+        cert.l1_outer_proof.stark_common = CommonData::new(None, Vec::new());
+        let err = verify_recursive_certificate(&cert, &zk, &profile, &pis)
+            .expect_err("recursive verifier must reject non-canonical preprocessed binding");
+        assert!(
+            err.to_string().contains("preprocessed commitment"),
+            "unexpected verifier error: {err}"
+        );
     }
 
     #[test]

@@ -176,6 +176,48 @@ therefore implement compact preprocessed-opening reconstruction and binding for
 the final layer, while also avoiding or replacing the expensive L1 batch-STARK
 witness proof.
 
+The natural follow-up is to pair the fast L1 profile (`lb=3,nq=20,cap=4`) with
+the compact final-layer projection above. A release/native diagnostic was
+attempted with:
+
+```text
+RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_fast_l1_statement_bound_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture
+```
+
+That run built and verified the fast L1 proof, then failed while self-verifying
+the L2 proof:
+
+```text
+L2 verify_all_tables: Verify("LookupError(\"GlobalCumulativeMismatch(None): WitnessChecks\")")
+```
+
+Enabling the lookup debugger isolated the mismatch to the Tip5 non-primitive
+table. The failing tuple was a `WitnessChecks` read of `WitnessId(52243)` from
+Tip5 Merkle row `1714`. Row `1713` produced the same witness id with
+`out_ctl=1`, and row `1714` consumed it with `in_ctl=1`; the imbalance was not
+a missing multiplicity. It was an index/value desynchronization: the final
+Merkle-path Tip5 permutation used the post-swap state so its CTL outputs bind
+the computed root, but its input CTL indices remained in the static pre-swap
+slot order. When the direction bit is `1`, the input lookup claims the running
+digest witness id while the row value is the sibling value.
+
+This is a completeness blocker for the fast-L1 L2 measurement and a soundness
+documentation blocker for any compact recursive path that relies on the current
+Tip5 MMCS table. A production fix must do one of the following before the
+fast-L1/L2 numbers are meaningful:
+
+- extend the Tip5 compact AIR with a direction-bit-aware lookup layer that
+  binds the MMCS direction bit and selects the correct input value for each
+  static witness index; or
+- avoid Tip5's internal variable Merkle swap in recursive verification by
+  exposing sibling limbs as circuit witnesses, doing the conditional swap in
+  ordinary circuit constraints, and calling Tip5 with a fixed slot order.
+
+Simply changing `lb`, `nq`, cap height, or L2 table packing cannot make this
+path production-sound. The diagnostic helper now threads the selected L2
+`log_blowup` and `log_final_poly_len` into `TablePacking::with_fri_params`, but
+that explicit FRI-shape packing was not the cause of the mismatch.
+
 The polynomial NPO path remains useful diagnostic evidence, but it is not a
 drop-in production replacement for the exhaustive NPO proof. The recursion-crate
 synthetic Tip5-only integrated-LogUp checkpoint measures below the byte and
@@ -485,6 +527,9 @@ The first implementation milestone should therefore not be another
 `lb=6,nq=10` terminal measurement. It should be a p3-native compression
 prototype over the existing pinned+LogUp L0 proof with the following outputs:
 
+- a Tip5 MMCS direction-binding fix or an explicit replacement for internal
+  variable Merkle swaps, with a regression covering a direction-bit-`1` final
+  Merkle permutation that has both CTL inputs and CTL outputs;
 - L1 proof size and proving time for verifying the current pinned+LogUp L0
   proof.
 - L2/final proof size and proving time for verifying the L1 proof.
@@ -1030,6 +1075,13 @@ considering the native terminal path. It is still useful for:
   wrapper;
 - fallback development while terminal proof-shape work continues.
 
+The production verifier now compares the submitted outer proof's
+preprocessed commitment binding against the canonical rebuilt L1 verifier
+circuit binding before calling `verify_all_tables`; a regression tampers
+`stark_common.preprocessed` and requires rejection. This closes the gap where a
+self-consistent proof could otherwise carry non-canonical verifier-preprocessed
+data with matching table metadata.
+
 Assessment: keep it sound, but do not spend milestone effort trying to make it
 the production certificate unless the hard size target changes.
 
@@ -1040,7 +1092,8 @@ I would pursue five tracks in this order:
 1. **Prototype the Pearl-shaped Plonky3 route: specialized AI-PoW AIR plus
    two-stage compact recursion.** This is the most plausible path to the Pearl
    class of proof sizes without importing Plonky2 or counting proof-system PoW.
-   The prototype should first define the compact final proof format and cached
+   The prototype should first fix or bypass the Tip5 MMCS direction-bit
+   CTL-binding issue, then define the compact final proof format and cached
    verifier-key binding under `pow_bits=0`, then measure final recursive proof
    size. The new L1 footprint diagnostic shows that reducing ordinary public
    input exposure is not enough; the compact proof must avoid the current
@@ -1082,6 +1135,7 @@ replaces the current terminal production proof:
   stale preludes, swapped roots, missing roots, tampered FRI openings,
   residual-zero tampering, recompose tampering, value-bridge tampering, byte
   LogUp tampering, NPO-IO LogUp tampering, hidden-output Merkle Tip5 cases, and
+  Tip5 MMCS direction-bit-`1` rows with both CTL inputs and CTL outputs, and
   wrong public values.
 - Written soundness theorem that names every binding: public values, terminal
   header, backend relation digest, NPO layout/profile, fixed Tip5 table digest,
