@@ -1449,6 +1449,63 @@ fn test_goldilocks_tip5_path_pruned_compact_round_trip_restores_full_proof() {
 }
 
 #[test]
+fn test_goldilocks_tip5_path_pruned_compact_body_uses_canonical_metadata() {
+    let (prover, proof, circuit_prover_data, fri_shape) =
+        prove_goldilocks_tip5_ext2_public_plus_const(None);
+    let metadata = GoldilocksTip5BatchStarkProofMetadata::from_proof(&proof);
+    let full_bytes = postcard::to_allocvec(&proof).expect("serialize full proof");
+
+    let compact_body = prover
+        .compact_goldilocks_tip5_path_pruned_preprocessed_body(
+            proof,
+            &circuit_prover_data,
+            fri_shape,
+        )
+        .expect("path-prune compact Goldilocks/Tip5 proof body");
+    let body_bytes = postcard::to_allocvec(&compact_body).expect("serialize compact body");
+    assert!(
+        body_bytes.len() < full_bytes.len(),
+        "metadata-free compact body should be smaller than full proof: full={}, body={}",
+        full_bytes.len(),
+        body_bytes.len()
+    );
+
+    let compact_body: GoldilocksTip5PathPrunedCompactBatchStarkProofBody =
+        postcard::from_bytes(&body_bytes).expect("deserialize compact body");
+    prover
+        .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body(
+            compact_body,
+            &metadata,
+            &circuit_prover_data,
+        )
+        .expect("compact body verifier restores metadata and proof openings");
+}
+
+#[test]
+fn test_goldilocks_tip5_path_pruned_compact_body_rejects_wrong_metadata() {
+    let (prover, proof, circuit_prover_data, fri_shape) =
+        prove_goldilocks_tip5_ext2_public_plus_const(None);
+    let (_, wrong_proof, wrong_setup, _) = prove_goldilocks_tip5_ext2_public_plus_const(Some(1));
+    let wrong_metadata = GoldilocksTip5BatchStarkProofMetadata::from_proof(&wrong_proof);
+
+    let compact_body = prover
+        .compact_goldilocks_tip5_path_pruned_preprocessed_body(
+            proof,
+            &circuit_prover_data,
+            fri_shape,
+        )
+        .expect("path-prune compact Goldilocks/Tip5 proof body");
+
+    prover
+        .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body(
+            compact_body,
+            &wrong_metadata,
+            &wrong_setup,
+        )
+        .expect_err("compact body must not verify under a different canonical metadata template");
+}
+
+#[test]
 fn test_goldilocks_tip5_path_pruned_compact_rejects_tampered_merkle_path() {
     let (prover, proof, circuit_prover_data, fri_shape) =
         prove_goldilocks_tip5_ext2_public_plus_const(None);

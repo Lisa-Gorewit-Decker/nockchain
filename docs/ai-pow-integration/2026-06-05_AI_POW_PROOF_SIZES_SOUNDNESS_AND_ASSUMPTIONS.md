@@ -33,8 +33,8 @@ must not be treated as the production block/wire artifact.
 | Relaxed L1-only batch-STARK cap-height sweep | Diagnostic for the smallest measured pure-query shape, varying only MMCS cap height; not enough to hit the relaxed gate | `lb=6,nq=10,pow=0,cap=4`: `173,171` bytes / `169.1 KiB`, prove `191.448s`; `cap=6`: `187,961` bytes / `183.6 KiB`, prove `193.219s`; cap-4 opening proof alone `141,987` bytes | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion relaxed_l1_only_pure_query_lb6_cap_height_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-05 |
 | Relaxed L1-only batch-STARK opening-proof breakdown | Diagnostic for the best pure-query/cap-height point; identifies what must be structurally reduced | `lb=6,nq=10,pow=0,cap=4`: FRI query proofs `136,577` bytes, input leaf opened values `63,201` bytes, input Merkle paths `34,213` bytes, commit-phase sibling values `4,813` bytes, commit-phase Merkle paths `34,259` bytes | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion relaxed_l1_only_pure_query_lb6_cap4_opening_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-05 |
 | Relaxed L1-only batch-STARK FRI-shape sweep | Diagnostic for soundness-neutral final-polynomial tail/folding shape on the best pure-query/cap-height point; not enough to hit size/time | `lfp=0,mla=3`: `175,304` bytes, prove `195.531s`; `lfp=1,mla=3`: `173,481` bytes, prove `196.417s`; current `lfp=2,mla=3` remains smallest measured at `173,171` bytes | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion relaxed_l1_only_pure_query_lb6_cap4_fri_shape_sweep_for_test_pearl -- --ignored --nocapture`, 2026-06-05 |
-| Pure-query L2-over-L1 batch-STARK sweep | Diagnostic for a Pearl-shaped second recursive compression layer over the statement-bound L1 proof; soundly binds the L1 statement digest and now verifies actual path-pruned compact wrappers, but still misses end-to-end time and the hard `~100 KiB` proof target | Shared L1 `lb=6,nq=10,cap=4`: `173,868` bytes, L1 prove `190.712s`; actual compact L2 `lb=4,nq=15,cap=4`: `160,826` bytes, L2 prove `12.649s`; actual compact L2 `lb=5,nq=12,cap=4`: `138,707` bytes, L2 prove `24.327s`; actual compact L2 `lb=6,nq=10,cap=4`: `127,133` bytes, L2 prove `48.426s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
-| Fast-L1 pure-query L2-over-L1 batch-STARK sweep | Diagnostic for pairing the only sub-30s L1 profile with the actual compact final-layer adapter; verifies after the Tip5 MMCS direction-binding fix, but still misses size/time jointly | Shared fast L1 `lb=3,nq=20,cap=4`: `279,719` bytes, L1 prove `25.070s`; actual compact L2 `lb=4,nq=15,cap=4`: `175,597` bytes, L2 prove `24.474s`; actual compact L2 `lb=5,nq=12,cap=4`: `146,577` bytes, L2 prove `48.290s`; actual compact L2 `lb=6,nq=10,cap=4`: `130,688` bytes, L2 prove `96.168s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_fast_l1_statement_bound_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
+| Pure-query L2-over-L1 batch-STARK sweep | Diagnostic for a Pearl-shaped second recursive compression layer over the statement-bound L1 proof; soundly binds the L1 statement digest and verifies the metadata-free path-pruned compact body, but still misses end-to-end time and the hard `~100 KiB` proof target | Shared L1 `lb=6,nq=10,cap=4`: `173,868` bytes, L1 prove `192.807s`; compact-body L2 `lb=4,nq=15,cap=4`: `159,945` bytes, L2 prove `12.571s`; compact-body L2 `lb=5,nq=12,cap=4`: `137,816` bytes, L2 prove `24.318s`; compact-body L2 `lb=6,nq=10,cap=4`: `126,251` bytes, L2 prove `48.074s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
+| Fast-L1 pure-query L2-over-L1 batch-STARK sweep | Diagnostic for pairing the only sub-30s L1 profile with the actual compact final-layer body; verifies after the Tip5 MMCS direction-binding fix, but still misses size/time jointly | Shared fast L1 `lb=3,nq=20,cap=4`: `279,719` bytes, L1 prove `25.178s`; compact-body L2 `lb=4,nq=15,cap=4`: `174,707` bytes, L2 prove `25.245s`; compact-body L2 `lb=5,nq=12,cap=4`: `145,695` bytes, L2 prove `48.530s`; compact-body L2 `lb=6,nq=10,cap=4`: `129,804` bytes, L2 prove `98.584s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_fast_l1_statement_bound_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
 | Native terminal certificate fixture | Recursion-crate terminal proof over the real Tip5 verifier-circuit fixture; proves the terminal backend can be small, but is not yet the full `ai-pow-zk` composite verifier path | `85,948` bytes / `83.9 KiB`; release prove `1.492s`, verify `1.181s` | `RUSTFLAGS="-C target-cpu=native" cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --release --test test_l1_outer_cert_tip5_unified terminal_production_certificate_measures_real_tip5_l0_verifier_circuit -- --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier native terminal path | Opt-in diagnostic path for the actual composite L1 verifier circuit; not yet production-qualified because it misses both size and time gates | `lb=6,nq=10,pow=0` reduced-profile run after compact known-index proof encoding: terminal certificate `766,069` bytes / `748.1 KiB`; terminal public inputs `5,180` bytes; postcard wire certificate `771,249` bytes / `753.2 KiB`; release prove `80.829s`, verify `58.825s` | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_recursive_certificate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed size measurement. First release/native command compiled in `1m57s`, then the test binary ran for more than `7m35s` without reaching the final size/timing print and was stopped. A phase-instrumented rerun compiled in `1m42s` and showed `38.235s` primitive prove plus `51.902s` merged value-bridge prove before the integrated Tip5 LogUp subproof finished | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
@@ -191,32 +191,36 @@ and wires them into the in-circuit Public AIR constraints. Without that fix, an
 L2 wrapper over a statement-bound L1 proof would not have been an explicit
 cryptographic binding of the statement digest.
 
-After the compact-wrapper follow-up, the batch-STARK L2 sweep still misses the
+After the compact-body follow-up, the batch-STARK L2 sweep still misses the
 end-to-end production target. With the shared L1 proof at
 `lb=6,nq=10,pow=0,cap=4`, the L1 object is **173,868 bytes** and the required
-L1 witness proof takes **190.712s**. The actual
-`GoldilocksTip5PathPrunedCompactBatchStarkProof` final-layer artifacts measure
-**160,826 bytes / 12.649s** at `lb=4,nq=15`,
-**138,707 bytes / 24.327s** at `lb=5,nq=12`, and
-**127,133 bytes / 48.426s** at `lb=6,nq=10`; compact wrapper construction is
-about **3ms** and compact verification is **34-40ms**. This proves the compact
-preprocessed/path-pruned final-layer adapter is real, not just a projection,
-and that `lb=5,nq=12` meets the relaxed `150 KiB`/`30s` final-layer gate.
-However, every actual compact final layer is still above the hard `~100 KiB`
-target, and the pipeline remains dominated by the L1 witness proof. A
-Pearl-shaped route still needs a more compact terminal/compression proof, or a
-way to prove the recursive verifier relation without first materializing the
-expensive L1 batch-STARK witness proof.
+L1 witness proof takes **192.807s**. The metadata-free
+`GoldilocksTip5PathPrunedCompactBatchStarkProofBody` final-layer artifacts
+measure **159,945 bytes / 12.571s** at `lb=4,nq=15`,
+**137,816 bytes / 24.318s** at `lb=5,nq=12`, and
+**126,251 bytes / 48.074s** at `lb=6,nq=10`; compact construction is about
+**3-4ms** and compact-body verification is **34-41ms**. This proves the compact
+preprocessed/path-pruned final-layer adapter and canonical-metadata verifier
+are real, not just projections, and that `lb=5,nq=12` meets the relaxed
+`150 KiB`/`30s` final-layer gate. However, dropping `BatchStarkProof` metadata
+saves only about **0.9 KiB** over the wrapper; the larger **49-58 KiB** gap
+between the core compact `BatchProof` and the wire body is the FRI shape plus
+pruned-path restoration payload. Every actual compact body is still above the
+hard `~100 KiB` target, and the pipeline remains dominated by the L1 witness
+proof. A Pearl-shaped route still needs a more compact terminal/compression
+proof, smaller restoration payload, or a way to prove the recursive verifier
+relation without first materializing the expensive L1 batch-STARK witness
+proof.
 
 The fast-L1 rerun pairs L1 `lb=3,nq=20,pow=0,cap=4` with the same actual compact
 L2 adapter. It verifies after the Tip5 MMCS direction-binding fix and reduces
-the L1 proving phase to **25.070s**, but the L1 proof is larger
+the L1 proving phase to **25.178s**, but the L1 proof is larger
 (**279,719 bytes**) and makes the L2 verifier relation larger. The actual
-compact final-layer artifacts are **175,597 bytes / 24.474s** at `lb=4,nq=15`,
-**146,577 bytes / 48.290s** at `lb=5,nq=12`, and
-**130,688 bytes / 96.168s** at `lb=6,nq=10`. This route therefore also misses:
+metadata-free compact final-layer bodies are **174,707 bytes / 25.245s** at
+`lb=4,nq=15`, **145,695 bytes / 48.530s** at `lb=5,nq=12`, and
+**129,804 bytes / 98.584s** at `lb=6,nq=10`. This route therefore also misses:
 the only sub-30s L2 row is too large, and the first row under the relaxed
-`150 KiB` size gate takes about **73s** end-to-end when the L1 witness proof is
+`150 KiB` size gate takes about **74s** end-to-end when the L1 witness proof is
 included.
 
 Verifier status after the 2026-06-05 hardening pass: the batch-STARK

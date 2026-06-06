@@ -558,6 +558,66 @@ where
     pub stark_common: CommonData<SC>,
 }
 
+/// Verifier-owned metadata template for a Goldilocks/Tip5 batch STARK proof.
+///
+/// This is the part of [`BatchStarkProof`] that must be derived from trusted
+/// verifier setup, circuit identity, and statement metadata when the wire proof
+/// carries only a compact body. It intentionally omits [`BatchProof`].
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct GoldilocksTip5BatchStarkProofMetadata {
+    pub table_packing: TablePacking,
+    pub public_binding_lanes: usize,
+    pub rows: RowCounts,
+    pub alu_variant: AirVariant,
+    pub ext_degree: usize,
+    pub w_binomial: Option<Goldilocks>,
+    pub alu_quintic_trinomial: bool,
+    pub non_primitives: Vec<NonPrimitiveTableEntry<GoldilocksTipsConfig>>,
+    #[serde(with = "serde_stark_common")]
+    pub stark_common: CommonData<GoldilocksTipsConfig>,
+}
+
+impl GoldilocksTip5BatchStarkProofMetadata {
+    /// Clone the verifier-relevant metadata from a full proof.
+    ///
+    /// This helper is mainly for diagnostics and tests. Production compact-body
+    /// verification should rebuild this template from the canonical circuit
+    /// setup and statement metadata rather than accepting it from the prover.
+    pub fn from_proof(proof: &BatchStarkProof<GoldilocksTipsConfig>) -> Self {
+        Self {
+            table_packing: proof.table_packing.clone(),
+            public_binding_lanes: proof.public_binding_lanes,
+            rows: proof.rows,
+            alu_variant: proof.alu_variant,
+            ext_degree: proof.ext_degree,
+            w_binomial: proof.w_binomial,
+            alu_quintic_trinomial: proof.alu_quintic_trinomial,
+            non_primitives: proof.non_primitives.clone(),
+            stark_common: clone_common_data(&proof.stark_common),
+        }
+    }
+
+    /// Rehydrate a compact proof body with this verifier-owned metadata.
+    pub fn into_proof_with_body(
+        &self,
+        proof: BatchProof<GoldilocksTipsConfig>,
+    ) -> BatchStarkProof<GoldilocksTipsConfig> {
+        BatchStarkProof {
+            proof,
+            table_packing: self.table_packing.clone(),
+            public_binding_lanes: self.public_binding_lanes,
+            rows: self.rows,
+            alu_variant: self.alu_variant,
+            ext_degree: self.ext_degree,
+            w_binomial: self.w_binomial,
+            alu_quintic_trinomial: self.alu_quintic_trinomial,
+            non_primitives: self.non_primitives.clone(),
+            stark_common: clone_common_data(&self.stark_common),
+        }
+    }
+}
+
 /// Compact projection of [`BatchStarkProof`] that omits verifier-deterministic
 /// out-of-domain openings for preprocessed columns.
 ///
@@ -768,6 +828,49 @@ impl GoldilocksTip5PathPrunedCompactBatchStarkProof {
     /// Consume the compact wrapper and return its inner proof object.
     pub fn into_inner(self) -> BatchStarkProof<GoldilocksTipsConfig> {
         self.proof
+    }
+
+    /// Consume the wrapper and drop verifier-deterministic batch proof metadata.
+    ///
+    /// The returned body is only sound when verified with metadata rebuilt from
+    /// the canonical verifier setup for the same statement.
+    pub fn into_body(self) -> GoldilocksTip5PathPrunedCompactBatchStarkProofBody {
+        GoldilocksTip5PathPrunedCompactBatchStarkProofBody {
+            proof: self.proof.proof,
+            fri_shape: self.fri_shape,
+            input_batch_paths: self.input_batch_paths,
+            commit_phase_paths: self.commit_phase_paths,
+        }
+    }
+}
+
+/// Compact Goldilocks/Tip5 proof body for the canonical-metadata wire path.
+///
+/// This carries only the cryptographic [`BatchProof`] plus the FRI shape and
+/// pruned-path dictionaries needed to restore omitted verifier-deterministic
+/// openings. It deliberately omits all [`BatchStarkProof`] metadata. Verification
+/// must provide a trusted [`GoldilocksTip5BatchStarkProofMetadata`] template.
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct GoldilocksTip5PathPrunedCompactBatchStarkProofBody {
+    pub proof: BatchProof<GoldilocksTipsConfig>,
+    pub fri_shape: GoldilocksTip5FriShape,
+    pub input_batch_paths: Vec<GoldilocksTip5PrunedMerklePaths>,
+    pub commit_phase_paths: Vec<GoldilocksTip5PrunedMerklePaths>,
+}
+
+impl GoldilocksTip5PathPrunedCompactBatchStarkProofBody {
+    /// Rehydrate this compact body with verifier-owned metadata.
+    pub fn into_wrapped(
+        self,
+        metadata: &GoldilocksTip5BatchStarkProofMetadata,
+    ) -> GoldilocksTip5PathPrunedCompactBatchStarkProof {
+        GoldilocksTip5PathPrunedCompactBatchStarkProof {
+            proof: metadata.into_proof_with_body(self.proof),
+            fri_shape: self.fri_shape,
+            input_batch_paths: self.input_batch_paths,
+            commit_phase_paths: self.commit_phase_paths,
+        }
     }
 }
 
@@ -2663,6 +2766,60 @@ impl BatchStarkProver<GoldilocksTipsConfig> {
         }
     }
 
+    /// Build the canonical-metadata compact body form of a path-pruned
+    /// Goldilocks/Tip5 proof.
+    ///
+    /// The returned body omits all [`BatchStarkProof`] metadata. Verifiers must
+    /// supply a trusted [`GoldilocksTip5BatchStarkProofMetadata`] template when
+    /// checking it.
+    pub fn compact_goldilocks_tip5_path_pruned_preprocessed_body(
+        &self,
+        proof: BatchStarkProof<GoldilocksTipsConfig>,
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+        fri_shape: GoldilocksTip5FriShape,
+    ) -> Result<GoldilocksTip5PathPrunedCompactBatchStarkProofBody, BatchStarkProverError>
+    where
+        <GoldilocksTipsConfig as StarkGenericConfig>::Pcs: Pcs<
+                GoldilocksTip5Challenge,
+                <GoldilocksTipsConfig as StarkGenericConfig>::Challenger,
+                Commitment = <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment,
+            >,
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        self.compact_goldilocks_tip5_path_pruned_preprocessed_body_with_public_values(
+            proof,
+            &[],
+            canonical_setup,
+            fri_shape,
+        )
+    }
+
+    /// Build the canonical-metadata compact body form while binding leading
+    /// Public-table lanes to caller-supplied STARK public values.
+    pub fn compact_goldilocks_tip5_path_pruned_preprocessed_body_with_public_values(
+        &self,
+        proof: BatchStarkProof<GoldilocksTipsConfig>,
+        public_values: &[Goldilocks],
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+        fri_shape: GoldilocksTip5FriShape,
+    ) -> Result<GoldilocksTip5PathPrunedCompactBatchStarkProofBody, BatchStarkProverError>
+    where
+        <GoldilocksTipsConfig as StarkGenericConfig>::Pcs: Pcs<
+                GoldilocksTip5Challenge,
+                <GoldilocksTipsConfig as StarkGenericConfig>::Challenger,
+                Commitment = <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment,
+            >,
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        self.compact_goldilocks_tip5_path_pruned_preprocessed_with_public_values(
+            proof,
+            public_values,
+            canonical_setup,
+            fri_shape,
+        )
+        .map(GoldilocksTip5PathPrunedCompactBatchStarkProof::into_body)
+    }
+
     /// Verify a path-pruned Goldilocks/Tip5 compact proof.
     pub fn verify_goldilocks_tip5_path_pruned_preprocessed_compact(
         &self,
@@ -2752,6 +2909,57 @@ impl BatchStarkProver<GoldilocksTipsConfig> {
             ),
             d => Err(BatchStarkProverError::UnsupportedDegree(d)),
         }
+    }
+
+    /// Verify a canonical-metadata compact body.
+    ///
+    /// `metadata` must be rebuilt or pinned by the verifier for the exact
+    /// statement being checked. It is not safe to deserialize this metadata from
+    /// the prover and pass it through as trusted context.
+    pub fn verify_goldilocks_tip5_path_pruned_preprocessed_compact_body(
+        &self,
+        proof: GoldilocksTip5PathPrunedCompactBatchStarkProofBody,
+        metadata: &GoldilocksTip5BatchStarkProofMetadata,
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <GoldilocksTipsConfig as StarkGenericConfig>::Pcs: Pcs<
+                GoldilocksTip5Challenge,
+                <GoldilocksTipsConfig as StarkGenericConfig>::Challenger,
+                Commitment = <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment,
+            >,
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        self.verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_public_values(
+            proof,
+            &[],
+            metadata,
+            canonical_setup,
+        )
+    }
+
+    /// Verify a canonical-metadata compact body while binding leading
+    /// Public-table lanes to caller-supplied STARK public values.
+    pub fn verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_public_values(
+        &self,
+        proof: GoldilocksTip5PathPrunedCompactBatchStarkProofBody,
+        public_values: &[Goldilocks],
+        metadata: &GoldilocksTip5BatchStarkProofMetadata,
+        canonical_setup: &CircuitProverData<GoldilocksTipsConfig>,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <GoldilocksTipsConfig as StarkGenericConfig>::Pcs: Pcs<
+                GoldilocksTip5Challenge,
+                <GoldilocksTipsConfig as StarkGenericConfig>::Challenger,
+                Commitment = <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment,
+            >,
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        self.verify_goldilocks_tip5_path_pruned_preprocessed_compact_with_public_values(
+            proof.into_wrapped(metadata),
+            public_values,
+            canonical_setup,
+        )
     }
 
     /// Verify a Goldilocks/Tip5 compact proof whose verifier-deterministic

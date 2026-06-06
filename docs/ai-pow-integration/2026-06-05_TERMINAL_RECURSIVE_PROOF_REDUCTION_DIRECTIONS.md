@@ -173,11 +173,15 @@ bytes with `24.516s` L2 proving, inside the relaxed size/time budget for the
 first materializes a roughly **194s** L1 batch-STARK witness proof. The
 Goldilocks/Tip5 compact wrapper now implements the preprocessed-opening
 reconstruction plus Merkle path-pruning portion of this projection with
-binding/tamper tests, but it is still only an adapter around the batch-STARK
-artifact. The measured compact-wrapper runs below close the final compact proof
-format gap for this batch-STARK route; the remaining Pearl-shaped route must
-avoid or replace the expensive L1 batch-STARK witness proof and further shrink
-the final proof if the hard `~100 KiB` gate remains.
+binding/tamper tests. The follow-up canonical-metadata body format also removes
+the `BatchStarkProof` metadata from the wire and verifies against
+verifier-owned metadata, but this saves only about `0.9 KiB` per L2 row. The
+suspected large overhead is therefore not generic proof metadata; it is the
+path dictionary plus remaining core opening material. The measured compact-body
+runs below close the final compact proof format gap for this batch-STARK route;
+the remaining Pearl-shaped route must avoid or replace the expensive L1
+batch-STARK witness proof and further shrink the final proof if the hard
+`~100 KiB` gate remains.
 
 The natural follow-up was to pair the fast L1 profile (`lb=3,nq=20,cap=4`)
 with the compact final-layer projection. A pre-fix release/native diagnostic
@@ -212,38 +216,42 @@ release/native rerun on 2026-06-06 now measures the actual
 `GoldilocksTip5PathPrunedCompactBatchStarkProof` wrapper as well as the older
 projection:
 
-| Shape | Final L2 proof | Path-only projection | Preprocessed-omitted projection | Actual compact wrapper | L2 prove time | Shared L1 witness proof |
-|---|---:|---:|---:|---:|---:|---:|
-| L2 `lb=4,nq=15,cap=4,pow=0` over L1 `lb=6,nq=10,cap=4,pow=0` | `209,802` bytes | `203,540` bytes | `158,800` bytes | `160,826` bytes | `12.649s` | L1 `173,868` bytes, path-only `170,306`, preprocessed-omitted `136,081`, L1 prove `190.712s`, verify `23ms` |
-| L2 `lb=5,nq=12,cap=4,pow=0` over same L1 | `176,628` bytes | `172,820` bytes | `134,877` bytes | `138,707` bytes | `24.327s` | same |
-| L2 `lb=6,nq=10,cap=4,pow=0` over same L1 | `160,762` bytes | `157,679` bytes | `124,344` bytes | `127,133` bytes | `48.426s` | same |
+| Shape | Final L2 proof | Path-only projection | Preprocessed-omitted projection | Actual compact wrapper | Metadata-free compact body | Core compact `BatchProof` | L2 prove time | Shared L1 witness proof |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| L2 `lb=4,nq=15,cap=4,pow=0` over L1 `lb=6,nq=10,cap=4,pow=0` | `209,802` bytes | `203,540` bytes | `158,800` bytes | `160,826` bytes | `159,945` bytes | `102,178` bytes | `12.571s` | L1 `173,868` bytes, path-only `170,306`, preprocessed-omitted `136,081`, L1 prove `192.807s`, verify `23ms` |
+| L2 `lb=5,nq=12,cap=4,pow=0` over same L1 | `176,628` bytes | `172,820` bytes | `134,877` bytes | `138,707` bytes | `137,816` bytes | `87,207` bytes | `24.318s` | same |
+| L2 `lb=6,nq=10,cap=4,pow=0` over same L1 | `160,762` bytes | `157,679` bytes | `124,344` bytes | `127,133` bytes | `126,251` bytes | `77,364` bytes | `48.074s` | same |
 
 The actual compact wrapper adds roughly `2-4 KiB` over the optimistic
-preprocessed-omitted projection, builds in about `3ms`, and verifies in
-`34-40ms` in this diagnostic. The soundness blocker is gone, but the production
-metric blocker is unchanged: the current batch-STARK L1 witness proof still
-takes about `191s`. The final-layer `lb=5,nq=12` actual compact proof is inside
-the relaxed `150 KiB` and `<30s` final-layer gates (`138,707` bytes,
-`24.327s`), but it is still above the hard `~100 KiB` target and the
-end-to-end pipeline is dominated by the L1 witness proof.
+preprocessed-omitted projection, builds in about `3-4ms`, and the
+metadata-free body verifies in `34-41ms` in this diagnostic. The
+metadata-free body saves only `881-891` bytes over the wrapper. The much larger
+gap between the core compact `BatchProof` and the body, about `49-58 KiB`, is
+the pruned-path/Fri-shape restoration payload. The soundness blocker is gone,
+but the production metric blocker is unchanged: the current batch-STARK L1
+witness proof still takes about `193s`. The final-layer `lb=5,nq=12`
+metadata-free compact body is inside the relaxed `150 KiB` and `<30s`
+final-layer gates (`137,816` bytes, `24.318s`), but it is still above the hard
+`~100 KiB` target and the end-to-end pipeline is dominated by the L1 witness
+proof.
 
 The fast-L1 follow-up with L1 `lb=3,nq=20,cap=4,pow=0` also completes and
 verifies after the Tip5 MMCS direction-binding fix:
 
-| Shape | Final L2 proof | Path-only projection | Preprocessed-omitted projection | Actual compact wrapper | L2 prove time | Shared fast L1 witness proof |
-|---|---:|---:|---:|---:|---:|---:|
-| L2 `lb=4,nq=15,cap=4,pow=0` over L1 `lb=3,nq=20,cap=4,pow=0` | `221,462` bytes | `214,545` bytes | `169,133` bytes | `175,597` bytes | `24.474s` | L1 `279,719` bytes, path-only `268,439`, preprocessed-omitted `210,823`, L1 prove `25.070s`, verify `33ms` |
-| L2 `lb=5,nq=12,cap=4,pow=0` over same L1 | `186,647` bytes | `182,371` bytes | `143,886` bytes | `146,577` bytes | `48.290s` | same |
-| L2 `lb=6,nq=10,cap=4,pow=0` over same L1 | `164,314` bytes | `161,202` bytes | `127,443` bytes | `130,688` bytes | `96.168s` | same |
+| Shape | Final L2 proof | Path-only projection | Preprocessed-omitted projection | Actual compact wrapper | Metadata-free compact body | Core compact `BatchProof` | L2 prove time | Shared fast L1 witness proof |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| L2 `lb=4,nq=15,cap=4,pow=0` over L1 `lb=3,nq=20,cap=4,pow=0` | `221,462` bytes | `214,545` bytes | `169,133` bytes | `175,597` bytes | `174,707` bytes | `103,259` bytes | `25.245s` | L1 `279,719` bytes, path-only `268,439`, preprocessed-omitted `210,823`, L1 prove `25.178s`, verify `32ms` |
+| L2 `lb=5,nq=12,cap=4,pow=0` over same L1 | `186,647` bytes | `182,371` bytes | `143,886` bytes | `146,577` bytes | `145,695` bytes | `88,143` bytes | `48.530s` | same |
+| L2 `lb=6,nq=10,cap=4,pow=0` over same L1 | `164,314` bytes | `161,202` bytes | `127,443` bytes | `130,688` bytes | `129,804` bytes | `78,072` bytes | `98.584s` | same |
 
 This rules out the simple fast-L1/two-layer batch-STARK route too. The only
-fast-L1 row whose final-layer proving time is under `30s` is still `175,597`
-bytes, above even the relaxed `150 KiB` target. The first row below the relaxed
-size target (`146,577` bytes) takes `48.290s` for the L2 proof alone, and about
-`73s` including the L1 witness proof. The smaller `130,688` byte final layer
-takes `96.168s` before adding L1 time. Lowering L1 blowup therefore trades the
-L1 proving bottleneck for a larger/slower L2 verifier relation; it does not
-meet the production criteria.
+fast-L1 row whose final-layer proving time is under `30s` is still `174,707`
+bytes as a metadata-free body, above even the relaxed `150 KiB` target. The
+first row below the relaxed size target (`145,695` bytes) takes `48.530s` for
+the L2 proof alone, and about `74s` including the L1 witness proof. The smaller
+`129,804` byte final layer takes `98.584s` before adding L1 time. Lowering L1
+blowup therefore trades the L1 proving bottleneck for a larger/slower L2
+verifier relation; it does not meet the production criteria.
 
 Compact verifier artifacts now exist for the verifier-deterministic
 preprocessed material in that projection.
@@ -289,6 +297,20 @@ delegates to normal upstream `p3-batch-stark` verification. The tests
 byte-for-byte full-proof restoration, ordinary-verifier rejection, compact
 verification, tampered leaf-index rejection, and tampered-pruned-path
 rejection.
+
+`GoldilocksTip5PathPrunedCompactBatchStarkProofBody` is the canonical-metadata
+wire-shape variant of that adapter. It carries the compact `BatchProof`, FRI
+shape, and pruned-path dictionaries, but drops all `BatchStarkProof` metadata.
+Verification rehydrates the proof with a verifier-owned
+`GoldilocksTip5BatchStarkProofMetadata` template before running the same
+restoration and upstream verification path. The metadata template must be
+rebuilt or pinned by the verifier for the exact statement; accepting it from
+the prover would make the compact body self-describing and would reintroduce
+noncanonical metadata risk. The tests
+`test_goldilocks_tip5_path_pruned_compact_body_uses_canonical_metadata` and
+`test_goldilocks_tip5_path_pruned_compact_body_rejects_wrong_metadata` cover
+body serialization/verification and rejection under a different canonical
+metadata/setup pair.
 
 This checkpoint still does **not** wire that adapter as the production
 recursive certificate path, and it does not solve the roughly **194s** L1
