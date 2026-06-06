@@ -2128,6 +2128,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         for (label, log_blowup, num_queries) in [
+            ("lb3_nq20", 3usize, 20usize),
             ("lb4_nq15", 4usize, 15usize),
             ("lb5_nq12", 5usize, 12usize),
             ("lb6_nq10", 6usize, 10usize),
