@@ -12,7 +12,7 @@ the persisted block artifact.
 > **Important - current production-proof direction:** before changing the
 > recursive proof path, proof shape, FRI parameters, certificate wire format, or
 > packed Tip5/NPO bridge code, read the live checkpoint summary:
-> [Current Production-Proof Summary](../../docs/ai-pow-integration/2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md#current-production-proof-summary).
+> [Important Current Production-Proof Summary](../../docs/ai-pow-integration/2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md#important-current-production-proof-summary).
 > The active route remains native terminal plus fused FRI-native NPO work, but
 > even the compact-trace coalesced shared packed-trace AIR+LogUp/bridge theorem
 > is still too large at `198,287` bytes and `33.277s` proof time; the next step

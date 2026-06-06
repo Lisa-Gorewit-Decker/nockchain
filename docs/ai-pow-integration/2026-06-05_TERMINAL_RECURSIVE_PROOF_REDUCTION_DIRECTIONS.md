@@ -9,14 +9,24 @@ production byte gate or the production time gate.
 ## Goal
 
 The production recursive proof target is the native terminal certificate, not
-the batch-STARK L1 checkpoint. The hard target is approximately `100 KiB` for
-the recursive proof and `<30s` release proving time, without letting a miner
-skip the AI-PoW matrix-multiplication work and without relying on an
-undocumented or unproven soundness shortcut.
+the batch-STARK L1 checkpoint. The original hard target is approximately
+`100 KiB` for the recursive proof and `<30s` release proving time. The active
+engineering target is the maintainer-relaxed milestone of about `150 KiB` total
+recursive proof size and about `30s` total release proving time. Every candidate
+must preserve soundness without letting a miner skip the AI-PoW
+matrix-multiplication work and without relying on undocumented or unproven
+shortcuts.
 
 ## Current Most Viable Path (2026-06-06)
 
-### Current Production-Proof Summary
+### Important Current Production-Proof Summary
+
+This is the live source of truth for the current production-proof direction.
+The `ai-pow-zk` README links here because changes to the recursive proof path,
+certificate wire format, FRI parameters, or packed Tip5/NPO bridge code should
+be checked against this summary first.
+
+#### Most Viable Path
 
 The current most viable production route is a native terminal certificate, not
 the batch-STARK recursive certificate. The target is the relaxed milestone of
@@ -38,7 +48,7 @@ The relations that still need to coexist in the final theorem are:
 - packed byte-table LogUp membership;
 - lane-selector-aware selected NPO-value to packed trace-lane binding.
 
-What is done and verified:
+#### Done And Verified
 
 - The merged residual-zero/recompose/padding/value-bridge checkpoint verifies
   over the actual full `ai-pow-zk` composite verifier relation at
@@ -70,7 +80,7 @@ What is done and verified:
   bytes. It still proves in `33.277s`, so it remains too large and slightly
   too slow as a standalone support theorem.
 
-What remains:
+#### Remaining Work
 
 - Replace or further collapse the measured coalesced shared packed-trace
   support theorem so it does not open the full `436`-column packed trace plus
@@ -85,6 +95,8 @@ What remains:
   roots, wrong `mmcs_bit` projection, malformed compact FRI payloads, and
   transcript/prelude substitutions.
 - Remeasure the full production path with release flags and native CPU codegen.
+
+#### Current Non-Claim
 
 The relaxed milestone is therefore not yet claimed. The verified checkpoints
 show which relations are sound, and coalescing same-phase PCS inputs is a real
