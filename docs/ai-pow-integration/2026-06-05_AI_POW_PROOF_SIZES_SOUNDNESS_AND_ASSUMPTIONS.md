@@ -462,6 +462,13 @@ lanes consistently with the lookup/AIR trace. Keeping this quotient inside the
 existing degree profile means the final production stack must separately prove
 that `mmcs_bit` is boolean, zero when not present, and padded consistently with
 the row mode; the value bridge alone should not be read as that padding proof.
+A 2026-06-06 attempt to append that padding/MMCS-bit quotient inside the same
+merged FRI object was not retained: the full-composite honest proof rejected
+with `npo_value_relation_quotient`, and a partially corrected mixed-LDE/direct
+variant spent about `78.8s`-`82.0s` in `padding_quotient_matrix`, raising the
+merged NPO prove phase to about `87s`-`90s`. A production version must fix the
+padding selector taxonomy for the full composite relation and batch the
+remaining constraints without per-point quotient evaluation.
 
 The same run breaks down the primitive bottleneck. The sparse R1CS relation has
 `106,604` rows, `222,449` variables, and `489,990` entries. The row-product and

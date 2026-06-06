@@ -167,6 +167,19 @@ at the same body size. The full diagnostic wall time is still high because it
 includes Layer-0 proving, terminal compilation, assignment commitment, prepared
 NPO-root construction, prelude construction, and verification.
 
+A 2026-06-06 follow-up tried to fold the existing value-padding/MMCS-bit
+quotient into this same merged FRI object. That remains the right architectural
+shape, but the direct implementation is not yet a valid production step: the
+full-composite verifier rejected the honest merged proof with
+`npo_value_relation_quotient`, and the partially corrected mixed-LDE/direct
+variant still spent about `78.8s` to `82.0s` inside
+`padding_quotient_matrix`, pushing the merged NPO prove phase to about
+`87s`-`90s`. The attempt was therefore not retained as the measured candidate.
+The next viable version must first make the padding quotient's selector set
+match the full composite row taxonomy, especially coefficient-recompose rows,
+then evaluate all remaining padding constraints with a sound batched LDE or a
+different low-degree relation so it does not reintroduce per-point work.
+
 The primitive proof is not dominated by scalar sumcheck messages. The PROD
 sparse R1CS relation has `106,604` rows, `222,449` variables, and `489,990`
 entries. The `57,501` byte primitive proof contains only `1,327` bytes of
