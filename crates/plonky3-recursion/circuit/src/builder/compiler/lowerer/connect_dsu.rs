@@ -72,14 +72,15 @@ impl ConnectDsu {
 
     /// Merge the equivalence classes of two expression IDs.
     ///
-    /// The second ID's root is attached under the first ID's root.
-    /// No-op if both already belong to the same class.
+    /// The smaller expression ID is kept as the class root so witness ownership is
+    /// independent of connect insertion order.
     #[inline]
     pub fn union(&mut self, a: ExprId, b: ExprId) {
         let ra = self.find(a);
         let rb = self.find(b);
         if ra != rb {
-            self.parents.insert(rb, ra);
+            let (root, child) = if ra <= rb { (ra, rb) } else { (rb, ra) };
+            self.parents.insert(child, root);
         }
     }
 

@@ -2115,6 +2115,35 @@ impl<F: Field> TerminalLinearExpression<F> {
         self.plus(rhs.scaled(-F::ONE))
     }
 
+    fn variable_sort_key(variable: TerminalLinearVariable) -> (u8, usize) {
+        match variable {
+            TerminalLinearVariable::One => (0, 0),
+            TerminalLinearVariable::Public(public_pos) => (1, public_pos),
+            TerminalLinearVariable::Witness(witness_id) => (2, witness_id.0 as usize),
+        }
+    }
+
+    fn canonicalize(mut self) -> Self {
+        self.terms.sort_by_key(|term| Self::variable_sort_key(term.variable));
+        let mut canonical = Vec::<TerminalLinearTerm<F>>::with_capacity(self.terms.len());
+        for term in self.terms {
+            if term.coeff == F::ZERO {
+                continue;
+            }
+            if let Some(last) = canonical.last_mut() {
+                if last.variable == term.variable {
+                    last.coeff += term.coeff;
+                    if last.coeff == F::ZERO {
+                        canonical.pop();
+                    }
+                    continue;
+                }
+            }
+            canonical.push(term);
+        }
+        Self { terms: canonical }
+    }
+
     fn evaluate(
         &self,
         public_inputs: &[F],
@@ -2952,9 +2981,9 @@ impl<F> NativeTerminalVerifyingKey<F> {
                 relation.constraints.push(TerminalQuadraticConstraint {
                     source_constraint_index,
                     kind,
-                    a,
-                    b,
-                    c,
+                    a: a.canonicalize(),
+                    b: b.canonicalize(),
+                    c: c.canonicalize(),
                 });
             };
             match constraint {

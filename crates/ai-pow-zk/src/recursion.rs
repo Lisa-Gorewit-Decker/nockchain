@@ -962,6 +962,12 @@ fn terminal_compiler() -> NativeTerminalCompiler {
     NativeTerminalCompiler::new("nock-terminal-v0", 60)
 }
 
+fn terminal_profile_log(stage: &str, elapsed_ms: u128) {
+    if std::env::var_os("NOCK_TERMINAL_PROFILE_PROVER").is_some() {
+        eprintln!("ai-pow terminal profile: {stage}_ms={elapsed_ms}");
+    }
+}
+
 fn prove_composite_l1_terminal_cert(
     built: &BuiltCompositeL1,
     proof: &BatchProof<AiPowStarkConfig>,
@@ -971,6 +977,7 @@ fn prove_composite_l1_terminal_cert(
     let t = Instant::now();
     let traces = run_composite_l1_verifier_traces(built, proof)?;
     let l1_in_circuit_verify_ms = t.elapsed().as_millis();
+    terminal_profile_log("l1_in_circuit_verify", l1_in_circuit_verify_ms);
 
     let compiler = terminal_compiler();
     let t = Instant::now();
@@ -992,6 +999,22 @@ fn prove_composite_l1_terminal_cert(
             ))
         })?;
     let terminal_compile_ms = t.elapsed().as_millis();
+    terminal_profile_log("terminal_compile", terminal_compile_ms);
+    if std::env::var_os("NOCK_TERMINAL_PROFILE_PROVER").is_some() {
+        let relation_profile = vk.relation_profile();
+        eprintln!(
+            "ai-pow terminal profile: ops={} primitive_ops={} hints={} npos={} constraints={} tip5_rows={} recompose_rows={} recompose_coeff_rows={} npo_residuals={}",
+            vk.inventory.total_ops(),
+            vk.inventory.total_primitive_ops(),
+            vk.inventory.hint_ops,
+            vk.inventory.non_primitive_ops,
+            relation_profile.terminal_constraints,
+            relation_profile.tip5_rows,
+            relation_profile.recompose_rows,
+            relation_profile.recompose_coeff_rows,
+            relation_profile.external_npo_validity_components,
+        );
+    }
 
     let witness = TerminalWitness {
         fingerprint: TerminalCircuitFingerprint::from_circuit(&built.circuit),
@@ -1009,6 +1032,7 @@ fn prove_composite_l1_terminal_cert(
             ))
         })?;
     let terminal_prove_ms = t.elapsed().as_millis();
+    terminal_profile_log("terminal_prove", terminal_prove_ms);
 
     let terminal_certificate = compiler
         .assemble_goldilocks_production_certificate(&vk, &witness.public_inputs, &terminal_proof)
@@ -1029,6 +1053,7 @@ fn prove_composite_l1_terminal_cert(
             ))
         })?;
     let terminal_verify_ms = t.elapsed().as_millis();
+    terminal_profile_log("terminal_verify", terminal_verify_ms);
 
     Ok((
         AiPowTerminalRecursiveCertificate::new(witness.public_inputs, terminal_certificate),
@@ -1283,27 +1308,22 @@ pub fn decode_recursive_certificate(
 }
 
 /// Serialize the native terminal recursive certificate and its terminal public
-/// input vector into compact fixed-int bytes.
+/// input vector into compact postcard bytes.
 pub fn encode_terminal_recursive_certificate(
     cert: &AiPowTerminalRecursiveCertificate,
-) -> Result<Vec<u8>, bincode::error::EncodeError> {
-    bincode::serde::encode_to_vec(cert, bincode::config::standard().with_fixed_int_encoding())
+) -> Result<Vec<u8>, postcard::Error> {
+    postcard::to_allocvec(cert)
 }
 
 /// Decode bytes previously produced by
 /// [`encode_terminal_recursive_certificate`].
 pub fn decode_terminal_recursive_certificate(
     bytes: &[u8],
-) -> Result<AiPowTerminalRecursiveCertificate, bincode::error::DecodeError> {
-    let (cert, consumed) = bincode::serde::decode_from_slice(
-        bytes,
-        bincode::config::standard().with_fixed_int_encoding(),
-    )?;
-    if consumed != bytes.len() {
-        return Err(bincode::error::DecodeError::OtherString(format!(
-            "terminal recursive certificate decode left {} trailing bytes",
-            bytes.len() - consumed
-        )));
+) -> Result<AiPowTerminalRecursiveCertificate, postcard::Error> {
+    let (cert, trailing): (AiPowTerminalRecursiveCertificate, &[u8]) =
+        postcard::take_from_bytes(bytes)?;
+    if !trailing.is_empty() {
+        return Err(postcard::Error::DeserializeUnexpectedEnd);
     }
     Ok(cert)
 }
@@ -1323,6 +1343,8 @@ fn _composite_conforms_to_recursive_air() {
 
 #[cfg(test)]
 mod tests {
+    use p3_recursion::terminal::{NativeTerminalConstraint, NativeTerminalVerifyingKey};
+
     use super::*;
     use crate::composite_proof::{build_config, composite_prove_pinned_logup, logup_common_for};
     use crate::composite_public::CompositePublicInputs;
@@ -1556,6 +1578,18 @@ mod tests {
         );
     }
 
+    fn init_terminal_prover_profile_tracing() {
+        if std::env::var_os("NOCK_TERMINAL_PROFILE_PROVER").is_none() {
+            return;
+        }
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("p3_recursion::terminal=info"));
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+            .try_init();
+    }
+
     #[test]
     fn terminal_relation_metrics_for_baseline_composite_are_available() {
         let metrics = measure_baseline_composite_terminal_relation(CircuitConfig::TEST_PEARL);
@@ -1629,7 +1663,102 @@ mod tests {
         assert!(metrics.tip5_rows > 0);
     }
 
-    fn prove_test_terminal_certificate() -> (
+    fn terminal_vk_for_verified_profile(
+        zk: &ZkParams,
+        profile: &CircuitConfig,
+        verified: &ChainVerifiedCompositeProof<'_>,
+    ) -> NativeTerminalVerifyingKey<crate::circuit::Challenge> {
+        let cfg = build_config(zk, profile);
+        let air = CompositeFullAirWithLookupsPinned::new_with(verified.program.clone(), true);
+        let pd = logup_common_for(&cfg, &verified.program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &verified.proof,
+            &pd.common,
+            &verified.public_inputs.to_vec(),
+            profile,
+        )
+        .expect("terminal header diagnostic must build L1 verifier circuit");
+        let compiler = terminal_compiler();
+        let (_pk, vk) = compiler
+            .compile_goldilocks_terminal(&built.circuit)
+            .expect("terminal header diagnostic must compile");
+        vk
+    }
+
+    fn log_first_terminal_constraint_mismatch(
+        first: &[NativeTerminalConstraint<crate::circuit::Challenge>],
+        second: &[NativeTerminalConstraint<crate::circuit::Challenge>],
+    ) {
+        if first.len() != second.len() {
+            eprintln!(
+                "ai-pow terminal header rebuild: constraint length mismatch first={} second={}",
+                first.len(),
+                second.len()
+            );
+        }
+        for (idx, (left, right)) in first.iter().zip(second).enumerate() {
+            if left != right {
+                eprintln!(
+                    "ai-pow terminal header rebuild: first constraint mismatch index={idx} left={left:?} right={right:?}"
+                );
+                break;
+            }
+        }
+    }
+
+    fn assert_terminal_header_rebuilds_deterministically(label: &str, profile: CircuitConfig) {
+        let zk = test_zk_params();
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program, proof, &pis,
+            )
+        };
+
+        let first_vk = terminal_vk_for_verified_profile(&zk, &profile, &verified);
+        let second_vk = terminal_vk_for_verified_profile(&zk, &profile, &verified);
+        let first = first_vk.header.clone();
+        let second = second_vk.header.clone();
+        eprintln!(
+            "ai-pow terminal header rebuild [{label}]: first={:?} second={:?}",
+            first, second
+        );
+        if first != second {
+            log_first_terminal_constraint_mismatch(&first_vk.constraints, &second_vk.constraints);
+        }
+        assert_eq!(
+            first, second,
+            "terminal certificate header must rebuild deterministically"
+        );
+    }
+
+    #[test]
+    fn terminal_header_rebuilds_deterministically_for_baseline_composite() {
+        assert_terminal_header_rebuilds_deterministically("TEST_PEARL", CircuitConfig::TEST_PEARL);
+    }
+
+    #[test]
+    #[ignore = "pure-query terminal header rebuild diagnostic is opt-in"]
+    fn terminal_header_rebuilds_deterministically_for_pure_query_lb6_nq10() {
+        assert_terminal_header_rebuilds_deterministically(
+            "PURE_QUERY_LB6_NQ10",
+            CircuitConfig {
+                log_blowup: 6,
+                pow_bits: 0,
+                num_queries: 10,
+            },
+        );
+    }
+
+    fn prove_test_terminal_certificate_with_profile(
+        profile: CircuitConfig,
+    ) -> (
         ZkParams,
         CircuitConfig,
         CompositePublicInputs,
@@ -1638,7 +1767,6 @@ mod tests {
         TerminalCertificateRun,
     ) {
         let zk = test_zk_params();
-        let profile = CircuitConfig::TEST_PEARL;
         let cfg = build_config(&zk, &profile);
 
         let trace = CompositeTrace::baseline_min();
@@ -1659,10 +1787,21 @@ mod tests {
         (zk, profile, pis, proof, program, run)
     }
 
-    #[test]
-    #[ignore = "native terminal proof over the full composite verifier is an opt-in measurement"]
-    fn terminal_recursive_certificate_round_trip_verifies() {
-        let (zk, profile, pis, proof, program, run) = prove_test_terminal_certificate();
+    fn prove_test_terminal_certificate() -> (
+        ZkParams,
+        CircuitConfig,
+        CompositePublicInputs,
+        BatchProof<AiPowStarkConfig>,
+        crate::AiPowProgram,
+        TerminalCertificateRun,
+    ) {
+        prove_test_terminal_certificate_with_profile(CircuitConfig::TEST_PEARL)
+    }
+
+    fn measure_and_verify_terminal_certificate_for_profile(label: &str, profile: CircuitConfig) {
+        init_terminal_prover_profile_tracing();
+        let (zk, profile, pis, proof, program, run) =
+            prove_test_terminal_certificate_with_profile(profile);
 
         let certificate_bytes = postcard::to_allocvec(run.terminal_cert.terminal_certificate())
             .expect("terminal certificate postcard serialization")
@@ -1671,9 +1810,9 @@ mod tests {
             .expect("terminal public inputs postcard serialization")
             .len();
         let wire_bytes = encode_terminal_recursive_certificate(&run.terminal_cert)
-            .expect("fixed-int terminal recursive certificate encoding");
+            .expect("postcard terminal recursive certificate encoding");
         eprintln!(
-            "native terminal recursive certificate over ai-pow composite verifier: certificate={} bytes public_inputs={} bytes wire={} bytes build_ms={} l1_verify_ms={} compile_ms={} prove_ms={} verify_ms={}",
+            "native terminal recursive certificate over ai-pow composite verifier [{label}]: certificate={} bytes public_inputs={} bytes wire={} bytes build_ms={} l1_verify_ms={} compile_ms={} prove_ms={} verify_ms={}",
             certificate_bytes,
             public_input_bytes,
             wire_bytes.len(),
@@ -1686,6 +1825,10 @@ mod tests {
 
         let decoded = decode_terminal_recursive_certificate(&wire_bytes)
             .expect("decode terminal recursive certificate");
+        assert_eq!(
+            decoded, run.terminal_cert,
+            "terminal recursive certificate postcard encoding must round trip structurally"
+        );
         let verified = unsafe {
             ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
                 program, proof, &pis,
@@ -1701,6 +1844,41 @@ mod tests {
         assert!(
             decode_terminal_recursive_certificate(&trailing).is_err(),
             "terminal decoder must reject trailing bytes"
+        );
+    }
+
+    #[test]
+    #[ignore = "native terminal proof over the full composite verifier is an opt-in measurement"]
+    fn terminal_recursive_certificate_round_trip_verifies() {
+        measure_and_verify_terminal_certificate_for_profile(
+            "TEST_PEARL",
+            CircuitConfig::TEST_PEARL,
+        );
+    }
+
+    #[test]
+    #[ignore = "native terminal proof pure-query profile sweep is opt-in"]
+    fn terminal_recursive_certificate_for_pure_query_lb6_nq10_measures() {
+        measure_and_verify_terminal_certificate_for_profile(
+            "PURE_QUERY_LB6_NQ10",
+            CircuitConfig {
+                log_blowup: 6,
+                pow_bits: 0,
+                num_queries: 10,
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "native terminal proof pure-query profile sweep is opt-in"]
+    fn terminal_recursive_certificate_for_pure_query_lb5_nq12_measures() {
+        measure_and_verify_terminal_certificate_for_profile(
+            "PURE_QUERY_LB5_NQ12",
+            CircuitConfig {
+                log_blowup: 5,
+                pow_bits: 0,
+                num_queries: 12,
+            },
         );
     }
 

@@ -1,6 +1,7 @@
 #![allow(clippy::upper_case_acronyms)]
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -1067,7 +1068,7 @@ where
         circuit.connect(folded_mul, quotient);
 
         // Check that the global lookup cumulative values accumulate to the expected value.
-        let mut global_cumulative = HashMap::<&String, Vec<_>>::new();
+        let mut global_cumulative = BTreeMap::<&String, Vec<_>>::new();
         for data in global_lookup_data.iter().flatten() {
             global_cumulative
                 .entry(&data.name)

@@ -244,7 +244,10 @@ impl<F: Field> MulAddFusion<F> {
         let mut valid: hashbrown::HashSet<usize> = candidates.keys().copied().collect();
 
         loop {
-            let fused_positions: HashMap<WitnessId, usize> = valid
+            let mut valid_indices = valid.iter().copied().collect::<Vec<_>>();
+            valid_indices.sort_unstable();
+
+            let fused_positions: HashMap<WitnessId, usize> = valid_indices
                 .iter()
                 .filter_map(|&add_idx| {
                     let (mul_idx, _, _) = candidates.get(&add_idx)?;
@@ -280,8 +283,10 @@ impl<F: Field> MulAddFusion<F> {
     ) -> Vec<Op<F>> {
         let mut consumed_adds = hashbrown::HashSet::new();
         let mut mul_replacements: HashMap<usize, Op<F>> = HashMap::new();
+        let mut valid_indices = valid.iter().copied().collect::<Vec<_>>();
+        valid_indices.sort_unstable();
 
-        for &add_idx in valid {
+        for add_idx in valid_indices {
             if let Some((mul_idx, muladd, _)) = candidates.remove(&add_idx)
                 && !mul_replacements.contains_key(&mul_idx)
             {

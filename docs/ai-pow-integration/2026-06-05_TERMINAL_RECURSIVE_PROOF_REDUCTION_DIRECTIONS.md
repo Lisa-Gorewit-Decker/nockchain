@@ -3,8 +3,8 @@
 Date: 2026-06-05
 Status: decision checkpoint, revised after stack-level integration audit. The
 exhaustive-NPO terminal fixture passes the byte and time gates, but the full
-`ai-pow-zk` composite-verifier terminal path has not yet met the production
-time gate.
+`ai-pow-zk` composite-verifier terminal path has not yet met either the
+production byte gate or the production time gate.
 
 ## Goal
 
@@ -27,12 +27,17 @@ both targets in release mode:
 
 The stack-level follow-up added
 `crates/ai-pow-zk/src/recursion.rs::prove_terminal_certificate_from_chain_verified_composite_proof`
-for the actual composite L1 verifier circuit. Its first release/native
-opt-in run of `terminal_recursive_certificate_round_trip_verifies` was stopped
-after more than two minutes without completing the proof. Therefore the
-fixture measurement is evidence that the backend can be small, not proof that
-the full AI-PoW production recursive artifact already satisfies the `<30s`
-gate.
+for the actual composite L1 verifier circuit. A completed release/native
+reduced-profile measurement verifies after postcard decode, but it is not close
+to the hard target:
+
+| Full composite terminal profile | Certificate | Public inputs | Postcard wire | Compile | Prove | Verify |
+|---|---:|---:|---:|---:|---:|---:|
+| `lb=6,nq=10,pow=0` | `886,600` bytes / `865.8 KiB` | `5,180` bytes | `891,780` bytes / `870.9 KiB` | `7.599s` | `80.603s` | `58.775s` |
+
+Therefore the fixture measurement is evidence that the backend can be small on
+a much smaller verifier relation, not proof that the full AI-PoW production
+recursive artifact already satisfies the byte or time gates.
 
 A non-proving production-profile relation diagnostic now measures the actual
 composite L1 terminal relation:
@@ -98,6 +103,12 @@ proof measurements. The test wall time includes Layer-0 proof generation,
 L1 verifier construction, and terminal relation compilation for the
 `CompositeTrace::baseline_min()` fixture.
 
+The full proof measurement for the most relation-favorable row in the table,
+`lb=6,nq=10,pow=0`, still produces an `891,780` byte postcard wire object and
+spends `80.603s` in terminal proving. That confirms that simply increasing
+Layer-0 blowup to reduce query count is not enough; the terminal relation and
+assignment-oracle opening material are still far too large.
+
 The retired polynomial NPO production candidate remains useful diagnostic
 evidence. Its size blocker was precise:
 
@@ -133,6 +144,16 @@ Verification rejects extra production prelude commitments, verifies the
 primitive row-product proof against the assignment root, then verifies every
 supported NPO row deterministically. There is no sampled NPO validity path and
 no terminal query PoW counted for NPO checking.
+
+The terminal certificate wrapper now uses postcard encoding and a structural
+round-trip assertion for the terminal public inputs plus certificate. The
+recursive verifier-key rebuild also has a deterministic-header regression. This
+was necessary for soundness: before the fix, the same Layer-0 proof could
+rebuild a different terminal relation digest because global lookup cumulative
+checks were emitted through hash-map value iteration in the recursive verifier
+circuit. The builder now emits those checks in sorted name order, so the
+terminal relation digest is a stable cryptographic binding rather than an
+artifact of hash iteration order.
 
 The latest measurement also printed useful comparison floors:
 
@@ -285,18 +306,23 @@ Implementation result:
 4. Focused production tests reject missing exhaustive assignment-opening
    material, tampered hidden Tip5 inputs, tampered assignment-witness Merkle
    frontier material, and recompose-row witness tampering.
-5. The `ai-pow-zk` composite L1 terminal path is wired as an opt-in diagnostic,
-   but its first release/native run exceeded two minutes without completing.
+5. The `ai-pow-zk` composite L1 terminal path is wired as an opt-in diagnostic.
+   Its `lb=6,nq=10,pow=0` release/native run verifies after postcard decode,
+   but measures `891,780` wire bytes, `prove=80.603s`, and `verify=58.775s`.
 6. A production-profile non-proving relation metric shows the full path has
    `125,961` terminal operations, `14,049` supported NPO rows, and `242,798`
    NPO residual components before terminal proving begins.
+7. The terminal relation digest rebuild is now deterministic for the baseline
+   composite diagnostic; the fixed source was hash-ordered global lookup
+   cumulative check emission in the recursive batch-STARK verifier circuit.
 
 Assessment: this is still the preferred production direction, but not yet the
-active stack-level production path. Its trade-off is witness exposure: it
-reveals selected recursive-verifier witness material, including hidden Tip5
-lanes. That is acceptable only if the final terminal certificate is explicitly
-not specified as zero-knowledge and the full composite verifier path is reduced
-under the production time gate.
+active stack-level production path. Its trade-off is witness exposure and, on
+the full composite verifier relation, a much larger proof than the fixture:
+about `870.9 KiB` on wire even after selecting the smallest measured
+pure-query relation profile. Witness exposure is acceptable only if the final
+terminal certificate is explicitly not specified as zero-knowledge and the full
+composite verifier path is reduced under both production gates.
 
 ## Direction 3: Relation-Specific Projection Instead Of Full Trace Opening
 
@@ -347,14 +373,15 @@ backend if the unified two-subproof merge still lands above the target.
 This direction was useful for diagnosing the old polynomial production path,
 and it remains necessary for the full composite terminal path. The promoted
 exhaustive path satisfies the `<30s` release target only for the
-recursion-crate Tip5 verifier fixture; the actual `ai-pow-zk` composite
-terminal path did not finish a release proof within two minutes.
+recursion-crate Tip5 verifier fixture. The actual `ai-pow-zk` composite
+terminal path now has a completed reduced-profile release measurement:
+`l1_verify=44ms`, `compile=7.599s`, `prove=80.603s`, `verify=58.775s`, and
+postcard wire size `891,780` bytes.
 
-The current production measurement prints total production prove time.
 The first runtime-instrumentation pass landed after this analysis. The
-production prover now emits tracing spans for the main stages, and it reuses
-one `TerminalNpoPolynomialTable` to derive both NPO polynomial columns and the
-Tip5 lookup trace. Source inspection still shows remaining repeated work:
+production prover now emits per-stage timings when
+`NOCK_TERMINAL_PROFILE_PROVER=1` is set. Source inspection still shows
+remaining repeated work:
 
 - `verify_assignment_with_goldilocks_npos` checks the full assignment before
   proof construction.
@@ -365,9 +392,9 @@ Tip5 lookup trace. Source inspection still shows remaining repeated work:
 
 Immediate work:
 
-1. Run the real measurement in release mode with `RUSTFLAGS="-C
-   target-cpu=native"` and `NOCK_TERMINAL_PROFILE_PROVER=1` to capture
-   per-stage close-event timings.
+1. Keep the real release measurement in the hot loop with `RUSTFLAGS="-C
+   target-cpu=native"` and `NOCK_TERMINAL_PROFILE_PROVER=1`; the current
+   `lb=6,nq=10,pow=0` proof is `891,780` bytes and `80.603s` to prove.
 2. Keep the non-proving relation metric in the hot loop. The current PROD
    relation has `75,870` Horner operations before proof construction, so
    optimizing terminal proof serialization alone cannot satisfy the `<30s`
@@ -426,7 +453,7 @@ I would pursue three tracks in this order:
 1. **Keep exhaustive NPO as the leading terminal direction, but do not call it
    fully production-integrated yet.** It is the only current native terminal
    fixture measured below 100 KiB and below 30s, but the actual composite L1
-   verifier path still exceeds the time gate.
+   verifier path still exceeds both the size and time gates.
 2. **Reduce the full composite L1 terminal relation before spending more effort
    on terminal proof-body compression.** The current blocker is relation size:
    `106,349` primitive operations and `14,049` supported NPO rows in the PROD

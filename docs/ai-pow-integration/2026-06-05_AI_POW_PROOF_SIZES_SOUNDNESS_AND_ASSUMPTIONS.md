@@ -30,7 +30,7 @@ must not be treated as the production block/wire artifact.
 | Layer-0 composite proof | Regular STARK proof of the AI-PoW puzzle statement; consumed by recursion; diagnostic/intermediate, not persisted by consensus | `304,048` bytes / `296.9 KiB` | `RUSTFLAGS="-C target-cpu=native" cargo run -p ai-pow-zk --release --features recursion --example prod_recursion_measure -- 15`, 2026-06-05 after `CircuitConfig::PROD.pow_bits=0` |
 | Hardened L1 batch-STARK recursive certificate | Soundness-hardened recursive verifier checkpoint/fallback path; not acceptable as the production wire artifact because it exceeds the size budget | L1 proof body `149.1 KiB`; full checkpoint certificate `1,135.5 KiB` legacy postcard / `5,794.7 KiB` fixed-int bincode / `358.3 KiB` gzip-best envelope | same `prod_recursion_measure 15` run |
 | Native terminal certificate fixture | Recursion-crate terminal proof over the real Tip5 verifier-circuit fixture; proves the terminal backend can be small, but is not yet the full `ai-pow-zk` composite verifier path | `85,948` bytes / `83.9 KiB`; release prove `1.492s`, verify `1.181s` | `RUSTFLAGS="-C target-cpu=native" cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --release --test test_l1_outer_cert_tip5_unified terminal_production_certificate_measures_real_tip5_l0_verifier_circuit -- --nocapture`, 2026-06-05 |
-| Full `ai-pow-zk` composite-verifier native terminal path | Newly wired opt-in diagnostic path; not yet production-qualified | Release/native run of `terminal_recursive_certificate_round_trip_verifies` was stopped after more than two minutes without completing the proof, so no production size/time claim is valid yet | 2026-06-05 follow-up integration run |
+| Full `ai-pow-zk` composite-verifier native terminal path | Opt-in diagnostic path for the actual composite L1 verifier circuit; not yet production-qualified because it misses both size and time gates | `lb=6,nq=10,pow=0` reduced-profile run: terminal certificate `886,600` bytes / `865.8 KiB`; terminal public inputs `5,180` bytes; postcard wire certificate `891,780` bytes / `870.9 KiB`; release prove `80.603s`, verify `58.775s` | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_recursive_certificate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier terminal relation metrics | Non-proving diagnostic for the same path | PROD baseline: `125,961` ops, `221,989` witnesses, `43,443` terminal private inputs, `14,049` NPO rows, `242,798` NPO residual components, `5,319` bytes of terminal public inputs, terminal compile `20.943s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_for_prod_baseline_composite_are_available -- --ignored --nocapture`, 2026-06-05 |
 
 The active production target is therefore:
@@ -44,9 +44,10 @@ The active production target is therefore:
   the about-100 KiB and `<30s` release-proving gates for the recursion-crate
   Tip5 verifier fixture;
 - full `ai-pow-zk` composite-verifier terminal integration: now has an opt-in
-  API and measurement test, but the first release/native run exceeded two
-  minutes before producing a proof, so this path has not met the production
-  `<30s` gate and cannot yet be called the production recursive artifact.
+  API and measurement test, and decoded verification passes after canonical
+  verifier-key rebuild. The best measured reduced-profile wire object is still
+  **891,780 bytes / 870.9 KiB**, with release prove **80.603s** and verify
+  **58.775s**, so this path misses both the about-100 KiB and `<30s` gates.
 
 Verifier status after the 2026-06-05 hardening pass: the batch-STARK
 `AiPowRecursiveCertificate` verifier now calls
@@ -72,7 +73,9 @@ not be conflated:
    release-time gates for the recursion-crate Tip5 verifier fixture.
 3. `crates/ai-pow-zk/src/recursion.rs::AiPowTerminalRecursiveCertificate`
    now wires that terminal backend to the actual composite L1 verifier circuit
-   as an opt-in diagnostic path. It has not yet met the production time gate.
+   as an opt-in diagnostic path. It verifies after postcard decode and
+   canonical verifier-key rebuild, but it has not met the production size or
+   time gate.
 
 The batch-STARK checkpoint pipeline is large because it proves the verifier
 circuit execution as another full STARK:
@@ -136,13 +139,27 @@ release prove `1.492s` and verify `1.181s`. The follow-up `ai-pow-zk`
 integration pass added
 `prove_terminal_certificate_from_chain_verified_composite_proof`, which proves
 the actual composite L1 verifier circuit with the terminal backend and carries
-the terminal public input vector alongside the terminal certificate. The first
-release/native run of the opt-in
-`terminal_recursive_certificate_round_trip_verifies` measurement exceeded two
-minutes before printing a proof size. That is the current blocker: the terminal
-backend is small on the recursion fixture, but the full composite verifier path
-is not yet proven under the `<30s` production gate. The higher-level miner noun
-path also still serializes the batch-STARK checkpoint object.
+the terminal public input vector alongside the terminal certificate. A
+completed release/native reduced-profile run now measures:
+
+| Full composite terminal profile | Certificate | Public inputs | Postcard wire | Compile | Prove | Verify |
+|---|---:|---:|---:|---:|---:|---:|
+| `lb=6,nq=10,pow=0` | `886,600` bytes / `865.8 KiB` | `5,180` bytes | `891,780` bytes / `870.9 KiB` | `7.599s` | `80.603s` | `58.775s` |
+
+The `lb=6,nq=10,pow=0` profile is the smallest relation measured so far, but
+the full composite terminal path is still almost nine times the byte target and
+well over the time target. The higher-level miner noun path also still
+serializes the batch-STARK checkpoint object.
+
+This integration run also exposed a verifier-key reconstruction soundness bug:
+two rebuilds of the same composite L1 verifier circuit produced different
+terminal relation digests, so a decoded certificate could fail with
+`CertificateHeaderMismatch`. The root cause was hash-ordered emission of global
+lookup cumulative checks in the recursive batch-STARK verifier circuit. The
+builder now emits those checks in sorted name order, and the regression
+`terminal_header_rebuilds_deterministically_for_baseline_composite` confirms
+that the same Layer-0 proof rebuilds the same terminal header. The terminal
+wrapper also uses postcard encoding with a structural round-trip assertion.
 
 The non-proving terminal-relation metrics explain why this full path is slow:
 
@@ -245,11 +262,11 @@ diagnostic measurements explain why it was removed from production:
 
 Engineering conclusion: exhaustive supported-NPO checking made the terminal
 fixture small enough. It has not yet made the full `ai-pow-zk` composite
-recursive path fast enough. The remaining work is to reduce the actual
-composite L1 terminal relation, especially the generic FRI/MMCS verifier
-circuit and supported-NPO callsite count, make verifier-key reconstruction
-canonical without carrying the Layer-0 proof, and then re-run the opt-in
-terminal measurement to obtain complete wire bytes and release timing.
+recursive path small or fast enough. Verifier-key reconstruction is now
+canonical for the baseline diagnostic, and the `lb=6,nq=10,pow=0` measurement
+has complete wire bytes and release timing. The remaining work is to reduce the
+actual composite L1 terminal relation, especially the generic FRI/MMCS verifier
+circuit and supported-NPO callsite count.
 
 ## Soundness Summary
 
@@ -449,8 +466,12 @@ Implementation anchors:
   `verify_terminal_production_goldilocks`.
 - `crates/ai-pow-zk/src/recursion.rs` now implements the opt-in
   `AiPowTerminalRecursiveCertificate` path for the actual composite L1 verifier
-  circuit. Its release/native measurement has not yet completed inside the
-  production time gate.
+  circuit. Its `lb=6,nq=10,pow=0` release/native measurement verifies after
+  postcard decode, but measures `891,780` wire bytes with `80.603s` prove time
+  and `58.775s` verify time.
+- `crates/plonky3-recursion/recursion/src/verifier/batch_stark.rs` emits global
+  lookup cumulative checks in sorted order so terminal verifier-key
+  reconstruction is deterministic and bound by a stable relation digest.
 - Terminal production tests reject malformed proof bodies, wrong proof kind,
   noncanonical parameters, missing commitments, missing exhaustive assignment
   openings, tampered hidden Tip5 input payloads, and tampered assignment
@@ -514,10 +535,12 @@ still the native terminal certificate, not the batch-STARK checkpoint. However,
 the full end-to-end production claim is not yet proven. The recursion-crate
 Tip5 verifier fixture satisfies the hard constraint at **85,948 bytes /
 83.9 KiB** with release prove **1.492 s** and verify **1.181 s**, but the
-newly wired full `ai-pow-zk` composite-verifier terminal path exceeded two
-minutes in release/native measurement before completing. The materialized
-Layer-0 proof is **304,048 bytes / 296.9 KiB**, but it is an intermediate
-diagnostic artifact rather than the target consensus wire object.
+newly wired full `ai-pow-zk` composite-verifier terminal path measures
+**891,780 bytes / 870.9 KiB** on the postcard wire with release prove
+**80.603 s** and verify **58.775 s** even under the reduced
+`lb=6,nq=10,pow=0` profile. The materialized Layer-0 proof is **304,048 bytes /
+296.9 KiB**, but it is an intermediate diagnostic artifact rather than the
+target consensus wire object.
 
 The hardened batch-STARK L1 proof body is **149.1 KiB**, and the full checkpoint
 certificate is **1,135.5 KiB** as legacy postcard, **5,794.7 KiB** as fixed-int
