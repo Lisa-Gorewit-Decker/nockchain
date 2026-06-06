@@ -307,6 +307,40 @@ pub struct TerminalBindingDigest(pub [u64; 5]);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalCommitmentDigest(pub [u64; 5]);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalCommitmentDigestBytes {
+    pub first: [u8; 32],
+    pub last: [u8; 8],
+}
+
+fn terminal_commitment_digest_to_bytes(
+    digest: TerminalCommitmentDigest,
+) -> TerminalCommitmentDigestBytes {
+    let mut first = [0u8; 32];
+    let mut last = [0u8; 8];
+    for (index, limb) in digest.0.iter().copied().enumerate() {
+        if index < 4 {
+            first[index * 8..(index + 1) * 8].copy_from_slice(&limb.to_le_bytes());
+        } else {
+            last.copy_from_slice(&limb.to_le_bytes());
+        }
+    }
+    TerminalCommitmentDigestBytes { first, last }
+}
+
+fn terminal_commitment_digest_from_bytes(
+    bytes: TerminalCommitmentDigestBytes,
+) -> TerminalCommitmentDigest {
+    let mut limbs = [0u64; 5];
+    for (index, limb) in limbs.iter_mut().take(4).enumerate() {
+        let mut limb_bytes = [0u8; 8];
+        limb_bytes.copy_from_slice(&bytes.first[index * 8..(index + 1) * 8]);
+        *limb = u64::from_le_bytes(limb_bytes);
+    }
+    limbs[4] = u64::from_le_bytes(bytes.last);
+    TerminalCommitmentDigest(limbs)
+}
+
 /// Tip5 digest of verifier-fixed terminal table material.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalFixedTableDigest(pub [u64; 5]);
@@ -344,16 +378,17 @@ pub struct TerminalOracleMultiProof {
 /// verifier-derived from the surrounding relation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalOracleKnownIndexMultiProof {
-    /// Nonzero coefficients for non-boolean opened values.
+    /// Nonzero coefficients for non-boolean opened values, encoded as
+    /// canonical little-endian Goldilocks limbs.
     ///
     /// For extension-field proofs (`DIMENSION > 1`), coefficients are stored
     /// sparsely and reconstructed from `value_basis_nonzero_masks` before the
     /// Merkle root check. Base-field proofs keep the old flat one-coefficient
     /// encoding and leave this mask vector empty.
-    pub value_basis_flat: Vec<u64>,
+    pub value_basis_flat: Vec<[u8; 8]>,
     pub value_basis_nonzero_masks: Vec<u8>,
     pub boolean_value_bits: Vec<u8>,
-    pub frontier: Vec<TerminalCommitmentDigest>,
+    pub frontier: Vec<TerminalCommitmentDigestBytes>,
 }
 
 /// Authenticated opening of a contiguous oracle prefix starting at index 0.
@@ -3353,14 +3388,14 @@ impl TerminalOracleMerkleTree {
                 boolean_index += 1;
             } else {
                 if dimension == 1 {
-                    value_basis_flat.extend(basis);
+                    value_basis_flat.extend(basis.into_iter().map(u64::to_le_bytes));
                 } else {
                     for (coeff_index, coeff) in basis.iter().copied().enumerate() {
                         if coeff != 0 {
                             let dense_coeff_index = non_boolean_index * dimension + coeff_index;
                             value_basis_nonzero_masks[dense_coeff_index / 8] |=
                                 1u8 << (dense_coeff_index % 8);
-                            value_basis_flat.push(coeff);
+                            value_basis_flat.push(coeff.to_le_bytes());
                         }
                     }
                 }
@@ -3375,7 +3410,10 @@ impl TerminalOracleMerkleTree {
             value_basis_flat,
             value_basis_nonzero_masks,
             boolean_value_bits,
-            frontier,
+            frontier: frontier
+                .into_iter()
+                .map(terminal_commitment_digest_to_bytes)
+                .collect(),
         })
     }
 
@@ -4209,7 +4247,11 @@ impl NativeTerminalCompiler {
         let mut values = Vec::with_capacity(indices.len());
         let mut openings = Vec::with_capacity(indices.len());
         let mut basis_chunks = proof.value_basis_flat.chunks_exact(dimension);
-        let mut sparse_basis_values = proof.value_basis_flat.iter().copied();
+        let mut sparse_basis_values = proof
+            .value_basis_flat
+            .iter()
+            .copied()
+            .map(u64::from_le_bytes);
         let mut boolean_index = 0usize;
         let mut non_boolean_index = 0usize;
         for index in indices.iter().copied() {
@@ -4230,7 +4272,10 @@ impl NativeTerminalCompiler {
                             got: proof.value_basis_flat.len(),
                         },
                     )?
-                    .to_vec()
+                    .iter()
+                    .copied()
+                    .map(u64::from_le_bytes)
+                    .collect()
             } else {
                 let mut basis = vec![0u64; dimension];
                 for coeff_index in 0..dimension {
@@ -4274,7 +4319,11 @@ impl NativeTerminalCompiler {
         }
 
         let root_level = Self::terminal_oracle_path_len(commitment.values_len);
-        let mut frontier = proof.frontier.iter().copied();
+        let mut frontier = proof
+            .frontier
+            .iter()
+            .copied()
+            .map(terminal_commitment_digest_from_bytes);
         let got = Self::terminal_oracle_multi_root_goldilocks(
             &commitment.label,
             commitment.values_len,
@@ -41897,8 +41946,7 @@ mod tests {
             .as_mut()
             .expect("fixture must include exhaustive NPO proof")
             .assignment_witness_multi_opening
-            .frontier[0]
-            .0[0] ^= 1;
+            .frontier[0].first[0] ^= 1;
         let err = compiler
             .verify_terminal_production_goldilocks(&vk, &public_inputs, &bad_value)
             .unwrap_err();
@@ -41932,12 +41980,12 @@ mod tests {
             .as_mut()
             .expect("fixture must include exhaustive NPO proof")
             .assignment_witness_multi_opening
-            .value_basis_flat[0] = bad_recompose
+            .value_basis_flat[0][0] = bad_recompose
             .npo_exhaustive_proof
             .as_ref()
             .expect("fixture must include exhaustive NPO proof")
             .assignment_witness_multi_opening
-            .value_basis_flat[0]
+            .value_basis_flat[0][0]
             .wrapping_add(1);
         let err = compiler
             .verify_terminal_production_goldilocks(&vk, &public_inputs, &bad_recompose)
@@ -42029,8 +42077,8 @@ mod tests {
         );
 
         let mut bad_round_value = proof.clone();
-        bad_round_value.round_openings[0].value_basis_flat[0] =
-            bad_round_value.round_openings[0].value_basis_flat[0].wrapping_add(1);
+        bad_round_value.round_openings[0].value_basis_flat[0][0] =
+            bad_round_value.round_openings[0].value_basis_flat[0][0].wrapping_add(1);
         assert!(
             compiler
                 .verify_terminal_assignment_evaluation_goldilocks(

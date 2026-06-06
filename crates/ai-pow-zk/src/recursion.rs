@@ -1343,7 +1343,9 @@ fn _composite_conforms_to_recursive_air() {
 
 #[cfg(test)]
 mod tests {
-    use p3_recursion::terminal::{NativeTerminalConstraint, NativeTerminalVerifyingKey};
+    use p3_recursion::terminal::{
+        NativeTerminalConstraint, NativeTerminalVerifyingKey, TerminalProductionProof,
+    };
 
     use super::*;
     use crate::composite_proof::{build_config, composite_prove_pinned_logup, logup_common_for};
@@ -1822,6 +1824,7 @@ mod tests {
             run.terminal_prove_ms,
             run.terminal_verify_ms,
         );
+        log_terminal_production_component_sizes(label, run.terminal_cert.terminal_certificate());
 
         let decoded = decode_terminal_recursive_certificate(&wire_bytes)
             .expect("decode terminal recursive certificate");
@@ -1844,6 +1847,101 @@ mod tests {
         assert!(
             decode_terminal_recursive_certificate(&trailing).is_err(),
             "terminal decoder must reject trailing bytes"
+        );
+    }
+
+    fn postcard_len<T: serde::Serialize>(value: &T, label: &str) -> usize {
+        postcard::to_allocvec(value)
+            .unwrap_or_else(|err| panic!("{label} must serialize for size accounting: {err:?}"))
+            .len()
+    }
+
+    fn log_terminal_production_component_sizes(
+        label: &str,
+        certificate: &p3_recursion::terminal::TerminalCertificate,
+    ) {
+        let (production_proof, trailing): (TerminalProductionProof, &[u8]) =
+            postcard::take_from_bytes(&certificate.proof_body)
+                .expect("terminal production proof body must decode for size accounting");
+        assert!(
+            trailing.is_empty(),
+            "terminal production proof size accounting must consume the whole body"
+        );
+
+        let prelude_bytes = postcard_len(&production_proof.prelude, "terminal prelude");
+        let primitive_bytes = postcard_len(
+            &production_proof.primitive_r1cs_proof, "primitive r1cs proof",
+        );
+        let primitive_rounds_bytes = postcard_len(
+            &production_proof.primitive_r1cs_proof.rounds, "primitive r1cs row-product rounds",
+        );
+        let matrix_sumcheck_bytes = postcard_len(
+            &production_proof.primitive_r1cs_proof.matrix_sumcheck,
+            "primitive r1cs matrix sumcheck",
+        );
+        let matrix_rounds_bytes = postcard_len(
+            &production_proof.primitive_r1cs_proof.matrix_sumcheck.rounds,
+            "primitive r1cs matrix sumcheck rounds",
+        );
+        let assignment_eval = &production_proof
+            .primitive_r1cs_proof
+            .matrix_sumcheck
+            .assignment_evaluation;
+        let assignment_eval_bytes =
+            postcard_len(assignment_eval, "primitive r1cs assignment evaluation");
+        let assignment_prefix_bytes = postcard_len(
+            &assignment_eval.public_prefix_proof, "primitive r1cs assignment public prefix proof",
+        );
+        let assignment_round_openings_bytes = postcard_len(
+            &assignment_eval.round_openings, "primitive r1cs assignment round openings",
+        );
+
+        let (
+            npo_bytes,
+            tip5_hidden_bytes,
+            assignment_witness_multi_bytes,
+            npo_hidden_values,
+            npo_assignment_values,
+            npo_boolean_bits,
+            npo_frontier_nodes,
+        ) = match &production_proof.npo_exhaustive_proof {
+            Some(npo) => (
+                postcard_len(npo, "terminal npo exhaustive proof"),
+                postcard_len(
+                    &npo.tip5_hidden_input_values_le, "terminal npo hidden Tip5 values",
+                ),
+                postcard_len(
+                    &npo.assignment_witness_multi_opening,
+                    "terminal npo assignment witness multiproof",
+                ),
+                npo.tip5_hidden_input_values_le.len(),
+                npo.assignment_witness_multi_opening.value_basis_flat.len(),
+                npo.assignment_witness_multi_opening
+                    .boolean_value_bits
+                    .len(),
+                npo.assignment_witness_multi_opening.frontier.len(),
+            ),
+            None => (0, 0, 0, 0, 0, 0, 0),
+        };
+
+        eprintln!(
+            "native terminal production body components [{label}]: body={} bytes prelude={} primitive_r1cs={} primitive_rounds={} matrix_sumcheck={} matrix_rounds={} assignment_eval={} assignment_prefix={} assignment_round_openings={} npo_exhaustive={} npo_tip5_hidden={} npo_assignment_witness_multi={} npo_hidden_values={} npo_assignment_values={} npo_boolean_bits={} npo_frontier_nodes={}",
+            certificate.proof_body.len(),
+            prelude_bytes,
+            primitive_bytes,
+            primitive_rounds_bytes,
+            matrix_sumcheck_bytes,
+            matrix_rounds_bytes,
+            assignment_eval_bytes,
+            assignment_prefix_bytes,
+            assignment_round_openings_bytes,
+            npo_bytes,
+            tip5_hidden_bytes,
+            assignment_witness_multi_bytes,
+            npo_hidden_values,
+            npo_assignment_values,
+            npo_boolean_bits,
+            npo_frontier_nodes,
         );
     }
 

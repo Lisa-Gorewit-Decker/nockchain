@@ -33,7 +33,7 @@ to the hard target:
 
 | Full composite terminal profile | Certificate | Public inputs | Postcard wire | Compile | Prove | Verify |
 |---|---:|---:|---:|---:|---:|---:|
-| `lb=6,nq=10,pow=0` | `886,600` bytes / `865.8 KiB` | `5,180` bytes | `891,780` bytes / `870.9 KiB` | `7.599s` | `80.603s` | `58.775s` |
+| `lb=6,nq=10,pow=0` after compact known-index proof encoding | `766,069` bytes / `748.1 KiB` | `5,180` bytes | `771,249` bytes / `753.2 KiB` | `7.579s` | `80.377s` | `58.496s` |
 
 Therefore the fixture measurement is evidence that the backend can be small on
 a much smaller verifier relation, not proof that the full AI-PoW production
@@ -104,8 +104,8 @@ L1 verifier construction, and terminal relation compilation for the
 `CompositeTrace::baseline_min()` fixture.
 
 The full proof measurement for the most relation-favorable row in the table,
-`lb=6,nq=10,pow=0`, still produces an `891,780` byte postcard wire object and
-spends `80.603s` in terminal proving. That confirms that simply increasing
+`lb=6,nq=10,pow=0`, still produces a `771,249` byte postcard wire object and
+spends `80.377s` in terminal proving. That confirms that simply increasing
 Layer-0 blowup to reduce query count is not enough; the terminal relation and
 assignment-oracle opening material are still far too large.
 
@@ -154,6 +154,24 @@ checks were emitted through hash-map value iteration in the recursive verifier
 circuit. The builder now emits those checks in sorted name order, so the
 terminal relation digest is a stable cryptographic binding rather than an
 artifact of hash iteration order.
+
+The current compact known-index multiproof encoding stores field limbs and
+frontier digests as fixed little-endian bytes. This reduced the same
+`lb=6,nq=10,pow=0` wire measurement from `891,780` bytes to `771,249` bytes,
+but it did not change the structural bottleneck:
+
+| Full composite terminal body component | Bytes |
+|---|---:|
+| Full production proof body | `765,844` |
+| Primitive R1CS row-product proof | `52,821` |
+| Exhaustive NPO proof | `712,830` |
+| Exhaustive NPO hidden Tip5 values | `92,802` |
+| Exhaustive NPO assignment-witness multiproof | `620,028` |
+
+The NPO assignment-witness multiproof still opens `47,814` assignment values
+and carries `5,434` Merkle frontier nodes. Ordinary encoding work cannot close
+the remaining gap to about `100 KiB`; a production-sized path has to avoid
+exhaustively opening this many assignment values.
 
 The latest measurement also printed useful comparison floors:
 
@@ -308,18 +326,21 @@ Implementation result:
    frontier material, and recompose-row witness tampering.
 5. The `ai-pow-zk` composite L1 terminal path is wired as an opt-in diagnostic.
    Its `lb=6,nq=10,pow=0` release/native run verifies after postcard decode,
-   but measures `891,780` wire bytes, `prove=80.603s`, and `verify=58.775s`.
+   but measures `771,249` wire bytes, `prove=80.377s`, and `verify=58.496s`.
 6. A production-profile non-proving relation metric shows the full path has
    `125,961` terminal operations, `14,049` supported NPO rows, and `242,798`
    NPO residual components before terminal proving begins.
 7. The terminal relation digest rebuild is now deterministic for the baseline
    composite diagnostic; the fixed source was hash-ordered global lookup
    cumulative check emission in the recursive batch-STARK verifier circuit.
+8. Fixed-width known-index proof limb/frontier encoding saves about `120.8 KiB`
+   on the full-path reduced-profile wire object, but leaves `620,028` bytes in
+   the NPO assignment-witness multiproof.
 
 Assessment: this is still the preferred production direction, but not yet the
 active stack-level production path. Its trade-off is witness exposure and, on
 the full composite verifier relation, a much larger proof than the fixture:
-about `870.9 KiB` on wire even after selecting the smallest measured
+about `753.2 KiB` on wire even after selecting the smallest measured
 pure-query relation profile. Witness exposure is acceptable only if the final
 terminal certificate is explicitly not specified as zero-knowledge and the full
 composite verifier path is reduced under both production gates.
@@ -375,8 +396,8 @@ and it remains necessary for the full composite terminal path. The promoted
 exhaustive path satisfies the `<30s` release target only for the
 recursion-crate Tip5 verifier fixture. The actual `ai-pow-zk` composite
 terminal path now has a completed reduced-profile release measurement:
-`l1_verify=44ms`, `compile=7.599s`, `prove=80.603s`, `verify=58.775s`, and
-postcard wire size `891,780` bytes.
+`l1_verify=44ms`, `compile=7.579s`, `prove=80.377s`, `verify=58.496s`, and
+postcard wire size `771,249` bytes.
 
 The first runtime-instrumentation pass landed after this analysis. The
 production prover now emits per-stage timings when
@@ -394,7 +415,7 @@ Immediate work:
 
 1. Keep the real release measurement in the hot loop with `RUSTFLAGS="-C
    target-cpu=native"` and `NOCK_TERMINAL_PROFILE_PROVER=1`; the current
-   `lb=6,nq=10,pow=0` proof is `891,780` bytes and `80.603s` to prove.
+   `lb=6,nq=10,pow=0` proof is `771,249` bytes and `80.377s` to prove.
 2. Keep the non-proving relation metric in the hot loop. The current PROD
    relation has `75,870` Horner operations before proof construction, so
    optimizing terminal proof serialization alone cannot satisfy the `<30s`
