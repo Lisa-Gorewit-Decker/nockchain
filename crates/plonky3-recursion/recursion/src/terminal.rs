@@ -6236,12 +6236,18 @@ impl NativeTerminalCompiler {
             packed.resize(row_start + profile.main_width, Goldilocks::ZERO);
             for round in 0..TIP5_PERM_ROUNDS {
                 let source_row = Self::terminal_npo_tip5_lookup_round_row(tip5_rank, round);
-                let source_start = source_row * lookup_trace.width() + Self::TIP5_LOOKUP_C_IN;
+                let source_column_start = if round == 0 {
+                    Self::TIP5_LOOKUP_C_IN
+                } else {
+                    Self::TIP5_LOOKUP_C_SPLIT
+                };
+                let source_start = source_row * lookup_trace.width() + source_column_start;
                 let source_end = Self::TIP5_LOOKUP_C_OUT + 16;
                 let source_end = source_row * lookup_trace.width() + source_end;
                 let target_start =
                     row_start + Self::terminal_npo_tip5_packed_lookup_round_offset(round);
-                let target_end = target_start + profile.round_width;
+                let target_end =
+                    target_start + Self::terminal_npo_tip5_packed_lookup_round_width(round);
                 packed[target_start..target_end]
                     .copy_from_slice(&lookup_trace.values[source_start..source_end]);
             }
@@ -21434,12 +21440,8 @@ impl NativeTerminalCompiler {
         let tip5_rows = verifying_key.npo_relation().tip5_rows();
         let rows = tip5_rows.max(1);
         let padded_rows = rows.max(TIP5_LOOKUP_TABLE_ROWS).next_power_of_two();
-        let round_width = Self::terminal_npo_tip5_packed_lookup_round_width();
-        let main_width = round_width.checked_mul(TIP5_PERM_ROUNDS).ok_or(
-            NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
-                reason: "terminal packed Tip5 lookup trace width overflow".into(),
-            },
-        )?;
+        let round_width = Self::terminal_npo_tip5_packed_lookup_first_round_width();
+        let main_width = Self::terminal_npo_tip5_packed_lookup_main_width();
         let logup_query_tuples = padded_rows
             .checked_mul(TIP5_PERM_ROUNDS)
             .and_then(|value| value.checked_mul(Self::TIP5_LOOKUP_NS))
@@ -21510,18 +21512,52 @@ impl NativeTerminalCompiler {
     }
 
     #[inline]
-    const fn terminal_npo_tip5_packed_lookup_round_width() -> usize {
+    const fn terminal_npo_tip5_packed_lookup_first_round_width() -> usize {
         Self::TIP5_LOOKUP_C_OUT + 16 - Self::TIP5_LOOKUP_C_IN
     }
 
     #[inline]
+    const fn terminal_npo_tip5_packed_lookup_linked_round_width() -> usize {
+        Self::TIP5_LOOKUP_C_OUT + 16 - Self::TIP5_LOOKUP_C_SPLIT
+    }
+
+    #[inline]
+    const fn terminal_npo_tip5_packed_lookup_round_width(round: usize) -> usize {
+        if round == 0 {
+            Self::terminal_npo_tip5_packed_lookup_first_round_width()
+        } else {
+            Self::terminal_npo_tip5_packed_lookup_linked_round_width()
+        }
+    }
+
+    #[inline]
+    const fn terminal_npo_tip5_packed_lookup_round_input_width(round: usize) -> usize {
+        if round == 0 { 16 } else { 0 }
+    }
+
+    #[inline]
+    const fn terminal_npo_tip5_packed_lookup_main_width() -> usize {
+        Self::terminal_npo_tip5_packed_lookup_first_round_width()
+            + (TIP5_PERM_ROUNDS - 1) * Self::terminal_npo_tip5_packed_lookup_linked_round_width()
+    }
+
+    #[inline]
     const fn terminal_npo_tip5_packed_lookup_round_offset(round: usize) -> usize {
-        round * Self::terminal_npo_tip5_packed_lookup_round_width()
+        if round == 0 {
+            0
+        } else {
+            Self::terminal_npo_tip5_packed_lookup_first_round_width()
+                + (round - 1) * Self::terminal_npo_tip5_packed_lookup_linked_round_width()
+        }
     }
 
     #[inline]
     const fn terminal_npo_tip5_packed_lookup_round_input_col(round: usize, lane: usize) -> usize {
-        Self::terminal_npo_tip5_packed_lookup_round_offset(round) + lane
+        if round == 0 {
+            lane
+        } else {
+            Self::terminal_npo_tip5_packed_lookup_round_output_col(round - 1, lane)
+        }
     }
 
     #[inline]
@@ -21531,8 +21567,7 @@ impl NativeTerminalCompiler {
         byte: usize,
     ) -> usize {
         Self::terminal_npo_tip5_packed_lookup_round_offset(round)
-            + Self::TIP5_LOOKUP_C_SPLIT
-            - Self::TIP5_LOOKUP_C_IN
+            + Self::terminal_npo_tip5_packed_lookup_round_input_width(round)
             + lane * (2 * Self::TIP5_LOOKUP_NBYTES)
             + byte
     }
@@ -21544,8 +21579,7 @@ impl NativeTerminalCompiler {
         byte: usize,
     ) -> usize {
         Self::terminal_npo_tip5_packed_lookup_round_offset(round)
-            + Self::TIP5_LOOKUP_C_SPLIT
-            - Self::TIP5_LOOKUP_C_IN
+            + Self::terminal_npo_tip5_packed_lookup_round_input_width(round)
             + lane * (2 * Self::TIP5_LOOKUP_NBYTES)
             + Self::TIP5_LOOKUP_NBYTES
             + byte
@@ -21554,16 +21588,17 @@ impl NativeTerminalCompiler {
     #[inline]
     const fn terminal_npo_tip5_packed_lookup_inv_col(round: usize, lane: usize) -> usize {
         Self::terminal_npo_tip5_packed_lookup_round_offset(round)
-            + Self::TIP5_LOOKUP_C_INV
-            - Self::TIP5_LOOKUP_C_IN
+            + Self::terminal_npo_tip5_packed_lookup_round_input_width(round)
+            + Self::TIP5_LOOKUP_SPLIT_BC
             + lane
     }
 
     #[inline]
     const fn terminal_npo_tip5_packed_lookup_round_output_col(round: usize, lane: usize) -> usize {
         Self::terminal_npo_tip5_packed_lookup_round_offset(round)
-            + Self::TIP5_LOOKUP_C_OUT
-            - Self::TIP5_LOOKUP_C_IN
+            + Self::terminal_npo_tip5_packed_lookup_round_input_width(round)
+            + Self::TIP5_LOOKUP_SPLIT_BC
+            + Self::TIP5_LOOKUP_NS
             + lane
     }
 
@@ -23061,15 +23096,14 @@ impl NativeTerminalCompiler {
         if trace_profile.padded_rows == 0 {
             return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
         }
-        if trace_profile.round_width != Self::terminal_npo_tip5_packed_lookup_round_width()
+        if trace_profile.round_width != Self::terminal_npo_tip5_packed_lookup_first_round_width()
             || trace_profile.tip5_rounds != TIP5_PERM_ROUNDS
-            || trace_profile.main_width != trace_profile.round_width * trace_profile.tip5_rounds
+            || trace_profile.main_width != Self::terminal_npo_tip5_packed_lookup_main_width()
         {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_packed_lookup_air_algebra_trace_profile".into(),
-                    expected: Self::terminal_npo_tip5_packed_lookup_round_width()
-                        * TIP5_PERM_ROUNDS,
+                    expected: Self::terminal_npo_tip5_packed_lookup_main_width(),
                     got: trace_profile.main_width,
                 },
             );
@@ -23099,14 +23133,13 @@ impl NativeTerminalCompiler {
         if trace_profile.padded_rows == 0 {
             return Err(NativeTerminalVerifyError::TerminalNpoQueryDomainEmpty);
         }
-        if trace_profile.main_width
-            != Self::terminal_npo_tip5_packed_lookup_round_width() * TIP5_PERM_ROUNDS
+        if trace_profile.round_width != Self::terminal_npo_tip5_packed_lookup_first_round_width()
+            || trace_profile.main_width != Self::terminal_npo_tip5_packed_lookup_main_width()
         {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_packed_lookup_npo_io_trace_profile".into(),
-                    expected: Self::terminal_npo_tip5_packed_lookup_round_width()
-                        * TIP5_PERM_ROUNDS,
+                    expected: Self::terminal_npo_tip5_packed_lookup_main_width(),
                     got: trace_profile.main_width,
                 },
             );
@@ -46468,11 +46501,11 @@ mod tests {
         );
         assert_eq!(
             packed_profile.round_width,
-            NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_round_width()
+            NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_first_round_width()
         );
         assert_eq!(
             packed_profile.main_width,
-            packed_profile.round_width * NUM_ROUNDS
+            NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_main_width()
         );
         assert_eq!(packed_trace.width(), packed_profile.main_width);
         assert_eq!(packed_trace.height(), packed_profile.padded_rows);

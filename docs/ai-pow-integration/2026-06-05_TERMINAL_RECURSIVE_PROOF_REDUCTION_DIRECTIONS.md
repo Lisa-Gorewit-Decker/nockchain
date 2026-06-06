@@ -46,38 +46,44 @@ What is done and verified:
   construction. It is sound for its included relations, including
   Merkle-direction-aware `mmcs_bit` value projection, but it intentionally does
   not yet bind internal Tip5 AIR/LogUp work.
-- The standalone packed Tip5 AIR algebra checkpoint verifies at `136,810`
-  bytes and `22.718s` proving.
-- The standalone packed byte-table LogUp checkpoint verifies at `167,018`
-  bytes and `22.442s` proving.
+- The compact packed Tip5 trace now omits duplicate explicit round-input
+  columns for rounds 1-4, reducing the committed packed trace width from `500`
+  to `436` while keeping those inputs bound as aliases of the previous round's
+  output.
+- The standalone packed Tip5 AIR algebra checkpoint verifies at `129,471`
+  bytes and `19.875s` proving with the compact trace.
+- The standalone packed byte-table LogUp checkpoint verifies at `155,974`
+  bytes and `22.284s` proving with the compact trace.
 - The standalone lane-selector selected-to-packed NPO-IO bridge verifies at
   `137,355` bytes and `28.526s` proving.
-- The direct selected-to-packed-trace bridge verifies at `213,546` bytes and
-  `31.997s` proving, deriving the 26 NPO-IO lanes directly from the opened
-  packed trace instead of carrying a separate projection commitment.
+- The direct selected-to-packed-trace bridge verifies at `205,950` bytes and
+  `35.863s` proving with the compact trace, deriving the 26 NPO-IO lanes
+  directly from the opened packed trace instead of carrying a separate
+  projection commitment.
 - The naive projection-plus-selected bridge fusion verifies, but measures
   `243,516` bytes and `35.423s` proving, so it is negative evidence against
   simply batching more standalone proof components into one opening proof.
-- The shared packed-trace AIR+LogUp+selected-trace bridge theorem verifies,
-  and the coalesced PCS-input version reduces PROD size from the prior
-  `273,113` bytes / `266.7 KiB` to `208,799` bytes / `203.9 KiB`, with
-  compact FRI down from `256,261` to `192,253` bytes. It still proves in
-  `33.313s`, so it remains too large and slightly too slow as a standalone
-  support theorem.
+- The shared packed-trace AIR+LogUp+selected-trace bridge theorem verifies.
+  Same-phase PCS-input coalescing and compact duplicate-input removal reduce
+  PROD size from the uncoalesced `273,113` bytes / `266.7 KiB` to `198,287`
+  bytes / `193.6 KiB`, with compact FRI down from `256,261` to `183,018`
+  bytes. It still proves in `33.277s`, so it remains too large and slightly
+  too slow as a standalone support theorem.
 
 What remains:
 
 - Replace or further collapse the measured coalesced shared packed-trace
-  support theorem so it does not open the full `500`-column packed trace plus
+  support theorem so it does not open the full `436`-column packed trace plus
   wide LogUp/bridge accumulator payload as a standalone support proof.
 - Fold the resulting Tip5 binding into the merged value-bridge proof instead
   of appending another standalone packed proof body.
 - Reuse prepared terminal compile output, NPO columns, packed traces,
   commitment roots, and prelude material so the measured production pipeline is
   the total path a miner would actually run.
-- Add negative tests for stale packed trace roots, stale table/profile data,
-  wrong selected-value bridge roots, wrong `mmcs_bit` projection, malformed
-  compact FRI payloads, and transcript/prelude substitutions.
+- Extend negative tests to the final fused production artifact, covering stale
+  packed trace roots, stale table/profile data, wrong selected-value bridge
+  roots, wrong `mmcs_bit` projection, malformed compact FRI payloads, and
+  transcript/prelude substitutions.
 - Remeasure the full production path with release flags and native CPU codegen.
 
 The relaxed milestone is therefore not yet claimed. The verified checkpoints
@@ -95,8 +101,8 @@ compression lever, but the current support theorem still cannot be added to the
 | Most viable shape | Native terminal merged value bridge plus a leaner packed Tip5 binding that algebraically collapses the packed AIR, byte LogUp, and selected-value bridge constraints instead of serializing separate support-theorem quotient/accumulator domains |
 | Best measured complete base | Merged padding/value-bridge checkpoint at `151,448` bytes / `147.9 KiB`, post-prelude proof body `14.914s`; sound for its included relations, but missing internal Tip5 binding |
 | Best near-target standalone missing binding | Lane-selector-aware selected-to-packed NPO-IO bridge at `137,355` bytes / `134.1 KiB`, prove `28.526s`, verify `14.510s` |
-| Direct bridge diagnostic | Binding selected NPO values directly to packed trace lanes verifies at `213,546` bytes / `208.5 KiB`, prove `31.997s`; it removes the projection commitment/domain but is too large standalone because it opens the full `500`-column packed trace |
-| Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s`; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; coalesced shared support theorem verifies at `208,799` bytes / `203.9 KiB`, prove `33.313s` |
+| Direct bridge diagnostic | Binding selected NPO values directly to compact packed trace lanes verifies at `205,950` bytes / `201.1 KiB`, prove `35.863s`; it removes the projection commitment/domain but is too large standalone because it still opens the full `436`-column packed trace |
+| Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s` |
 | Main current blocker | All required packed Tip5/NPO subtheorems now verify, and PCS input-batch coalescing helps, but the current support proof still opens too much packed trace/accumulator material |
 | Next implementation step | Design and measure a packed Tip5 binding that reduces opened trace/accumulator payload before folding it into the merged value-bridge theorem |
 
@@ -147,20 +153,24 @@ because it does not bind the internal Tip5 lookup/AIR/LogUp work.
 
 The packed Tip5 checkpoints show the missing internal Tip5 binding can be made
 sound and materially faster than the row-per-round shape. The packed trace maps
-`8,081` Tip5 calls into an `8,192 x 500` trace and cuts the algebra quotient
-domain from `524,288` rows to `65,536` rows. The standalone packed AIR algebra
-proof verifies at `136,810` bytes / `133.6 KiB` with `22.718s` proving. The
-standalone packed byte-table LogUp proof verifies at `167,018` bytes /
-`163.1 KiB` with `22.442s` proving.
+`8,081` Tip5 calls into an `8,192 x 436` trace and cuts the algebra quotient
+domain from `524,288` rows to `65,536` rows. The width dropped from `500` to
+`436` by omitting explicit round-input columns for rounds 1-4 and reading those
+inputs from the previous round's output columns. The standalone packed AIR
+algebra proof verifies at `129,471` bytes / `126.4 KiB` with `19.875s`
+proving. The standalone packed byte-table LogUp proof verifies at `155,974`
+bytes / `152.3 KiB` with `22.284s` proving.
 
 The packed trace NPO-IO projection checkpoint now verifies too. It commits a
 26-column packed-domain projection containing the packed trace's 16 round-0
 input lanes and 10 final-round output lanes, then proves those projection
 columns are derived from the packed trace commitment. On the full PROD
-composite relation, the standalone projection proof verifies at `149,525`
-bytes / `146.0 KiB`, with compact FRI `138,727` bytes, full-trace zeta
-openings `10,007` bytes, NPO-IO openings `527` bytes, opened quotient `7`
-bytes, prove `20.379s`, and verify `10.692s`.
+composite relation, the pre-compaction standalone projection proof verified at
+`149,525` bytes / `146.0 KiB`, with compact FRI `138,727` bytes, full-trace
+zeta openings `10,007` bytes, NPO-IO openings `527` bytes, opened quotient
+`7` bytes, prove `20.379s`, and verify `10.692s`. It has not yet been rerun
+after the compact trace width change because the direct selected-to-packed
+trace bridge is the sharper production diagnostic.
 
 The lane-selector-aware selected-to-packed NPO-IO bridge now verifies. It
 binds the selected value-bridge endpoint to the packed NPO-IO projection
@@ -191,10 +201,10 @@ diagnostic. It removes the intermediate packed NPO-IO projection commitment and
 projection quotient domain entirely: the prover commits to the selected lookup
 and packed trace, and the verifier derives the 26 NPO-IO lanes from the opened
 packed trace at `zeta`. On the full PROD composite relation it measures
-`213,546` bytes / `208.5 KiB`, compact FRI `199,459` bytes, full packed-trace
-opening `10,021` bytes, prove `31.997s`, and verify `14.054s`. This is
+`205,950` bytes / `201.1 KiB`, compact FRI `193,160` bytes, full packed-trace
+opening `8,718` bytes, prove `35.863s`, and verify `14.955s`. This is
 smaller than the naive projection+selected fusion, but still not production
-viable standalone. The full `500`-column packed trace opening is too expensive
+viable standalone. The full `436`-column packed trace opening is too expensive
 as a separate bridge proof, and the next measurement below shows that sharing
 that opening without reducing the surrounding quotient/accumulator domains is
 still not enough.
@@ -203,21 +213,22 @@ The first shared packed-trace AIR+LogUp+selected-trace theorem now verifies,
 and the follow-up PCS input-batch coalescing is a real compression lever. The
 uncoalesced version shared one packed trace opening, but still committed each
 support matrix separately; it measured `273,113` bytes / `266.7 KiB`, compact
-FRI `256,261` bytes, and prove `36.590s`. The coalesced version groups
-same-transcript-phase matrices into four PCS input batches: selected lookup,
-packed trace plus LogUp table, all accumulators, and all quotients. On the full
-PROD composite relation it verifies at `208,799` bytes / `203.9 KiB`, compact
-FRI `192,253` bytes, selected lookup opening `1,693` bytes, packed trace
-opening `9,992` bytes, AIR quotient opening `41` bytes, LogUp table opening
-`20` bytes, LogUp accumulator opening `1,849` bytes, LogUp quotient opening
-`42` bytes, selected/packed bridge accumulator openings `727 + 729` bytes, and
-selected/packed bridge quotient openings `42 + 40` bytes. It uses AIR and
-LogUp quotient domains of `65,536` rows, selected bridge quotient rows
-`65,536`, and packed bridge quotient rows `32,768`. It proves in `33.313s`,
-verifies in `14.073s`, and has `94.365s` total diagnostic wall time. This
-confirms that Merkle-path duplication was meaningful, but the remaining
-full-trace and accumulator leaf payload is still too large for the relaxed
-target.
+FRI `256,261` bytes, and prove `36.590s`. The first coalesced version grouped
+same-transcript-phase matrices into four PCS input batches and measured
+`208,799` bytes / `203.9 KiB`, compact FRI `192,253` bytes, and prove
+`33.313s` on the width-500 packed trace. The compact-trace coalesced version
+now verifies at `198,287` bytes / `193.6 KiB`, compact FRI `183,018` bytes,
+selected lookup opening `1,698` bytes, packed trace opening `8,728` bytes, AIR
+quotient opening `41` bytes, LogUp table opening `21` bytes, LogUp accumulator
+opening `1,840` bytes, LogUp quotient opening `42` bytes, selected/packed
+bridge accumulator openings `716 + 724` bytes, and selected/packed bridge
+quotient openings `42 + 41` bytes. It uses AIR and LogUp quotient domains of
+`65,536` rows, selected bridge quotient rows `65,536`, and packed bridge
+quotient rows `32,768`. It proves in `33.277s`, verifies in `14.358s`, and
+has `94.874s` total diagnostic wall time. This confirms that Merkle-path
+duplication and duplicate round-input columns were meaningful payload, but the
+remaining full-trace and accumulator leaf payload is still too large for the
+relaxed target.
 
 Those standalone proofs are evidence, not an appendable production proof.
 Appending any standalone packed proof to the `151,448` byte merged
@@ -286,7 +297,7 @@ masked projection commitment.
   coalesce same-phase PCS input batches, and reject tampered packed trace
   commitments/openings, tampered LogUp table openings, and tampered bridge
   final cumulatives. The full PROD coalesced measurement is still negative at
-  `208,799` bytes and `33.313s` proving.
+  `198,287` bytes and `33.277s` proving.
 - The production soundness policy is explicit: 60 bits must come from FRI query
   soundness at `pow=0`, not from proof-system grinding.
 
@@ -295,9 +306,10 @@ masked projection commitment.
 - Replace the current coalesced shared packed-trace AIR+LogUp+selected-trace
   support theorem with a leaner packed Tip5 binding. The failed
   projection+selected fusion, the still-too-large standalone direct bridge,
-  the `273,113` byte uncoalesced theorem, and the `208,799` byte coalesced
-  theorem show this must reduce opened trace/accumulator payload, not merely
-  remove duplicate Merkle paths.
+  the `273,113` byte uncoalesced theorem, the `208,799` byte width-500
+  coalesced theorem, and the `198,287` byte compact-trace coalesced theorem
+  show this must reduce opened trace/accumulator payload, not merely remove
+  duplicate Merkle paths or duplicate round-input columns.
 - Remove duplicated production prover setup by reusing terminal compile
   outputs, prepared NPO columns, packed traces, roots, and prelude material
   wherever verifier key and public inputs are unchanged.
@@ -305,9 +317,11 @@ masked projection commitment.
   `RUSTFLAGS="-C target-cpu=native"` and the production pure-query profile.
   The milestone requires a total production-pipeline proving measurement, not
   only post-prelude subproof timings.
-- Add negative tests for stale packed trace roots, stale fixed table/profile
-  data, wrong selected-value bridge commitments, wrong `mmcs_bit` projection,
-  malformed compact FRI payloads, and transcript/prelude substitutions.
+- Extend negative tests from the verified subproof checkpoints to the final
+  fused production artifact: stale packed trace roots, stale fixed
+  table/profile data, wrong selected-value bridge commitments, wrong
+  `mmcs_bit` projection, malformed compact FRI payloads, and
+  transcript/prelude substitutions.
 
 ### Current Non-Claims
 
@@ -583,8 +597,10 @@ The first concrete checkpoint for that route is now implemented as a data
 source and profile, not yet as an accepted proof: `TerminalNpoTip5PackedLookupTraceProfile`
 and `terminal_npo_tip5_packed_lookup_trace_goldilocks`. The packed trace reuses
 the already tested lookup-trace generator, pads to zero-input permutations, and
-copies each permutation's five round rows horizontally into one row containing
-only `IN`, split `(b,c)` byte pairs, guard inverses, and `OUT`. The focused
+copies each permutation's five round rows horizontally into one row. Round 0
+stores `IN`, split `(b,c)` byte pairs, guard inverses, and `OUT`; rounds 1-4
+store only split `(b,c)` byte pairs, guard inverses, and `OUT`, with their
+`IN` values aliased to the previous round's `OUT`. The focused
 regression `goldilocks_npo_tip5_air_trace_matches_terminal_rows` now checks
 that these packed rows match the existing lookup trace and terminal-derived
 Tip5 inputs/outputs.
@@ -595,27 +611,29 @@ gain for the actual composite verifier relation:
 | Tip5 terminal trace shape | Rows | Width | Algebra quotient rows | Notes |
 |---|---:|---:|---:|---|
 | Current row-per-round lookup trace | `65,536` | `117` | `524,288` | Includes the 256 lookup-table rows and five rows per Tip5 permutation. |
-| Packed one-row-per-permutation lookup trace | `8,192` | `500` | `65,536` | Reuses the same round-row contents, padded with zero-input permutations. |
+| Compact packed one-row-per-permutation lookup trace | `8,192` | `436` | `65,536` | Omits duplicate explicit round-input columns for rounds 1-4; those inputs are previous-round output aliases. |
 
 The packed route therefore removes the `8x` quotient-domain blowup that kept
 the integrated Tip5 AIR proof in `air_quotient_matrix`. The first packed proof
 checkpoint now implements and verifies the internal Tip5 algebra quotient over
 that one-row-per-permutation trace. On the full PROD composite relation, the
-standalone packed algebra proof is `136,810` bytes / `133.6 KiB`, with
-`126,599` bytes of compact FRI, `10,004` bytes of full-trace zeta openings,
-and `40` bytes of quotient opening. It proves in `22.718s` and verifies in
-`11.062s` after setup. This confirms the quotient-domain specialization is a
-real runtime lever, but it is not yet a production theorem.
+standalone packed algebra proof is now `129,471` bytes / `126.4 KiB`, with
+`120,507` bytes of compact FRI, `8,756` bytes of full-trace zeta openings, and
+`41` bytes of quotient opening. It proves in `19.875s` and verifies in
+`10.402s` after setup. This confirms the quotient-domain specialization and
+compact trace layout are real runtime levers, but this is not yet a production
+theorem.
 
 The second packed proof checkpoint now implements the byte-table LogUp binding
 over the same one-row-per-permutation trace. It commits a packed-domain
 table-multiplicity column before sampling LogUp challenges, keeps the fixed
 Tip5 table verifier-derived, and proves the grouped rational running-sum
 transition over the packed trace. On the full PROD composite relation, the
-standalone packed LogUp proof is `167,018` bytes / `163.1 KiB`, with `154,339`
-bytes of compact FRI, `9,964` bytes of full-trace zeta openings, `22` bytes of
-table opening, `1,849` bytes of accumulator openings, and `42` bytes of
-quotient opening. It proves in `22.442s` and verifies in `10.821s` after setup.
+standalone packed LogUp proof is now `155,974` bytes / `152.3 KiB`, with
+`144,547` bytes of compact FRI, `8,709` bytes of full-trace zeta openings,
+`21` bytes of table opening, `1,848` bytes of accumulator openings, and `42`
+bytes of quotient opening. It proves in `22.284s` and verifies in `11.055s`
+after setup.
 This closes the standalone byte-table soundness gap, but it is not appendable:
 both standalone packed algebra and standalone packed LogUp duplicate the
 full-trace/Fri opening cost and exceed the relaxed target when combined with
@@ -630,9 +648,11 @@ packed trace. On the full PROD composite relation, the standalone packed
 NPO-IO projection proof is `149,525` bytes / `146.0 KiB`, with `138,727`
 bytes of compact FRI, `10,007` bytes of full-trace zeta openings, `527` bytes
 of opened projection lanes, and `7` bytes of opened quotient. It proves in
-`20.379s` and verifies in `10.692s` after setup. This closes the
-packed-trace-side projection binding needed by the selected-value bridge, but
-it is also not appendable as a standalone proof. The remaining bridge work is
+`20.379s` and verifies in `10.692s` after setup. This is the pre-compaction
+width-500 measurement and should not be read as a current compact-trace size.
+It closes the packed-trace-side projection binding needed by the selected-value
+bridge, but it is also not appendable as a standalone proof. The remaining
+bridge work is
 to bind the selected NPO-value commitment to this packed projection and then
 fuse the packed AIR, packed LogUp, projection, and selected bridge openings
 under one transcript.

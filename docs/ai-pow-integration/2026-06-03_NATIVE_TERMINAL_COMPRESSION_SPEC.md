@@ -391,14 +391,15 @@ for this route.
 - `TerminalNpoTip5PackedLookupTrace` profile and data source: the next
   production-size candidate keeps the same lookup-trace generator but packs the
   five round rows for each Tip5 permutation horizontally into one row. Each
-  packed row contains only round `IN`, split `(b,c)` byte-pair columns, guard
-  inverses, and `OUT`; table rows and repeated carried-input columns stay out
-  of the packed matrix. The focused regression checks packed rows against the
+  packed row contains round-0 `IN`, split `(b,c)` byte-pair columns, guard
+  inverses, and `OUT`; later round `IN` values are aliases of the previous
+  round's `OUT`, so table rows and repeated carried-input columns stay out of
+  the packed matrix. The focused regression checks packed rows against the
   existing lookup trace and terminal-derived Tip5 IO. On the full
-  `ai-pow-zk` PROD composite relation, this shape has width `500`, `8,192`
-  padded rows, and a `65,536`-row degree-8 algebra quotient, compared with the
-  current row-per-round lookup trace's width `117`, `65,536` rows, and
-  `524,288`-row quotient.
+  `ai-pow-zk` PROD composite relation, this compact shape has width `436`,
+  `8,192` padded rows, and a `65,536`-row degree-8 algebra quotient, compared
+  with the current row-per-round lookup trace's width `117`, `65,536` rows,
+  and `524,288`-row quotient.
 - `TerminalNpoTip5PackedLookupAirAlgebraQuotientProof`: the first committed
   proof over that packed trace. It binds the packed trace root through the
   terminal prelude, samples its folding challenge after the trace root, commits
@@ -408,10 +409,10 @@ for this route.
   round chaining. It deliberately does not prove the byte-table LogUp relation
   or selected NPO value bridge. The focused regression round-trips the proof
   and rejects stale roots/profiles, malformed openings, and tampered packed
-  round links, split bytes, and power lanes. The full PROD diagnostic measures
-  this standalone checkpoint at `136,810` bytes / `133.6 KiB`, compact FRI
-  `126,599` bytes, full-trace zeta openings `10,004` bytes, prove `22.718s`,
-  and verify `11.062s`. This is a quotient-runtime improvement, not a
+  round links, split bytes, and power lanes. The full PROD diagnostic now
+  measures this standalone checkpoint at `129,471` bytes / `126.4 KiB`,
+  compact FRI `120,507` bytes, full-trace zeta openings `8,756` bytes, prove
+  `19.875s`, and verify `10.402s`. This is a quotient-runtime improvement, not a
   production-size proof to append to the existing merged value-bridge body.
 - `TerminalNpoTip5PackedLookupLogupQuotientProof`: the second committed proof
   over the packed trace. It keeps table rows out of the packed trace but
@@ -422,12 +423,13 @@ for this route.
   quotient. The focused regression round-trips the proof and rejects stale
   trace/table commitments, stale profiles, malformed openings, tampered
   accumulator/quotient openings, non-table byte pairs, and stale table
-  multiplicities. The full PROD diagnostic measures this standalone checkpoint
-  at `167,018` bytes / `163.1 KiB`, compact FRI `154,339` bytes, full-trace
-  zeta openings `9,964` bytes, table opening `22` bytes, accumulator openings
-  `1,849` bytes, prove `22.442s`, and verify `10.821s`. This closes the
-  standalone byte-table binding, but it is already above the relaxed `~150 KiB`
-  target and is not appendable to the merged value-bridge body.
+  multiplicities. The full PROD diagnostic now measures this standalone
+  checkpoint at `155,974` bytes / `152.3 KiB`, compact FRI `144,547` bytes,
+  full-trace zeta openings `8,709` bytes, table opening `21` bytes,
+  accumulator openings `1,848` bytes, prove `22.284s`, and verify `11.055s`.
+  This closes the standalone byte-table binding, but it is still above the
+  relaxed `~150 KiB` target and is not appendable to the merged value-bridge
+  body.
   A terminal LogUp accumulator checkpoint now mirrors the Plonky3 LogUp
   rational-sum equation with transcript-derived `(alpha, beta)` after the
   committed full-main lookup trace root. It computes query byte-pair terms from
@@ -1717,9 +1719,9 @@ stopped. The active production baseline has `8,081` terminal Tip5 calls, which
 forces the current generic lookup AIR into a `65,536`-row trace and a
 `524,288`-point quotient domain. The packed one-row-per-permutation algebra
 checkpoint reduces that quotient domain to `65,536` rows and verifies on the
-full PROD relation at `136,810` bytes with `22.718s` proving. The packed
+full PROD relation at `129,471` bytes with `19.875s` proving. The packed
 byte-table LogUp checkpoint also verifies on the full PROD relation at
-`167,018` bytes with `22.442s` proving, closing the standalone table-membership
+`155,974` bytes with `22.284s` proving, closing the standalone table-membership
 binding but proving that appending standalone packed components will miss the
 relaxed size target. The same proof shape still needs selected-value bridge
 implementation and fused packed AIR/LogUp/bridge openings before it can replace

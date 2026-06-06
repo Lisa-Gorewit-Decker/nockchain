@@ -14,12 +14,12 @@ the persisted block artifact.
 > packed Tip5/NPO bridge code, read the live checkpoint summary:
 > [Current Production-Proof Summary](../../docs/ai-pow-integration/2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md#current-production-proof-summary).
 > The active route remains native terminal plus fused FRI-native NPO work, but
-> even the coalesced shared packed-trace AIR+LogUp/bridge theorem is still too
-> large; the next step is a leaner packed Tip5 binding with less opened
-> trace/accumulator payload folded into the merged value-bridge theorem. The
-> batch-STARK recursive certificate remains a sound checkpoint/fallback, not the
-> production wire target, and the relaxed production milestone is not yet
-> claimed.
+> even the compact-trace coalesced shared packed-trace AIR+LogUp/bridge theorem
+> is still too large at `198,287` bytes and `33.277s` proof time; the next step
+> is a leaner packed Tip5 binding with less opened trace/accumulator payload
+> folded into the merged value-bridge theorem. The batch-STARK recursive
+> certificate remains a sound checkpoint/fallback, not the production wire
+> target, and the relaxed production milestone is not yet claimed.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 
