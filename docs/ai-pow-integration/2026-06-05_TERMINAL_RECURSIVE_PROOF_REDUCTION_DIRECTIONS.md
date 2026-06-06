@@ -545,6 +545,22 @@ recursive compression proof. A Merkle-only serialization change cannot satisfy
 the `100 KiB` production target and is not a robust route to the relaxed
 `150 KiB` target either.
 
+The FRI-shape diagnostic
+`relaxed_l1_only_pure_query_lb6_cap4_fri_shape_sweep_for_test_pearl` then keeps
+`lb=6,nq=10,pow=0,cap=4,max_log_arity=3` and varies only
+`log_final_poly_len`:
+
+| Pure-query `lb=6,nq=10,pow=0,cap=4` FRI-shape diagnostic (`TEST_PEARL`) | L1 outer | L1 proof body | Opening proof | FRI query proofs | FRI final poly | Prove |
+|---|---:|---:|---:|---:|---:|---:|
+| `lfp=0,mla=3` | `175,304 bytes` | `174,413 bytes` | `144,120 bytes` | `137,988 bytes` | `21 bytes` | `195.531s` |
+| `lfp=1,mla=3` | `173,481 bytes` | `172,590 bytes` | `142,297 bytes` | `136,908 bytes` | `40 bytes` | `196.417s` |
+| `lfp=2,mla=3` | `173,171 bytes` | `172,280 bytes` | `141,987 bytes` | `136,577 bytes` | `77 bytes` | `191.448s` |
+
+The existing `lfp=2,mla=3` shape is still the smallest measured cap-4
+pure-query object, and the lower-tail variants remain around `170 KiB` with
+roughly `196s` proving. This closes the soundness-neutral final-polynomial
+retune as a production route.
+
 A relaxed-size L1-only path would need to replace those proof-carried rebuild
 inputs with a pinned verifier-key contract:
 

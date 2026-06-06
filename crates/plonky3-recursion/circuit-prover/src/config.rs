@@ -457,6 +457,30 @@ pub fn goldilocks_tip5_pure_query_60bit_with_shape_and_cap(
     num_queries: usize,
     cap_height: usize,
 ) -> GoldilocksTipsConfig {
+    goldilocks_tip5_pure_query_60bit_with_fri_shape(
+        log_blowup,
+        num_queries,
+        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
+        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_MAX_LOG_ARITY,
+        cap_height,
+    )
+}
+
+/// Build a query-only 60-bit Goldilocks + Tip5 recursive profile for a
+/// specific FRI proof-shape diagnostic.
+///
+/// `log_final_poly_len`, `max_log_arity`, and `cap_height` change proof shape
+/// and size but are not counted as Johnson soundness bits. The function retains
+/// the exact `log_blowup * num_queries == 60` assertion so callers cannot
+/// accidentally benchmark a weaker no-PoW candidate as production-equivalent.
+#[inline]
+pub fn goldilocks_tip5_pure_query_60bit_with_fri_shape(
+    log_blowup: usize,
+    num_queries: usize,
+    log_final_poly_len: usize,
+    max_log_arity: usize,
+    cap_height: usize,
+) -> GoldilocksTipsConfig {
     assert_eq!(
         log_blowup * num_queries,
         GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS,
@@ -464,8 +488,8 @@ pub fn goldilocks_tip5_pure_query_60bit_with_shape_and_cap(
     );
     goldilocks_tip5_with_fri_params(
         log_blowup,
-        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
-        GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_MAX_LOG_ARITY,
+        log_final_poly_len,
+        max_log_arity,
         num_queries,
         GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
         GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
