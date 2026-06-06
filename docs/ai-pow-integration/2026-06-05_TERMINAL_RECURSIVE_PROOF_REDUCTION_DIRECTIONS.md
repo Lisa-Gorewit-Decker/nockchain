@@ -269,6 +269,22 @@ saves only `50` bytes relative to the current `lfp=2,mla=3` row. This
 effectively rules out FRI fold/final-poly tuning as the missing hard-size lever
 for the batch-STARK L2 route.
 
+The next check measured the actual compact path dictionaries against an ideal
+Merkle multiproof frontier on the current relaxed-final-layer row. The current
+predecessor-suffix encoding is already close to that lower bound:
+
+| L2 `lb=5,nq=12,lfp=2,mla=3,cap=4,pow=0` over L1 `lb=6,nq=10,cap=4,pow=0` | Metadata-free compact body | Restoration payload | Path sets | Current pruned siblings | Ideal frontier siblings | Digest-only frontier savings | L2 prove |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Actual query set | `137,816` bytes | `50,609` bytes | `8` | `1,056` | `1,024` | `1,280` bytes | `24.608s` |
+
+This rules out a direct Merkle-frontier rewrite as the missing hard-size lever
+for this batch-STARK L2 shape. It would save only `32` Tip5 digests before any
+frontier-position metadata. It would also be more invasive than the current
+restoration format because a true multiproof verifier would need to reconstruct
+internal nodes from opened values plus frontier siblings, or replace the
+upstream verifier path, rather than simply restoring ordinary per-query
+authentication paths.
+
 The fast-L1 follow-up with L1 `lb=3,nq=20,cap=4,pow=0` also completes and
 verifies after the Tip5 MMCS direction-binding fix:
 

@@ -2930,6 +2930,13 @@ mod tests {
             ) = compact_path_dictionary_stats(
                 &l2_compact_body.input_batch_paths, &l2_compact_body.commit_phase_paths,
             );
+            let l2_compact_frontier_siblings = compact_path_frontier_sibling_count(
+                &l2_compact_body.input_batch_paths, &l2_compact_body.commit_phase_paths,
+            );
+            let l2_compact_frontier_sibling_savings =
+                l2_compact_pruned_siblings.saturating_sub(l2_compact_frontier_siblings);
+            let l2_compact_frontier_digest_savings_bytes =
+                l2_compact_frontier_sibling_savings * core::mem::size_of::<[Val; DIGEST_ELEMS]>();
             let l2_compact_verify_start = Instant::now();
             l2_compact_verifier
                 .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body(
@@ -2939,7 +2946,7 @@ mod tests {
             let l2_compact_verify_ms = l2_compact_verify_start.elapsed().as_millis();
 
             eprintln!(
-                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 {l1_label} -> L2 {l2_label}]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_preprocessed_ood={} l1_preprocessed_input_batch={} l1_preprocessed_input_opened_values={} l1_preprocessed_input_merkle={} l1_preprocessed_omitted_projected_outer={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_preprocessed_ood={} l2_preprocessed_input_batch={} l2_preprocessed_input_opened_values={} l2_preprocessed_input_merkle={} l2_preprocessed_omitted_projected_outer={} l2_actual_compact={} l2_actual_compact_body={} l2_actual_compact_proof_body={} l2_actual_compact_restoration={} l2_actual_compact_input_paths={} l2_actual_compact_commit_paths={} l2_actual_compact_path_sets={} l2_actual_compact_original_orders={} l2_actual_compact_pruned_paths={} l2_actual_compact_pruned_siblings={} l2_actual_compact_build_ms={} l2_actual_compact_body_verify_ms={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_log_final_poly_len={} l2_max_log_arity={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prove_ms={}",
+                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 {l1_label} -> L2 {l2_label}]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_preprocessed_ood={} l1_preprocessed_input_batch={} l1_preprocessed_input_opened_values={} l1_preprocessed_input_merkle={} l1_preprocessed_omitted_projected_outer={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_preprocessed_ood={} l2_preprocessed_input_batch={} l2_preprocessed_input_opened_values={} l2_preprocessed_input_merkle={} l2_preprocessed_omitted_projected_outer={} l2_actual_compact={} l2_actual_compact_body={} l2_actual_compact_proof_body={} l2_actual_compact_restoration={} l2_actual_compact_input_paths={} l2_actual_compact_commit_paths={} l2_actual_compact_path_sets={} l2_actual_compact_original_orders={} l2_actual_compact_pruned_paths={} l2_actual_compact_pruned_siblings={} l2_actual_compact_frontier_siblings={} l2_actual_compact_frontier_sibling_savings={} l2_actual_compact_frontier_digest_savings={} l2_actual_compact_build_ms={} l2_actual_compact_body_verify_ms={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_log_final_poly_len={} l2_max_log_arity={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prove_ms={}",
                 l1_outer_bytes,
                 l1_proof_body_bytes,
                 l1_path_pruned_projected_outer_bytes,
@@ -2986,6 +2993,9 @@ mod tests {
                 l2_compact_original_orders,
                 l2_compact_pruned_paths,
                 l2_compact_pruned_siblings,
+                l2_compact_frontier_siblings,
+                l2_compact_frontier_sibling_savings,
+                l2_compact_frontier_digest_savings_bytes,
                 l2_compact_ms,
                 l2_compact_verify_ms,
                 l2_public_binding_lanes,
@@ -3087,6 +3097,19 @@ mod tests {
                 ("lb5_nq12_lfp2_mla3_cap4", 5, 12, 2, 3, 4),
                 ("lb5_nq12_lfp2_mla4_cap4", 5, 12, 2, 4, 4),
             ],
+        );
+    }
+
+    #[test]
+    #[ignore = "pure-query AI-PoW L2 actual-vs-frontier Merkle path measurement is opt-in"]
+    fn pure_query_l2_over_l1_l2_multiproof_frontier_estimate_for_test_pearl() {
+        run_pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl(
+            "lb6_nq10_cap4",
+            6,
+            10,
+            4,
+            2,
+            &[("lb5_nq12_lfp2_mla3_cap4", 5, 12, 2, 3, 4)],
         );
     }
 
@@ -3569,6 +3592,44 @@ mod tests {
                 .sum::<usize>();
         }
         (path_sets, original_orders, pruned_paths, pruned_siblings)
+    }
+
+    fn compact_path_frontier_sibling_count(
+        input_paths: &[p3_circuit_prover::GoldilocksTip5PrunedMerklePaths],
+        commit_paths: &[p3_circuit_prover::GoldilocksTip5PrunedMerklePaths],
+    ) -> usize {
+        input_paths
+            .iter()
+            .chain(commit_paths)
+            .map(frontier_sibling_count_for_path_set)
+            .sum()
+    }
+
+    fn frontier_sibling_count_for_path_set(
+        path_set: &p3_circuit_prover::GoldilocksTip5PrunedMerklePaths,
+    ) -> usize {
+        if path_set.full_path_len == 0 || path_set.paths.paths.is_empty() {
+            return 0;
+        }
+
+        let mut current = path_set
+            .paths
+            .paths
+            .iter()
+            .map(|path| path.leaf_index)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut frontier_siblings = 0usize;
+        for _ in 0..path_set.full_path_len {
+            let mut parents = std::collections::BTreeSet::new();
+            for &node in &current {
+                if !current.contains(&(node ^ 1)) {
+                    frontier_siblings += 1;
+                }
+                parents.insert(node >> 1);
+            }
+            current = parents;
+        }
+        frontier_siblings
     }
 
     #[derive(Clone, Debug)]
