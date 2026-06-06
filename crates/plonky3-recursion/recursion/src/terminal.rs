@@ -50636,7 +50636,9 @@ mod tests {
         );
         assert_eq!(
             proof.quotient_profile.padded_rows,
-            packed_profile.padded_rows * packed_profile.max_constraint_degree
+            packed_profile.padded_rows
+                * (NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_logup_group_size() + 1)
+                    .max(packed_profile.max_constraint_degree)
         );
         assert_eq!(proof.opened_accumulator_points_basis.len(), 2);
 
