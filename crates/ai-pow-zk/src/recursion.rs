@@ -2699,6 +2699,26 @@ mod tests {
         );
         let l1_path_pruned_projected_outer_bytes = l1_outer_bytes
             .saturating_sub(l1_path_estimate.mean_digest_savings_bytes.round() as usize);
+        let l1_input_batches = fri_input_batch_byte_breakdown_for_outer_proof(&l1);
+        let l1_preprocessed_input = input_batch_bytes_by_label(&l1_input_batches, "preprocessed")
+            .expect("L1 proof should carry a preprocessed input batch");
+        let l1_preprocessed_ood_bytes = preprocessed_ood_opening_bytes_for_outer_proof(&l1);
+        let l1_path_without_preprocessed =
+            merkle_path_compression_estimate_for_outer_proof_with_omitted_input_batch(
+                &l1,
+                L1_LOG_BLOWUP,
+                L1_LOG_FINAL_POLY_LEN,
+                L1_CAP_HEIGHT,
+                Some(l1_preprocessed_input.index),
+            );
+        let l1_preprocessed_omitted_projected_outer_bytes = l1_outer_bytes
+            .saturating_sub(l1_preprocessed_ood_bytes)
+            .saturating_sub(l1_preprocessed_input.total_bytes)
+            .saturating_sub(
+                l1_path_without_preprocessed
+                    .mean_digest_savings_bytes
+                    .round() as usize,
+            );
 
         assert_eq!(
             l1.public_binding_lanes, DIGEST_ELEMS,
@@ -2748,15 +2768,41 @@ mod tests {
             );
             let l2_path_pruned_projected_outer_bytes = l2_outer_bytes
                 .saturating_sub(l2_path_estimate.mean_digest_savings_bytes.round() as usize);
+            let l2_input_batches = fri_input_batch_byte_breakdown_for_outer_proof(&l2);
+            let l2_preprocessed_input =
+                input_batch_bytes_by_label(&l2_input_batches, "preprocessed")
+                    .expect("L2 proof should carry a preprocessed input batch");
+            let l2_preprocessed_ood_bytes = preprocessed_ood_opening_bytes_for_outer_proof(&l2);
+            let l2_path_without_preprocessed =
+                merkle_path_compression_estimate_for_outer_proof_with_omitted_input_batch(
+                    &l2,
+                    l2_log_blowup,
+                    p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
+                    L2_CAP_HEIGHT,
+                    Some(l2_preprocessed_input.index),
+                );
+            let l2_preprocessed_omitted_projected_outer_bytes = l2_outer_bytes
+                .saturating_sub(l2_preprocessed_ood_bytes)
+                .saturating_sub(l2_preprocessed_input.total_bytes)
+                .saturating_sub(
+                    l2_path_without_preprocessed
+                        .mean_digest_savings_bytes
+                        .round() as usize,
+                );
 
             eprintln!(
-                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 lb6_nq10_cap4 -> L2 {l2_label}_cap4]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prove_ms={}",
+                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 lb6_nq10_cap4 -> L2 {l2_label}_cap4]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_preprocessed_ood={} l1_preprocessed_input_batch={} l1_preprocessed_input_opened_values={} l1_preprocessed_input_merkle={} l1_preprocessed_omitted_projected_outer={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_preprocessed_ood={} l2_preprocessed_input_batch={} l2_preprocessed_input_opened_values={} l2_preprocessed_input_merkle={} l2_preprocessed_omitted_projected_outer={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prove_ms={}",
                 l1_outer_bytes,
                 l1_proof_body_bytes,
                 l1_path_pruned_projected_outer_bytes,
                 l1_path_estimate.raw_siblings,
                 l1_path_estimate.mean_compressed_siblings.round() as usize,
                 l1_path_estimate.mean_digest_savings_bytes.round() as usize,
+                l1_preprocessed_ood_bytes,
+                l1_preprocessed_input.total_bytes,
+                l1_preprocessed_input.opened_values_bytes,
+                l1_preprocessed_input.merkle_bytes,
+                l1_preprocessed_omitted_projected_outer_bytes,
                 l1.public_binding_lanes,
                 L1_LOG_BLOWUP,
                 L1_NUM_QUERIES,
@@ -2777,6 +2823,11 @@ mod tests {
                 l2_path_estimate.raw_siblings,
                 l2_path_estimate.mean_compressed_siblings.round() as usize,
                 l2_path_estimate.mean_digest_savings_bytes.round() as usize,
+                l2_preprocessed_ood_bytes,
+                l2_preprocessed_input.total_bytes,
+                l2_preprocessed_input.opened_values_bytes,
+                l2_preprocessed_input.merkle_bytes,
+                l2_preprocessed_omitted_projected_outer_bytes,
                 l2.public_binding_lanes,
                 l2_log_blowup,
                 l2_num_queries,
@@ -3278,12 +3329,25 @@ mod tests {
         log_final_poly_len: usize,
         cap_height: usize,
     ) -> MerklePathCompressionEstimate {
+        merkle_path_compression_estimate_for_outer_proof_with_omitted_input_batch(
+            proof, log_blowup, log_final_poly_len, cap_height, None,
+        )
+    }
+
+    fn merkle_path_compression_estimate_for_outer_proof_with_omitted_input_batch(
+        proof: &AiPowL1OuterProof,
+        log_blowup: usize,
+        log_final_poly_len: usize,
+        cap_height: usize,
+        omitted_input_batch: Option<usize>,
+    ) -> MerklePathCompressionEstimate {
         const TRIALS: usize = 256;
         const DIGEST_BYTES: usize = core::mem::size_of::<[u64; DIGEST_ELEMS]>();
 
         let fri = &proof.proof.opening_proof;
-        let groups =
-            auth_path_groups_for_outer_proof(proof, log_blowup, log_final_poly_len, cap_height);
+        let groups = auth_path_groups_for_outer_proof(
+            proof, log_blowup, log_final_poly_len, cap_height, omitted_input_batch,
+        );
         let raw_siblings: usize =
             groups.iter().map(|g| g.path_len).sum::<usize>() * fri.query_proofs.len();
 
@@ -3332,6 +3396,7 @@ mod tests {
         log_blowup: usize,
         log_final_poly_len: usize,
         cap_height: usize,
+        omitted_input_batch: Option<usize>,
     ) -> Vec<AuthPathGroup> {
         let Some(first_query) = proof.proof.opening_proof.query_proofs.first() else {
             return Vec::new();
@@ -3346,7 +3411,10 @@ mod tests {
             log_arities.iter().sum::<usize>() + log_blowup + log_final_poly_len;
 
         let mut groups = Vec::new();
-        for batch in &first_query.input_proof {
+        for (batch_idx, batch) in first_query.input_proof.iter().enumerate() {
+            if omitted_input_batch == Some(batch_idx) {
+                continue;
+            }
             let path_len = batch.opening_proof.len();
             let index_bits = cap_height + path_len;
             groups.push(AuthPathGroup {
@@ -3369,6 +3437,99 @@ mod tests {
         }
 
         groups
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct FriInputBatchByteBreakdown {
+        index: usize,
+        label: &'static str,
+        total_bytes: usize,
+        opened_values_bytes: usize,
+        merkle_bytes: usize,
+    }
+
+    fn input_batch_bytes_by_label(
+        batches: &[FriInputBatchByteBreakdown],
+        label: &str,
+    ) -> Option<FriInputBatchByteBreakdown> {
+        batches.iter().copied().find(|batch| batch.label == label)
+    }
+
+    fn fri_input_batch_byte_breakdown_for_outer_proof(
+        proof: &AiPowL1OuterProof,
+    ) -> Vec<FriInputBatchByteBreakdown> {
+        let labels = fri_input_batch_labels_for_outer_proof(proof);
+        let mut totals = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| FriInputBatchByteBreakdown {
+                index,
+                label,
+                total_bytes: 0,
+                opened_values_bytes: 0,
+                merkle_bytes: 0,
+            })
+            .collect::<Vec<_>>();
+
+        for query in &proof.proof.opening_proof.query_proofs {
+            assert_eq!(
+                query.input_proof.len(),
+                labels.len(),
+                "FRI input proof batch count must match commitment schedule labels"
+            );
+            for (index, batch) in query.input_proof.iter().enumerate() {
+                totals[index].total_bytes +=
+                    postcard_len(batch, "FRI input batch for compact projection");
+                totals[index].opened_values_bytes += postcard_len(
+                    &batch.opened_values, "FRI input batch opened values for compact projection",
+                );
+                totals[index].merkle_bytes += postcard_len(
+                    &batch.opening_proof, "FRI input batch Merkle proof for compact projection",
+                );
+            }
+        }
+
+        totals
+    }
+
+    fn fri_input_batch_labels_for_outer_proof(proof: &AiPowL1OuterProof) -> Vec<&'static str> {
+        let mut labels = Vec::new();
+        if proof.proof.commitments.random.is_some() {
+            labels.push("random");
+        }
+        labels.push("trace");
+        labels.push("quotient");
+        if proof.stark_common.preprocessed.is_some() {
+            labels.push("preprocessed");
+        }
+        if proof.proof.commitments.permutation.is_some() {
+            labels.push("permutation");
+        }
+        labels
+    }
+
+    fn preprocessed_ood_opening_bytes_for_outer_proof(proof: &AiPowL1OuterProof) -> usize {
+        proof
+            .proof
+            .opened_values
+            .instances
+            .iter()
+            .map(|instance| {
+                let local = instance
+                    .base_opened_values
+                    .preprocessed_local
+                    .as_ref()
+                    .map(|values| postcard_len(values, "preprocessed OOD local values"))
+                    .unwrap_or(0);
+                let next = instance
+                    .base_opened_values
+                    .preprocessed_next
+                    .as_ref()
+                    .map(|values| postcard_len(values, "preprocessed OOD next values"))
+                    .unwrap_or(0);
+                local + next
+            })
+            .sum()
     }
 
     fn compressed_sibling_count(cap_height: usize, path_len: usize, indices: &[usize]) -> usize {
