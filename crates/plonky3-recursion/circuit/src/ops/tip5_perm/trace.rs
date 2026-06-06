@@ -121,6 +121,9 @@ pub fn generate_tip5_trace<F: Field + ExtensionField<Config::BaseField>, Config:
                 input_indices: row.input_indices.clone(),
                 out_ctl: row.out_ctl.clone(),
                 output_indices: row.output_indices.clone(),
+                mmcs_bit_ctl: row.mmcs_bit_ctl,
+                mmcs_bit_index: row.mmcs_bit_index,
+                mmcs_bit: row.mmcs_bit,
             }
         })
         .collect();

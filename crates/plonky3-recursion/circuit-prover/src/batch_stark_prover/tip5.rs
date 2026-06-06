@@ -43,8 +43,8 @@ use p3_goldilocks::Goldilocks;
 use p3_matrix::Matrix;
 use p3_tip5_circuit_air::{
     NUM_ROUNDS, TABLE_ROWS, TIP5_CIRCUIT_PREP_WIDTH, TIP5_CTL_PREP_COLS, TIP5_RATE, TIP5_WIDTH,
-    Tip5CircuitAir, Tip5CircuitRow, build_tip5_circuit_preprocessed,
-    generate_tip5_circuit_main, tip5_inputs_from_rows,
+    Tip5CircuitAir, Tip5CircuitRow, build_tip5_circuit_main_with_mmcs_bits,
+    build_tip5_circuit_preprocessed, generate_tip5_circuit_main, tip5_inputs_from_rows,
 };
 use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
 use p3_util::log2_ceil_usize;
@@ -136,8 +136,9 @@ where
 }
 
 /// Per-op preprocessed CTL row width registered by the Tip5 NPO
-/// executor (`in_ctl[16] | in_idx[16] | out_idx[10] | out_ctl[10]`).
-const TIP5_OP_CTL_WIDTH: usize = TIP5_CTL_PREP_COLS; // 52
+/// executor (`in_ctl[16] | in_idx[16] | out_idx[10] | out_ctl[10]
+/// | mmcs_bit_ctl | mmcs_bit_idx`).
+const TIP5_OP_CTL_WIDTH: usize = TIP5_CTL_PREP_COLS; // 54
 
 /// Table prover for the Tip5 NPO. Single Goldilocks D=1 config.
 #[derive(Clone)]
@@ -191,9 +192,11 @@ impl Tip5Prover {
         }
         let min_height = packing.min_trace_height();
 
-        // 1. Main trace via the *unmodified* validated generator.
+        // 1. Main trace: validated lookup generator plus the wrapper
+        //    MMCS direction-bit column used by WitnessChecks.
         let inputs = tip5_inputs_from_rows(&t.operations);
-        let (main_g, l_prep_g) = generate_tip5_circuit_main(&inputs);
+        let (lookup_main_g, l_prep_g) = generate_tip5_circuit_main(&inputs);
+        let main_g = build_tip5_circuit_main_with_mmcs_bits(lookup_main_g, &t.operations);
         let height = main_g.height();
         // Goldilocks-only circuit ⇒ Val<SC> == Goldilocks. Go through
         // the field's canonical-u64 API (no transmute) to copy.
@@ -437,7 +440,7 @@ where
         }
         let num_ops = prep_base.len() / TIP5_OP_CTL_WIDTH;
 
-        // CTL column offsets within one op's 52-col block.
+        // CTL column offsets within one op's 54-col block.
         let in_ctl_off = 0;
         let in_idx_off = in_ctl_off + TIP5_WIDTH;
         let out_idx_off = in_idx_off + TIP5_WIDTH;
@@ -488,6 +491,11 @@ where
                     output_indices: (0..TIP5_RATE)
                         .map(|i| F::as_canonical_u64(&resolved[base + out_idx_off + i]) as u32)
                         .collect(),
+                    mmcs_bit_ctl: resolved[base + out_ctl_off + TIP5_RATE] != F::ZERO,
+                    mmcs_bit_index: F::as_canonical_u64(
+                        &resolved[base + out_ctl_off + TIP5_RATE + 1],
+                    ) as u32,
+                    mmcs_bit: false,
                 }
             })
             .collect();

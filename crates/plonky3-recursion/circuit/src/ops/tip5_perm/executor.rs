@@ -80,21 +80,6 @@ impl Tip5PermExecutor {
         !slot.is_empty()
     }
 
-    /// Whether any of the first `rate` output slots is CTL-exposed on
-    /// the `WitnessChecks` bus (a single wid). Exactly the predicate
-    /// `build_trace_row` uses to set `out_ctl[i]` / `preprocess_ctl`
-    /// uses for `out_idx`. Used by `execute_mmcs` to detect the
-    /// chained-only / leaf-compress merkle perms (no CTL output) whose
-    /// trace row must carry the **pre-merkle-swap** bus state
-    /// (2026-05-19_C3_OUTER_CERT_DESIGN.md §13).
-    #[inline]
-    fn has_ctl_output(&self, outputs: &[Vec<WitnessId>]) -> bool {
-        outputs
-            .iter()
-            .take(self.config.rate())
-            .any(|o| Self::limb_ctl_enabled(o))
-    }
-
     /// Build the initial permutation state vector. Mirrors
     /// `Poseidon1PermExecutor::init_chain_state`.
     ///
@@ -269,13 +254,15 @@ impl Tip5PermExecutor {
     /// slot (`RATE`=10). Mirrors `build_base_trace_row` — the
     /// single-row Tip5 AIR consumes the fully resolved `input_values`
     /// (post chain ⊕ sibling ⊕ swap) and the CTL flags only; merkle /
-    /// mmcs_bit are executor-internal (no AIR columns), exactly like
-    /// the Poseidon1 D=1 compact path feeds a resolved IN.
+    /// mmcs_bit is recorded in a wrapper-owned main column so the AIR
+    /// can bind direction-aware input CTL to the same witness bit that
+    /// drove the Merkle swap.
     fn build_trace_row<F: Field>(
         &self,
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
         input_values: &[F],
+        mmcs_bit: bool,
     ) -> Tip5CircuitRow<F> {
         let width = self.config.width();
         let rate = self.config.rate();
@@ -301,6 +288,13 @@ impl Tip5PermExecutor {
             }
         }
 
+        let (mmcs_bit_ctl, mmcs_bit_index) =
+            if self.merkle_path && let Some([wid]) = inputs.get(width + 1).map(Vec::as_slice) {
+                (true, wid.0)
+            } else {
+                (false, 0)
+            };
+
         Tip5CircuitRow {
             new_start: self.new_start,
             input_values: input_values.to_vec(),
@@ -308,6 +302,9 @@ impl Tip5PermExecutor {
             input_indices,
             out_ctl,
             output_indices,
+            mmcs_bit_ctl,
+            mmcs_bit_index,
+            mmcs_bit,
         }
     }
 
@@ -426,7 +423,7 @@ impl Tip5PermExecutor {
         }
 
         let output = exec(&resolved_inputs);
-        let row = self.build_trace_row(limbs, outputs, &resolved_inputs);
+        let row = self.build_trace_row(limbs, outputs, &resolved_inputs, false);
 
         self.write_outputs(outputs, &output, ctx)?;
         self.update_chain_state(ctx, output, row);
@@ -514,54 +511,22 @@ impl Tip5PermExecutor {
         self.fill_sibling_data(&mut state, private_inputs);
         self.apply_witness_values(&mut state, inputs, ctx)?;
 
-        // 2026-05-19_C3_OUTER_CERT_DESIGN.md §13 (DT-4, debug-confirmed) — fix the
-        // merkle-swap slot↔idx desync that orphaned the D≥2 outer-cert
-        // `WitnessChecks` global-sum. `apply_merkle_swap` exchanges the
-        // digest halves `[0,digest)`↔`[digest,2·digest)` by the runtime
-        // `mmcs_bit`, but `build_trace_row` / `preprocess_ctl` record
-        // `input_indices` from the **static pre-swap** slot order. With
-        // the post-swap state in the trace row, slot `i`'s recorded
-        // `input_indices[i] = wid.0` (pre-swap) is paired with
-        // `input_values[i]` (post-swap, = the *sibling* value at slot
-        // `i` after a `mmcs_bit==1` swap). For a chained-only /
-        // leaf-compress merkle perm (no CTL output: it feeds only the
-        // running digest, not the witness bus) that perm's INPUT_LIMB
-        // bus tuple then becomes `(idx = wid, value = sibling)` — a
-        // value that wid does not hold — so it cannot cancel the
-        // upstream perm-A OUTPUT_LIMB producer `(idx = wid, value =
-        // get_witness(wid))`, leaving the observed lone +1 at
-        // `idx = wid·D`. Recording the **pre-swap** `bus_state` makes
-        // perm-B's INPUT_LIMB carry `get_witness(inputs[i])` (= perm-A's
-        // challenger/MMCS-bound output), so the multiset cancels
-        // *because* the duplex `connect` + verbatim
-        // `Tip5PermLookupAir` x⁷/`tip5_l` constraints + the
-        // challenger/MMCS recompute bind it — net-0 as a *consequence
-        // of the binding*, NO multiplicity changed. `exec` /
-        // `write_outputs` / `update_chain_state` (the Merkle-root
-        // binding, untouched in `mmcs.rs`) all keep using the
-        // **post-swap** state, so the native compression / root chain
-        // is bit-for-bit unchanged. Only the desync class
-        // (`!has_ctl_output`: leaf/chained merkle perms) takes the
-        // pre-swap row; CTL-output perms keep the post-swap row exactly
-        // as before (their output is the bus value, no input-side
-        // desync).
-        let bus_state = state.clone();
+        // The trace records the post-swap permutation input so the
+        // lookup AIR proves the native MMCS compression. The wrapper
+        // AIR separately binds `mmcs_bit` and selects the corresponding
+        // pre-swap value for input-side WitnessChecks CTL.
         self.apply_merkle_swap(&mut state, mmcs_bit);
 
         let output = exec(&state);
-        let trace_state = if self.has_ctl_output(outputs) {
-            &state
-        } else {
-            &bus_state
-        };
-        let row = self.build_trace_row(inputs, outputs, trace_state);
+        let row = self.build_trace_row(inputs, outputs, &state, mmcs_bit);
         self.write_outputs(outputs, &output, ctx)?;
         self.update_chain_state(ctx, output, row);
         Ok(())
     }
 
     /// Emit the per-op preprocessed CTL columns for the Tip5 circuit
-    /// table: `in_ctl[16] | in_idx[16] | out_idx[10] | out_ctl[10]`.
+    /// table: `in_ctl[16] | in_idx[16] | out_idx[10] | out_ctl[10]
+    /// | mmcs_bit_ctl | mmcs_bit_idx`.
     ///
     /// Input slots that are CTL-exposed are registered as
     /// `WitnessChecks` **reads** (so the bus reader count / `ext_reads`
@@ -570,9 +535,9 @@ impl Tip5PermExecutor {
     /// `out_ctl` multiplicity the `Tip5Preprocessor` later resolves
     /// from `ext_reads`, exactly like Poseidon1 / Recompose). Only the
     /// first `width` (16) input slots and `rate` (10) output slots are
-    /// registered; any trailing `mmcs_index_sum` / `mmcs_bit` slots
-    /// from the merkle layout are not CTL columns of the single-row
-    /// Tip5 AIR (the executor consumes the resolved state instead).
+    /// registered as state CTL. The trailing `mmcs_bit` slot is also
+    /// registered as a direction-bit read so the AIR can bind the
+    /// direction-aware state selection to the circuit witness.
     fn preprocess_ctl<F: Field>(
         &self,
         inputs: &[Vec<WitnessId>],
@@ -622,6 +587,32 @@ impl Tip5PermExecutor {
             preprocessed.register_non_primitive_preprocessed_no_read(
                 &self.op_type,
                 &[F::from_bool(Self::limb_ctl_enabled(out))],
+            );
+        }
+        let mmcs_bit_slot = inputs.get(width + 1).map(Vec::as_slice).unwrap_or(&[]);
+        if self.merkle_path {
+            preprocessed.register_non_primitive_preprocessed_no_read(
+                &self.op_type,
+                &[F::from_bool(Self::limb_ctl_enabled(mmcs_bit_slot))],
+            );
+            match mmcs_bit_slot {
+                [] => {
+                    preprocessed
+                        .register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
+                    Ok(())
+                }
+                [_] => preprocessed
+                    .register_non_primitive_witness_reads(&self.op_type, mmcs_bit_slot),
+                many => Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                    op: self.op_type.clone(),
+                    expected: "0 or 1 witness for mmcs_bit".into(),
+                    got: many.len(),
+                }),
+            }?;
+        } else {
+            preprocessed.register_non_primitive_preprocessed_no_read(
+                &self.op_type,
+                &[F::ZERO, F::ZERO],
             );
         }
         Ok(())

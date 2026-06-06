@@ -133,9 +133,9 @@ table and reconstructs `PublicAir` with those binding lanes. That is required
 for any L2 proof over a statement-bound L1 object to bind the statement digest
 cryptographically.
 
-With that fix in place, the release/native L2 sweep measured the raw proof,
-Merkle-only path pruning, and a stronger compact-final projection that also
-omits verifier-deterministic preprocessed openings:
+With public-binding fixed, the first release/native L2 sweep measured the raw
+proof, Merkle-only path pruning, and a stronger compact-final projection that
+also omits verifier-deterministic preprocessed openings:
 
 | Shape | Final L2 proof | Path-only projection | Preprocessed-omitted projection | L2 prove time | Shared L1 witness proof |
 |---|---:|---:|---:|---:|---:|
@@ -164,17 +164,17 @@ verifier-key digest, circuit digest, FRI parameter tuple, public-input digest,
 or preprocessed commitment. Treating these values as prover hints would be
 unsound.
 
-The updated result is more nuanced than the Merkle-only check. Duplicate Merkle
+The result is more nuanced than the Merkle-only check. Duplicate Merkle
 authentication paths are not the dominant size issue, but verifier-deterministic
-preprocessed openings are a real Pearl-style compactness lever: the `lb5,nq12`
-final L2 proof projects to `136,888` bytes with `24.403s` L2 proving, inside
-the relaxed size/time budget for the **final layer alone**. The end-to-end
-pipeline still fails production because it first materializes a **192.974s** L1
-batch-STARK witness proof, and because this projection is not yet an implemented
-compact verifier with binding/tamper tests. The next Pearl-shaped route should
-therefore implement compact preprocessed-opening reconstruction and binding for
-the final layer, while also avoiding or replacing the expensive L1 batch-STARK
-witness proof.
+preprocessed openings are a real Pearl-style compactness lever: after the Tip5
+direction-binding fix, the `lb5,nq12` final L2 proof projects to `134,877`
+bytes with `24.516s` L2 proving, inside the relaxed size/time budget for the
+**final layer alone**. The end-to-end pipeline still fails production because it
+first materializes a roughly **194s** L1 batch-STARK witness proof, and because
+this projection is not yet an implemented compact verifier with binding/tamper
+tests. The next Pearl-shaped route should therefore implement compact
+preprocessed-opening reconstruction and binding for the final layer, while also
+avoiding or replacing the expensive L1 batch-STARK witness proof.
 
 The natural follow-up is to pair the fast L1 profile (`lb=3,nq=20,cap=4`) with
 the compact final-layer projection above. A release/native diagnostic was
@@ -217,6 +217,40 @@ Simply changing `lb`, `nq`, cap height, or L2 table packing cannot make this
 path production-sound. The diagnostic helper now threads the selected L2
 `log_blowup` and `log_final_poly_len` into `TablePacking::with_fri_params`, but
 that explicit FRI-shape packing was not the cause of the mismatch.
+
+The Tip5 MMCS gap has since been fixed in the batch-STARK Tip5 wrapper AIR:
+
+- the Tip5 row now carries the resolved `mmcs_bit` in a wrapper-owned main
+  column;
+- the preprocessed CTL block now carries `mmcs_bit_ctl` and `mmcs_bit_idx`;
+- the AIR boolean-constrains the direction bit when present and sends
+  `[mmcs_bit_idx, mmcs_bit]` on `WitnessChecks`;
+- input-side `WitnessChecks` now selects the pre-swap value for static input
+  indices when `mmcs_bit=1`, while the lookup AIR still proves the post-swap
+  Tip5 permutation input used for the native Merkle root.
+
+The regression
+`test_tip5_mmcs_direction_one_ctl_lookups` proves and verifies a direction-bit
+`1` Merkle row whose running digest is a prior Tip5 output. The broader
+`test_tip5_lookups` file passes, and the release Stage-4 Tip5-throughout L2
+wrapper now accepts (`L1=185,821` bytes, `L2=188,541` bytes, full test
+`20.11s`).
+
+After that fix, the AI-PoW statement-bound L2 sweep completes again. New
+release/native measurements on 2026-06-06:
+
+| Shape | Final L2 proof | Path-only projection | Preprocessed-omitted projection | L2 prove time | Shared L1 witness proof |
+|---|---:|---:|---:|---:|---:|
+| L2 `lb=4,nq=15,cap=4,pow=0` over L1 `lb=6,nq=10,cap=4,pow=0` | `209,802` bytes | `203,540` bytes | `158,800` bytes | `12.884s` | L1 `173,868` bytes, path-only `170,306`, preprocessed-omitted `136,081`, L1 prove `194.346s`, verify `23ms` |
+| L2 `lb=5,nq=12,cap=4,pow=0` over same L1 | `176,628` bytes | `172,820` bytes | `134,877` bytes | `24.516s` | same |
+| L2 `lb=6,nq=10,cap=4,pow=0` over same L1 | `160,762` bytes | `157,679` bytes | `124,344` bytes | `49.530s` | same |
+
+The soundness blocker is gone, but the production metric blocker is unchanged:
+the current batch-STARK L1 witness proof still takes about `194s`, and the
+only final-layer shape under `30s` (`lb=5,nq=12`) needs compact
+preprocessed/path omission to land near `135 KiB`. Raw final L2 is still above
+the relaxed `150 KiB` target; the smallest raw shape here is about `161 KiB`
+and takes about `49.5s`.
 
 The polynomial NPO path remains useful diagnostic evidence, but it is not a
 drop-in production replacement for the exhaustive NPO proof. The recursion-crate
@@ -524,12 +558,13 @@ mixes together:
    recompute it from public data or another proof obligation already binds it.
 
 The first implementation milestone should therefore not be another
-`lb=6,nq=10` terminal measurement. It should be a p3-native compression
+`lb=6,nq=10` terminal measurement. With the Tip5 MMCS direction-binding fix and
+direction-bit-`1` regression in place, it should be a p3-native compression
 prototype over the existing pinned+LogUp L0 proof with the following outputs:
 
-- a Tip5 MMCS direction-binding fix or an explicit replacement for internal
-  variable Merkle swaps, with a regression covering a direction-bit-`1` final
-  Merkle permutation that has both CTL inputs and CTL outputs;
+- compact preprocessed-opening reconstruction for the final layer, including
+  verifier recomputation of the omitted preprocessed cap/codeword rows and
+  transcript binding of the same values;
 - L1 proof size and proving time for verifying the current pinned+LogUp L0
   proof.
 - L2/final proof size and proving time for verifying the L1 proof.
@@ -1092,12 +1127,12 @@ I would pursue five tracks in this order:
 1. **Prototype the Pearl-shaped Plonky3 route: specialized AI-PoW AIR plus
    two-stage compact recursion.** This is the most plausible path to the Pearl
    class of proof sizes without importing Plonky2 or counting proof-system PoW.
-   The prototype should first fix or bypass the Tip5 MMCS direction-bit
-   CTL-binding issue, then define the compact final proof format and cached
-   verifier-key binding under `pow_bits=0`, then measure final recursive proof
-   size. The new L1 footprint diagnostic shows that reducing ordinary public
-   input exposure is not enough; the compact proof must avoid the current
-   generic-terminal NPO assignment-opening cost.
+   The Tip5 MMCS direction-bit CTL-binding issue is now fixed and regression
+   covered; the prototype should next define the compact final proof format and
+   cached verifier-key/preprocessed binding under `pow_bits=0`, then measure
+   final recursive proof size. The new L1 footprint diagnostic shows that
+   reducing ordinary public input exposure is not enough; the compact proof
+   must avoid the current generic-terminal NPO assignment-opening cost.
 2. **Keep exhaustive NPO as the leading native-terminal fallback, but do not
    call it fully production-integrated yet.** It is the only current native
    terminal fixture measured below 100 KiB and below 30s, but the actual

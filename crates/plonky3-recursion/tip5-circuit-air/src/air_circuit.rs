@@ -10,8 +10,9 @@
 //! or the verifier-fixed 256-row L-table — that AIR's `eval` is reused
 //! **verbatim** via composition.
 //!
-//! What this module adds — and *only* this — is the cross-table
-//! `WitnessChecks` CTL layer that connects the permutation's
+//! What this module adds is the cross-table `WitnessChecks` CTL layer
+//! and one wrapper-owned MMCS direction-bit column. The CTL layer
+//! connects the permutation's
 //! `IN[0..16]` (consumed) and `ROUT[NUM_ROUNDS-1][0..10]` rate outputs (produced)
 //! to the rest of the circuit's witness bus, exactly as
 //! `p3-poseidon1-circuit-air`'s `eval_interactions` does for the
@@ -22,13 +23,13 @@
 //! on the verifier-fixed final-round row of each permutation so
 //! `TIN` is the permutation input and `ROUT` is the final output.
 //!
-//! Trace shape is the *unmodified* [`crate::generate_lookup_trace`]
-//! output: rows `[0,256)` = L-table, rows `[256,256+P)` = one full
-//! Tip5 evaluation each, the rest inert padding. The matching
-//! preprocessed trace carries the verifier-fixed L-table/round-selector
-//! columns `[IS_TABLE, TIN, TOUT, IS_ROUND, ROUND[0..5]]` *and* the
-//! per-perm-row CTL columns `[in_ctl[16], in_idx[16], out_idx[10],
-//! out_ctl[10]]`.
+//! Trace shape is [`crate::generate_lookup_trace`] plus one ignored-by-inner
+//! `mmcs_bit` column: rows `[0,256)` = L-table, rows `[256,256+P)` = one full
+//! Tip5 evaluation each, the rest inert padding. The matching preprocessed
+//! trace carries the verifier-fixed L-table/round-selector columns
+//! `[IS_TABLE, TIN, TOUT, IS_ROUND, ROUND[0..5]]` *and* the per-perm-row CTL
+//! columns `[in_ctl[16], in_idx[16], out_idx[10], out_ctl[10],
+//! mmcs_bit_ctl, mmcs_bit_idx]`.
 
 use alloc::vec::Vec;
 
@@ -36,7 +37,7 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_goldilocks::Goldilocks;
 use p3_lookup::builder::InteractionBuilder;
-use p3_matrix::dense::RowMajorMatrix;
+use p3_matrix::{Matrix, dense::RowMajorMatrix};
 
 use crate::air_lookup::{
     PREP_WIDTH as L_PREP_WIDTH, TABLE_ROWS, Tip5PermLookupAir, tip5_in_col,
@@ -50,23 +51,34 @@ use crate::tip5_spec::{NUM_ROUNDS, STATE_SIZE};
 pub const TIP5_RATE: usize = 10;
 /// Tip5 state width in base-field elements.
 pub const TIP5_WIDTH: usize = STATE_SIZE; // 16
+/// Tip5 Merkle digest width in base-field elements.
+pub const TIP5_DIGEST: usize = 5;
 
 /// Per-perm-row CTL preprocessed columns appended after the lookup AIR's
 /// L-table/round-selector columns: `in_ctl[16] | in_idx[16] |
-/// out_idx[10] | out_ctl[10]`. (Mirrors the Poseidon1 compact-D1
-/// header/idx/ctl columns, Tip5-shaped: no merkle/chaining selectors —
-/// Tip5 sponge chaining is realised by the executor carrying the previous
-/// full state into `IN`, not by per-limb preprocessed chain selectors.)
-pub const TIP5_CTL_PREP_COLS: usize = TIP5_WIDTH + TIP5_WIDTH + TIP5_RATE + TIP5_RATE; // 52
+/// out_idx[10] | out_ctl[10] | mmcs_bit_ctl | mmcs_bit_idx`.
+/// (Mirrors the Poseidon1 compact-D1 header/idx/ctl columns,
+/// Tip5-shaped: no merkle/chaining selectors — Tip5 sponge chaining is
+/// realised by the executor carrying the previous full state into
+/// `IN`, not by per-limb preprocessed chain selectors.)
+pub const TIP5_CTL_PREP_COLS: usize = TIP5_WIDTH + TIP5_WIDTH + TIP5_RATE + TIP5_RATE + 2; // 54
 
 /// Total preprocessed width: lookup AIR columns + CTL columns.
-pub const TIP5_CIRCUIT_PREP_WIDTH: usize = L_PREP_WIDTH + TIP5_CTL_PREP_COLS; // 9 + 52 = 61
+pub const TIP5_CIRCUIT_PREP_WIDTH: usize = L_PREP_WIDTH + TIP5_CTL_PREP_COLS; // 9 + 54 = 63
+
+/// Extra main-trace columns appended after the validated lookup AIR's
+/// columns. The lookup AIR ignores these; the wrapper AIR uses them
+/// only for MMCS-direction binding and direction-aware input CTL value
+/// selection.
+pub const TIP5_CIRCUIT_EXTRA_MAIN_COLS: usize = 1;
 
 // CTL column offsets *within* the appended block (after `L_PREP_WIDTH`).
 const CTL_IN_CTL: usize = 0;
 const CTL_IN_IDX: usize = CTL_IN_CTL + TIP5_WIDTH;
 const CTL_OUT_IDX: usize = CTL_IN_IDX + TIP5_WIDTH;
 const CTL_OUT_CTL: usize = CTL_OUT_IDX + TIP5_RATE;
+const CTL_MMCS_BIT_CTL: usize = CTL_OUT_CTL + TIP5_RATE;
+const CTL_MMCS_BIT_IDX: usize = CTL_MMCS_BIT_CTL + 1;
 /// Verifier-fixed permutation-row selector in the embedded lookup AIR
 /// preprocessed columns. Mirrors `air_lookup::P_IS_ROUND`.
 const L_PREP_IS_ROUND: usize = 3;
@@ -95,6 +107,15 @@ pub struct Tip5CircuitRow<F> {
     pub out_ctl: Vec<bool>,
     /// Per-rate-output-limb CTL witness indices (length 10).
     pub output_indices: Vec<u32>,
+    /// True when the MMCS direction bit is an explicit circuit input
+    /// for this Tip5 row.
+    pub mmcs_bit_ctl: bool,
+    /// MMCS direction bit witness index when `mmcs_bit_ctl` is true.
+    pub mmcs_bit_index: u32,
+    /// Resolved MMCS direction bit value used by the executor. Stored
+    /// in an extra main-trace column and bound to `mmcs_bit_index` on
+    /// the `WitnessChecks` bus when `mmcs_bit_ctl` is true.
+    pub mmcs_bit: bool,
 }
 
 /// Build the `[u64;16]` permutation inputs for
@@ -108,6 +129,32 @@ pub fn tip5_inputs_from_rows<F: Field + p3_field::PrimeField64>(
             core::array::from_fn(|i| r.input_values[i].as_canonical_u64())
         })
         .collect()
+}
+
+/// Build the full circuit main trace: the validated lookup AIR trace
+/// plus one wrapper-owned `mmcs_bit` column.
+pub fn build_tip5_circuit_main_with_mmcs_bits<F>(
+    lookup_main: RowMajorMatrix<Goldilocks>,
+    rows: &[Tip5CircuitRow<F>],
+) -> RowMajorMatrix<Goldilocks> {
+    let lookup_width = lookup_main.width();
+    let height = lookup_main.height();
+    let width = lookup_width + TIP5_CIRCUIT_EXTRA_MAIN_COLS;
+    let mut values = Goldilocks::zero_vec(height * width);
+
+    for r in 0..height {
+        let src = r * lookup_width;
+        let dst = r * width;
+        values[dst..dst + lookup_width].copy_from_slice(&lookup_main.values[src..src + lookup_width]);
+    }
+
+    let mmcs_col = lookup_width;
+    for (pi, row) in rows.iter().enumerate() {
+        let trace_row = TABLE_ROWS + pi * NUM_ROUNDS + (NUM_ROUNDS - 1);
+        values[trace_row * width + mmcs_col] = Goldilocks::from_bool(row.mmcs_bit);
+    }
+
+    RowMajorMatrix::new(values, width)
 }
 
 /// Build the full circuit preprocessed flat vector (row-major,
@@ -165,6 +212,8 @@ pub fn build_tip5_circuit_preprocessed<F: Field>(
             prep[base + CTL_OUT_IDX + i] = F::from_u32(row.output_indices[i] * idx_scale);
             prep[base + CTL_OUT_CTL + i] = F::from_bool(row.out_ctl[i]);
         }
+        prep[base + CTL_MMCS_BIT_CTL] = F::from_bool(row.mmcs_bit_ctl);
+        prep[base + CTL_MMCS_BIT_IDX] = F::from_u32(row.mmcs_bit_index * idx_scale);
     }
 
     prep
@@ -256,7 +305,7 @@ impl<F: Field, const WITNESS_EXT_D: usize> Tip5CircuitAir<F, WITNESS_EXT_D> {
 
 impl<F: Field, const WITNESS_EXT_D: usize> BaseAir<F> for Tip5CircuitAir<F, WITNESS_EXT_D> {
     fn width(&self) -> usize {
-        tip5_lookup_air_width()
+        tip5_lookup_air_width() + TIP5_CIRCUIT_EXTRA_MAIN_COLS
     }
 
     fn preprocessed_width(&self) -> usize {
@@ -321,6 +370,30 @@ where
 
         let kind: AB::Expr = pre[L_PREP_IS_ROUND].into();
         let cbase = L_PREP_WIDTH;
+        let mmcs_bit_ctl: AB::Expr = pre[cbase + CTL_MMCS_BIT_CTL].into();
+        let mmcs_bit_idx: AB::Expr = pre[cbase + CTL_MMCS_BIT_IDX].into();
+        let mmcs_bit: AB::Expr = local[tip5_lookup_air_width()].into();
+        let active_mmcs_bit = mmcs_bit_ctl.clone() * mmcs_bit.clone();
+
+        builder.assert_zero(
+            kind.clone()
+                * mmcs_bit_ctl.clone()
+                * mmcs_bit.clone()
+                * (mmcs_bit.clone() - AB::Expr::ONE),
+        );
+
+        let mut bit_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+        bit_lookup.push(mmcs_bit_idx);
+        bit_lookup.push(mmcs_bit.clone());
+        for _ in 0..(WITNESS_EXT_D - 1) {
+            bit_lookup.push(AB::Expr::ZERO);
+        }
+        builder.push_interaction(
+            "WitnessChecks",
+            bit_lookup,
+            -(mmcs_bit_ctl.clone() * kind.clone()),
+            1,
+        );
 
         // Input limb SENDS: `[idx, value, ZERO×(WITNESS_EXT_D − 1)]`,
         // multiplicity `-(in_ctl * kind)`. `kind` (boolean, asserted by
@@ -337,7 +410,16 @@ where
         for i in 0..TIP5_WIDTH {
             let idx: AB::Expr = pre[cbase + CTL_IN_IDX + i].into();
             let in_ctl: AB::Expr = pre[cbase + CTL_IN_CTL + i].into();
-            let value: AB::Expr = local[tip5_in_col(i)].into();
+            let mut value: AB::Expr = local[tip5_in_col(i)].into();
+            if i < 2 * TIP5_DIGEST {
+                let swap_i = if i < TIP5_DIGEST {
+                    i + TIP5_DIGEST
+                } else {
+                    i - TIP5_DIGEST
+                };
+                let swapped: AB::Expr = local[tip5_in_col(swap_i)].into();
+                value = value.clone() + active_mmcs_bit.clone() * (swapped - value);
+            }
             let mult = in_ctl * kind.clone();
             let mut input_idx_limb: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
             input_idx_limb.push(idx);
