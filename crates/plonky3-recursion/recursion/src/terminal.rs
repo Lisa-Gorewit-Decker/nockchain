@@ -1802,6 +1802,30 @@ pub struct TerminalNpoPolynomialFriProfile {
     pub proximity: TerminalProximityProfile,
 }
 
+/// Verifier-key-derived size drivers for the supported-NPO polynomial backend.
+///
+/// This is a diagnostic contract, not proof data. It lets higher-level stacks
+/// measure whether the FRI-native NPO-column route has plausible row/column
+/// shape before running a full proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalNpoPolynomialLayoutMetrics {
+    pub relation_profile: TerminalNpoPolynomialProfile,
+    pub column_layout: TerminalNpoPolynomialColumnLayout,
+    pub full_table_profile: TerminalNpoPolynomialFriProfile,
+    pub witness_value_profile: TerminalNpoPolynomialFriProfile,
+    pub prover_dependent_profile: TerminalNpoPolynomialFriProfile,
+    pub compact_residual_composition_profile: TerminalCompactCompositionFriProfile,
+    pub residual_relation_quotient_profile: TerminalNpoPolynomialFriProfile,
+    pub terminal_challenge_basis_dimension: usize,
+    pub witness_value_field_columns: usize,
+    pub residual_value_field_columns: usize,
+    pub prover_dependent_field_columns: usize,
+    pub fri_native_residual_zero_opened_basis_columns: usize,
+    pub fri_native_residual_zero_min_opened_limb_bytes: usize,
+    pub fri_native_recompose_opened_basis_columns: usize,
+    pub fri_native_recompose_min_opened_limb_bytes: usize,
+}
+
 /// FRI opening proof for the basis-expanded supported-NPO polynomial columns.
 ///
 /// This is a terminal backend checkpoint, not yet the complete production NPO
@@ -17862,6 +17886,75 @@ impl NativeTerminalCompiler {
         }
 
         profile
+    }
+
+    pub fn terminal_npo_polynomial_layout_metrics<F>(
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+    ) -> Result<TerminalNpoPolynomialLayoutMetrics, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks>,
+    {
+        let relation_profile = Self::terminal_npo_polynomial_profile::<F>(verifying_key);
+        let column_layout = Self::terminal_npo_polynomial_column_layout::<F>(verifying_key);
+        let full_table_profile =
+            Self::terminal_npo_polynomial_fri_profile_for_layout::<F>(&column_layout)?;
+        let witness_value_field_columns = column_layout.input_value_columns
+            + column_layout.output_value_columns
+            + column_layout.hidden_tip5_value_columns
+            + 1;
+        let residual_value_field_columns = column_layout.residual_value_columns;
+        let prover_dependent_field_columns =
+            witness_value_field_columns + residual_value_field_columns;
+        let witness_value_profile = Self::terminal_npo_polynomial_fri_profile_for_column_count::<F>(
+            &column_layout,
+            TerminalNpoPolynomialFriColumnSet::WitnessValues,
+            witness_value_field_columns,
+        )?;
+        let prover_dependent_profile =
+            Self::terminal_npo_polynomial_fri_profile_for_column_count::<F>(
+                &column_layout,
+                TerminalNpoPolynomialFriColumnSet::ProverDependent,
+                prover_dependent_field_columns,
+            )?;
+        let compact_residual_composition_profile = Self::terminal_compact_composition_fri_profile(
+            column_layout.rows,
+            column_layout.rows.next_power_of_two(),
+        )?;
+        let residual_relation_quotient_profile =
+            Self::terminal_npo_polynomial_residual_relation_quotient_profile(&column_layout)?;
+        let terminal_challenge_basis_dimension =
+            <TerminalFriChallenge as BasedVectorSpace<Goldilocks>>::DIMENSION;
+        let fri_native_residual_zero_opened_basis_columns =
+            prover_dependent_profile.basis_columns
+                + compact_residual_composition_profile.basis_columns;
+        let fri_native_recompose_opened_basis_columns =
+            fri_native_residual_zero_opened_basis_columns
+                + residual_relation_quotient_profile.basis_columns;
+        let opened_limb_bytes = |basis_columns: usize| {
+            basis_columns * terminal_challenge_basis_dimension * core::mem::size_of::<u64>()
+        };
+
+        Ok(TerminalNpoPolynomialLayoutMetrics {
+            relation_profile,
+            column_layout,
+            full_table_profile,
+            witness_value_profile,
+            prover_dependent_profile,
+            compact_residual_composition_profile,
+            residual_relation_quotient_profile,
+            terminal_challenge_basis_dimension,
+            witness_value_field_columns,
+            residual_value_field_columns,
+            prover_dependent_field_columns,
+            fri_native_residual_zero_opened_basis_columns,
+            fri_native_residual_zero_min_opened_limb_bytes: opened_limb_bytes(
+                fri_native_residual_zero_opened_basis_columns,
+            ),
+            fri_native_recompose_opened_basis_columns,
+            fri_native_recompose_min_opened_limb_bytes: opened_limb_bytes(
+                fri_native_recompose_opened_basis_columns,
+            ),
+        })
     }
 
     fn terminal_npo_tip5_lookup_trace_profile<F>(

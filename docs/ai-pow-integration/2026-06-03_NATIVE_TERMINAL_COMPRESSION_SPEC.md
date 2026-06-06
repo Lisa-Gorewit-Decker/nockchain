@@ -858,10 +858,17 @@ for this route.
   columns. On the real Tip5-L0 verifier circuit, the opt-in benchmark measures
   `61,683` bytes / `60.2 KiB`, with `1,174` bytes of selected zeta openings,
   `60,372` bytes of compact FRI material, `prove=1.567s`, and
-  `verify=0.496s`. This is still a checkpoint rather than a production NPO
-  proof because the residual columns still need a quotient tying them to the
-  witness-value columns and verifier-derived row relation over the whole NPO
-  domain.
+  `verify=0.496s`. On the full `ai-pow-zk` composite verifier relation, the
+  same FRI-native residual-zero shape produces a `57,390` byte body with
+  `55,889` bytes of compact FRI material over `14,049` NPO rows, `16,384`
+  padded rows, and `89` prover-dependent field columns. That full-composite
+  proof is intentionally treated as a rejected diagnostic today: the generated
+  residual columns contain `10,070` nonzero values, the first observed nonzero
+  is at row `1293` in `residual_value_1`, and verification rejects with a
+  residual-relation mismatch. This is still a checkpoint rather than a
+  production NPO proof because the full-composite residual columns must become
+  identically zero and then still need quotients tying them to the witness-value
+  columns and verifier-derived row relation over the whole NPO domain.
 - `TerminalNpoPolynomialFriResidualZeroRecomposeProof`: a combined FRI-native
   checkpoint that opens the prover-dependent NPO table, the folded residual-zero
   composition polynomial, and the recompose residual quotient in one terminal
@@ -1568,6 +1575,7 @@ Tip5-L0 verifier circuit produced:
 | Merkle residual-zero candidate, opt-in real Tip5-L0 measurement | 734,249 | - | - | 56.449 s | 4.627 s |
 | selected-column compact residual-zero FRI candidate, opt-in real Tip5-L0 measurement | 376,642 | - | 48,495 | 26.304 s | 2.273 s |
 | FRI-native compact residual-zero candidate, opt-in real Tip5-L0 measurement | 61,683 | - | 60,372 | 1.567 s | 0.496 s |
+| FRI-native compact residual-zero candidate, full AI-PoW composite measurement, rejected nonzero residuals | 57,390 | - | 55,889 | 20.265 s | 11.920 s reject |
 | recompose residual-relation quotient candidate, opt-in real Tip5-L0 measurement | 81,266 | - | 79,916 | 1.852 s | 0.601 s |
 
 The full-table FRI candidate is too large to combine with the primitive
@@ -1594,13 +1602,26 @@ quotient proves that tie for Goldilocks recompose rows and is now fast enough
 after replacing naive quotient-domain evaluation with batched LDEs, but as a
 separate FRI proof it is too expensive to stack with the residual-zero proof:
 `60.2 KiB + 79.4 KiB` duplicates selected-column commitment/opening material
-before Tip5 permutation and chain constraints are added. The next viable
-direction is a shared/batched terminal proximity backend that commits the NPO
-row columns through one low-degree object and amortizes FRI proof material
-across primitive and NPO relations, or an NPO relation check that consumes the
-selected/value FRI openings without adding a second standalone proof. The FRI
-verifier now exposes exactly that checked value-column opening handoff. The
-padding quotient checkpoint now
+before Tip5 permutation and chain constraints are added.
+
+The full AI-PoW composite measurement confirms that the FRI-native
+residual-zero byte floor is plausible at production scale, but also exposes the
+current correctness blocker. The full-composite layout has `14,049` rows,
+`16,384` padded rows, `46` residual-value columns, and `89` prover-dependent
+field columns. The residual-zero proof body is only `57,390` bytes, but the
+residual table has `10,070` nonzero values and the verifier rejects it. Until
+the verifier-key-derived NPO residual mapping and row-relation quotient make
+those columns zero, this proof shape cannot replace exhaustive NPO checking.
+The total diagnostic wall time was `74.506s`, so a production version must also
+reuse L0, terminal-compile, NPO-column, root, and prelude work instead of
+rebuilding them around each checkpoint proof.
+
+The next viable direction is a shared/batched terminal proximity backend that
+commits the NPO row columns through one low-degree object and amortizes FRI
+proof material across primitive and NPO relations, or an NPO relation check
+that consumes the selected/value FRI openings without adding a second
+standalone proof. The FRI verifier now exposes exactly that checked
+value-column opening handoff. The padding quotient checkpoint now
 checks mixed present-bit value padding and MMCS direction-bit booleanity with a
 quotient/vanishing identity over the same opened value columns, and it now
 checks Tip5 chain-start zero lanes, Merkle capacity-zero lanes, and recompose
@@ -1801,18 +1822,20 @@ Completion audit against the active terminal-compression requirements:
 Security-audit conclusions for the current implementation checkpoint:
 
 - The typed compact production proof now gives native terminal certificates a
-  non-witness primitive sparse-R1CS row-product argument plus the promoted
-  polynomial/proximity supported-NPO backend. This removes the previous
-  full-witness serialization baseline, the sampled NPO production path, and the
-  exhaustive Merkle-opening NPO production verifier.
-- The current production proof is now an integrated terminal backend: a
-  sumcheck-backed primitive sparse-R1CS argument plus merged FRI-native NPO
-  residual-zero+recompose+value-bridge checking and the Tip5 lookup AIR/LogUp
-  selected-vs-trace NPO-IO bridge. The bridge commits the masked trace-domain
-  NPO-IO projection in the same FRI matrix as the full trace so Merkle Tip5
-  hidden-output rows compare the same public/selected output lanes on both
-  domains. The theorem below is the written polynomial/proximity soundness
-  statement for this production proof body.
+  non-witness primitive sparse-R1CS row-product argument plus exhaustive
+  supported-NPO row checking under one assignment-root prelude. This removes
+  the previous full-witness serialization baseline and the sampled NPO
+  production path, while keeping exhaustive Merkle-opening NPO verification as
+  the active production boundary until the polynomial/proximity backend is
+  complete.
+- The current production proof is a sumcheck-backed primitive sparse-R1CS
+  argument plus deterministic exhaustive checking of every supported Tip5 and
+  recompose NPO row. The merged FRI-native NPO
+  residual-zero+recompose+value-bridge checks and the Tip5 lookup AIR/LogUp
+  selected-vs-trace NPO-IO bridge remain the leading replacement direction, but
+  they are diagnostic today. The full-composite residual-zero floor is small
+  enough to be interesting, but it currently rejects because the residual
+  columns are nonzero.
 - The terminal proof prelude is now an implemented transcript-binding prefix,
   not a standalone argument. It prevents challenge grinding across relation,
   public input, parameter, and commitment substitutions. In the compact

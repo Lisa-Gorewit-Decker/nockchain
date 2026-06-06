@@ -27,7 +27,9 @@ use p3_recursion::pcs::fri::{
 };
 use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::public_inputs::BatchStarkVerifierInputsBuilder;
-use p3_recursion::terminal::{NativeTerminalCompiler, NativeTerminalVerifyError};
+use p3_recursion::terminal::{
+    NativeTerminalCompiler, NativeTerminalVerifyError, TerminalNpoPolynomialLayoutMetrics,
+};
 use p3_recursion::{
     verify_batch_circuit, BatchProofTargets, CommonDataTargets, Recursive, RecursiveAir,
     TerminalCertificate, TerminalCircuitFingerprint, TerminalProofParameters, TerminalWitness,
@@ -915,6 +917,22 @@ pub struct CompositeTerminalRelationMetrics {
     pub external_npo_validity_components: usize,
 }
 
+/// NPO-polynomial backend layout metrics for the actual composite-L1 terminal
+/// relation.
+///
+/// This is a proof-shape diagnostic for the FRI-native NPO replacement path.
+/// It derives row/column counts and zeta-opening floors from the terminal
+/// verifying key without running the terminal prover.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompositeTerminalNpoPolynomialLayoutMetrics {
+    pub l1_circuit_build_ms: u128,
+    pub terminal_compile_ms: u128,
+    pub circuit_fingerprint: TerminalCircuitFingerprint,
+    pub terminal_public_input_values: usize,
+    pub terminal_private_input_values: usize,
+    pub npo_polynomial: TerminalNpoPolynomialLayoutMetrics,
+}
+
 /// Public/private input footprint of the current composite-L1 verifier circuit.
 ///
 /// Pearl keeps the inner STARK proof as witness material and exposes a small
@@ -1415,6 +1433,58 @@ fn measure_composite_l1_terminal_relation_with_recompose_coeff_ctl(
     })
 }
 
+/// Measure the FRI-native supported-NPO polynomial layout generated for the
+/// actual composite L1 verifier circuit without running terminal proving.
+pub fn measure_composite_l1_terminal_npo_polynomial_layout(
+    zk_params: &crate::params::ZkParams,
+    profile: &crate::circuit::CircuitConfig,
+    verified: &ChainVerifiedCompositeProof<'_>,
+) -> Result<CompositeTerminalNpoPolynomialLayoutMetrics, VerificationError> {
+    use std::time::Instant;
+
+    let cfg = crate::composite_proof::build_config(zk_params, profile);
+    let t = Instant::now();
+    let air = CompositeFullAirWithLookupsPinned::new_with(verified.program.clone(), true);
+    let pd = crate::composite_proof::logup_common_for(&cfg, &verified.program, true);
+    let built = build_composite_l1_verifier_circuit(
+        &cfg,
+        &air,
+        &verified.proof,
+        &pd.common,
+        &verified.public_inputs.to_vec(),
+        profile,
+    )?;
+    let l1_circuit_build_ms = t.elapsed().as_millis();
+
+    let compiler = terminal_compiler();
+    let t = Instant::now();
+    let (_pk, vk) = compiler
+        .compile_goldilocks_terminal(&built.circuit)
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW terminal NPO polynomial layout compile failed: {e:?}"
+            ))
+        })?;
+    let npo_polynomial =
+        NativeTerminalCompiler::terminal_npo_polynomial_layout_metrics::<Challenge>(&vk).map_err(
+            |e| {
+                VerificationError::InvalidProofShape(format!(
+                    "AI-PoW terminal NPO polynomial layout metrics failed: {e:?}"
+                ))
+            },
+        )?;
+    let terminal_compile_ms = t.elapsed().as_millis();
+
+    Ok(CompositeTerminalNpoPolynomialLayoutMetrics {
+        l1_circuit_build_ms,
+        terminal_compile_ms,
+        circuit_fingerprint: TerminalCircuitFingerprint::from_circuit(&built.circuit),
+        terminal_public_input_values: built.public_inputs.len(),
+        terminal_private_input_values: built.private_inputs.len(),
+        npo_polynomial,
+    })
+}
+
 /// Verify a native terminal recursive certificate against the same
 /// chain-verified Layer-0 proof parts used to build the L1 verifier circuit.
 ///
@@ -1637,8 +1707,8 @@ fn _composite_conforms_to_recursive_air() {
 #[cfg(test)]
 mod tests {
     use p3_recursion::terminal::{
-        NativeTerminalConstraint, NativeTerminalVerifyingKey, TerminalProductionNpoPolynomialProof,
-        TerminalProductionProof,
+        NativeTerminalConstraint, NativeTerminalVerifyingKey, TerminalNpoPolynomialFriColumnSet,
+        TerminalProductionNpoPolynomialProof, TerminalProductionProof,
     };
 
     use super::*;
@@ -3298,6 +3368,24 @@ mod tests {
             .expect("L1 verifier input footprint must build without terminal proving")
     }
 
+    fn measure_baseline_terminal_npo_polynomial_layout(
+        profile: CircuitConfig,
+    ) -> CompositeTerminalNpoPolynomialLayoutMetrics {
+        let zk = test_zk_params();
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program, proof, &pis,
+            )
+        };
+        measure_composite_l1_terminal_npo_polynomial_layout(&zk, &profile, &verified)
+            .expect("terminal NPO polynomial layout metrics must build without terminal proving")
+    }
+
     fn print_l1_verifier_input_footprint(
         label: &str,
         footprint: &CompositeL1VerifierInputFootprint,
@@ -3347,6 +3435,55 @@ mod tests {
             metrics.external_npo_validity_components,
             metrics.circuit_fingerprint,
             metrics.non_primitive_types,
+        );
+    }
+
+    fn print_terminal_npo_polynomial_layout_metrics(
+        label: &str,
+        metrics: &CompositeTerminalNpoPolynomialLayoutMetrics,
+    ) {
+        let npo = &metrics.npo_polynomial;
+        eprintln!(
+            "ai-pow composite terminal NPO polynomial layout [{label}]: build_ms={} compile_ms={} public_values={} private_values={} fingerprint={:?} npo_rows={} residual_components={} sampled_residual_components={} tip5_rows={} tip5_merkle_rows={} tip5_new_start_rows={} recompose_rows={} recompose_coeff_rows={} witness_inputs={} witness_outputs={} hidden_inputs={} max_serialized_hidden_inputs={} mmcs_bits={} column_count={} metadata_columns={} input_value_columns={} output_value_columns={} hidden_value_columns={} residual_value_columns={} witness_value_field_columns={} residual_value_field_columns={} prover_dependent_field_columns={} full_table_basis_columns={} witness_value_basis_columns={} prover_dependent_basis_columns={} rows={} padded_rows={} composition_basis_columns={} recompose_quotient_basis_columns={} terminal_challenge_basis_dim={} residual_zero_opened_basis_columns={} residual_zero_min_opened_limb_bytes={} recompose_opened_basis_columns={} recompose_min_opened_limb_bytes={}",
+            metrics.l1_circuit_build_ms,
+            metrics.terminal_compile_ms,
+            metrics.terminal_public_input_values,
+            metrics.terminal_private_input_values,
+            metrics.circuit_fingerprint,
+            npo.relation_profile.rows,
+            npo.relation_profile.residual_components,
+            npo.relation_profile.sampled_residual_components,
+            npo.relation_profile.tip5_rows,
+            npo.relation_profile.tip5_merkle_rows,
+            npo.relation_profile.tip5_new_start_rows,
+            npo.relation_profile.recompose_rows,
+            npo.relation_profile.recompose_coeff_rows,
+            npo.relation_profile.witness_input_slots,
+            npo.relation_profile.witness_output_slots,
+            npo.relation_profile.hidden_input_slots,
+            npo.relation_profile.max_serialized_hidden_input_slots,
+            npo.relation_profile.mmcs_direction_bits,
+            npo.column_layout.column_count,
+            npo.column_layout.metadata_columns,
+            npo.column_layout.input_value_columns,
+            npo.column_layout.output_value_columns,
+            npo.column_layout.hidden_tip5_value_columns,
+            npo.column_layout.residual_value_columns,
+            npo.witness_value_field_columns,
+            npo.residual_value_field_columns,
+            npo.prover_dependent_field_columns,
+            npo.full_table_profile.basis_columns,
+            npo.witness_value_profile.basis_columns,
+            npo.prover_dependent_profile.basis_columns,
+            npo.prover_dependent_profile.rows,
+            npo.prover_dependent_profile.padded_rows,
+            npo.compact_residual_composition_profile.basis_columns,
+            npo.residual_relation_quotient_profile.basis_columns,
+            npo.terminal_challenge_basis_dimension,
+            npo.fri_native_residual_zero_opened_basis_columns,
+            npo.fri_native_residual_zero_min_opened_limb_bytes,
+            npo.fri_native_recompose_opened_basis_columns,
+            npo.fri_native_recompose_min_opened_limb_bytes,
         );
     }
 
@@ -3467,6 +3604,39 @@ mod tests {
         assert!(
             unsafe_floor.npo_rows < sound.npo_rows,
             "without a replacement binding this only measures an unsound NPO floor"
+        );
+    }
+
+    #[test]
+    #[ignore = "production-profile terminal NPO polynomial layout diagnostic is opt-in"]
+    fn terminal_npo_polynomial_layout_for_prod_baseline_composite_is_available() {
+        let metrics = measure_baseline_terminal_npo_polynomial_layout(CircuitConfig::PROD);
+        print_terminal_npo_polynomial_layout_metrics("PROD", &metrics);
+
+        let npo = &metrics.npo_polynomial;
+        assert!(npo.relation_profile.rows > 0);
+        assert!(npo.relation_profile.residual_components >= npo.relation_profile.rows);
+        assert_eq!(npo.column_layout.rows, npo.relation_profile.rows);
+        assert!(
+            npo.prover_dependent_field_columns < npo.column_layout.column_count,
+            "verifier-derived NPO columns should stay off the prover-dependent FRI matrix"
+        );
+        assert_eq!(
+            npo.prover_dependent_field_columns,
+            npo.witness_value_field_columns + npo.residual_value_field_columns
+        );
+        assert_eq!(
+            npo.prover_dependent_profile.field_columns,
+            npo.prover_dependent_field_columns
+        );
+        assert_eq!(
+            npo.fri_native_residual_zero_opened_basis_columns,
+            npo.prover_dependent_profile.basis_columns
+                + npo.compact_residual_composition_profile.basis_columns
+        );
+        assert!(
+            npo.fri_native_residual_zero_min_opened_limb_bytes > 0,
+            "layout diagnostic should expose a nonzero opened-limb floor"
         );
     }
 
@@ -4213,6 +4383,248 @@ mod tests {
                 pow_bits: 0,
                 num_queries: 10,
             },
+        );
+    }
+
+    fn measure_terminal_fri_native_residual_zero_candidate_for_profile(
+        label: &str,
+        profile: CircuitConfig,
+    ) {
+        init_terminal_prover_profile_tracing();
+        assert_eq!(profile.johnson_fri_bits(), 60);
+
+        let total_start = std::time::Instant::now();
+        let zk = test_zk_params();
+        let cfg = build_config(&zk, &profile);
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let l0_prove_start = std::time::Instant::now();
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        eprintln!(
+            "native terminal FRI-native residual-zero candidate phase [{label}]: l0_prove_ms={}",
+            l0_prove_start.elapsed().as_millis()
+        );
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program.clone(),
+                proof,
+                &pis,
+            )
+        };
+
+        let l1_build_start = std::time::Instant::now();
+        let air = CompositeFullAirWithLookupsPinned::new_with(program, true);
+        let pd = logup_common_for(&cfg, &verified.program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &verified.proof,
+            &pd.common,
+            &verified.public_inputs.to_vec(),
+            &profile,
+        )
+        .expect("FRI-native residual-zero diagnostic must build L1 verifier circuit");
+        let l1_circuit_build_ms = l1_build_start.elapsed().as_millis();
+        eprintln!(
+            "native terminal FRI-native residual-zero candidate phase [{label}]: l1_circuit_build_ms={l1_circuit_build_ms}"
+        );
+
+        let l1_verify_start = std::time::Instant::now();
+        let traces = run_composite_l1_verifier_traces(&built, &verified.proof)
+            .expect("FRI-native residual-zero diagnostic must run L1 verifier traces");
+        let l1_verify_elapsed = l1_verify_start.elapsed();
+        eprintln!(
+            "native terminal FRI-native residual-zero candidate phase [{label}]: l1_trace_verify_ms={}",
+            l1_verify_elapsed.as_millis()
+        );
+
+        let compiler = terminal_compiler();
+        let compile_start = std::time::Instant::now();
+        let (_pk, vk) = compiler
+            .compile_goldilocks_terminal(&built.circuit)
+            .expect("FRI-native residual-zero diagnostic must compile terminal circuit");
+        compiler
+            .validate_goldilocks_production_query_domains(
+                &vk,
+                TerminalProofParameters::production_60bit(),
+            )
+            .expect("FRI-native residual-zero diagnostic must use production query domains");
+        let compile_elapsed = compile_start.elapsed();
+        eprintln!(
+            "native terminal FRI-native residual-zero candidate phase [{label}]: terminal_compile_ms={}",
+            compile_elapsed.as_millis()
+        );
+
+        let witness = TerminalWitness {
+            fingerprint: TerminalCircuitFingerprint::from_circuit(&built.circuit),
+            public_inputs: built.public_inputs.clone(),
+            private_inputs: built.private_inputs.clone(),
+            traces,
+        };
+
+        let layout_metrics =
+            NativeTerminalCompiler::terminal_npo_polynomial_layout_metrics::<Challenge>(&vk)
+                .expect("FRI-native residual-zero diagnostic must derive NPO layout metrics");
+
+        let columns_start = std::time::Instant::now();
+        let columns = compiler
+            .terminal_npo_polynomial_columns_goldilocks(&vk, &witness)
+            .expect("FRI-native residual-zero diagnostic must build NPO columns");
+        let columns_elapsed = columns_start.elapsed();
+        let mut residual_column_count = 0usize;
+        let mut residual_nonzero_values = 0usize;
+        let mut first_nonzero_residual = None;
+        for (column_index, label) in columns.labels.iter().enumerate() {
+            if !label.starts_with("residual_value_") {
+                continue;
+            }
+            residual_column_count += 1;
+            for (row, value) in columns.columns[column_index].iter().enumerate() {
+                if *value != Challenge::ZERO {
+                    residual_nonzero_values += 1;
+                    first_nonzero_residual.get_or_insert_with(|| {
+                        let basis =
+                            <Challenge as BasedVectorSpace<Val>>::as_basis_coefficients_slice(
+                                value,
+                            );
+                        (
+                            row,
+                            label.clone(),
+                            basis.iter().copied().collect::<Vec<_>>(),
+                        )
+                    });
+                }
+            }
+        }
+        eprintln!(
+            "native terminal FRI-native residual-zero candidate phase [{label}]: npo_columns_ms={} residual_columns={} residual_nonzero_values={} first_nonzero_residual={:?}",
+            columns_elapsed.as_millis(),
+            residual_column_count,
+            residual_nonzero_values,
+            first_nonzero_residual,
+        );
+
+        let roots_start = std::time::Instant::now();
+        let prelude_roots =
+            NativeTerminalCompiler::terminal_npo_polynomial_fri_prelude_commitments_goldilocks(
+                &columns,
+                TerminalNpoPolynomialFriColumnSet::ProverDependent,
+            )
+            .expect("FRI-native residual-zero diagnostic must commit prover-dependent columns");
+        let roots_elapsed = roots_start.elapsed();
+        eprintln!(
+            "native terminal FRI-native residual-zero candidate phase [{label}]: prover_dependent_root_ms={}",
+            roots_elapsed.as_millis()
+        );
+
+        let prelude_start = std::time::Instant::now();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &witness.public_inputs,
+                TerminalProofParameters::production_60bit(),
+                prelude_roots,
+            )
+            .expect("FRI-native residual-zero diagnostic must build terminal prelude");
+        let prelude_elapsed = prelude_start.elapsed();
+        eprintln!(
+            "native terminal FRI-native residual-zero candidate phase [{label}]: prelude_ms={}",
+            prelude_elapsed.as_millis()
+        );
+
+        let prove_start = std::time::Instant::now();
+        let proof = compiler
+            .prove_terminal_npo_polynomial_fri_compact_residual_zero_goldilocks(
+                &vk, &witness.public_inputs, &witness, &prelude,
+            )
+            .expect("FRI-native residual-zero proof must build");
+        let prove_elapsed = prove_start.elapsed();
+
+        assert_eq!(
+            proof.selected_profile.field_columns,
+            layout_metrics.prover_dependent_field_columns
+        );
+        assert_eq!(
+            proof.selected_profile.basis_columns,
+            layout_metrics.prover_dependent_profile.basis_columns
+        );
+
+        let proof_bytes = postcard_len(&proof, "FRI-native residual-zero proof");
+        let selected_commitment_bytes = postcard_len(
+            &proof.selected_commitment, "FRI-native residual-zero selected commitment",
+        );
+        let composition_commitment_bytes = postcard_len(
+            &proof.composition_commitment, "FRI-native residual-zero composition commitment",
+        );
+        let opened_selected_bytes = postcard_len(
+            &proof.opened_selected_basis, "FRI-native residual-zero selected zeta openings",
+        );
+        let opened_composition_bytes = postcard_len(
+            &proof.opened_composition_basis, "FRI-native residual-zero composition zeta openings",
+        );
+        let compact_fri_bytes = postcard_len(&proof.proof, "FRI-native residual-zero compact FRI");
+
+        let verify_start = std::time::Instant::now();
+        let verify_result = compiler
+            .verify_terminal_npo_polynomial_fri_compact_residual_zero_goldilocks::<Challenge>(
+                &vk, &witness.public_inputs, &prelude, &proof,
+            );
+        let verify_elapsed = verify_start.elapsed();
+        let verification_status = match (residual_nonzero_values, verify_result) {
+            (0, Ok(_)) => "verified",
+            (0, Err(err)) => {
+                panic!("FRI-native residual-zero proof must verify for zero residuals: {err:?}")
+            }
+            (_, Ok(_)) => {
+                panic!("FRI-native residual-zero proof must reject nonzero residual columns")
+            }
+            (_, Err(err)) => {
+                assert!(
+                    matches!(
+                        err,
+                        NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { .. }
+                    ),
+                    "nonzero residual columns should fail the residual-zero relation, got {err:?}"
+                );
+                "rejected_nonzero_residuals"
+            }
+        };
+        let total_candidate_elapsed = total_start.elapsed();
+
+        eprintln!(
+            "native terminal FRI-native residual-zero NPO candidate over ai-pow composite verifier [{label}]: proof={} bytes selected_commitment={} composition_commitment={} opened_selected={} opened_composition={} compact_fri={} npo_rows={} padded_rows={} prover_dependent_field_columns={} prover_dependent_basis_columns={} residual_components={} residual_nonzero_values={} verification_status={} residual_zero_opened_basis_columns={} residual_zero_min_opened_limb_bytes={} l1_verify_ms={} compile_ms={} npo_columns_ms={} prover_dependent_root_ms={} prelude_ms={} prove_ms={} verify_ms={} total_wall_ms={}",
+            proof_bytes,
+            selected_commitment_bytes,
+            composition_commitment_bytes,
+            opened_selected_bytes,
+            opened_composition_bytes,
+            compact_fri_bytes,
+            layout_metrics.relation_profile.rows,
+            layout_metrics.prover_dependent_profile.padded_rows,
+            layout_metrics.prover_dependent_field_columns,
+            layout_metrics.prover_dependent_profile.basis_columns,
+            layout_metrics.relation_profile.residual_components,
+            residual_nonzero_values,
+            verification_status,
+            layout_metrics.fri_native_residual_zero_opened_basis_columns,
+            layout_metrics.fri_native_residual_zero_min_opened_limb_bytes,
+            l1_verify_elapsed.as_millis(),
+            compile_elapsed.as_millis(),
+            columns_elapsed.as_millis(),
+            roots_elapsed.as_millis(),
+            prelude_elapsed.as_millis(),
+            prove_elapsed.as_millis(),
+            verify_elapsed.as_millis(),
+            total_candidate_elapsed.as_millis(),
+        );
+    }
+
+    #[test]
+    #[ignore = "full composite FRI-native residual-zero terminal NPO candidate measurement is opt-in"]
+    fn terminal_fri_native_residual_zero_candidate_for_prod_baseline_measures() {
+        measure_terminal_fri_native_residual_zero_candidate_for_profile(
+            "PROD",
+            CircuitConfig::PROD,
         );
     }
 

@@ -101,6 +101,29 @@ rows because most coefficient-control calls become ordinary recompose rows.
 The hard blocker remains the generic verifier relation and assignment-opening
 shape, not the marginal overhead of this specific coefficient-binding table.
 
+The first full-composite FRI-native residual-zero NPO measurement changes the
+shape of the promising path. It is byte-plausible but not yet correct:
+
+| Full composite FRI-native residual-zero checkpoint | Value |
+|---|---:|
+| NPO rows / padded rows | `14,049` / `16,384` |
+| Prover-dependent field columns / basis columns | `89` / `178` |
+| Residual-value columns | `46` |
+| Residual-zero opened basis columns | `180` |
+| Proof body / compact FRI | `57,390` bytes / `55,889` bytes |
+| Nonzero residual values | `10,070` |
+| Prove / verify / total diagnostic wall | `20.265s` / `11.920s` / `74.506s` |
+| Verification status | `rejected_nonzero_residuals` |
+
+This is a useful lower bound because it uses the actual composite verifier
+layout rather than the small synthetic NPO-only fixture, and the proof body is
+comfortably below the relaxed `150 KiB` budget. It is not a production proof:
+the verifier correctly rejects because the full-composite NPO residual columns
+are not zero. The next NPO work should therefore focus on making the
+verifier-key-derived row relation and residual/recompose quotients correct for
+the full composite terminal table, then sharing root/prelude work, rather than
+on further byte serialization of this rejected checkpoint.
+
 The current `CircuitConfig::PROD` profile is now exactly 60 pure-query bits
 (`log_blowup=4`, `num_queries=15`, `pow_bits=0`). Removing the previous
 one-bit commit/query proof-system PoW hooks was the right soundness-policy
@@ -1017,6 +1040,11 @@ solution:
 - The current NPO-only integrated checkpoint measures `96,219` bytes /
   `94.0 KiB` including the primitive proof on the small synthetic circuit, but
   it is not the full composite production proof body.
+- The full-composite FRI-native residual-zero checkpoint measures `57,390`
+  bytes with a `55,889` byte compact FRI body over the actual composite NPO
+  layout, but verification correctly rejects because the residual columns have
+  `10,070` nonzero values. That makes this a byte floor and correctness
+  diagnostic, not a candidate production proof.
 - The full composite integrated diagnostic ran for more than `7m35s` after
   compile without reaching its final size print, so this path currently misses
   the proving-time gate even before it can be considered for promotion.
@@ -1035,6 +1063,10 @@ Soundness obligations:
 - Residual-zero, recompose, value-bridge, Tip5 AIR, byte LogUp, and NPO-IO
   LogUp challenges must have explicit domain separation and an ordering proof
   in the written theorem.
+- For the full composite relation, verifier-derived residual columns must be
+  identically zero under the committed witness-value columns and row relation;
+  the current diagnostic rejection must become an honest-verifier acceptance
+  before any size number can be counted as production evidence.
 - The verifier must recompute every profile from the verifying key and reject
   any proof-carried profile mismatch.
 - The unified proof must preserve the hidden-output masking rule for Merkle
@@ -1063,6 +1095,8 @@ Implementation sketch:
 Tests required before promotion:
 
 - Honest real Tip5 L0 verifier-circuit production measurement.
+- Full-composite residual-zero acceptance after fixing the NPO residual
+  mapping, plus a regression test that a nonzero residual column is rejected.
 - Body and certificate size assertions at or below the target.
 - Tamper tests for each identity: residual-zero, recompose, value bridge, AIR
   quotient, byte LogUp, selected NPO-IO LogUp, trace NPO-IO LogUp.
