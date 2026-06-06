@@ -25,8 +25,8 @@ undocumented or unproven soundness shortcut.
 | Soundness target | 60 pure FRI query bits with `log_blowup=4`, `num_queries=15`, `query_pow_bits=0` |
 | Most viable shape | One fused FRI-native terminal theorem over the merged NPO/value bridge plus packed Tip5 AIR, packed byte LogUp, packed trace-to-NPO-IO projection, and selected-value-to-packed-NPO-IO bridge |
 | Best measured complete base | Merged padding/value-bridge checkpoint at `151,448` bytes / `147.9 KiB`, post-prelude proof body `14.914s`, but missing internal Tip5 binding |
-| Main current blocker | The bridge from selected NPO values to packed NPO-IO must account for output-present masking; absent output limbs are zero on the selected value side but nonzero in the unmasked packed projection |
-| Next implementation step | Add a lane-selector-aware selected-to-packed LogUp bridge, then fuse it with the packed AIR/LogUp/projection openings under one transcript |
+| Main current blocker | All required packed Tip5/NPO subtheorems now verify standalone, but appending them duplicates compact-FRI and opening material and misses the total size/time target |
+| Next implementation step | Fuse the merged value bridge, packed AIR, packed byte LogUp, packed NPO-IO projection, and lane-selector bridge under one transcript and one opening schedule |
 
 ### Decision
 
@@ -89,6 +89,17 @@ bytes / `146.0 KiB`, with compact FRI `138,727` bytes, full-trace zeta
 openings `10,007` bytes, NPO-IO openings `527` bytes, opened quotient `7`
 bytes, prove `20.379s`, and verify `10.692s`.
 
+The lane-selector-aware selected-to-packed NPO-IO bridge now verifies. It
+binds the selected value-bridge endpoint to the packed NPO-IO projection
+endpoint with verifier-derived per-lane selectors: all 16 input lanes are
+included for every Tip5 row, and each final-output lane is included only when
+its `output_present_limb` selector is one. On the full PROD composite relation,
+the standalone bridge proof verifies at `140,843` bytes / `137.5 KiB`, with
+compact FRI `137,218` bytes, selected lookup opening `1,720` bytes, packed
+NPO-IO opening `524` bytes, accumulator openings `322 + 322` bytes, quotient
+openings `42 + 39` bytes, selected quotient rows `131,072`, packed quotient
+rows `65,536`, prove `31.157s`, and verify `14.482s`.
+
 Those standalone proofs are evidence, not an appendable production proof.
 Appending any standalone packed proof to the `151,448` byte merged
 value-bridge checkpoint would exceed the relaxed size target because it would
@@ -135,19 +146,17 @@ masked projection commitment.
   the proof and reject stale trace/projection commitments, stale projection
   profiles, malformed openings, tampered projection openings, and stale prelude
   roots for a changed packed trace.
-- The latest bridge investigation has identified the necessary selector shape:
-  selected-value output lanes are masked by `output_present_limb`, while the
-  packed projection remains unmasked and trace-derived. This is a design
-  constraint for the next proof, not yet a passing production bridge.
+- The lane-selector-aware selected-to-packed NPO-IO bridge checkpoint verifies.
+  Its tests round-trip the proof, require selected and packed endpoint roots to
+  match the merged value-bridge and packed projection commitments, compare only
+  semantically present lanes, reject stale endpoint commitments/profiles,
+  reject malformed openings, reject tampered selected openings, and reject a
+  stale prelude for a changed packed projection endpoint.
 - The production soundness policy is explicit: 60 bits must come from FRI query
   soundness at `pow=0`, not from proof-system grinding.
 
 ### Remaining Work
 
-- Implement the lane-selector-aware selected NPO-value to packed NPO-IO
-  projection bridge, preserving the Merkle-direction-aware `mmcs_bit`
-  bus-to-trace projection and binding the bridge endpoints to the merged
-  value-bridge selected commitment and the packed projection commitment.
 - Fuse packed AIR algebra, packed byte-table LogUp, packed NPO-IO projection,
   and selected-value bridge openings with the merged value-bridge proof under
   one transcript and one shared opening schedule.
@@ -165,8 +174,9 @@ masked projection commitment.
 ### Current Non-Claims
 
 - The relaxed milestone has not been met yet.
-- The standalone packed AIR and packed LogUp proofs are sound checkpoints, but
-  they are not production artifacts by themselves.
+- The standalone packed AIR, packed LogUp, packed NPO-IO projection, and
+  selected-to-packed bridge proofs are sound checkpoints, but they are not
+  production artifacts by themselves.
 - The batch-STARK L2/final-layer route does not replace the native terminal
   production certificate path.
 - Any route that changes to proof-system PoW grinding, omits the selected
