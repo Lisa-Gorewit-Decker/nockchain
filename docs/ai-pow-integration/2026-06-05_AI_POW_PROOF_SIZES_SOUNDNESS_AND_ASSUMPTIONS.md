@@ -43,7 +43,7 @@ must not be treated as the production block/wire artifact.
 | Full `ai-pow-zk` composite-verifier native terminal path | Opt-in diagnostic path for the actual composite L1 verifier circuit; not yet production-qualified because it misses both size and time gates | `lb=6,nq=10,pow=0` reduced-profile run after compact known-index proof encoding: terminal certificate `766,069` bytes / `748.1 KiB`; terminal public inputs `5,180` bytes; postcard wire certificate `771,249` bytes / `753.2 KiB`; release prove `80.829s`, verify `58.825s` | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_recursive_certificate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed size measurement. First release/native command compiled in `1m57s`, then the test binary ran for more than `7m35s` without reaching the final size/timing print and was stopped. A phase-instrumented rerun compiled in `1m42s` and showed `38.235s` primitive prove plus `51.902s` merged value-bridge prove before the integrated Tip5 LogUp subproof finished | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier terminal relation metrics | Non-proving diagnostic for the same path | PROD baseline: `125,961` ops, `221,989` witnesses, `43,443` terminal private inputs, `14,049` NPO rows, `242,798` NPO residual components, `5,319` bytes of terminal public inputs, terminal compile `20.943s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_for_prod_baseline_composite_are_available -- --ignored --nocapture`, 2026-06-05 |
-| Full `ai-pow-zk` composite-verifier FRI-native NPO residual-zero floor | Diagnostic only; measures the actual composite L1 verifier NPO polynomial layout and the FRI-native residual-zero body. This is not production-sound yet because the full-composite residual columns are nonzero and verification correctly rejects the proof. | Layout: `14,049` NPO rows, `16,384` padded rows, `89` prover-dependent field columns / `178` basis columns, residual-zero opened-column floor `180` basis columns. Proof body `57,390` bytes with `55,889` bytes compact FRI; `10,070` nonzero residual values; status `rejected_nonzero_residuals`; prove `20.265s`, verify `11.920s`, total diagnostic wall `74.506s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_fri_native_residual_zero_candidate_for_prod_baseline_measures -- --ignored --nocapture`, 2026-06-06 |
+| Full `ai-pow-zk` composite-verifier FRI-native NPO residual-zero floor | Diagnostic only; measures the actual composite L1 verifier NPO polynomial layout and the FRI-native residual-zero body. After the terminal Tip5 Merkle-direction mapping fix, this residual-zero layer verifies, but it is not by itself a production-sound recursive proof because the remaining NPO quotient/value-bridge/lookup and primitive-row relations still have to be included or replaced by documented bindings. | Layout: `14,049` NPO rows, `16,384` padded rows, `89` prover-dependent field columns / `178` basis columns, residual-zero opened-column floor `180` basis columns. Proof body `55,344` bytes with `54,023` bytes compact FRI; `0` nonzero residual values; status `verified`; prove `19.635s`, verify `11.930s`, total diagnostic wall `87.229s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_fri_native_residual_zero_candidate_for_prod_baseline_measures -- --ignored --nocapture`, 2026-06-06 |
 | Recompose/coeff terminal relation lower bound | Unsound diagnostic only; disables the D=2 coefficient-control binding to quantify whether replacing that table could be a primary size lever | Production binding: `125,961` ops, `106,349` primitive ops, `14,049` NPO rows, `5,743` recompose/coeff rows. Disabled binding: `125,571` ops, same `106,349` primitive ops, `13,659` NPO rows, `0` recompose/coeff rows but `5,578` ordinary recompose rows. Net unsound saving: only `390` ops/NPO rows and no primitive arithmetic | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_relation_metrics_recompose_ctl_lower_bound_for_prod_baseline_composite -- --ignored --nocapture`, 2026-06-06 |
 | Layer-0 pinned+LogUp baseline proof breakdown | Diagnostic for the specialized AI-PoW AIR that a Pearl-shaped recursive compressor would consume; not a production wire artifact | `lb=4,nq=15,pow=0`: bincode proof `260,987` bytes / `254.9 KiB`, opening proof `229,849` bytes, prove `8.695s`; `lb=6,nq=10,pow=0`: bincode proof `199,882` bytes / `195.2 KiB`, opening proof `168,744` bytes, prove `32.314s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release composite_pinned_logup_prod_l0_size_breakdown -- --ignored --nocapture` and `... composite_pinned_logup_lb6_nq10_l0_size_breakdown ...`, 2026-06-05 |
 
@@ -71,13 +71,22 @@ The active production target is therefore:
   **94.0 KiB / 23.070s** checkpoint cannot be promoted as the production
   recursive path.
 - full `ai-pow-zk` composite-verifier FRI-native NPO residual-zero floor: the
-  actual composite relation has a plausible byte floor, with a **57,390 byte**
-  residual-zero proof body and **55,889 byte** compact FRI payload over
-  **89** prover-dependent field columns and **16,384** padded NPO rows. It is
-  not a valid production replacement: the generated residual columns currently
-  contain **10,070** nonzero values and the verifier rejects with a residual
-  relation mismatch. This is a sound failure and makes the next work a
-  row-relation/quotient correctness task, not a serialization task.
+  actual composite relation has a plausible byte floor, with a **55,344 byte**
+  residual-zero proof body and **54,023 byte** compact FRI payload over
+  **89** prover-dependent field columns and **16,384** padded NPO rows. After
+  fixing terminal Tip5 Merkle-direction input/hidden-lane reconstruction, the
+  generated residual table has **0** nonzero values and the residual-zero FRI
+  layer verifies. This is still not a valid production replacement by itself:
+  residual-zero only proves committed residual columns are zero. The remaining
+  production work is to include or replace the NPO row-relation quotients,
+  value bridge, Tip5 lookup/AIR binding, primitive row-product checks, and
+  their explicit transcript/root bindings without blowing the size or time
+  gates. The value bridge must also bind Tip5 Merkle direction explicitly:
+  callsite input slots are pre-swap bus limbs, but the Tip5 trace/AIR consumes
+  post-direction permutation-input lanes, so `mmcs_bit=1` swaps which trace
+  lanes are witness inputs versus hidden values. A production bridge must prove
+  that bus-to-trace projection or commit/constrain direction-dependent
+  trace-lane selectors.
 - specialized Layer-0 pinned+LogUp proof breakdown: the existing AI-PoW AIR
   proof is still too large to submit directly. The pure-query production
   baseline measured **260,987 bytes / 254.9 KiB** as bincode, dominated by a
@@ -402,19 +411,21 @@ soundness and size-reduction research path, not the active production recursive
 certificate backend.
 
 The newer FRI-native compact residual-zero checkpoint is much more promising
-on bytes but still fails correctness on the full composite relation. The
+on bytes, and the full-composite residual-zero layer now verifies after fixing
+terminal Tip5 Merkle-direction input and hidden-lane reconstruction. The
 PROD-layout diagnostic derives the NPO polynomial shape from the compiled
-terminal verifying key: `14,049` rows, `16,384` padded rows, `46` residual-value
-columns, `89` prover-dependent field columns, and `180` opened basis columns
-for the residual-zero check. The resulting proof body is `57,390` bytes, but
-the NPO residual table contains `10,070` nonzero values, with the first observed
-nonzero at row `1293` in `residual_value_1`. Verification rejects that proof as
-`TerminalNpoPolynomialFriRelationMismatch`. Until the full composite NPO
-residual mapping and row-relation quotients make those columns zero, this is
-only a measured size floor. The diagnostic also shows work still needs to be
-shared: L0 proving, terminal compile, NPO-column construction, root building,
-prelude construction, the residual-zero proof, and verification took about
-`74.506s` wall time in aggregate.
+terminal verifying key: `14,049` rows, `16,384` padded rows, `46`
+residual-value columns, `89` prover-dependent field columns, and `180` opened
+basis columns for the residual-zero check. The resulting proof body is
+`55,344` bytes with a `54,023` byte compact FRI payload, the residual table has
+`0` nonzero values, and the verification status is `verified`. This is still
+only a residual-zero layer, not a complete production terminal proof: the NPO
+row-relation quotients, recompose/value-bridge checks, Tip5 lookup/AIR
+bindings, primitive row-product checks, and their explicit root/transcript
+bindings still have to be included or replaced. The diagnostic also shows work
+still needs to be shared: L0 proving, terminal compile, NPO-column
+construction, root building, prelude construction, the residual-zero proof, and
+verification took `87.229s` wall time in aggregate.
 
 A phase-instrumented rerun made the failure mode more concrete:
 

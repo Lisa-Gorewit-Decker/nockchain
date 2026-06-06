@@ -1708,6 +1708,7 @@ fn _composite_conforms_to_recursive_air() {
 mod tests {
     use p3_recursion::terminal::{
         NativeTerminalConstraint, NativeTerminalVerifyingKey, TerminalNpoPolynomialFriColumnSet,
+        TerminalNpoPolynomialTable, TerminalNpoPolynomialTableRow, TerminalNpoRowKind,
         TerminalProductionNpoPolynomialProof, TerminalProductionProof,
     };
 
@@ -3487,6 +3488,153 @@ mod tests {
         );
     }
 
+    fn describe_terminal_npo_residual_component(
+        row: &TerminalNpoPolynomialTableRow<Challenge>,
+        component_offset: usize,
+    ) -> String {
+        let basis_dim = <Challenge as BasedVectorSpace<Val>>::DIMENSION;
+        let mut offset = component_offset;
+        let mut visit = |label: String, width: usize| {
+            if offset < width {
+                Some(format!("{label}/basis_{offset}"))
+            } else {
+                offset -= width;
+                None
+            }
+        };
+
+        match row.row_kind {
+            TerminalNpoRowKind::Tip5Goldilocks => {
+                for (limb, value) in row.inputs.iter().enumerate() {
+                    if value.is_some() {
+                        if let Some(label) = visit(format!("tip5_input_limb_{limb}"), basis_dim) {
+                            return label;
+                        }
+                    }
+                }
+                for (limb, value) in row.outputs.iter().enumerate() {
+                    if value.is_some() {
+                        if let Some(label) = visit(format!("tip5_output_limb_{limb}"), basis_dim) {
+                            return label;
+                        }
+                    }
+                }
+                if row.mode_merkle_path {
+                    if row.mmcs_bit.is_some() {
+                        if let Some(label) = visit("tip5_mmcs_bit_limb_16".into(), 1) {
+                            return label;
+                        }
+                    }
+                    for limb in 0..5 {
+                        if row.inputs.get(limb).is_none_or(Option::is_none) {
+                            if let Some(label) =
+                                visit(format!("tip5_merkle_chain_input_limb_{limb}"), 1)
+                            {
+                                return label;
+                            }
+                        }
+                    }
+                    for limb in 10..16 {
+                        if row.inputs.get(limb).is_none_or(Option::is_none) {
+                            if let Some(label) = visit(format!("tip5_merkle_zero_limb_{limb}"), 1) {
+                                return label;
+                            }
+                        }
+                    }
+                } else {
+                    for limb in 0..16 {
+                        if row.inputs.get(limb).is_none_or(Option::is_none) {
+                            if let Some(label) = visit(format!("tip5_chain_input_limb_{limb}"), 1) {
+                                return label;
+                            }
+                        }
+                    }
+                }
+            }
+            TerminalNpoRowKind::Recompose | TerminalNpoRowKind::RecomposeWithCoeffLookups => {
+                for (limb, value) in row.inputs.iter().enumerate() {
+                    if value.is_some() {
+                        if let Some(label) =
+                            visit(format!("recompose_input_limb_{limb}"), basis_dim)
+                        {
+                            return label;
+                        }
+                    }
+                }
+                for (limb, value) in row.outputs.iter().enumerate() {
+                    if value.is_some() {
+                        if let Some(label) =
+                            visit(format!("recompose_output_limb_{limb}"), basis_dim)
+                        {
+                            return label;
+                        }
+                    }
+                }
+            }
+        }
+
+        format!("unknown_component_{component_offset}")
+    }
+
+    fn print_terminal_npo_residual_distribution(
+        label: &str,
+        table: &TerminalNpoPolynomialTable<Challenge>,
+    ) {
+        let mut total_nonzero = 0usize;
+        let mut rows_with_nonzero = 0usize;
+        let mut by_row_kind = std::collections::BTreeMap::<String, usize>::new();
+        let mut by_component = std::collections::BTreeMap::<String, usize>::new();
+        let mut first_nonzero_rows = Vec::new();
+
+        for row in &table.rows {
+            let mut row_has_nonzero = false;
+            for (component_offset, value) in row.residual_values.iter().enumerate() {
+                if *value == Challenge::ZERO {
+                    continue;
+                }
+                total_nonzero += 1;
+                row_has_nonzero = true;
+                *by_row_kind
+                    .entry(format!("{:?}", row.row_kind))
+                    .or_default() += 1;
+                let component = describe_terminal_npo_residual_component(row, component_offset);
+                *by_component.entry(component.clone()).or_default() += 1;
+                if first_nonzero_rows.len() < 8 {
+                    let basis =
+                        <Challenge as BasedVectorSpace<Val>>::as_basis_coefficients_slice(value)
+                            .iter()
+                            .copied()
+                            .collect::<Vec<_>>();
+                    first_nonzero_rows.push(format!(
+                        "npo={} local={} kind={:?} new_start={} merkle={} offset={} component={} value_basis={:?}",
+                        row.npo_index,
+                        row.local_row,
+                        row.row_kind,
+                        row.mode_new_start,
+                        row.mode_merkle_path,
+                        component_offset,
+                        component,
+                        basis
+                    ));
+                }
+            }
+            rows_with_nonzero += usize::from(row_has_nonzero);
+        }
+
+        let mut top_components = by_component.iter().collect::<Vec<_>>();
+        top_components.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        top_components.truncate(12);
+
+        eprintln!(
+            "native terminal NPO residual distribution [{label}]: rows_with_nonzero={} total_nonzero={} by_row_kind={:?} top_components={:?} first_nonzero_rows={:?}",
+            rows_with_nonzero,
+            total_nonzero,
+            by_row_kind,
+            top_components,
+            first_nonzero_rows,
+        );
+    }
+
     fn init_terminal_prover_profile_tracing() {
         if std::env::var_os("NOCK_TERMINAL_PROFILE_PROVER").is_none() {
             return;
@@ -4462,9 +4610,23 @@ mod tests {
             traces,
         };
 
+        let assignment_check_start = std::time::Instant::now();
+        let assignment_check_result =
+            compiler.verify_assignment_with_goldilocks_npos(&vk, &witness);
+        eprintln!(
+            "native terminal FRI-native residual-zero candidate phase [{label}]: assignment_npo_check_ms={} assignment_npo_check={:?}",
+            assignment_check_start.elapsed().as_millis(),
+            assignment_check_result.as_ref().map(|_| "ok"),
+        );
+
         let layout_metrics =
             NativeTerminalCompiler::terminal_npo_polynomial_layout_metrics::<Challenge>(&vk)
                 .expect("FRI-native residual-zero diagnostic must derive NPO layout metrics");
+
+        let table = compiler
+            .terminal_npo_polynomial_table_goldilocks(&vk, &witness)
+            .expect("FRI-native residual-zero diagnostic must build NPO table");
+        print_terminal_npo_residual_distribution(label, &table);
 
         let columns_start = std::time::Instant::now();
         let columns = compiler

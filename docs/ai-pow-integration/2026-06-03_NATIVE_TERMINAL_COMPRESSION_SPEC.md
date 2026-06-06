@@ -859,16 +859,21 @@ for this route.
   `61,683` bytes / `60.2 KiB`, with `1,174` bytes of selected zeta openings,
   `60,372` bytes of compact FRI material, `prove=1.567s`, and
   `verify=0.496s`. On the full `ai-pow-zk` composite verifier relation, the
-  same FRI-native residual-zero shape produces a `57,390` byte body with
-  `55,889` bytes of compact FRI material over `14,049` NPO rows, `16,384`
-  padded rows, and `89` prover-dependent field columns. That full-composite
-  proof is intentionally treated as a rejected diagnostic today: the generated
-  residual columns contain `10,070` nonzero values, the first observed nonzero
-  is at row `1293` in `residual_value_1`, and verification rejects with a
-  residual-relation mismatch. This is still a checkpoint rather than a
-  production NPO proof because the full-composite residual columns must become
-  identically zero and then still need quotients tying them to the witness-value
-  columns and verifier-derived row relation over the whole NPO domain.
+  same FRI-native residual-zero shape now produces a `55,344` byte body with
+  `54,023` bytes of compact FRI material over `14,049` NPO rows, `16,384`
+  padded rows, and `89` prover-dependent field columns. After fixing terminal
+  Tip5 Merkle-direction input/hidden-lane reconstruction, the full-composite
+  residual table has `0` nonzero values and this residual-zero checkpoint
+  verifies. This is still a checkpoint rather than a production NPO proof
+  because it must be paired with, or replaced by, quotients tying residual
+  columns to the witness-value columns and verifier-derived row relation over
+  the whole NPO domain. In particular, Merkle Tip5 direction bits make the
+  value bridge direction-dependent: callsite inputs are pre-swap bus limbs,
+  while the Tip5 trace/AIR consumes post-direction permutation-input lanes. The
+  production bridge must either prove the `mmcs_bit`-selected bus-to-trace
+  projection, or commit and constrain direction-dependent trace-lane selectors;
+  fixed trace-lane hidden/input selectors are not an explicit sound binding
+  when `mmcs_bit=1`.
 - `TerminalNpoPolynomialFriResidualZeroRecomposeProof`: a combined FRI-native
   checkpoint that opens the prover-dependent NPO table, the folded residual-zero
   composition polynomial, and the recompose residual quotient in one terminal
@@ -1575,7 +1580,7 @@ Tip5-L0 verifier circuit produced:
 | Merkle residual-zero candidate, opt-in real Tip5-L0 measurement | 734,249 | - | - | 56.449 s | 4.627 s |
 | selected-column compact residual-zero FRI candidate, opt-in real Tip5-L0 measurement | 376,642 | - | 48,495 | 26.304 s | 2.273 s |
 | FRI-native compact residual-zero candidate, opt-in real Tip5-L0 measurement | 61,683 | - | 60,372 | 1.567 s | 0.496 s |
-| FRI-native compact residual-zero candidate, full AI-PoW composite measurement, rejected nonzero residuals | 57,390 | - | 55,889 | 20.265 s | 11.920 s reject |
+| FRI-native compact residual-zero candidate, full AI-PoW composite measurement, verified residual-zero layer | 55,344 | - | 54,023 | 19.635 s | 11.930 s |
 | recompose residual-relation quotient candidate, opt-in real Tip5-L0 measurement | 81,266 | - | 79,916 | 1.852 s | 0.601 s |
 
 The full-table FRI candidate is too large to combine with the primitive
@@ -1605,16 +1610,17 @@ separate FRI proof it is too expensive to stack with the residual-zero proof:
 before Tip5 permutation and chain constraints are added.
 
 The full AI-PoW composite measurement confirms that the FRI-native
-residual-zero byte floor is plausible at production scale, but also exposes the
-current correctness blocker. The full-composite layout has `14,049` rows,
-`16,384` padded rows, `46` residual-value columns, and `89` prover-dependent
-field columns. The residual-zero proof body is only `57,390` bytes, but the
-residual table has `10,070` nonzero values and the verifier rejects it. Until
-the verifier-key-derived NPO residual mapping and row-relation quotient make
-those columns zero, this proof shape cannot replace exhaustive NPO checking.
-The total diagnostic wall time was `74.506s`, so a production version must also
-reuse L0, terminal-compile, NPO-column, root, and prelude work instead of
-rebuilding them around each checkpoint proof.
+residual-zero byte floor is plausible at production scale. The full-composite
+layout has `14,049` rows, `16,384` padded rows, `46` residual-value columns,
+and `89` prover-dependent field columns. The residual-zero proof body is only
+`55,344` bytes, the residual table has `0` nonzero values, and the
+residual-zero verifier accepts it. This does not replace exhaustive NPO
+checking by itself: a production version still needs the verifier-key-derived
+NPO row-relation quotients, value bridge, Tip5 lookup/AIR bindings, and their
+shared roots/transcript bindings. The total diagnostic wall time was
+`87.229s`, so a production version must also reuse L0, terminal-compile,
+NPO-column, root, and prelude work instead of rebuilding them around each
+checkpoint proof.
 
 The next viable direction is a shared/batched terminal proximity backend that
 commits the NPO row columns through one low-degree object and amortizes FRI
@@ -1833,9 +1839,10 @@ Security-audit conclusions for the current implementation checkpoint:
   recompose NPO row. The merged FRI-native NPO
   residual-zero+recompose+value-bridge checks and the Tip5 lookup AIR/LogUp
   selected-vs-trace NPO-IO bridge remain the leading replacement direction, but
-  they are diagnostic today. The full-composite residual-zero floor is small
-  enough to be interesting, but it currently rejects because the residual
-  columns are nonzero.
+  they are diagnostic today. The full-composite residual-zero layer is now
+  small and verified, but it is only one identity; the remaining NPO and
+  primitive-row identities still need explicit bindings before this can replace
+  exhaustive NPO checking.
 - The terminal proof prelude is now an implemented transcript-binding prefix,
   not a standalone argument. It prevents challenge grinding across relation,
   public input, parameter, and commitment substitutions. In the compact

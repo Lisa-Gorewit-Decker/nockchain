@@ -5576,11 +5576,15 @@ impl NativeTerminalCompiler {
                             got: None,
                         },
                     )?;
-                    let hidden_inputs = Self::terminal_tip5_hidden_inputs_from_compact(
+                    let hidden_inputs =
+                        Self::terminal_tip5_hidden_inputs_from_compact_for_opened_values(
                         local_opening.npo_index,
-                        verifying_key,
+                        row,
+                        callsite,
                         local_opening.tip5_hidden_input_nonzero_mask,
                         &local_opening.tip5_hidden_input_values_le,
+                        &expected_witness_ids,
+                        &opened_values,
                     )?;
                     let evaluation = self.evaluate_exhaustive_tip5_npo_row_values::<F>(
                         npo_index,
@@ -8974,16 +8978,27 @@ impl NativeTerminalCompiler {
             if row.row_kind != TerminalNpoRowKind::Tip5Goldilocks {
                 continue;
             }
-            let mut state = [Goldilocks::ZERO; 16];
-            for (limb, value) in row.inputs.iter().enumerate().take(16) {
-                if let Some(value) = value {
-                    state[limb] = Self::terminal_npo_table_base_goldilocks(
-                        row.npo_index,
-                        &format!("input_value_{limb}"),
-                        value,
-                    )?;
-                }
-            }
+            let mode = Tip5TerminalMode {
+                new_start: row.mode_new_start,
+                merkle_path: row.mode_merkle_path,
+            };
+            let mmcs_bit = if mode.merkle_path {
+                row.mmcs_bit
+                    .as_ref()
+                    .map(|value| {
+                        Self::terminal_npo_table_base_goldilocks(
+                            row.npo_index,
+                            "mmcs_bit",
+                            value,
+                        )
+                    })
+                    .transpose()?
+                    .map(|value| value == Goldilocks::ONE)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            let mut hidden_by_trace_limb = [None; 16];
             for hidden in &row.hidden_tip5_inputs {
                 if hidden.limb >= 16 || hidden.value_basis.len() != 1 {
                     return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
@@ -9000,7 +9015,29 @@ impl NativeTerminalCompiler {
                         },
                     );
                 }
-                state[hidden.limb] = Goldilocks::from_u64(hidden.value_basis[0]);
+                if hidden_by_trace_limb[hidden.limb].is_some() {
+                    return Err(
+                        NativeTerminalVerifyError::TerminalNpoTip5HiddenInputDuplicate {
+                            npo_index: row.npo_index,
+                            limb: hidden.limb,
+                        },
+                    );
+                }
+                hidden_by_trace_limb[hidden.limb] = Some(Goldilocks::from_u64(hidden.value_basis[0]));
+            }
+            let mut state = [Goldilocks::ZERO; 16];
+            for trace_limb in 0..16 {
+                let bus_limb =
+                    Self::terminal_tip5_bus_limb_from_trace_limb(mode, mmcs_bit, trace_limb);
+                if let Some(value) = row.inputs.get(bus_limb).and_then(|value| value.as_ref()) {
+                    state[trace_limb] = Self::terminal_npo_table_base_goldilocks(
+                        row.npo_index,
+                        &format!("input_value_{bus_limb}"),
+                        value,
+                    )?;
+                } else if let Some(value) = hidden_by_trace_limb[trace_limb] {
+                    state[trace_limb] = value;
+                }
             }
             inputs.push(state);
         }
@@ -14658,7 +14695,7 @@ impl NativeTerminalCompiler {
                 Self::push_unique_witness(&mut witness_ids, witness_id);
             }
             match Self::terminal_npo_row(verifying_key, npo_index) {
-                Some(NativeTerminalNpoRowRef::Tip5 { callsite, .. }) => {
+                Some(NativeTerminalNpoRowRef::Tip5 { row, callsite, .. }) => {
                     if let Some(witness_id) = callsite.tip5_mmcs_bit {
                         Self::push_unique_witness(&mut boolean_witness_ids, witness_id);
                     }
@@ -14683,18 +14720,34 @@ impl NativeTerminalCompiler {
                     } else {
                         false
                     };
-                    let full_hidden = Self::terminal_tip5_hidden_inputs_from_compact(
-                        npo_index,
-                        verifying_key,
-                        npo_opening.tip5_hidden_input_nonzero_mask,
-                        &npo_opening.tip5_hidden_input_values_le,
-                    )?;
-                    let has_ctl_output = callsite.outputs.iter().any(Option::is_some);
+                    let expected_witness_ids = Self::npo_callsite_witness_ids(callsite);
+                    let opened_values = expected_witness_ids
+                        .iter()
+                        .map(|witness_id| {
+                            witness
+                                .traces
+                                .witness_trace
+                                .get_value(*witness_id)
+                                .copied()
+                                .ok_or(NativeTerminalVerifyError::MissingWitness {
+                                    witness_id: witness_id.0,
+                                })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let full_hidden =
+                        Self::terminal_tip5_hidden_inputs_from_compact_for_opened_values(
+                            npo_index,
+                            row,
+                            callsite,
+                            npo_opening.tip5_hidden_input_nonzero_mask,
+                            &npo_opening.tip5_hidden_input_values_le,
+                            &expected_witness_ids,
+                            &opened_values,
+                        )?;
                     for hidden in full_hidden {
                         if Self::should_serialize_tip5_hidden_limb(
                             callsite,
                             mode,
-                            has_ctl_output,
                             mmcs_bit,
                             hidden.limb,
                         ) {
@@ -15081,11 +15134,14 @@ impl NativeTerminalCompiler {
                         *expected_index,
                         row,
                         callsite,
-                        &Self::terminal_tip5_hidden_inputs_from_compact(
+                        &Self::terminal_tip5_hidden_inputs_from_compact_for_opened_values(
                             opening.npo_opening.npo_index,
-                            verifying_key,
+                            row,
+                            callsite,
                             opening.npo_opening.tip5_hidden_input_nonzero_mask,
                             &opening.npo_opening.tip5_hidden_input_values_le,
+                            &expected_witness_ids,
+                            &opened_values,
                         )?,
                         &expected_witness_ids,
                         &opened_values,
@@ -29296,7 +29352,7 @@ impl NativeTerminalCompiler {
                         columns, npo_index, callsite,
                     )?;
                 let hidden_inputs = Self::terminal_npo_polynomial_column_hidden_tip5_inputs(
-                    columns, npo_index, callsite,
+                    columns, npo_index, row, callsite,
                 )?;
                 self.evaluate_exhaustive_tip5_npo_row_values::<F>(
                     npo_index,
@@ -29483,22 +29539,46 @@ impl NativeTerminalCompiler {
     fn terminal_npo_polynomial_column_hidden_tip5_inputs<F>(
         columns: &TerminalNpoPolynomialColumns<F>,
         npo_index: usize,
+        row: usize,
         callsite: &NativeTerminalNpoCallsite,
     ) -> Result<Vec<TerminalTip5HiddenInputValue>, NativeTerminalVerifyError>
     where
         F: Field + BasedVectorSpace<Goldilocks>,
     {
+        let mode =
+            callsite
+                .tip5_mode
+                .ok_or(NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                    op_type: Self::tip5_op_type().as_str().into(),
+                    row,
+                    field: "tip5_mode",
+                    limb: 0,
+                    expected: Some(1),
+                    got: None,
+                })?;
+        let mmcs_value =
+            Self::terminal_npo_polynomial_column_value(columns, "mmcs_bit", npo_index)?;
+        let mmcs_bit = mode.merkle_path
+            && Self::terminal_npo_table_base_goldilocks(npo_index, "mmcs_bit", &mmcs_value)?
+                == Goldilocks::ONE;
         let mut hidden_inputs = Vec::new();
-        for limb in 0..columns.layout.hidden_tip5_value_columns {
-            let expected = callsite.inputs.get(limb).copied().flatten().is_none();
-            let present_label = format!("hidden_tip5_present_{limb}");
+        for trace_limb in 0..columns.layout.hidden_tip5_value_columns {
+            let bus_limb =
+                Self::terminal_tip5_bus_limb_from_trace_limb(mode, mmcs_bit, trace_limb);
+            let expected = callsite
+                .inputs
+                .get(bus_limb)
+                .copied()
+                .flatten()
+                .is_none();
+            let present_label = format!("hidden_tip5_present_{trace_limb}");
             Self::expect_terminal_npo_polynomial_bool_column(
                 columns,
                 &present_label,
                 npo_index,
                 expected,
             )?;
-            let value_label = format!("hidden_tip5_value_{limb}");
+            let value_label = format!("hidden_tip5_value_{trace_limb}");
             let value =
                 Self::terminal_npo_polynomial_column_value(columns, &value_label, npo_index)?;
             if expected {
@@ -29518,7 +29598,7 @@ impl NativeTerminalCompiler {
                 }
                 let first = basis.first().copied().unwrap_or(Goldilocks::ZERO);
                 hidden_inputs.push(TerminalTip5HiddenInputValue {
-                    limb,
+                    limb: trace_limb,
                     value_basis: vec![first.as_canonical_u64()],
                 });
             } else if value != F::ZERO {
@@ -29711,18 +29791,13 @@ impl NativeTerminalCompiler {
         if !mode.merkle_path {
             return 0;
         }
-        let has_ctl_output = callsite.outputs.iter().any(Option::is_some);
         let mut count_without_swap = 0usize;
         let mut count_with_swap = 0usize;
-        for limb in 0..16 {
-            if callsite.inputs[limb].is_some() {
-                continue;
-            }
-            if Self::should_serialize_tip5_hidden_limb(callsite, mode, has_ctl_output, false, limb)
-            {
+        for trace_limb in 0..16 {
+            if Self::should_serialize_tip5_hidden_limb(callsite, mode, false, trace_limb) {
                 count_without_swap += 1;
             }
-            if Self::should_serialize_tip5_hidden_limb(callsite, mode, has_ctl_output, true, limb) {
+            if Self::should_serialize_tip5_hidden_limb(callsite, mode, true, trace_limb) {
                 count_with_swap += 1;
             }
         }
@@ -30247,23 +30322,45 @@ impl NativeTerminalCompiler {
         let (local_opening, expected_witness_ids) =
             self.terminal_npo_local_opening_goldilocks(verifying_key, witness, npo_index)?;
         let mut witness_openings = Vec::new();
-        for witness_id in expected_witness_ids {
-            let value = witness.traces.witness_trace.get_value(witness_id).ok_or(
+        let mut opened_values = Vec::with_capacity(expected_witness_ids.len());
+        for witness_id in &expected_witness_ids {
+            let value = witness.traces.witness_trace.get_value(*witness_id).ok_or(
                 NativeTerminalVerifyError::MissingWitness {
                     witness_id: witness_id.0,
                 },
             )?;
+            opened_values.push(*value);
             witness_openings
                 .push(witness_oracle.open_goldilocks_value(witness_id.0 as usize, value)?);
         }
+        let (row, callsite) = match Self::terminal_npo_row(verifying_key, npo_index).ok_or(
+            NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
+                query: npo_index,
+                expected: npo_index,
+                got: npo_index,
+            },
+        )? {
+            NativeTerminalNpoRowRef::Tip5 { row, callsite, .. } => (row, callsite),
+            NativeTerminalNpoRowRef::Recompose { .. } => {
+                return Ok(TerminalNpoOpening {
+                    npo_index,
+                    tip5_hidden_input_values: Vec::new(),
+                    witness_openings,
+                });
+            }
+        };
 
         Ok(TerminalNpoOpening {
             npo_index,
-            tip5_hidden_input_values: Self::terminal_tip5_hidden_inputs_from_compact(
+            tip5_hidden_input_values:
+                Self::terminal_tip5_hidden_inputs_from_compact_for_opened_values(
                 local_opening.npo_index,
-                verifying_key,
+                row,
+                callsite,
                 local_opening.tip5_hidden_input_nonzero_mask,
                 &local_opening.tip5_hidden_input_values_le,
+                &expected_witness_ids,
+                &opened_values,
             )?,
             witness_openings,
         })
@@ -30315,21 +30412,40 @@ impl NativeTerminalCompiler {
                         got: operation.input_values.len(),
                     });
                 }
-                for (limb, input_value) in operation.input_values.iter().enumerate() {
-                    if callsite.inputs.get(limb).and_then(|input| *input).is_none() {
+                let mode = callsite.tip5_mode.ok_or(
+                    NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                        op_type: op_type.into(),
+                        row,
+                        field: "tip5_mode",
+                        limb: 0,
+                        expected: Some(1),
+                        got: None,
+                    },
+                )?;
+                let mmcs_bit = mode.merkle_path && operation.mmcs_bit;
+                for (trace_limb, input_value) in operation.input_values.iter().enumerate() {
+                    let bus_limb =
+                        Self::terminal_tip5_bus_limb_from_trace_limb(mode, mmcs_bit, trace_limb);
+                    if callsite
+                        .inputs
+                        .get(bus_limb)
+                        .copied()
+                        .flatten()
+                        .is_none()
+                    {
                         let basis = Self::goldilocks_basis_u64(input_value);
                         if basis.len() != 1 {
                             return Err(
                                 NativeTerminalVerifyError::TerminalNpoTip5InputValueDimensionMismatch {
                                     npo_index,
-                                    limb,
+                                    limb: trace_limb,
                                     expected: 1,
                                     got: basis.len(),
                                 },
                             );
                         }
                         if basis[0] != 0 {
-                            tip5_hidden_input_nonzero_mask |= 1u16 << limb;
+                            tip5_hidden_input_nonzero_mask |= 1u16 << trace_limb;
                             tip5_hidden_input_values_le.push(basis[0].to_le_bytes());
                         }
                     }
@@ -30351,12 +30467,51 @@ impl NativeTerminalCompiler {
         ))
     }
 
-    fn terminal_tip5_hidden_inputs_from_compact(
+    fn terminal_tip5_hidden_inputs_from_compact_for_opened_values<F>(
         npo_index: usize,
-        verifying_key: &NativeTerminalVerifyingKey<impl Field>,
+        row: usize,
+        callsite: &NativeTerminalNpoCallsite,
         nonzero_mask: u16,
         values_le: &[[u8; 8]],
-    ) -> Result<Vec<TerminalTip5HiddenInputValue>, NativeTerminalVerifyError> {
+        expected_witness_ids: &[WitnessId],
+        opened_values: &[F],
+    ) -> Result<Vec<TerminalTip5HiddenInputValue>, NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks> + Copy,
+    {
+        let mode =
+            callsite
+                .tip5_mode
+                .ok_or(NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                    op_type: Self::tip5_op_type().as_str().into(),
+                    row,
+                    field: "tip5_mode",
+                    limb: 0,
+                    expected: Some(1),
+                    got: None,
+                })?;
+        let mmcs_bit = if mode.merkle_path {
+            let witness_id = callsite.tip5_mmcs_bit.ok_or(
+                NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                    op_type: Self::tip5_op_type().as_str().into(),
+                    row,
+                    field: "mmcs_bit",
+                    limb: 16,
+                    expected: Some(1),
+                    got: None,
+                },
+            )?;
+            Self::tip5_opened_goldilocks_value(
+                row,
+                16,
+                expected_witness_ids,
+                opened_values,
+                witness_id,
+            )? == Goldilocks::ONE
+        } else {
+            false
+        };
+
         if values_le.len() != nonzero_mask.count_ones() as usize {
             return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
                 npo_index,
@@ -30364,35 +30519,15 @@ impl NativeTerminalCompiler {
                 got: values_le.len(),
             });
         }
-        let row_ref = Self::terminal_npo_row(verifying_key, npo_index).ok_or(
-            NativeTerminalVerifyError::TerminalNpoQueryIndexMismatch {
-                query: npo_index,
-                expected: npo_index,
-                got: npo_index,
-            },
-        )?;
-        let callsite = match row_ref {
-            NativeTerminalNpoRowRef::Tip5 { callsite, .. } => callsite,
-            NativeTerminalNpoRowRef::Recompose { .. } => {
-                if nonzero_mask != 0 || !values_le.is_empty() {
-                    return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
-                        npo_index,
-                        expected: 0,
-                        got: values_le.len(),
-                    });
-                }
-                return Ok(Vec::new());
-            }
-        };
-        let hidden_input_count = callsite
-            .inputs
-            .iter()
-            .filter(|input| input.is_none())
-            .count();
         let mut hidden_mask = 0u16;
-        for (limb, input) in callsite.inputs.iter().enumerate() {
-            if input.is_none() {
-                hidden_mask |= 1u16 << limb;
+        let mut hidden_input_count = 0usize;
+        for trace_limb in 0..16 {
+            let bus_limb = Self::terminal_tip5_bus_limb_from_trace_limb(
+                mode, mmcs_bit, trace_limb,
+            );
+            if callsite.inputs.get(bus_limb).copied().flatten().is_none() {
+                hidden_mask |= 1u16 << trace_limb;
+                hidden_input_count += 1;
             }
         }
         if (nonzero_mask & !hidden_mask) != 0 {
@@ -30405,7 +30540,7 @@ impl NativeTerminalCompiler {
         let mut values = Vec::with_capacity(hidden_input_count);
         let mut value_index = 0usize;
         for limb in 0..16 {
-            if callsite.inputs.get(limb).and_then(|input| *input).is_none() {
+            if (hidden_mask & (1u16 << limb)) != 0 {
                 let value = if (nonzero_mask & (1u16 << limb)) != 0 {
                     let value = u64::from_le_bytes(values_le[value_index]);
                     value_index += 1;
@@ -30475,16 +30610,22 @@ impl NativeTerminalCompiler {
         } else {
             false
         };
-        let has_ctl_output = callsite.outputs.iter().any(Option::is_some);
         let mut values = Vec::new();
         for trace_limb in 0..16 {
-            if callsite.inputs[trace_limb].is_some() {
+            let bus_limb =
+                Self::terminal_tip5_bus_limb_from_trace_limb(mode, mmcs_bit, trace_limb);
+            if callsite
+                .inputs
+                .get(bus_limb)
+                .copied()
+                .flatten()
+                .is_some()
+            {
                 continue;
             }
             let serialized = Self::should_serialize_tip5_hidden_limb(
                 callsite,
                 mode,
-                has_ctl_output,
                 mmcs_bit,
                 trace_limb,
             );
@@ -30499,12 +30640,6 @@ impl NativeTerminalCompiler {
                 *value_offset += 1;
                 u64::from_le_bytes(*value_le)
             } else if mode.merkle_path {
-                let bus_limb = Self::terminal_tip5_bus_limb_from_trace_limb(
-                    mode,
-                    has_ctl_output,
-                    mmcs_bit,
-                    trace_limb,
-                );
                 if bus_limb < 5 {
                     if mode.new_start {
                         0
@@ -30647,11 +30782,10 @@ impl NativeTerminalCompiler {
 
     fn terminal_tip5_bus_limb_from_trace_limb(
         mode: Tip5TerminalMode,
-        has_ctl_output: bool,
         mmcs_bit: bool,
         trace_limb: usize,
     ) -> usize {
-        if mode.merkle_path && has_ctl_output && mmcs_bit {
+        if mode.merkle_path && mmcs_bit {
             if trace_limb < 5 {
                 trace_limb + 5
             } else if trace_limb < 10 {
@@ -30667,19 +30801,22 @@ impl NativeTerminalCompiler {
     fn should_serialize_tip5_hidden_limb(
         callsite: &NativeTerminalNpoCallsite,
         mode: Tip5TerminalMode,
-        has_ctl_output: bool,
         mmcs_bit: bool,
         trace_limb: usize,
     ) -> bool {
-        if callsite.inputs[trace_limb].is_some() || !mode.merkle_path {
+        if !mode.merkle_path {
             return false;
         }
-        let bus_limb = Self::terminal_tip5_bus_limb_from_trace_limb(
-            mode,
-            has_ctl_output,
-            mmcs_bit,
-            trace_limb,
-        );
+        let bus_limb = Self::terminal_tip5_bus_limb_from_trace_limb(mode, mmcs_bit, trace_limb);
+        if callsite
+            .inputs
+            .get(bus_limb)
+            .copied()
+            .flatten()
+            .is_some()
+        {
+            return false;
+        }
         (5..10).contains(&bus_limb)
     }
 
@@ -31170,11 +31307,15 @@ impl NativeTerminalCompiler {
                     &expected_witness_ids,
                     indexed_witness_values,
                 )?;
-                let hidden_inputs = Self::terminal_tip5_hidden_inputs_from_compact(
+                let hidden_inputs =
+                    Self::terminal_tip5_hidden_inputs_from_compact_for_opened_values(
                     local_opening.npo_index,
-                    verifying_key,
+                    row,
+                    callsite,
                     local_opening.tip5_hidden_input_nonzero_mask,
                     &local_opening.tip5_hidden_input_values_le,
+                    &expected_witness_ids,
+                    &opened_values,
                 )?;
                 self.evaluate_sampled_tip5_npo_row_values::<F>(
                     npo_index,
@@ -31237,11 +31378,15 @@ impl NativeTerminalCompiler {
                     &expected_witness_ids,
                     indexed_witness_values,
                 )?;
-                let hidden_inputs = Self::terminal_tip5_hidden_inputs_from_compact(
+                let hidden_inputs =
+                    Self::terminal_tip5_hidden_inputs_from_compact_for_opened_values(
                     local_opening.npo_index,
-                    verifying_key,
+                    row,
+                    callsite,
                     local_opening.tip5_hidden_input_nonzero_mask,
                     &local_opening.tip5_hidden_input_values_le,
+                    &expected_witness_ids,
+                    &opened_values,
                 )?;
                 self.evaluate_exhaustive_tip5_npo_row_values::<F>(
                     npo_index,
@@ -31377,11 +31522,15 @@ impl NativeTerminalCompiler {
                         &expected_witness_ids,
                         indexed_witness_values,
                     )?;
-                    let hidden_inputs = Self::terminal_tip5_hidden_inputs_from_compact(
+                    let hidden_inputs =
+                        Self::terminal_tip5_hidden_inputs_from_compact_for_opened_values(
                         segment_opening.npo_index,
-                        verifying_key,
+                        row,
+                        callsite,
                         segment_opening.tip5_hidden_input_nonzero_mask,
                         &segment_opening.tip5_hidden_input_values_le,
+                        &expected_witness_ids,
+                        &opened_values,
                     )?;
                     let evaluation = self.evaluate_exhaustive_tip5_npo_row_values::<F>(
                         expected_npo_index,
@@ -31590,6 +31739,156 @@ impl NativeTerminalCompiler {
         Self::reject_nonzero_terminal_npo_evaluation(row, &evaluation)
     }
 
+    fn terminal_tip5_trace_state_from_opened_values<F>(
+        npo_index: usize,
+        row: usize,
+        callsite: &NativeTerminalNpoCallsite,
+        tip5_hidden_input_values: &[TerminalTip5HiddenInputValue],
+        expected_witness_ids: &[WitnessId],
+        opened_values: &[F],
+    ) -> Result<([Goldilocks; 16], Tip5TerminalMode, bool), NativeTerminalVerifyError>
+    where
+        F: BasedVectorSpace<Goldilocks> + Copy,
+    {
+        let mode =
+            callsite
+                .tip5_mode
+                .ok_or(NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                    op_type: Self::tip5_op_type().as_str().into(),
+                    row,
+                    field: "tip5_mode",
+                    limb: 0,
+                    expected: Some(1),
+                    got: None,
+                })?;
+        let opened_value = |wanted: WitnessId| {
+            expected_witness_ids
+                .iter()
+                .position(|id| *id == wanted)
+                .map(|idx| opened_values[idx])
+                .ok_or(NativeTerminalVerifyError::MissingWitness {
+                    witness_id: wanted.0,
+                })
+        };
+        let mmcs_bit = if mode.merkle_path {
+            let witness_id = callsite.tip5_mmcs_bit.ok_or(
+                NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                    op_type: Self::tip5_op_type().as_str().into(),
+                    row,
+                    field: "mmcs_bit",
+                    limb: 16,
+                    expected: Some(1),
+                    got: None,
+                },
+            )?;
+            Self::tip5_opened_goldilocks_value(
+                row,
+                16,
+                expected_witness_ids,
+                opened_values,
+                witness_id,
+            )? == Goldilocks::ONE
+        } else {
+            false
+        };
+
+        let mut expected_hidden_trace_limb = [false; 16];
+        let mut hidden_input_count = 0usize;
+        for trace_limb in 0..16 {
+            let bus_limb =
+                Self::terminal_tip5_bus_limb_from_trace_limb(mode, mmcs_bit, trace_limb);
+            if callsite
+                .inputs
+                .get(bus_limb)
+                .copied()
+                .flatten()
+                .is_none()
+            {
+                expected_hidden_trace_limb[trace_limb] = true;
+                hidden_input_count += 1;
+            }
+        }
+        if tip5_hidden_input_values.len() != hidden_input_count {
+            return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
+                npo_index,
+                expected: hidden_input_count,
+                got: tip5_hidden_input_values.len(),
+            });
+        }
+
+        let mut hidden_by_trace_limb = [None; 16];
+        for hidden in tip5_hidden_input_values {
+            if hidden.limb >= 16 {
+                return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
+                    npo_index,
+                    expected: 16,
+                    got: hidden.limb + 1,
+                });
+            }
+            if hidden_by_trace_limb[hidden.limb].is_some() {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoTip5HiddenInputDuplicate {
+                        npo_index,
+                        limb: hidden.limb,
+                    },
+                );
+            }
+            if !expected_hidden_trace_limb[hidden.limb] {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoTip5HiddenInputUnexpected {
+                        npo_index,
+                        limb: hidden.limb,
+                    },
+                );
+            }
+            if hidden.value_basis.len() != 1 {
+                return Err(
+                    NativeTerminalVerifyError::TerminalNpoTip5InputValueDimensionMismatch {
+                        npo_index,
+                        limb: hidden.limb,
+                        expected: 1,
+                        got: hidden.value_basis.len(),
+                    },
+                );
+            }
+            if hidden.value_basis[0] >= Goldilocks::ORDER_U64 {
+                return Err(
+                    NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical {
+                        limb: hidden.limb,
+                        value: hidden.value_basis[0],
+                    },
+                );
+            }
+            hidden_by_trace_limb[hidden.limb] = Some(Goldilocks::from_u64(hidden.value_basis[0]));
+        }
+
+        let mut trace_state = [Goldilocks::ZERO; 16];
+        for trace_limb in 0..16 {
+            let bus_limb =
+                Self::terminal_tip5_bus_limb_from_trace_limb(mode, mmcs_bit, trace_limb);
+            if let Some(witness_id) = callsite.inputs.get(bus_limb).copied().flatten() {
+                let opened = opened_value(witness_id)?;
+                let opened_basis = opened.as_basis_coefficients_slice();
+                if opened_basis.is_empty() {
+                    return Err(NativeTerminalVerifyError::Tip5InputMismatch {
+                        row,
+                        limb: bus_limb,
+                    });
+                }
+                trace_state[trace_limb] = opened_basis[0];
+            } else {
+                trace_state[trace_limb] = hidden_by_trace_limb[trace_limb].ok_or(
+                    NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
+                        npo_index,
+                        expected: hidden_input_count,
+                        got: tip5_hidden_input_values.len(),
+                    },
+                )?;
+            }
+        }
+        Ok((trace_state, mode, mmcs_bit))
+    }
+
     fn evaluate_exhaustive_tip5_npo_row_values<F>(
         &self,
         npo_index: usize,
@@ -31633,15 +31932,15 @@ impl NativeTerminalCompiler {
             )
         };
 
-        let mut trace_state = [Goldilocks::ZERO; 16];
-        for (limb, witness_id) in callsite.inputs.iter().copied().enumerate() {
-            if let Some(witness_id) = witness_id {
-                trace_state[limb] = opened_value(witness_id, limb)?;
-            }
-        }
-        for hidden in tip5_hidden_input_values {
-            trace_state[hidden.limb] = Goldilocks::from_u64(hidden.value_basis[0]);
-        }
+        let (mut trace_state, _, mmcs_direction_bit) =
+            Self::terminal_tip5_trace_state_from_opened_values(
+                npo_index,
+                row,
+                callsite,
+                tip5_hidden_input_values,
+                expected_witness_ids,
+                opened_values,
+            )?;
 
         let mmcs_bit = if mode.merkle_path {
             let witness_id = callsite.tip5_mmcs_bit.ok_or(
@@ -31661,15 +31960,14 @@ impl NativeTerminalCompiler {
                 basis: vec![value * (value - Goldilocks::ONE)],
             };
             Self::push_terminal_npo_residual(&mut evaluation, residual);
-            value == Goldilocks::ONE
+            mmcs_direction_bit
         } else {
             false
         };
 
-        let has_ctl_output = callsite.outputs.iter().any(Option::is_some);
         if mode.merkle_path {
             let mut bus_state = trace_state;
-            if has_ctl_output && mmcs_bit {
+            if mmcs_bit {
                 Self::apply_terminal_tip5_merkle_swap(&mut bus_state);
             }
             for limb in 0..5 {
@@ -31703,9 +32001,6 @@ impl NativeTerminalCompiler {
             }
 
             let mut perm_input = trace_state;
-            if !has_ctl_output && mmcs_bit {
-                Self::apply_terminal_tip5_merkle_swap(&mut perm_input);
-            }
             Tip5Perm.permute_mut(&mut perm_input);
             *previous_merkle_output = Some(perm_input);
         } else {
@@ -31769,18 +32064,14 @@ impl NativeTerminalCompiler {
     where
         F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
     {
-        let hidden_input_count = callsite
-            .inputs
-            .iter()
-            .filter(|input| input.is_none())
-            .count();
-        if tip5_hidden_input_values.len() != hidden_input_count {
-            return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
-                npo_index,
-                expected: hidden_input_count,
-                got: tip5_hidden_input_values.len(),
-            });
-        }
+        let (mut state, mode, mmcs_bit) = Self::terminal_tip5_trace_state_from_opened_values(
+            npo_index,
+            row,
+            callsite,
+            tip5_hidden_input_values,
+            expected_witness_ids,
+            opened_values,
+        )?;
         let mut evaluation = TerminalNpoRowEvaluation::new(TerminalNpoRowKind::Tip5Goldilocks);
         let opened_value = |wanted: WitnessId| {
             expected_witness_ids
@@ -31792,72 +32083,21 @@ impl NativeTerminalCompiler {
                 })
         };
 
-        let mut state = [Goldilocks::ZERO; 16];
-        for (limb, witness_id) in callsite.inputs.iter().copied().enumerate() {
+        for (limb, witness_id) in callsite.inputs.iter().copied().enumerate().take(16) {
             if let Some(witness_id) = witness_id {
                 let opened = opened_value(witness_id)?;
-                let opened_basis = opened.as_basis_coefficients_slice();
-                if opened_basis.is_empty() {
-                    return Err(NativeTerminalVerifyError::Tip5InputMismatch { row, limb });
-                }
-                state[limb] = opened_basis[0];
+                let trace_limb =
+                    Self::terminal_tip5_bus_limb_from_trace_limb(mode, mmcs_bit, limb);
                 Self::push_terminal_npo_residual(
                     &mut evaluation,
                     Self::terminal_field_residual(
                         TerminalNpoResidualKind::Tip5Input,
                         limb,
                         opened,
-                        Self::embed_goldilocks(state[limb]),
+                        Self::embed_goldilocks(state[trace_limb]),
                     ),
                 );
             }
-        }
-
-        let mut seen_hidden = [false; 16];
-        for hidden in tip5_hidden_input_values {
-            if hidden.limb >= 16 {
-                return Err(NativeTerminalVerifyError::TerminalNpoTip5InputValueLength {
-                    npo_index,
-                    expected: 16,
-                    got: hidden.limb + 1,
-                });
-            }
-            if seen_hidden[hidden.limb] {
-                return Err(
-                    NativeTerminalVerifyError::TerminalNpoTip5HiddenInputDuplicate {
-                        npo_index,
-                        limb: hidden.limb,
-                    },
-                );
-            }
-            seen_hidden[hidden.limb] = true;
-            if callsite.inputs[hidden.limb].is_some() {
-                return Err(
-                    NativeTerminalVerifyError::TerminalNpoTip5HiddenInputUnexpected {
-                        npo_index,
-                        limb: hidden.limb,
-                    },
-                );
-            }
-            if hidden.value_basis.len() != 1 {
-                return Err(
-                    NativeTerminalVerifyError::TerminalNpoTip5InputValueDimensionMismatch {
-                        npo_index,
-                        limb: hidden.limb,
-                        expected: 1,
-                        got: hidden.value_basis.len(),
-                    },
-                );
-            }
-            if hidden.value_basis[0] >= Goldilocks::ORDER_U64 {
-                return Err(
-                    NativeTerminalVerifyError::TerminalOracleOpeningValueNonCanonical {
-                        limb: hidden.limb,
-                        value: hidden.value_basis[0],
-                    },
-                );
-            }
-            state[hidden.limb] = Goldilocks::from_u64(hidden.value_basis[0]);
         }
 
         Tip5Perm.permute_mut(&mut state);
@@ -35108,7 +35348,8 @@ impl NativeTerminalCompiler {
         }
 
         for (row, operation) in trace.operations.iter().enumerate() {
-            Self::verify_tip5_callsite(op_type, row, &callsites[row], operation)?;
+            let callsite = &callsites[row];
+            Self::verify_tip5_callsite(op_type, row, callsite, operation)?;
             if operation.input_values.len() != 16 {
                 return Err(NativeTerminalVerifyError::Tip5TraceInputLength {
                     row,
@@ -35143,6 +35384,18 @@ impl NativeTerminalCompiler {
                     got: operation.output_indices.len(),
                 });
             }
+            let mode =
+                callsite
+                    .tip5_mode
+                    .ok_or(NativeTerminalVerifyError::NonPrimitiveCallsiteMismatch {
+                        op_type: op_type.into(),
+                        row,
+                        field: "tip5_mode",
+                        limb: 0,
+                        expected: Some(1),
+                        got: None,
+                    })?;
+            let mmcs_bit = mode.merkle_path && operation.mmcs_bit;
 
             for limb in 0..16 {
                 if operation.in_ctl[limb] {
@@ -35155,7 +35408,10 @@ impl NativeTerminalCompiler {
                         .ok_or(NativeTerminalVerifyError::MissingWitness {
                             witness_id: witness_id.0,
                         })?;
-                    if witness_value != Self::embed_goldilocks(operation.input_values[limb]) {
+                    let trace_limb =
+                        Self::terminal_tip5_bus_limb_from_trace_limb(mode, mmcs_bit, limb);
+                    if witness_value != Self::embed_goldilocks(operation.input_values[trace_limb])
+                    {
                         return Err(NativeTerminalVerifyError::Tip5InputMismatch { row, limb });
                     }
                 }
@@ -47097,6 +47353,47 @@ mod tests {
                 &mut merkle_state,
             )
             .expect("fresh Merkle row may carry sibling limbs and zero capacity");
+
+        let previous_merkle_output =
+            merkle_state.expect("fresh Merkle row must update Merkle chain state");
+        let merkle_right_sibling_callsite = NativeTerminalNpoCallsite {
+            inputs: vec![None; 16],
+            outputs: Vec::new(),
+            tip5_mode: Some(Tip5TerminalMode {
+                new_start: false,
+                merkle_path: true,
+            }),
+            tip5_mmcs_bit: Some(WitnessId(101)),
+        };
+        let merkle_right_sibling_hidden = (0..16)
+            .map(|limb| {
+                let value = if limb < 5 {
+                    0xa00 + limb as u64
+                } else if limb < 10 {
+                    previous_merkle_output[limb - 5].as_canonical_u64()
+                } else {
+                    0
+                };
+                TerminalTip5HiddenInputValue {
+                    limb,
+                    value_basis: vec![value],
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut normal_state = None;
+        let mut merkle_state = Some(previous_merkle_output);
+        compiler
+            .verify_exhaustive_tip5_npo_row_values::<Goldilocks>(
+                0,
+                1,
+                &merkle_right_sibling_callsite,
+                &merkle_right_sibling_hidden,
+                &[WitnessId(101)],
+                &[Goldilocks::ONE],
+                &mut normal_state,
+                &mut merkle_state,
+            )
+            .expect("right-sibling intermediate Merkle row must swap back carried digest lanes");
 
         let mut bad_zero_lane = merkle_hidden.clone();
         bad_zero_lane[12].value_basis[0] = 1;

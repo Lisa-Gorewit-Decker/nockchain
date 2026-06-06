@@ -101,8 +101,10 @@ rows because most coefficient-control calls become ordinary recompose rows.
 The hard blocker remains the generic verifier relation and assignment-opening
 shape, not the marginal overhead of this specific coefficient-binding table.
 
-The first full-composite FRI-native residual-zero NPO measurement changes the
-shape of the promising path. It is byte-plausible but not yet correct:
+The full-composite FRI-native residual-zero NPO measurement changes the shape
+of the promising path. After fixing terminal Tip5 Merkle-direction
+input/hidden-lane reconstruction, the residual-zero layer is byte-plausible and
+verifies:
 
 | Full composite FRI-native residual-zero checkpoint | Value |
 |---|---:|
@@ -110,19 +112,31 @@ shape of the promising path. It is byte-plausible but not yet correct:
 | Prover-dependent field columns / basis columns | `89` / `178` |
 | Residual-value columns | `46` |
 | Residual-zero opened basis columns | `180` |
-| Proof body / compact FRI | `57,390` bytes / `55,889` bytes |
-| Nonzero residual values | `10,070` |
-| Prove / verify / total diagnostic wall | `20.265s` / `11.920s` / `74.506s` |
-| Verification status | `rejected_nonzero_residuals` |
+| Proof body / compact FRI | `55,344` bytes / `54,023` bytes |
+| Nonzero residual values | `0` |
+| Prove / verify / total diagnostic wall | `19.635s` / `11.930s` / `87.229s` |
+| Verification status | `verified` |
 
 This is a useful lower bound because it uses the actual composite verifier
 layout rather than the small synthetic NPO-only fixture, and the proof body is
-comfortably below the relaxed `150 KiB` budget. It is not a production proof:
-the verifier correctly rejects because the full-composite NPO residual columns
-are not zero. The next NPO work should therefore focus on making the
-verifier-key-derived row relation and residual/recompose quotients correct for
-the full composite terminal table, then sharing root/prelude work, rather than
-on further byte serialization of this rejected checkpoint.
+comfortably below both the hard `~100 KiB` proof-size target and the relaxed
+`150 KiB` budget. It is not a complete production proof by itself:
+residual-zero only proves that committed residual columns are zero. The next
+NPO work should therefore focus on integrating or replacing the
+verifier-key-derived row-relation quotients, recompose/value-bridge checks,
+Tip5 lookup/AIR binding, primitive row-product checks, and their shared
+root/prelude work, rather than on further byte serialization of this single
+layer.
+
+The Merkle-direction fix also identifies an explicit binding requirement for
+the next value-bridge/AIR step. Tip5 callsite inputs are in pre-swap bus-limb
+coordinates, while the Tip5 trace and lookup AIR consume post-direction
+permutation-input lanes. When `mmcs_bit=1`, input and hidden trace lanes swap.
+A sound polynomial bridge must either keep committed NPO value columns in
+bus-limb coordinates and prove the `mmcs_bit`-selected projection into the
+Tip5 trace, or commit/constrain direction-dependent trace-lane present
+selectors. Treating trace-lane hidden/input selectors as verifier-fixed across
+both directions is not a sound explicit binding.
 
 The current `CircuitConfig::PROD` profile is now exactly 60 pure-query bits
 (`log_blowup=4`, `num_queries=15`, `pow_bits=0`). Removing the previous
@@ -1040,11 +1054,12 @@ solution:
 - The current NPO-only integrated checkpoint measures `96,219` bytes /
   `94.0 KiB` including the primitive proof on the small synthetic circuit, but
   it is not the full composite production proof body.
-- The full-composite FRI-native residual-zero checkpoint measures `57,390`
-  bytes with a `55,889` byte compact FRI body over the actual composite NPO
-  layout, but verification correctly rejects because the residual columns have
-  `10,070` nonzero values. That makes this a byte floor and correctness
-  diagnostic, not a candidate production proof.
+- The full-composite FRI-native residual-zero checkpoint now measures
+  `55,344` bytes with a `54,023` byte compact FRI body over the actual
+  composite NPO layout, has `0` nonzero residual values, and verifies. That
+  makes this a real byte floor for the residual-zero layer, but not a candidate
+  production proof until the remaining NPO quotient/value-bridge/lookup and
+  primitive-row identities are included or replaced.
 - The full composite integrated diagnostic ran for more than `7m35s` after
   compile without reaching its final size print, so this path currently misses
   the proving-time gate even before it can be considered for promotion.
@@ -1095,8 +1110,8 @@ Implementation sketch:
 Tests required before promotion:
 
 - Honest real Tip5 L0 verifier-circuit production measurement.
-- Full-composite residual-zero acceptance after fixing the NPO residual
-  mapping, plus a regression test that a nonzero residual column is rejected.
+- Keep the full-composite residual-zero acceptance measurement passing, plus a
+  regression test that a nonzero residual column is rejected.
 - Body and certificate size assertions at or below the target.
 - Tamper tests for each identity: residual-zero, recompose, value bridge, AIR
   quotient, byte LogUp, selected NPO-IO LogUp, trace NPO-IO LogUp.
