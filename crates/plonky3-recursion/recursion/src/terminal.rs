@@ -29,6 +29,7 @@ use p3_goldilocks::Goldilocks;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::interpolation::Interpolate;
+use p3_maybe_rayon::prelude::*;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 use p3_tip5_circuit_air::{
@@ -3184,6 +3185,8 @@ pub struct TerminalOracleMerkleTree {
 }
 
 impl TerminalOracleMerkleTree {
+    const PARALLEL_COMMIT_THRESHOLD: usize = 1024;
+
     pub fn commit_goldilocks_values<F>(
         label: impl Into<String>,
         values: &[F],
@@ -3215,12 +3218,23 @@ impl TerminalOracleMerkleTree {
         let mut levels = vec![leaves];
         while levels.last().expect("level exists").len() > 1 {
             let prev = levels.last().expect("level exists");
-            let mut next = Vec::with_capacity(prev.len() / 2);
-            for pair in prev.chunks_exact(2) {
-                next.push(NativeTerminalCompiler::terminal_oracle_node_digest(
-                    &label, pair[0], pair[1],
-                ));
-            }
+            let next = if prev.len() >= Self::PARALLEL_COMMIT_THRESHOLD {
+                prev.par_chunks_exact(2)
+                    .map(|pair| {
+                        NativeTerminalCompiler::terminal_oracle_node_digest(
+                            &label, pair[0], pair[1],
+                        )
+                    })
+                    .collect()
+            } else {
+                prev.chunks_exact(2)
+                    .map(|pair| {
+                        NativeTerminalCompiler::terminal_oracle_node_digest(
+                            &label, pair[0], pair[1],
+                        )
+                    })
+                    .collect()
+            };
             levels.push(next);
         }
 

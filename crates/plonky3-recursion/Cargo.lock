@@ -1200,6 +1200,7 @@ dependencies = [
  "p3-koala-bear",
  "p3-lookup",
  "p3-matrix",
+ "p3-maybe-rayon",
  "p3-merkle-tree",
  "p3-poseidon2",
  "p3-poseidon2-air",

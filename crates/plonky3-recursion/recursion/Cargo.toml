@@ -24,6 +24,7 @@ p3-goldilocks.workspace = true
 p3-koala-bear.workspace = true
 p3-lookup.workspace = true
 p3-matrix.workspace = true
+p3-maybe-rayon.workspace = true
 p3-merkle-tree.workspace = true
 p3-poseidon2-air.workspace = true
 p3-poseidon2-circuit-air.workspace = true
@@ -70,6 +71,7 @@ tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 # way (deterministic, index-ordered reductions).
 default = ["parallel"]
 parallel = [
+    "p3-maybe-rayon/parallel",
     "p3-circuit-prover/parallel",
     "p3-uni-stark/parallel",
     "p3-batch-stark/parallel",
