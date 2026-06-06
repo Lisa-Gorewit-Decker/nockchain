@@ -452,6 +452,34 @@ almost all of it is the actual cryptographic proof body. The same run took
 `75.17s` inside the release test binary, however, so this is not yet a
 time-qualified production path.
 
+The follow-up diagnostic
+`relaxed_l1_only_statement_bound_candidate_size_breakdown_for_test_pearl`
+checks whether binding the statement digest into the L1 proof changes that size
+picture. It proves the same `TEST_PEARL` L1 outer object with five public
+binding lanes and verifies the proof against the explicit public values:
+
+| Statement-bound L1-only diagnostic (`TEST_PEARL`) | Measurement |
+|---|---:|
+| Full L1 outer object | `153,904 bytes` |
+| L1 proof body | `152,259 bytes` |
+| L1 metadata outside proof body | `1,645 bytes` |
+| L1 public binding lanes | `5` |
+| Prove time | `54.62s` |
+| Verify time | `18ms` |
+
+An earlier run of the same diagnostic measured `153,888 bytes` and `70.14s`, so
+postcard size has small run-to-run variation and prover time has larger runtime
+variation. The larger observed proof adds only `54 bytes` over the unbound
+L1-only object, so explicit statement-digest binding is compatible with the
+relaxed-size target. It does not solve the remaining soundness contract by
+itself: an L1-only production wire format must still pin or reconstruct the
+verifier key, L0 proof shape, preprocessed commitment, L1 circuit fingerprint,
+table packing, and L1 public values without accepting proof-carried
+substitutions. It also does not solve the proof-system soundness policy: the
+current recursive prover profile still uses proof-system PoW in addition to
+queries, while the production target is 60-bit soundness without relying on
+verifier-accepted PoW grinding.
+
 A relaxed-size L1-only path would need to replace those proof-carried rebuild
 inputs with a pinned verifier-key contract:
 
@@ -477,9 +505,11 @@ but it still requires new verifier-key plumbing. Simply dropping `l0_proof` and
 current verifier would no longer have an independent way to know which L1
 verifier circuit the submitted outer proof is supposed to prove.
 
-The relaxed size gate also does not solve the time gate. The same measurement
-spent `59.21s` on the L1 outer batch-STARK prove+verify after the L0 proof
-already existed, and `93.88s` end to end. The `150 KiB` branch is therefore a
+The relaxed size gate also does not solve the time gate. The production-faithful
+measurement spent `59.21s` on the L1 outer batch-STARK prove+verify after the
+L0 proof already existed, and `93.88s` end to end; the focused
+statement-bound `TEST_PEARL` diagnostic spent `54.62s` to `70.14s` proving the
+L1 outer object across two release runs. The `150 KiB` branch is therefore a
 candidate only if the L1 proof can be both wire-minimized and made materially
 faster. The likely short-term levers are:
 

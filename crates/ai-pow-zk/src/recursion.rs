@@ -144,9 +144,9 @@ const DIGEST_ELEMS: usize = 5;
 const WIDTH: usize = 16;
 const RATE: usize = 10;
 
-fn production_l1_table_packing(_public_value_count: usize) -> p3_circuit_prover::TablePacking {
+fn production_l1_table_packing(public_binding_lanes: usize) -> p3_circuit_prover::TablePacking {
     p3_circuit_prover::TablePacking::new(DIGEST_ELEMS, 8)
-        .with_public_binding_lanes(0)
+        .with_public_binding_lanes(public_binding_lanes)
         .with_horner_pack_k(5)
 }
 
@@ -435,6 +435,19 @@ fn production_l1_circuit_prover_data(
     ),
     VerificationError,
 > {
+    production_l1_circuit_prover_data_with_public_binding_lanes(built, 0)
+}
+
+fn production_l1_circuit_prover_data_with_public_binding_lanes(
+    built: &BuiltCompositeL1,
+    public_binding_lanes: usize,
+) -> Result<
+    (
+        p3_circuit_prover::TablePacking,
+        p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksTipsConfig>,
+    ),
+    VerificationError,
+> {
     use p3_batch_stark::ProverData;
     use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
     use p3_circuit_prover::{
@@ -445,7 +458,6 @@ fn production_l1_circuit_prover_data(
 
     type OuterConfig = config::GoldilocksTipsConfig;
 
-    let public_binding_lanes = built.public_inputs.len();
     let table_packing = production_l1_table_packing(public_binding_lanes);
     let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
         vec![Box::new(Tip5Preprocessor), Box::new(RecomposePreprocessor::new(true))];
@@ -496,6 +508,14 @@ pub fn prove_composite_l1_outer_cert(
     built: &BuiltCompositeL1,
     proof: &BatchProof<AiPowStarkConfig>,
 ) -> Result<AiPowL1OuterProof, VerificationError> {
+    prove_composite_l1_outer_cert_with_public_binding_lanes(built, proof, 0)
+}
+
+fn prove_composite_l1_outer_cert_with_public_binding_lanes(
+    built: &BuiltCompositeL1,
+    proof: &BatchProof<AiPowStarkConfig>,
+    public_binding_lanes: usize,
+) -> Result<AiPowL1OuterProof, VerificationError> {
     use p3_batch_stark::ProverData;
     use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
     use p3_circuit_prover::{
@@ -509,7 +529,6 @@ pub fn prove_composite_l1_outer_cert(
     // D=2 outer-cert table layout — Tip5 NPO (D=1 perm) + recompose
     // with split coeff tables (the verifier circuit set
     // `set_recompose_coeff_ctl_for_decompose_links(true)`).
-    let public_binding_lanes = built.public_inputs.len();
     let table_packing = production_l1_table_packing(public_binding_lanes);
     let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
         vec![Box::new(Tip5Preprocessor), Box::new(RecomposePreprocessor::new(true))];
@@ -1582,6 +1601,83 @@ mod tests {
         );
         assert!(
             split.l1_outer_postcard_bytes >= split.l1_proof_body_postcard_bytes,
+            "metadata split must be well formed"
+        );
+    }
+
+    #[test]
+    #[ignore = "statement-bound relaxed L1-only candidate size accounting is opt-in"]
+    fn relaxed_l1_only_statement_bound_candidate_size_breakdown_for_test_pearl() {
+        use std::time::Instant;
+
+        use p3_circuit::ops::Tip5Config;
+        use p3_circuit_prover::BatchStarkProver;
+
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+
+        let prove_start = Instant::now();
+        let outer =
+            prove_composite_l1_outer_cert_with_public_binding_lanes(&built, &proof, DIGEST_ELEMS)
+                .expect("statement-bound recursive certificate");
+        let prove_ms = prove_start.elapsed().as_millis();
+
+        let mut verifier = BatchStarkProver::new(production_l1_stark_config())
+            .with_table_packing(production_l1_table_packing(DIGEST_ELEMS));
+        verifier.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+        verifier.register_recompose_table::<2>(true);
+
+        let statement_digest_public_values = built
+            .public_inputs
+            .iter()
+            .take(DIGEST_ELEMS)
+            .flat_map(|value| {
+                <Challenge as BasedVectorSpace<Val>>::as_basis_coefficients_slice(value)
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>();
+        let verify_start = Instant::now();
+        verifier
+            .verify_all_tables_with_public_values(&outer, &statement_digest_public_values)
+            .expect("statement-bound L1 outer proof must verify");
+        let verify_ms = verify_start.elapsed().as_millis();
+
+        let l1_outer_bytes = postcard_len(&outer, "statement-bound L1 outer proof");
+        let l1_proof_body_bytes = postcard_len(&outer.proof, "statement-bound L1 proof body");
+        let l1_metadata_bytes = l1_outer_bytes.saturating_sub(l1_proof_body_bytes);
+        eprintln!(
+            "relaxed L1-only statement-bound candidate [TEST_PEARL]: l1_outer={} l1_proof_body={} l1_metadata={} l1_public_binding_lanes={} prove_ms={} verify_ms={}",
+            l1_outer_bytes,
+            l1_proof_body_bytes,
+            l1_metadata_bytes,
+            outer.public_binding_lanes,
+            prove_ms,
+            verify_ms,
+        );
+
+        assert_eq!(
+            outer.public_binding_lanes, DIGEST_ELEMS,
+            "diagnostic L1 proof must expose the statement digest"
+        );
+        assert!(
+            l1_outer_bytes >= l1_proof_body_bytes,
             "metadata split must be well formed"
         );
     }

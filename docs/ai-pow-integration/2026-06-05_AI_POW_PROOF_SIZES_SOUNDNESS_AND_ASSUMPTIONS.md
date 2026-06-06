@@ -105,6 +105,22 @@ split on the small `TEST_PEARL` profile: current full checkpoint postcard
 the zero public-binding lanes and the **75.17s** release test runtime are the
 next two blockers.
 
+The follow-up opt-in diagnostic,
+`relaxed_l1_only_statement_bound_candidate_size_breakdown_for_test_pearl`,
+enables five public-binding lanes for the statement digest and verifies the
+outer proof with the explicit public values. The latest validated run measured
+the statement-bound L1 object at **153,904 bytes**, with a **152,259 byte**
+proof body, **1,645 bytes** of metadata, `l1_public_binding_lanes=5`,
+**54.62s** prove time, and **18ms** verify time inside the release test. An
+earlier run of the same diagnostic measured **153,888 bytes** and **70.14s**,
+so this path has small run-to-run proof-size variation and larger runtime
+variation. Binding the five-limb digest therefore adds only about **54 bytes**
+over the unbound diagnostic, so statement binding is not the relaxed-size
+blocker. The measurement still does not production-qualify the path: it does
+not remove the need for pinned verifier-key/L0-shape metadata, and the current
+recursive prover profile still includes proof-system PoW in addition to query
+soundness.
+
 Verifier status after the 2026-06-05 hardening pass: the batch-STARK
 `AiPowRecursiveCertificate` verifier now calls
 `BatchStarkProver::verify_all_tables` for the submitted L1 outer proof. That
