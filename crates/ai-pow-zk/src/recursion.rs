@@ -1344,7 +1344,8 @@ fn _composite_conforms_to_recursive_air() {
 #[cfg(test)]
 mod tests {
     use p3_recursion::terminal::{
-        NativeTerminalConstraint, NativeTerminalVerifyingKey, TerminalProductionProof,
+        NativeTerminalConstraint, NativeTerminalVerifyingKey, TerminalProductionNpoPolynomialProof,
+        TerminalProductionProof,
     };
 
     use super::*;
@@ -1958,6 +1959,195 @@ mod tests {
     #[ignore = "native terminal proof pure-query profile sweep is opt-in"]
     fn terminal_recursive_certificate_for_pure_query_lb6_nq10_measures() {
         measure_and_verify_terminal_certificate_for_profile(
+            "PURE_QUERY_LB6_NQ10",
+            CircuitConfig {
+                log_blowup: 6,
+                pow_bits: 0,
+                num_queries: 10,
+            },
+        );
+    }
+
+    fn measure_terminal_integrated_logup_candidate_for_profile(
+        label: &str,
+        profile: CircuitConfig,
+    ) {
+        init_terminal_prover_profile_tracing();
+        assert_eq!(profile.johnson_fri_bits(), 60);
+
+        let zk = test_zk_params();
+        let cfg = build_config(&zk, &profile);
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program.clone(),
+                proof,
+                &pis,
+            )
+        };
+        let air = CompositeFullAirWithLookupsPinned::new_with(program, true);
+        let pd = logup_common_for(&cfg, &verified.program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &verified.proof,
+            &pd.common,
+            &verified.public_inputs.to_vec(),
+            &profile,
+        )
+        .expect("integrated LogUp diagnostic must build L1 verifier circuit");
+
+        let l1_verify_start = std::time::Instant::now();
+        let traces = run_composite_l1_verifier_traces(&built, &verified.proof)
+            .expect("integrated LogUp diagnostic must run L1 verifier traces");
+        let l1_verify_elapsed = l1_verify_start.elapsed();
+
+        let compiler = terminal_compiler();
+        let compile_start = std::time::Instant::now();
+        let (_pk, vk) = compiler
+            .compile_goldilocks_terminal(&built.circuit)
+            .expect("integrated LogUp diagnostic must compile terminal circuit");
+        compiler
+            .validate_goldilocks_production_query_domains(
+                &vk,
+                TerminalProofParameters::production_60bit(),
+            )
+            .expect("integrated LogUp diagnostic must use production query domains");
+        let compile_elapsed = compile_start.elapsed();
+
+        let witness = TerminalWitness {
+            fingerprint: TerminalCircuitFingerprint::from_circuit(&built.circuit),
+            public_inputs: built.public_inputs.clone(),
+            private_inputs: built.private_inputs.clone(),
+            traces,
+        };
+
+        let assignment_oracle = compiler
+            .commit_terminal_assignment_goldilocks(&vk, &witness.public_inputs, &witness)
+            .expect("integrated LogUp diagnostic must commit terminal assignment");
+        let assignment_commitment = assignment_oracle.commitment();
+        let mut prelude_roots = vec![assignment_commitment.root];
+        prelude_roots.extend(
+            compiler
+                .terminal_npo_fri_residual_zero_recompose_value_bridge_prelude_commitments_from_witness_goldilocks(
+                    &vk,
+                    &witness,
+                )
+                .expect("integrated LogUp diagnostic must bind merged NPO root"),
+        );
+        prelude_roots.extend(
+            compiler
+                .terminal_npo_tip5_lookup_trace_bundled_io_support_prelude_commitments_from_witness_goldilocks(
+                    &vk,
+                    &witness,
+                )
+                .expect("integrated LogUp diagnostic must bind bundled Tip5 root"),
+        );
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &witness.public_inputs,
+                TerminalProofParameters::production_60bit(),
+                prelude_roots,
+            )
+            .expect("integrated LogUp diagnostic must build terminal prelude");
+
+        let primitive_prove_start = std::time::Instant::now();
+        let primitive_r1cs_proof = compiler
+            .prove_terminal_r1cs_row_product_sumcheck_goldilocks(
+                &vk, &witness.public_inputs, &prelude, &assignment_oracle, &witness,
+            )
+            .expect("integrated LogUp diagnostic must prove primitive R1CS");
+        let primitive_prove_elapsed = primitive_prove_start.elapsed();
+
+        let npo_prove_start = std::time::Instant::now();
+        let merged_value_bridge_proof = compiler
+            .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks(
+                &vk, &witness.public_inputs, &witness, &prelude,
+            )
+            .expect("integrated LogUp diagnostic must prove merged NPO value bridge");
+        let integrated_logup_proof = compiler
+            .prove_terminal_npo_tip5_lookup_air_logup_trace_io_support_npo_io_logup_goldilocks(
+                &vk, &witness.public_inputs, &witness, &prelude,
+            )
+            .expect("integrated LogUp diagnostic must prove bundled Tip5 LogUp");
+        let npo_prove_elapsed = npo_prove_start.elapsed();
+
+        let primitive_verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_r1cs_row_product_sumcheck_goldilocks(
+                &vk, &witness.public_inputs, &prelude, &assignment_commitment,
+                &primitive_r1cs_proof,
+            )
+            .expect("integrated LogUp diagnostic primitive proof must verify");
+        let primitive_verify_elapsed = primitive_verify_start.elapsed();
+        let npo_verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_tip5_lookup_backend_trace_value_integrated_logup_bridge_goldilocks(
+                &vk, &witness.public_inputs, &prelude, &merged_value_bridge_proof,
+                &integrated_logup_proof,
+            )
+            .expect("integrated LogUp diagnostic NPO proof must verify");
+        let npo_verify_elapsed = npo_verify_start.elapsed();
+
+        let npo_polynomial_proof = TerminalProductionNpoPolynomialProof {
+            merged_value_bridge_proof,
+            integrated_logup_proof,
+        };
+        let candidate_body = (
+            prelude.clone(),
+            primitive_r1cs_proof.clone(),
+            npo_polynomial_proof.clone(),
+        );
+        let body_bytes = postcard_len(&candidate_body, "integrated LogUp candidate body");
+        let prelude_bytes = postcard_len(&prelude, "integrated LogUp candidate prelude");
+        let primitive_bytes = postcard_len(
+            &primitive_r1cs_proof, "integrated LogUp candidate primitive proof",
+        );
+        let npo_bytes = postcard_len(
+            &npo_polynomial_proof, "integrated LogUp candidate NPO proof",
+        );
+        let merged_bytes = postcard_len(
+            &npo_polynomial_proof.merged_value_bridge_proof,
+            "integrated LogUp candidate merged NPO proof",
+        );
+        let integrated_logup_bytes = postcard_len(
+            &npo_polynomial_proof.integrated_logup_proof,
+            "integrated LogUp candidate Tip5 LogUp proof",
+        );
+        let integrated_logup_fri_bytes = postcard_len(
+            &npo_polynomial_proof.integrated_logup_proof.proof,
+            "integrated LogUp candidate Tip5 compact FRI",
+        );
+        let total_prove_elapsed = primitive_prove_elapsed + npo_prove_elapsed;
+        let total_verify_elapsed = primitive_verify_elapsed + npo_verify_elapsed;
+
+        eprintln!(
+            "native terminal integrated-LogUp production candidate over ai-pow composite verifier [{label}]: body={} bytes prelude={} primitive_r1cs={} npo_polynomial={} merged_value_bridge={} integrated_logup={} integrated_logup_fri={} l1_verify_ms={} compile_ms={} primitive_prove_ms={} npo_prove_ms={} total_prove_ms={} primitive_verify_ms={} npo_verify_ms={} total_verify_ms={}",
+            body_bytes,
+            prelude_bytes,
+            primitive_bytes,
+            npo_bytes,
+            merged_bytes,
+            integrated_logup_bytes,
+            integrated_logup_fri_bytes,
+            l1_verify_elapsed.as_millis(),
+            compile_elapsed.as_millis(),
+            primitive_prove_elapsed.as_millis(),
+            npo_prove_elapsed.as_millis(),
+            total_prove_elapsed.as_millis(),
+            primitive_verify_elapsed.as_millis(),
+            npo_verify_elapsed.as_millis(),
+            total_verify_elapsed.as_millis(),
+        );
+    }
+
+    #[test]
+    #[ignore = "full composite integrated LogUp terminal candidate measurement is opt-in"]
+    fn terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures() {
+        measure_terminal_integrated_logup_candidate_for_profile(
             "PURE_QUERY_LB6_NQ10",
             CircuitConfig {
                 log_blowup: 6,

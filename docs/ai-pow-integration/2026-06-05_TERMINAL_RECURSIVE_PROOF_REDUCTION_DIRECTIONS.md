@@ -109,8 +109,33 @@ spends `80.377s` in terminal proving. That confirms that simply increasing
 Layer-0 blowup to reduce query count is not enough; the terminal relation and
 assignment-oracle opening material are still far too large.
 
-The retired polynomial NPO production candidate remains useful diagnostic
-evidence. Its size blocker was precise:
+The polynomial NPO path remains useful diagnostic evidence, but it is not a
+drop-in production replacement for the exhaustive NPO proof. The recursion-crate
+synthetic Tip5-only integrated-LogUp checkpoint measures below the byte and
+time targets:
+
+| Synthetic integrated-LogUp checkpoint | Bytes / Time |
+|---|---:|
+| Bundled masked-IO NPO checkpoint | `95,403` bytes / `93.2 KiB` |
+| Primitive + bundled NPO production-candidate body | `96,219` bytes / `94.0 KiB` |
+| NPO prove time | `23.057s` |
+| Total primitive + NPO prove time | `23.070s` |
+| Total verify time | `64.4ms` |
+
+That test is intentionally small. It proves a synthetic NPO-only Tip5 circuit,
+not the full `ai-pow-zk` composite verifier. A full composite diagnostic,
+`terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures`, now
+builds the actual L1 verifier circuit, binds the assignment root plus the
+merged NPO and bundled Tip5 roots, proves the primitive row-product component,
+and then attempts the integrated polynomial NPO proof. The first release/native
+run compiled in `1m57s`, then the test binary ran for more than `7m35s` without
+reaching the final size/timing print and was stopped. This already violates the
+`<30s` production proving constraint, so the synthetic `94.0 KiB` checkpoint
+must not be treated as evidence that the full composite recursive certificate
+path meets the milestone.
+
+The older two-subproof polynomial NPO production candidate had a precise size
+blocker:
 
 | Component | Bytes | Notes |
 |---|---:|---|
@@ -205,12 +230,17 @@ the selected+lookup commitment must match between the two subproofs. A unified
 proof would make that equality structural, then share the FRI query set,
 opening point, authentication paths, and transcript across all NPO identities.
 
-Why this can hit the target:
+Why this is still the relevant proof-shape direction, but not yet a production
+solution:
 
 - The production NPO proof is currently `204,039` bytes because two independent
   FRI payloads are serialized.
-- The old NPO-only integrated checkpoint measured around `94,016` bytes /
-  `91.8 KiB`, but it was not the current full production proof body.
+- The current NPO-only integrated checkpoint measures `96,219` bytes /
+  `94.0 KiB` including the primitive proof on the small synthetic circuit, but
+  it is not the full composite production proof body.
+- The full composite integrated diagnostic ran for more than `7m35s` after
+  compile without reaching its final size print, so this path currently misses
+  the proving-time gate even before it can be considered for promotion.
 - The full production certificate can tolerate roughly `75-78 KiB` of NPO
   payload after the primitive R1CS component and certificate framing. A unified
   proof must therefore cut the NPO payload by about `125 KiB`.

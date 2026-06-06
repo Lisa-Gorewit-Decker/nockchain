@@ -21161,6 +21161,27 @@ impl NativeTerminalCompiler {
         )
     }
 
+    pub fn terminal_npo_tip5_lookup_trace_bundled_io_support_prelude_commitments_from_witness_goldilocks<
+        F,
+    >(
+        &self,
+        verifying_key: &NativeTerminalVerifyingKey<F>,
+        witness: &TerminalWitness<F>,
+    ) -> Result<Vec<TerminalCommitmentDigest>, NativeTerminalVerifyError>
+    where
+        F: Field + BasedVectorSpace<Goldilocks> + From<Goldilocks>,
+    {
+        let columns = self.terminal_npo_polynomial_columns_goldilocks(verifying_key, witness)?;
+        let trace_profile = Self::terminal_npo_tip5_lookup_trace_profile(verifying_key);
+        let (_, trace, _) =
+            self.terminal_npo_tip5_lookup_air_trace_goldilocks(verifying_key, witness)?;
+        Self::terminal_npo_tip5_lookup_trace_bundled_io_support_prelude_commitments_goldilocks(
+            &trace_profile,
+            &columns,
+            &trace,
+        )
+    }
+
     fn terminal_npo_polynomial_basis_matrix_for_column_set_goldilocks<F>(
         columns: &TerminalNpoPolynomialColumns<F>,
         column_set: TerminalNpoPolynomialFriColumnSet,
