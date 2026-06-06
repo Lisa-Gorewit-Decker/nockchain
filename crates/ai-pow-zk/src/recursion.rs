@@ -2710,14 +2710,13 @@ mod tests {
         l1_num_queries: usize,
         l1_cap_height: usize,
         l1_log_final_poly_len: usize,
-        l2_shapes: &[(&str, usize, usize)],
+        l2_shapes: &[(&str, usize, usize, usize)],
     ) {
         use std::time::Instant;
 
         use p3_circuit::ops::Tip5Config;
         use p3_circuit_prover::BatchStarkProver;
 
-        const L2_CAP_HEIGHT: usize = 4;
         assert_eq!(l1_log_blowup * l1_num_queries, 60);
         assert_eq!(
             p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
@@ -2804,10 +2803,10 @@ mod tests {
             "L1 proof must expose the statement digest before L2 wrapping"
         );
 
-        for (l2_label, l2_log_blowup, l2_num_queries) in l2_shapes.iter().copied() {
+        for (l2_label, l2_log_blowup, l2_num_queries, l2_cap_height) in l2_shapes.iter().copied() {
             assert_eq!(l2_log_blowup * l2_num_queries, 60);
             let l2_config = pure_query_l1_stark_config_with_shape_and_cap(
-                l2_log_blowup, l2_num_queries, L2_CAP_HEIGHT,
+                l2_log_blowup, l2_num_queries, l2_cap_height,
             );
             let l2_prove_start = Instant::now();
             let l2_artifact = prove_l2_over_l1_outer_for_test_pearl(
@@ -2845,7 +2844,7 @@ mod tests {
                 &l2,
                 l2_log_blowup,
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
-                L2_CAP_HEIGHT,
+                l2_cap_height,
             );
             let l2_path_pruned_projected_outer_bytes = l2_outer_bytes
                 .saturating_sub(l2_path_estimate.mean_digest_savings_bytes.round() as usize);
@@ -2859,7 +2858,7 @@ mod tests {
                     &l2,
                     l2_log_blowup,
                     p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
-                    L2_CAP_HEIGHT,
+                    l2_cap_height,
                     Some(l2_preprocessed_input.index),
                 );
             let l2_preprocessed_omitted_projected_outer_bytes = l2_outer_bytes
@@ -2876,7 +2875,7 @@ mod tests {
                 l2_log_blowup,
                 l2_num_queries,
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
-                L2_CAP_HEIGHT,
+                l2_cap_height,
             );
             let mut l2_compact_verifier = BatchStarkProver::new(l2_config.clone())
                 .with_table_packing(
@@ -2907,6 +2906,29 @@ mod tests {
             let l2_compact_proof_body_bytes = postcard_len(
                 &l2_compact_body.proof, "pure-query L2 diagnostic actual compact core proof body",
             );
+            let l2_compact_restoration_bytes = postcard_len(
+                &(
+                    l2_compact_body.fri_shape, &l2_compact_body.input_batch_paths,
+                    &l2_compact_body.commit_phase_paths,
+                ),
+                "pure-query L2 diagnostic compact restoration payload",
+            );
+            let l2_compact_input_paths_bytes = postcard_len(
+                &l2_compact_body.input_batch_paths,
+                "pure-query L2 diagnostic compact input path dictionaries",
+            );
+            let l2_compact_commit_paths_bytes = postcard_len(
+                &l2_compact_body.commit_phase_paths,
+                "pure-query L2 diagnostic compact commit-phase path dictionaries",
+            );
+            let (
+                l2_compact_path_sets,
+                l2_compact_original_orders,
+                l2_compact_pruned_paths,
+                l2_compact_pruned_siblings,
+            ) = compact_path_dictionary_stats(
+                &l2_compact_body.input_batch_paths, &l2_compact_body.commit_phase_paths,
+            );
             let l2_compact_verify_start = Instant::now();
             l2_compact_verifier
                 .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body(
@@ -2916,7 +2938,7 @@ mod tests {
             let l2_compact_verify_ms = l2_compact_verify_start.elapsed().as_millis();
 
             eprintln!(
-                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 {l1_label} -> L2 {l2_label}_cap4]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_preprocessed_ood={} l1_preprocessed_input_batch={} l1_preprocessed_input_opened_values={} l1_preprocessed_input_merkle={} l1_preprocessed_omitted_projected_outer={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_preprocessed_ood={} l2_preprocessed_input_batch={} l2_preprocessed_input_opened_values={} l2_preprocessed_input_merkle={} l2_preprocessed_omitted_projected_outer={} l2_actual_compact={} l2_actual_compact_body={} l2_actual_compact_proof_body={} l2_actual_compact_build_ms={} l2_actual_compact_body_verify_ms={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prove_ms={}",
+                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 {l1_label} -> L2 {l2_label}]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_preprocessed_ood={} l1_preprocessed_input_batch={} l1_preprocessed_input_opened_values={} l1_preprocessed_input_merkle={} l1_preprocessed_omitted_projected_outer={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_preprocessed_ood={} l2_preprocessed_input_batch={} l2_preprocessed_input_opened_values={} l2_preprocessed_input_merkle={} l2_preprocessed_omitted_projected_outer={} l2_actual_compact={} l2_actual_compact_body={} l2_actual_compact_proof_body={} l2_actual_compact_restoration={} l2_actual_compact_input_paths={} l2_actual_compact_commit_paths={} l2_actual_compact_path_sets={} l2_actual_compact_original_orders={} l2_actual_compact_pruned_paths={} l2_actual_compact_pruned_siblings={} l2_actual_compact_build_ms={} l2_actual_compact_body_verify_ms={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prove_ms={}",
                 l1_outer_bytes,
                 l1_proof_body_bytes,
                 l1_path_pruned_projected_outer_bytes,
@@ -2956,12 +2978,19 @@ mod tests {
                 l2_compact_bytes,
                 l2_compact_body_bytes,
                 l2_compact_proof_body_bytes,
+                l2_compact_restoration_bytes,
+                l2_compact_input_paths_bytes,
+                l2_compact_commit_paths_bytes,
+                l2_compact_path_sets,
+                l2_compact_original_orders,
+                l2_compact_pruned_paths,
+                l2_compact_pruned_siblings,
                 l2_compact_ms,
                 l2_compact_verify_ms,
                 l2_public_binding_lanes,
                 l2_log_blowup,
                 l2_num_queries,
-                L2_CAP_HEIGHT,
+                l2_cap_height,
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
                 l2_log_blowup * l2_num_queries,
@@ -2996,7 +3025,11 @@ mod tests {
             10,
             4,
             2,
-            &[("lb4_nq15", 4, 15), ("lb5_nq12", 5, 12), ("lb6_nq10", 6, 10)],
+            &[
+                ("lb4_nq15_cap4", 4, 15, 4),
+                ("lb5_nq12_cap4", 5, 12, 4),
+                ("lb6_nq10_cap4", 6, 10, 4),
+            ],
         );
     }
 
@@ -3009,7 +3042,29 @@ mod tests {
             20,
             4,
             2,
-            &[("lb4_nq15", 4, 15), ("lb5_nq12", 5, 12), ("lb6_nq10", 6, 10)],
+            &[
+                ("lb4_nq15_cap4", 4, 15, 4),
+                ("lb5_nq12_cap4", 5, 12, 4),
+                ("lb6_nq10_cap4", 6, 10, 4),
+            ],
+        );
+    }
+
+    #[test]
+    #[ignore = "pure-query AI-PoW L2 cap-height measurement is opt-in"]
+    fn pure_query_l2_over_l1_l2_cap_height_compact_body_breakdown_for_test_pearl() {
+        run_pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl(
+            "lb6_nq10_cap4",
+            6,
+            10,
+            4,
+            2,
+            &[
+                ("lb5_nq12_cap2", 5, 12, 2),
+                ("lb5_nq12_cap4", 5, 12, 4),
+                ("lb5_nq12_cap6", 5, 12, 6),
+                ("lb5_nq12_cap8", 5, 12, 8),
+            ],
         );
     }
 
@@ -3471,6 +3526,27 @@ mod tests {
         postcard::to_allocvec(value)
             .unwrap_or_else(|err| panic!("{label} must serialize for size accounting: {err:?}"))
             .len()
+    }
+
+    fn compact_path_dictionary_stats(
+        input_paths: &[p3_circuit_prover::GoldilocksTip5PrunedMerklePaths],
+        commit_paths: &[p3_circuit_prover::GoldilocksTip5PrunedMerklePaths],
+    ) -> (usize, usize, usize, usize) {
+        let path_sets = input_paths.len() + commit_paths.len();
+        let mut original_orders = 0usize;
+        let mut pruned_paths = 0usize;
+        let mut pruned_siblings = 0usize;
+        for path_set in input_paths.iter().chain(commit_paths.iter()) {
+            original_orders += path_set.paths.original_order.len();
+            pruned_paths += path_set.paths.paths.len();
+            pruned_siblings += path_set
+                .paths
+                .paths
+                .iter()
+                .map(|path| path.siblings.len())
+                .sum::<usize>();
+        }
+        (path_sets, original_orders, pruned_paths, pruned_siblings)
     }
 
     #[derive(Clone, Debug)]

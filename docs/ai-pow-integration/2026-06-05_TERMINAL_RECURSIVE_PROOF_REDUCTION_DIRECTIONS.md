@@ -235,6 +235,24 @@ final-layer gates (`137,816` bytes, `24.318s`), but it is still above the hard
 `~100 KiB` target and the end-to-end pipeline is dominated by the L1 witness
 proof.
 
+A cap-height sweep on the relaxed-final-layer row confirms that `cap=4` is the
+best measured point for this L2 shape. Raising the cap height does reduce the
+path restoration payload, but it moves more bytes into commitments and the core
+`BatchProof` than it saves. Lowering the cap height keeps commitments small but
+increases the restoration payload.
+
+| L2 `lb=5,nq=12,pow=0` over L1 `lb=6,nq=10,cap=4,pow=0` | Metadata-free compact body | Core compact `BatchProof` | Restoration payload | Input paths | Commit paths | Pruned siblings | L2 prove |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `cap=2` | `140,056` bytes | `82,546` bytes | `57,510` bytes | `28,429` bytes | `29,074` bytes | `1,200` | `25.422s` |
+| `cap=4` | `137,816` bytes | `87,207` bytes | `50,609` bytes | `25,840` bytes | `24,762` bytes | `1,056` | `24.403s` |
+| `cap=6` | `146,931` bytes | `105,475` bytes | `41,456` bytes | `22,400` bytes | `19,049` bytes | `864` | `24.320s` |
+| `cap=8` | `205,134` bytes | `172,198` bytes | `32,936` bytes | `18,987` bytes | `13,942` bytes | `684` | `24.174s` |
+
+All four cap-height rows verify as compact bodies. The sweep rules out cap
+height alone as the route under `~100 KiB`: even the best measured row remains
+about `37.8 KiB` above the hard target, and the cap choices that shrink path
+payload make the core proof substantially larger.
+
 The fast-L1 follow-up with L1 `lb=3,nq=20,cap=4,pow=0` also completes and
 verifies after the Tip5 MMCS direction-binding fix:
 
