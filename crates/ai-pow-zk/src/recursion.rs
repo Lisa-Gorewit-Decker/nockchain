@@ -2694,6 +2694,11 @@ mod tests {
 
         let l1_outer_bytes = postcard_len(&l1, "pure-query L2 diagnostic L1 outer proof");
         let l1_proof_body_bytes = postcard_len(&l1.proof, "pure-query L2 diagnostic L1 proof body");
+        let l1_path_estimate = merkle_path_compression_estimate_for_outer_proof(
+            &l1, L1_LOG_BLOWUP, L1_LOG_FINAL_POLY_LEN, L1_CAP_HEIGHT,
+        );
+        let l1_path_pruned_projected_outer_bytes = l1_outer_bytes
+            .saturating_sub(l1_path_estimate.mean_digest_savings_bytes.round() as usize);
 
         assert_eq!(
             l1.public_binding_lanes, DIGEST_ELEMS,
@@ -2735,11 +2740,23 @@ mod tests {
             let l2_global_lookup_data_bytes = postcard_len(
                 &l2.proof.global_lookup_data, "pure-query L2 diagnostic global lookup data",
             );
+            let l2_path_estimate = merkle_path_compression_estimate_for_outer_proof(
+                &l2,
+                l2_log_blowup,
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_FINAL_POLY_LEN,
+                L2_CAP_HEIGHT,
+            );
+            let l2_path_pruned_projected_outer_bytes = l2_outer_bytes
+                .saturating_sub(l2_path_estimate.mean_digest_savings_bytes.round() as usize);
 
             eprintln!(
-                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 lb6_nq10_cap4 -> L2 {l2_label}_cap4]: l1_outer={} l1_proof_body={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prove_ms={}",
+                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 lb6_nq10_cap4 -> L2 {l2_label}_cap4]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prove_ms={}",
                 l1_outer_bytes,
                 l1_proof_body_bytes,
+                l1_path_pruned_projected_outer_bytes,
+                l1_path_estimate.raw_siblings,
+                l1_path_estimate.mean_compressed_siblings.round() as usize,
+                l1_path_estimate.mean_digest_savings_bytes.round() as usize,
                 l1.public_binding_lanes,
                 L1_LOG_BLOWUP,
                 L1_NUM_QUERIES,
@@ -2756,6 +2773,10 @@ mod tests {
                 l2_opened_values_bytes,
                 l2_opening_proof_bytes,
                 l2_global_lookup_data_bytes,
+                l2_path_pruned_projected_outer_bytes,
+                l2_path_estimate.raw_siblings,
+                l2_path_estimate.mean_compressed_siblings.round() as usize,
+                l2_path_estimate.mean_digest_savings_bytes.round() as usize,
                 l2.public_binding_lanes,
                 l2_log_blowup,
                 l2_num_queries,
@@ -3235,6 +3256,187 @@ mod tests {
         postcard::to_allocvec(value)
             .unwrap_or_else(|err| panic!("{label} must serialize for size accounting: {err:?}"))
             .len()
+    }
+
+    #[derive(Clone, Debug)]
+    struct AuthPathGroup {
+        path_len: usize,
+        index_shift: usize,
+        index_bits: usize,
+    }
+
+    #[derive(Clone, Debug)]
+    struct MerklePathCompressionEstimate {
+        raw_siblings: usize,
+        mean_compressed_siblings: f64,
+        mean_digest_savings_bytes: f64,
+    }
+
+    fn merkle_path_compression_estimate_for_outer_proof(
+        proof: &AiPowL1OuterProof,
+        log_blowup: usize,
+        log_final_poly_len: usize,
+        cap_height: usize,
+    ) -> MerklePathCompressionEstimate {
+        const TRIALS: usize = 256;
+        const DIGEST_BYTES: usize = core::mem::size_of::<[u64; DIGEST_ELEMS]>();
+
+        let fri = &proof.proof.opening_proof;
+        let groups =
+            auth_path_groups_for_outer_proof(proof, log_blowup, log_final_poly_len, cap_height);
+        let raw_siblings: usize =
+            groups.iter().map(|g| g.path_len).sum::<usize>() * fri.query_proofs.len();
+
+        if groups.is_empty() || fri.query_proofs.is_empty() {
+            return MerklePathCompressionEstimate {
+                raw_siblings,
+                mean_compressed_siblings: raw_siblings as f64,
+                mean_digest_savings_bytes: 0.0,
+            };
+        }
+
+        let num_queries = fri.query_proofs.len();
+        let log_global_max_height = groups
+            .iter()
+            .map(|g| g.index_shift + g.index_bits)
+            .max()
+            .unwrap_or(0);
+
+        let mut compressed_total = 0usize;
+        for trial in 0..TRIALS {
+            let global_indices: Vec<usize> = (0..num_queries)
+                .map(|query| sample_transcript_shaped_index(trial, query, log_global_max_height))
+                .collect();
+            for group in &groups {
+                let reduced_indices: Vec<usize> = global_indices
+                    .iter()
+                    .map(|&index| reduced_index(index, group.index_shift, group.index_bits))
+                    .collect();
+                compressed_total +=
+                    compressed_sibling_count(cap_height, group.path_len, &reduced_indices);
+            }
+        }
+
+        let mean_compressed_siblings = compressed_total as f64 / TRIALS as f64;
+        let mean_digest_savings_bytes =
+            (raw_siblings as f64 - mean_compressed_siblings) * DIGEST_BYTES as f64;
+        MerklePathCompressionEstimate {
+            raw_siblings,
+            mean_compressed_siblings,
+            mean_digest_savings_bytes,
+        }
+    }
+
+    fn auth_path_groups_for_outer_proof(
+        proof: &AiPowL1OuterProof,
+        log_blowup: usize,
+        log_final_poly_len: usize,
+        cap_height: usize,
+    ) -> Vec<AuthPathGroup> {
+        let Some(first_query) = proof.proof.opening_proof.query_proofs.first() else {
+            return Vec::new();
+        };
+
+        let log_arities: Vec<usize> = first_query
+            .commit_phase_openings
+            .iter()
+            .map(|step| step.log_arity as usize)
+            .collect();
+        let log_global_max_height =
+            log_arities.iter().sum::<usize>() + log_blowup + log_final_poly_len;
+
+        let mut groups = Vec::new();
+        for batch in &first_query.input_proof {
+            let path_len = batch.opening_proof.len();
+            let index_bits = cap_height + path_len;
+            groups.push(AuthPathGroup {
+                path_len,
+                index_shift: log_global_max_height.saturating_sub(index_bits),
+                index_bits,
+            });
+        }
+
+        let mut folded_shift = 0usize;
+        for step in &first_query.commit_phase_openings {
+            folded_shift += step.log_arity as usize;
+            let path_len = step.opening_proof.len();
+            let index_bits = cap_height + path_len;
+            groups.push(AuthPathGroup {
+                path_len,
+                index_shift: folded_shift,
+                index_bits,
+            });
+        }
+
+        groups
+    }
+
+    fn compressed_sibling_count(cap_height: usize, path_len: usize, indices: &[usize]) -> usize {
+        if path_len == 0 || indices.is_empty() {
+            return 0;
+        }
+        let height = cap_height + path_len;
+        if height >= usize::BITS as usize {
+            return path_len * indices.len();
+        }
+
+        let num_leaves = 1usize << height;
+        let mut known = std::collections::BTreeSet::new();
+        for &leaf in indices {
+            let mut node = (leaf % num_leaves) + num_leaves;
+            for _ in 0..path_len {
+                known.insert(node);
+                node >>= 1;
+            }
+        }
+
+        let mut compressed = 0usize;
+        for &leaf in indices {
+            let mut node = (leaf % num_leaves) + num_leaves;
+            for _ in 0..path_len {
+                let sibling = node ^ 1;
+                if known.insert(sibling) {
+                    compressed += 1;
+                }
+                node >>= 1;
+                known.insert(node);
+            }
+        }
+        compressed
+    }
+
+    fn reduced_index(index: usize, shift: usize, bits: usize) -> usize {
+        if bits == 0 {
+            return 0;
+        }
+        let shifted = index.checked_shr(shift as u32).unwrap_or(0);
+        shifted & low_bits_mask(bits)
+    }
+
+    fn sample_transcript_shaped_index(trial: usize, query: usize, bits: usize) -> usize {
+        if bits == 0 {
+            return 0;
+        }
+        let seed = 0x9e37_79b9_7f4a_7c15u64
+            ^ ((trial as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9))
+            ^ ((query as u64).wrapping_mul(0x94d0_49bb_1331_11eb));
+        (splitmix64(seed) as usize) & low_bits_mask(bits)
+    }
+
+    fn low_bits_mask(bits: usize) -> usize {
+        if bits >= usize::BITS as usize {
+            usize::MAX
+        } else {
+            (1usize << bits) - 1
+        }
+    }
+
+    fn splitmix64(mut x: u64) -> u64 {
+        x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
     }
 
     fn log_terminal_production_component_sizes(

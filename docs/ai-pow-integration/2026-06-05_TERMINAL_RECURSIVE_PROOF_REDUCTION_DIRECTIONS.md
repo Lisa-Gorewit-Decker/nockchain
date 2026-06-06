@@ -133,21 +133,32 @@ table and reconstructs `PublicAir` with those binding lanes. That is required
 for any L2 proof over a statement-bound L1 object to bind the statement digest
 cryptographically.
 
-With that fix in place, the release/native L2 sweep measured:
+With that fix in place, the release/native L2 sweep measured the raw proof and
+an optimistic verifier-index-derived Merkle path pruning projection:
 
-| Shape | Final L2 proof | L2 prove time | Shared L1 witness proof |
-|---|---:|---:|---:|
-| L2 `lb=4,nq=15,cap=4,pow=0` over L1 `lb=6,nq=10,cap=4,pow=0` | `207,241` bytes | `12.776s` | L1 `173,171` bytes, L1 prove `192.291s` |
-| L2 `lb=5,nq=12,cap=4,pow=0` over same L1 | `178,719` bytes | `24.630s` | same |
-| L2 `lb=6,nq=10,cap=4,pow=0` over same L1 | `159,734` bytes | `48.154s` | same |
+| Shape | Final L2 proof | Path-pruned projection | Path savings | L2 prove time | Shared L1 witness proof |
+|---|---:|---:|---:|---:|---:|
+| L2 `lb=4,nq=15,cap=4,pow=0` over L1 `lb=6,nq=10,cap=4,pow=0` | `207,241` bytes | `201,034` bytes | `6,207` bytes | `12.703s` | L1 `173,171` bytes, projected `169,609`, L1 prove `194.188s` |
+| L2 `lb=5,nq=12,cap=4,pow=0` over same L1 | `178,719` bytes | `174,507` bytes | `4,212` bytes | `24.716s` | same |
+| L2 `lb=6,nq=10,cap=4,pow=0` over same L1 | `159,734` bytes | `156,652` bytes | `3,082` bytes | `48.170s` | same |
 
-The best L2 proof is close to, but still above, the relaxed `150 KiB` size
-target. It also exceeds the `<30s` proving budget for the L2 layer alone, and
-the pipeline still has to produce the **192.291s** L1 batch-STARK witness proof
+The pruning projection models Plonky2/Pearl-style authentication-path omission
+only when the verifier rederives the Fiat-Shamir query indices from the
+transcript. Serializing miner-supplied query indices would be unsound. The
+projection also subtracts only omitted digest bytes and does not charge a new
+compact-format overhead, so it is an optimistic floor for this proof shape.
+
+The result is decisive: duplicate Merkle authentication paths are not the
+dominant reason the batch-STARK L2 proof misses the target. The best L2 proof is
+still above the relaxed `150 KiB` target even under the optimistic projection.
+It also exceeds the `<30s` proving budget for the L2 layer alone, and the
+pipeline still has to produce the **194.188s** L1 batch-STARK witness proof
 first. This is useful evidence, but it rules out a plain second batch-STARK
-layer as the production answer. The next Pearl-shaped route has to avoid
-materializing the expensive L1 batch-STARK witness proof, or replace the final
-batch-STARK proof format with a genuinely compact terminal/compression proof.
+layer, or a Merkle-only compact serializer for that layer, as the production
+answer. The next Pearl-shaped route has to avoid materializing the expensive L1
+batch-STARK witness proof, or replace the final batch-STARK proof format with a
+genuinely compact terminal/compression proof whose non-path openings are also
+omitted or cached under explicit verifier-key bindings.
 
 The polynomial NPO path remains useful diagnostic evidence, but it is not a
 drop-in production replacement for the exhaustive NPO proof. The recursion-crate
@@ -391,7 +402,8 @@ Viable Nockchain tracks that do not use Plonky2 directly are:
    caps, wrong circuit digests, and malformed compact openings are rejected.
    This route must avoid simply wrapping the current L1 verifier in another
    batch-STARK; the measured L2 batch-STARK proof remains above the relaxed size
-   target and too slow once the required L1 proof is included.
+   target even after optimistic verifier-derived Merkle path pruning, and is too
+   slow once the required L1 proof is included.
 3. **Preprocessed-program binding instead of assignment-value revelation.**
    Move deterministic verifier/program data out of terminal assignment openings
    and into digest-bound preprocessed columns whose evaluations at verifier
