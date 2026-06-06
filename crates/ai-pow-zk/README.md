@@ -9,14 +9,16 @@ an opt-in diagnostic but has not yet met the release-time gate. The plain
 `MatmulProof` remains a miner diagnostic / pre-ZKP target-hit check; it is not
 the persisted block artifact.
 
-> **Important current production-proof direction:** before changing the
-> recursive proof path, proof shape, FRI parameters, or certificate wire format,
-> read the live status summary:
+> **Important - current production-proof direction:** before changing the
+> recursive proof path, proof shape, FRI parameters, certificate wire format, or
+> packed Tip5/NPO bridge code, read the live status summary:
 > [Current Most Viable Path (2026-06-06)](../../docs/ai-pow-integration/2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md#current-most-viable-path-2026-06-06).
 > The active route is native terminal plus fused FRI-native NPO work with
-> packed Tip5 AIR/LogUp/value-bridge bindings. The batch-STARK recursive
-> certificate remains a sound checkpoint/fallback, not the production wire
-> target, and the relaxed production milestone is not yet claimed.
+> packed Tip5 AIR/LogUp/projection/value-bridge bindings, including the
+> lane-selector-aware selected-to-packed NPO-IO bridge described there. The
+> batch-STARK recursive certificate remains a sound checkpoint/fallback, not the
+> production wire target, and the relaxed production milestone is not yet
+> claimed.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 

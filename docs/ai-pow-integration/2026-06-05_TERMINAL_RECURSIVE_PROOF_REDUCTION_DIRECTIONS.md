@@ -16,6 +16,18 @@ undocumented or unproven soundness shortcut.
 
 ## Current Most Viable Path (2026-06-06)
 
+### At A Glance
+
+| Question | Current answer |
+|---|---|
+| Production recursive proof path | Native terminal certificate, not the batch-STARK recursive certificate |
+| Relaxed target | About `150 KiB` recursive proof artifact and about `30s` total release proving |
+| Soundness target | 60 pure FRI query bits with `log_blowup=4`, `num_queries=15`, `query_pow_bits=0` |
+| Most viable shape | One fused FRI-native terminal theorem over the merged NPO/value bridge plus packed Tip5 AIR, packed byte LogUp, packed trace-to-NPO-IO projection, and selected-value-to-packed-NPO-IO bridge |
+| Best measured complete base | Merged padding/value-bridge checkpoint at `151,448` bytes / `147.9 KiB`, post-prelude proof body `14.914s`, but missing internal Tip5 binding |
+| Main current blocker | The bridge from selected NPO values to packed NPO-IO must account for output-present masking; absent output limbs are zero on the selected value side but nonzero in the unmasked packed projection |
+| Next implementation step | Add a lane-selector-aware selected-to-packed LogUp bridge, then fuse it with the packed AIR/LogUp/projection openings under one transcript |
+
 ### Decision
 
 The current most viable route to the relaxed production target is a native
@@ -36,7 +48,7 @@ single fused NPO theorem that contains:
 - packed one-row-per-permutation Tip5 AIR algebra;
 - packed byte-table LogUp;
 - packed trace to packed NPO-IO projection binding;
-- selected NPO-value to packed NPO-IO projection bridge;
+- lane-selector-aware selected NPO-value to packed NPO-IO projection bridge;
 - one shared prelude, transcript, FRI point, and opening shape so trace
   openings are not duplicated across standalone proof components.
 
@@ -85,6 +97,20 @@ fuse packed AIR algebra, packed LogUp, packed NPO-IO projection, and the
 selected-value bridge into the same transcript and opening set as the merged
 value bridge.
 
+The selected-to-packed bridge should compare only lanes that are semantically
+present. The selected value bridge masks final-output lanes by
+`output_present_limb`, while the packed NPO-IO projection checkpoint keeps the
+unmasked final-round output lanes so it can be derived directly from the packed
+trace. A naive all-26-lane equality would therefore fail on absent output lanes:
+the selected side contains zero and the packed side contains the trace value.
+The least invasive sound path is to keep the unmasked packed projection proof
+and add verifier-derived per-lane selectors to the selected-to-packed LogUp
+equality: all 16 input lanes are included for every Tip5 row, and each of the 10
+output lanes is included only when its `output_present_limb` selector is one.
+This preserves the existing packed trace binding and the
+Merkle-direction-aware `mmcs_bit` value bridge without introducing a second
+masked projection commitment.
+
 ### Done And Verified
 
 - Native terminal remains the selected production backend; the README for
@@ -109,13 +135,19 @@ value bridge.
   the proof and reject stale trace/projection commitments, stale projection
   profiles, malformed openings, tampered projection openings, and stale prelude
   roots for a changed packed trace.
+- The latest bridge investigation has identified the necessary selector shape:
+  selected-value output lanes are masked by `output_present_limb`, while the
+  packed projection remains unmasked and trace-derived. This is a design
+  constraint for the next proof, not yet a passing production bridge.
 - The production soundness policy is explicit: 60 bits must come from FRI query
   soundness at `pow=0`, not from proof-system grinding.
 
 ### Remaining Work
 
-- Implement the selected NPO-value to packed NPO-IO projection bridge,
-  preserving the Merkle-direction-aware `mmcs_bit` bus-to-trace projection.
+- Implement the lane-selector-aware selected NPO-value to packed NPO-IO
+  projection bridge, preserving the Merkle-direction-aware `mmcs_bit`
+  bus-to-trace projection and binding the bridge endpoints to the merged
+  value-bridge selected commitment and the packed projection commitment.
 - Fuse packed AIR algebra, packed byte-table LogUp, packed NPO-IO projection,
   and selected-value bridge openings with the merged value-bridge proof under
   one transcript and one shared opening schedule.
