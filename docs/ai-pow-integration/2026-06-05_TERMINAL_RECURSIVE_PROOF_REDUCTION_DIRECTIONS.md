@@ -258,6 +258,110 @@ The latest measurement also printed useful comparison floors:
 | Sparse R1CS matrix sumcheck | `20,873` | Primitive matrix component is already small enough |
 | R1CS row-product sumcheck | `22,631` | Assignment fold openings dominate this component, but it is not the main target |
 
+## Pearl/Plonky2 Reference: What Actually Makes Its Proof Small
+
+The Pearl implementation is useful evidence that the target size is plausible
+with a STARK-family proof, but the mechanism is not "batch-STARK the recursive
+verifier harder." In the read-only Pearl checkout, the submitted `ZKProof`
+contains only a 22-byte preamble
+(`pow_bits[3] | rate_bits[3] | zeta[16]`) plus the final compact Plonky2 proof
+bytes (`pearl/zk-pow/src/api/proof.rs` and `proof_utils.rs`). The public proof
+data is separate and fixed-size, and verification reconstructs the final proof
+public inputs from public params, cached verifier data, and deterministic
+preprocessed columns.
+
+The architecture is materially different from the current full
+`ai-pow-zk` terminal path:
+
+- Pearl proves the AI-PoW computation with a specialized `PearlStark` AIR, not
+  with a generic recursive-verifier terminal relation. The AIR interleaves input,
+  Blake3, matmul, and jackpot chips in one trace
+  (`pearl/zk-pow/src/circuit/pearl_air.rs`).
+- Its "program" side is encoded as preprocessed control/noise/routing columns.
+  Starky commits online and preprocessed trace columns in one Merkle oracle,
+  absorbs a preprocessed/public-data digest before deriving challenges, and
+  recursively connects the preprocessed openings at `zeta` and `g*zeta`
+  (`pearl/plonky2/starky/src/prover.rs` and
+  `recursive_verifier.rs`).
+- The first recursive circuit verifies the base STARK proof and exposes the
+  base public inputs, public-data commitment, STARK `zeta`, and preprocessed
+  evaluations as public inputs. Verification later recomputes those
+  preprocessed evaluations natively from public parameters instead of carrying
+  the base STARK proof on the wire
+  (`pearl/zk-pow/src/circuit/pearl_circuit.rs`).
+- The second recursive circuit verifies the first recursive proof and serializes
+  only a compact final proof. Pearl's `CompactProofWithPublicInputs` omits
+  deterministic `constants_sigmas` evaluations and Merkle proofs from FRI query
+  rounds, then reconstructs them during verification from trusted cached
+  polynomial coefficients (`pearl/plonky2/plonky2/src/plonk/proof.rs`).
+- Pearl explicitly binds a gap in its second-recursion verifier by exposing the
+  first circuit's `constants_sigmas_cap` and `circuit_digest` as public inputs,
+  because `builder_2.verify_proof` alone does not prove that the cap is related
+  to the digest.
+
+That explains why Pearl does not pay our measured `620,028` byte
+assignment-witness multiproof cost. It does not terminalize a generic composite
+verifier and then authenticate tens of thousands of verifier-assignment values.
+It proves a purpose-built AIR, recursively compresses that proof twice, and
+puts only the compact second-recursion proof on the wire.
+
+The exact Pearl parameters are not directly portable to Nockchain's stated
+soundness policy. Pearl's defaults are `pow_bits=[18,18,22]` and
+`rate_bits=[1 or 2,3,7]`, with `num_query_rounds =
+ceil((120 - pow_bits) / rate_bits)` in all three stages
+(`pearl/zk-pow/src/circuit/circuit_utils.rs`). Nockchain's current production
+policy is a 60-bit pure-query floor with `query_pow_bits=0`. Therefore Pearl's
+high proof-system PoW values are useful as an engineering comparison but cannot
+be counted toward Nockchain's production soundness unless that policy is
+explicitly changed.
+
+## Pearl-Informed Plonky3-Compatible Tracks
+
+The portable lessons are the proof shape and the bindings, not Plonky2 itself.
+Viable Nockchain tracks that do not use Plonky2 directly are:
+
+1. **Specialized AI-PoW base AIR plus recursive compression.** Build a
+   Plonky3-native AIR for the actual AI-PoW statement, with matrix/noise/hash
+   and jackpot constraints directly in the trace and deterministic public data
+   represented as preprocessed columns. This is the closest analogue to Pearl
+   and avoids the current generic verifier relation before recursion. It is the
+   largest AIR implementation, but it attacks both measured blockers: the
+   `106,349` primitive terminal operations and the `14,049` supported NPO rows.
+2. **Two-stage Plonky3 recursive compressor with compact final serialization.**
+   Keep the current Layer-0 proof or a future specialized AIR proof, then add a
+   first recursive verifier circuit and a second proof-compression circuit whose
+   on-wire proof omits only deterministic verifier-key openings. This requires
+   a Plonky3 analogue of Pearl's compact proof format: cached verifier
+   polynomials, public binding of verifier digests/caps, strict verifier-key
+   reconstruction, and explicit tests that stale cached polynomials, swapped
+   caps, wrong circuit digests, and malformed compact openings are rejected.
+3. **Preprocessed-program binding instead of assignment-value revelation.**
+   Move deterministic verifier/program data out of terminal assignment openings
+   and into digest-bound preprocessed columns whose evaluations at verifier
+   challenge points are recomputed by the verifier. This is a narrower form of
+   the Pearl design and could reduce the current exhaustive NPO multiproof, but
+   it is sound only if every omitted value is either deterministically
+   reconstructable or still proven derived from committed witness columns.
+4. **Unified STARK/IOP for terminal NPO data.** Continue the Direction 1 work,
+   but treat Pearl as evidence that the final proof should be one compact
+   recursively compressed object rather than two independent terminal FRI
+   payloads plus a large assignment-opening proof. The current integrated
+   candidate is too slow, so a viable version has to share commitments,
+   challenges, and openings structurally and avoid rebuilding the same matrices.
+5. **Pure-query parameter search after the proof shape changes.** Pearl's
+   `rate_bits=7,pow_bits=22` final stage is small partly because it counts
+   proof-system PoW. For Nockchain, parameter sweeps must keep `pow_bits=0`
+   unless the soundness policy changes. The useful search space is therefore
+   higher-rate/fewer-query pure-query recursion after compact serialization and
+   specialized/preprocessed bindings have reduced the relation.
+
+The expected production route is probably a combination of the first two
+tracks: prove the AI-PoW statement with a specialized Plonky3 STARK/AIR, then
+recursively compress it to one compact final proof. The current native terminal
+backend remains valuable as a verifier-relation diagnostic and fallback, but
+its full composite path is paying costs that Pearl's architecture avoids
+entirely.
+
 ## Direction 1: Unified Production NPO FRI/IOP
 
 Build one production NPO proof that combines the current
@@ -553,21 +657,28 @@ the production certificate unless the hard size target changes.
 
 ## Recommendation
 
-I would pursue three tracks in this order:
+I would pursue five tracks in this order:
 
-1. **Keep exhaustive NPO as the leading terminal direction, but do not call it
-   fully production-integrated yet.** It is the only current native terminal
-   fixture measured below 100 KiB and below 30s, but the actual composite L1
-   verifier path still exceeds both the size and time gates.
-2. **Reduce the full composite L1 terminal relation before spending more effort
-   on terminal proof-body compression.** The current blocker is relation size:
+1. **Prototype the Pearl-shaped Plonky3 route: specialized AI-PoW AIR plus
+   two-stage compact recursion.** This is the most plausible path to the Pearl
+   class of proof sizes without importing Plonky2 or counting proof-system PoW.
+   The prototype should first measure final compact recursive proof size under
+   `pow_bits=0`, then add soundness documentation for every public,
+   preprocessed, verifier-key, and cached-polynomial binding.
+2. **Keep exhaustive NPO as the leading native-terminal fallback, but do not
+   call it fully production-integrated yet.** It is the only current native
+   terminal fixture measured below 100 KiB and below 30s, but the actual
+   composite L1 verifier path still exceeds both the size and time gates.
+3. **Reduce the full composite L1 terminal relation only if we keep pursuing
+   the generic-verifier terminal route.** The current blocker is relation size:
    `106,349` primitive operations and `14,049` supported NPO rows in the PROD
    baseline. The primitive reduction should focus first on generic FRI/PCS
    verifier Horner work; the NPO reduction should focus on Tip5 and
    recompose/coeff callsite count without removing their bindings.
-3. **Continue the unified NPO proof only as hardening/future work.** It would
-   reduce witness leakage if it can share one FRI payload and stay under target.
-4. **Keep batch-STARK hardened as checkpoint only.** It is soundness-relevant
+4. **Continue the unified NPO proof as hardening/future work.** It would reduce
+   witness leakage if it can share one FRI payload and stay under target, but
+   the current full-composite integrated candidate is too slow.
+5. **Keep batch-STARK hardened as checkpoint only.** It is soundness-relevant
    but too large for the production recursive certificate.
 
 I would not spend milestone effort on terminal query-PoW parameter changes
