@@ -1508,6 +1508,35 @@ mod tests {
     use crate::params::ZkParams;
     use crate::CircuitConfig;
 
+    struct RecScalarValMmcs<const DIGEST_ELEMS: usize, H, C>(core::marker::PhantomData<(H, C)>);
+
+    impl<const DIGEST_ELEMS: usize, H, C> p3_recursion::RecursiveMmcs<Val, Challenge>
+        for RecScalarValMmcs<DIGEST_ELEMS, H, C>
+    where
+        H: p3_symmetric::CryptographicHasher<Val, [Val; DIGEST_ELEMS]> + Sync,
+        C: p3_symmetric::PseudoCompressionFunction<[Val; DIGEST_ELEMS], 2> + Sync,
+        [Val; DIGEST_ELEMS]: serde::Serialize + for<'a> serde::Deserialize<'a>,
+    {
+        type Input = p3_merkle_tree::MerkleTreeMmcs<Val, Val, H, C, 2, DIGEST_ELEMS>;
+        type Commitment = MerkleCapTargets<Val, DIGEST_ELEMS>;
+        type Proof = p3_recursion::pcs::fri::HashProofTargets<Val, DIGEST_ELEMS>;
+    }
+
+    type L2Hash = p3_symmetric::PaddingFreeSponge<RecTip5Perm, WIDTH, RATE, DIGEST_ELEMS>;
+    type L2Compress = p3_symmetric::TruncatedPermutation<RecTip5Perm, 2, DIGEST_ELEMS, WIDTH>;
+    type L2ValMmcs = p3_merkle_tree::MerkleTreeMmcs<Val, Val, L2Hash, L2Compress, 2, DIGEST_ELEMS>;
+    type L2ChallengeMmcs = p3_commit::ExtensionMmcs<Val, Challenge, L2ValMmcs>;
+    type L2Comm = MerkleCapTargets<Val, DIGEST_ELEMS>;
+    type L2RecValMmcs = RecScalarValMmcs<DIGEST_ELEMS, L2Hash, L2Compress>;
+    type L2InputProof = InputProofTargets<Val, Challenge, L2RecValMmcs>;
+    type L2InnerFri = FriProofTargets<
+        Val,
+        Challenge,
+        RecExtensionValMmcs<Val, Challenge, DIGEST_ELEMS, L2RecValMmcs>,
+        L2InputProof,
+        Witness<Val>,
+    >;
+
     fn test_zk_params() -> ZkParams {
         ZkParams {
             m: 8,
@@ -1517,6 +1546,204 @@ mod tests {
             tile: 2,
             difficulty_bits: 0,
         }
+    }
+
+    fn statement_digest_public_values_for_l1(built: &BuiltCompositeL1) -> Vec<Val> {
+        built
+            .public_inputs
+            .iter()
+            .take(DIGEST_ELEMS)
+            .flat_map(|value| {
+                <Challenge as BasedVectorSpace<Val>>::as_basis_coefficients_slice(value)
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>()
+    }
+
+    fn tip5_recompose_table_provers_for_l2(
+    ) -> Vec<Box<dyn p3_circuit_prover::TableProver<p3_circuit_prover::config::GoldilocksTipsConfig>>>
+    {
+        use p3_circuit_prover::{
+            recompose_table_provers, ConstraintProfile, TableProver, Tip5Prover,
+        };
+
+        let mut provers: Vec<
+            Box<dyn TableProver<p3_circuit_prover::config::GoldilocksTipsConfig>>,
+        > = vec![Box::new(Tip5Prover::new(
+            Tip5Config::GOLDILOCKS_W16,
+            ConstraintProfile::Standard,
+        ))];
+        provers.extend(recompose_table_provers::<
+            p3_circuit_prover::config::GoldilocksTipsConfig,
+            2,
+        >(1, true));
+        provers
+    }
+
+    fn l2_public_values_for_l1(
+        l1: &AiPowL1OuterProof,
+        statement_digest_public_values: &[Val],
+    ) -> Vec<Vec<Val>> {
+        use p3_circuit::ops::PrimitiveOpType;
+        use p3_circuit_prover::batch_stark_prover::NUM_PRIMITIVE_TABLES;
+
+        let mut public_values = Vec::with_capacity(NUM_PRIMITIVE_TABLES + l1.non_primitives.len());
+        public_values.resize_with(NUM_PRIMITIVE_TABLES, Vec::new);
+        let expected_public_values = l1.public_binding_lanes * l1.ext_degree;
+        assert_eq!(
+            statement_digest_public_values.len(),
+            expected_public_values,
+            "L2 diagnostic must bind the same statement digest exposed by the L1 Public AIR"
+        );
+        public_values[PrimitiveOpType::Public as usize] = statement_digest_public_values.to_vec();
+        public_values.extend(
+            l1.non_primitives
+                .iter()
+                .map(|entry| entry.public_values.clone()),
+        );
+        public_values
+    }
+
+    fn pure_query_fri_verifier_params_for_l1(
+        log_blowup: usize,
+        log_final_poly_len: usize,
+    ) -> FriVerifierParams {
+        FriVerifierParams::with_mmcs(
+            log_blowup,
+            log_final_poly_len,
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+            Tip5Config::GOLDILOCKS_W16,
+        )
+    }
+
+    fn prove_l2_over_l1_outer_for_test_pearl(
+        l1: &AiPowL1OuterProof,
+        statement_digest_public_values: &[Val],
+        l1_config: p3_circuit_prover::config::GoldilocksTipsConfig,
+        l1_fri_verifier_params: &FriVerifierParams,
+        l2_config: p3_circuit_prover::config::GoldilocksTipsConfig,
+    ) -> Result<AiPowL1OuterProof, String> {
+        use p3_batch_stark::ProverData;
+        use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
+        use p3_circuit_prover::{
+            recompose_air_builders, strip_public_binding_for_lookup_metadata, tip5_air_builders,
+            BatchStarkProver, CircuitProverData, ConstraintProfile, RecomposePreprocessor,
+            TablePacking, Tip5Preprocessor,
+        };
+        use p3_recursion::verifier::verify_p3_batch_proof_circuit;
+
+        const TRACE_D: usize = 2;
+
+        let l1_public_values = l2_public_values_for_l1(l1, statement_digest_public_values);
+        let mut circuit_builder = CircuitBuilder::<Challenge>::new();
+        circuit_builder.enable_tip5_perm::<Tip5Goldilocks, _>(
+            generate_tip5_trace::<Challenge, Tip5Goldilocks>, LiftTip5,
+        );
+        circuit_builder.enable_recompose::<Val>(generate_recompose_trace::<Val, Challenge>);
+        circuit_builder.set_recompose_coeff_ctl_for_decompose_links(true);
+
+        let lookup_gadget = LogUpGadget::new();
+        let l1_table_provers = tip5_recompose_table_provers_for_l2();
+        let (verifier_inputs, mmcs_op_ids) = verify_p3_batch_proof_circuit::<
+            p3_circuit_prover::config::GoldilocksTipsConfig,
+            L2Comm,
+            L2InputProof,
+            L2InnerFri,
+            LogUpGadget,
+            Tip5Config,
+            WIDTH,
+            RATE,
+            TRACE_D,
+        >(
+            &l1_config,
+            &mut circuit_builder,
+            l1,
+            l1_fri_verifier_params,
+            &l1.stark_common,
+            &lookup_gadget,
+            Tip5Config::GOLDILOCKS_W16,
+            &l1_table_provers,
+        )
+        .map_err(|e| format!("build L2 verifier circuit over L1 proof: {e:?}"))?;
+
+        let verification_circuit = circuit_builder
+            .build()
+            .map_err(|e| format!("build L2 circuit: {e:?}"))?;
+        let (public_inputs, private_inputs) =
+            verifier_inputs.pack_values(&l1_public_values, &l1.proof, &l1.stark_common);
+
+        let l2_table_packing = TablePacking::new(DIGEST_ELEMS, 8).with_horner_pack_k(5);
+        let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
+            vec![Box::new(Tip5Preprocessor), Box::new(RecomposePreprocessor::new(true))];
+        let mut air_builders =
+            tip5_air_builders::<p3_circuit_prover::config::GoldilocksTipsConfig, 2>();
+        air_builders.extend(recompose_air_builders::<
+            p3_circuit_prover::config::GoldilocksTipsConfig,
+            2,
+        >(1, true));
+
+        let (airs_degrees, primitive_columns, non_primitive_columns) =
+            get_airs_and_degrees_with_prep::<
+                p3_circuit_prover::config::GoldilocksTipsConfig,
+                Challenge,
+                2,
+            >(
+                &verification_circuit,
+                &l2_table_packing,
+                &npo_prep,
+                &air_builders,
+                ConstraintProfile::Standard,
+            )
+            .map_err(|e| format!("L2 get_airs_and_degrees: {e:?}"))?;
+        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
+        let mut runner = verification_circuit.runner();
+        runner
+            .set_public_inputs(&public_inputs)
+            .map_err(|e| format!("L2 set public inputs: {e:?}"))?;
+        runner
+            .set_private_inputs(&private_inputs)
+            .map_err(|e| format!("L2 set private inputs: {e:?}"))?;
+        set_fri_mmcs_private_data::<
+            Val,
+            Challenge,
+            L2ChallengeMmcs,
+            L2ValMmcs,
+            L2Hash,
+            L2Compress,
+            DIGEST_ELEMS,
+        >(
+            &mut runner,
+            &mmcs_op_ids,
+            &l1.proof.opening_proof,
+            Tip5Config::GOLDILOCKS_W16,
+        )
+        .map_err(|e| format!("L2 set FRI MMCS private data: {e}"))?;
+        let traces = runner
+            .run()
+            .map_err(|e| format!("L2 verifier circuit rejected L1 proof: {e:?}"))?;
+
+        let lookup_metadata_airs = airs
+            .iter()
+            .map(strip_public_binding_for_lookup_metadata)
+            .collect::<Vec<_>>();
+        let prover_data =
+            ProverData::from_airs_and_degrees(&l2_config, &lookup_metadata_airs, &degrees);
+        let circuit_prover_data =
+            CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+        let mut prover = BatchStarkProver::new(l2_config).with_table_packing(l2_table_packing);
+        prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+        prover.register_recompose_table::<2>(true);
+        let proof = prover
+            .prove_all_tables(&traces, &circuit_prover_data)
+            .map_err(|e| format!("L2 prove_all_tables: {e:?}"))?;
+        prover
+            .verify_all_tables(&proof)
+            .map_err(|e| format!("L2 verify_all_tables: {e:?}"))?;
+        Ok(proof)
     }
 
     /// S3d — end-to-end: a real composite batch-STARK proof is
@@ -2288,6 +2515,159 @@ mod tests {
             assert!(
                 l1_outer_bytes >= l1_proof_body_bytes,
                 "metadata split must be well formed"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "pure-query AI-PoW L2-over-L1 recursive compression measurement is opt-in"]
+    fn pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl() {
+        use std::time::Instant;
+
+        use p3_circuit::ops::Tip5Config;
+        use p3_circuit_prover::BatchStarkProver;
+
+        const L1_LOG_BLOWUP: usize = 6;
+        const L1_NUM_QUERIES: usize = 10;
+        const L1_CAP_HEIGHT: usize = 4;
+        const L1_LOG_FINAL_POLY_LEN: usize = 2;
+        const L2_LOG_BLOWUP: usize = 4;
+        const L2_NUM_QUERIES: usize = 15;
+        const L2_CAP_HEIGHT: usize = 4;
+        assert_eq!(L1_LOG_BLOWUP * L1_NUM_QUERIES, 60);
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+            0
+        );
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+            0
+        );
+
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+
+        let statement_digest_public_values = statement_digest_public_values_for_l1(&built);
+        let l1_config = pure_query_l1_stark_config_with_shape_and_cap(
+            L1_LOG_BLOWUP, L1_NUM_QUERIES, L1_CAP_HEIGHT,
+        );
+        let l1_prove_start = Instant::now();
+        let l1 = prove_composite_l1_outer_cert_with_config_and_public_binding_lanes(
+            &built,
+            &proof,
+            l1_config.clone(),
+            DIGEST_ELEMS,
+        )
+        .expect("pure-query cap-4 L1 recursive certificate");
+        let l1_prove_ms = l1_prove_start.elapsed().as_millis();
+
+        let mut l1_verifier = BatchStarkProver::new(l1_config.clone())
+            .with_table_packing(production_l1_table_packing(DIGEST_ELEMS));
+        l1_verifier.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+        l1_verifier.register_recompose_table::<2>(true);
+        let l1_verify_start = Instant::now();
+        l1_verifier
+            .verify_all_tables_with_public_values(&l1, &statement_digest_public_values)
+            .expect("statement-bound L1 proof must verify before L2 wrapping");
+        let l1_verify_ms = l1_verify_start.elapsed().as_millis();
+
+        let l1_outer_bytes = postcard_len(&l1, "pure-query L2 diagnostic L1 outer proof");
+        let l1_proof_body_bytes = postcard_len(&l1.proof, "pure-query L2 diagnostic L1 proof body");
+
+        assert_eq!(
+            l1.public_binding_lanes, DIGEST_ELEMS,
+            "L1 proof must expose the statement digest before L2 wrapping"
+        );
+
+        for (l2_label, l2_log_blowup, l2_num_queries) in [
+            ("lb4_nq15", L2_LOG_BLOWUP, L2_NUM_QUERIES),
+            ("lb5_nq12", 5usize, 12usize),
+            ("lb6_nq10", 6usize, 10usize),
+        ] {
+            assert_eq!(l2_log_blowup * l2_num_queries, 60);
+            let l2_config = pure_query_l1_stark_config_with_shape_and_cap(
+                l2_log_blowup, l2_num_queries, L2_CAP_HEIGHT,
+            );
+            let l2_prove_start = Instant::now();
+            let l2 = prove_l2_over_l1_outer_for_test_pearl(
+                &l1,
+                &statement_digest_public_values,
+                l1_config.clone(),
+                &pure_query_fri_verifier_params_for_l1(L1_LOG_BLOWUP, L1_LOG_FINAL_POLY_LEN),
+                l2_config,
+            )
+            .expect("pure-query L2 proof over statement-bound L1");
+            let l2_prove_ms = l2_prove_start.elapsed().as_millis();
+
+            let l2_outer_bytes = postcard_len(&l2, "pure-query L2 diagnostic L2 outer proof");
+            let l2_proof_body_bytes =
+                postcard_len(&l2.proof, "pure-query L2 diagnostic L2 proof body");
+            let l2_commitments_bytes = postcard_len(
+                &l2.proof.commitments, "pure-query L2 diagnostic commitments",
+            );
+            let l2_opened_values_bytes = postcard_len(
+                &l2.proof.opened_values, "pure-query L2 diagnostic opened values",
+            );
+            let l2_opening_proof_bytes = postcard_len(
+                &l2.proof.opening_proof, "pure-query L2 diagnostic opening proof",
+            );
+            let l2_global_lookup_data_bytes = postcard_len(
+                &l2.proof.global_lookup_data, "pure-query L2 diagnostic global lookup data",
+            );
+
+            eprintln!(
+                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 lb6_nq10_cap4 -> L2 {l2_label}_cap4]: l1_outer={} l1_proof_body={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prove_ms={}",
+                l1_outer_bytes,
+                l1_proof_body_bytes,
+                l1.public_binding_lanes,
+                L1_LOG_BLOWUP,
+                L1_NUM_QUERIES,
+                L1_CAP_HEIGHT,
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+                L1_LOG_BLOWUP * L1_NUM_QUERIES,
+                l1_prove_ms,
+                l1_verify_ms,
+                l2_outer_bytes,
+                l2_proof_body_bytes,
+                l2_outer_bytes.saturating_sub(l2_proof_body_bytes),
+                l2_commitments_bytes,
+                l2_opened_values_bytes,
+                l2_opening_proof_bytes,
+                l2_global_lookup_data_bytes,
+                l2.public_binding_lanes,
+                l2_log_blowup,
+                l2_num_queries,
+                L2_CAP_HEIGHT,
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+                l2_log_blowup * l2_num_queries,
+                l2_prove_ms,
+            );
+
+            assert_eq!(
+                l2.public_binding_lanes, 0,
+                "diagnostic L2 proof currently binds its L1 statement through the verifier public inputs"
+            );
+            assert!(
+                l2_outer_bytes >= l2_proof_body_bytes,
+                "L2 metadata split must be well formed"
             );
         }
     }

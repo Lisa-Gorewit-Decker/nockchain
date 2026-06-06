@@ -256,7 +256,8 @@ where
         CircuitTablesAir::Public(PublicAir::<Val<SC>, TRACE_D>::new(
             rows[PrimitiveTable::Public],
             public_lanes,
-        )),
+        )
+        .with_public_binding_lanes(proof.public_binding_lanes)),
         CircuitTablesAir::Alu(alu_air),
     ];
 
@@ -283,6 +284,8 @@ where
     }
 
     let mut air_public_counts = vec![0usize; NUM_PRIMITIVE_TABLES];
+    air_public_counts[PrimitiveTable::Public as usize] =
+        proof.public_binding_lanes * TRACE_D;
     for entry in &proof.non_primitives {
         air_public_counts.push(entry.public_values.len());
     }

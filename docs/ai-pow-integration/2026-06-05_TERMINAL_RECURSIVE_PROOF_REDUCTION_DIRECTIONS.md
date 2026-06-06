@@ -117,6 +117,38 @@ pure-query 60-bit sweep; failing the size/time gates there means the current
 terminal proof shape is structurally too large. Its L0 proving cost remains too
 high for an unqualified production default.
 
+## Batch-STARK L2 Compression Check
+
+A Pearl-shaped architecture needs a second compression step, but the current
+batch-STARK L2 path is not that solution. The opt-in diagnostic
+`pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl`
+builds a real AI-PoW L1 proof with explicit statement digest public-binding
+lanes, then proves a second batch-STARK verifier circuit over that L1 proof.
+
+This exercise found one soundness-critical wiring gap before measurement:
+`verify_p3_batch_proof_circuit` did not allocate or constrain primitive Public
+AIR values for `proof.public_binding_lanes`. The recursive verifier now
+allocates `proof.public_binding_lanes * TRACE_D` public inputs for the Public
+table and reconstructs `PublicAir` with those binding lanes. That is required
+for any L2 proof over a statement-bound L1 object to bind the statement digest
+cryptographically.
+
+With that fix in place, the release/native L2 sweep measured:
+
+| Shape | Final L2 proof | L2 prove time | Shared L1 witness proof |
+|---|---:|---:|---:|
+| L2 `lb=4,nq=15,cap=4,pow=0` over L1 `lb=6,nq=10,cap=4,pow=0` | `207,241` bytes | `12.776s` | L1 `173,171` bytes, L1 prove `192.291s` |
+| L2 `lb=5,nq=12,cap=4,pow=0` over same L1 | `178,719` bytes | `24.630s` | same |
+| L2 `lb=6,nq=10,cap=4,pow=0` over same L1 | `159,734` bytes | `48.154s` | same |
+
+The best L2 proof is close to, but still above, the relaxed `150 KiB` size
+target. It also exceeds the `<30s` proving budget for the L2 layer alone, and
+the pipeline still has to produce the **192.291s** L1 batch-STARK witness proof
+first. This is useful evidence, but it rules out a plain second batch-STARK
+layer as the production answer. The next Pearl-shaped route has to avoid
+materializing the expensive L1 batch-STARK witness proof, or replace the final
+batch-STARK proof format with a genuinely compact terminal/compression proof.
+
 The polynomial NPO path remains useful diagnostic evidence, but it is not a
 drop-in production replacement for the exhaustive NPO proof. The recursion-crate
 synthetic Tip5-only integrated-LogUp checkpoint measures below the byte and

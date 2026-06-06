@@ -33,6 +33,7 @@ must not be treated as the production block/wire artifact.
 | Relaxed L1-only batch-STARK cap-height sweep | Diagnostic for the smallest measured pure-query shape, varying only MMCS cap height; not enough to hit the relaxed gate | `lb=6,nq=10,pow=0,cap=4`: `173,171` bytes / `169.1 KiB`, prove `191.448s`; `cap=6`: `187,961` bytes / `183.6 KiB`, prove `193.219s`; cap-4 opening proof alone `141,987` bytes | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion relaxed_l1_only_pure_query_lb6_cap_height_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-05 |
 | Relaxed L1-only batch-STARK opening-proof breakdown | Diagnostic for the best pure-query/cap-height point; identifies what must be structurally reduced | `lb=6,nq=10,pow=0,cap=4`: FRI query proofs `136,577` bytes, input leaf opened values `63,201` bytes, input Merkle paths `34,213` bytes, commit-phase sibling values `4,813` bytes, commit-phase Merkle paths `34,259` bytes | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion relaxed_l1_only_pure_query_lb6_cap4_opening_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-05 |
 | Relaxed L1-only batch-STARK FRI-shape sweep | Diagnostic for soundness-neutral final-polynomial tail/folding shape on the best pure-query/cap-height point; not enough to hit size/time | `lfp=0,mla=3`: `175,304` bytes, prove `195.531s`; `lfp=1,mla=3`: `173,481` bytes, prove `196.417s`; current `lfp=2,mla=3` remains smallest measured at `173,171` bytes | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion relaxed_l1_only_pure_query_lb6_cap4_fri_shape_sweep_for_test_pearl -- --ignored --nocapture`, 2026-06-05 |
+| Pure-query L2-over-L1 batch-STARK sweep | Diagnostic for a Pearl-shaped second recursive compression layer over the statement-bound L1 proof; soundly binds the L1 statement digest after the recursive Public AIR binding fix, but still misses size/time | Shared L1 `lb=6,nq=10,cap=4`: `173,171` bytes, L1 prove `192.291s`; L2 `lb=4,nq=15,cap=4`: `207,241` bytes, L2 prove `12.776s`; L2 `lb=5,nq=12,cap=4`: `178,719` bytes, L2 prove `24.630s`; L2 `lb=6,nq=10,cap=4`: `159,734` bytes, L2 prove `48.154s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-05 |
 | Native terminal certificate fixture | Recursion-crate terminal proof over the real Tip5 verifier-circuit fixture; proves the terminal backend can be small, but is not yet the full `ai-pow-zk` composite verifier path | `85,948` bytes / `83.9 KiB`; release prove `1.492s`, verify `1.181s` | `RUSTFLAGS="-C target-cpu=native" cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --release --test test_l1_outer_cert_tip5_unified terminal_production_certificate_measures_real_tip5_l0_verifier_circuit -- --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier native terminal path | Opt-in diagnostic path for the actual composite L1 verifier circuit; not yet production-qualified because it misses both size and time gates | `lb=6,nq=10,pow=0` reduced-profile run after compact known-index proof encoding: terminal certificate `766,069` bytes / `748.1 KiB`; terminal public inputs `5,180` bytes; postcard wire certificate `771,249` bytes / `753.2 KiB`; release prove `80.829s`, verify `58.825s` | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_recursive_certificate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed size measurement. First release/native command compiled in `1m57s`, then the test binary ran for more than `7m35s` without reaching the final size/timing print and was stopped. A phase-instrumented rerun compiled in `1m42s` and showed `38.235s` primitive prove plus `51.902s` merged value-bridge prove before the integrated Tip5 LogUp subproof finished | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
@@ -176,6 +177,31 @@ remains the smallest measured pure-query cap-4 object at **173,171 bytes**.
 This closes another soundness-neutral retune: final-polynomial/fold-shape
 tweaks do not materially change the conclusion, and the L1-only batch-STARK
 route still needs structural proof compression.
+
+The second-recursion follow-up,
+`pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl`,
+wraps the best pure-query L1 proof in another pure-query batch-STARK. This
+diagnostic also found and fixed a recursive-verifier soundness gap:
+`verify_p3_batch_proof_circuit` reconstructed the Public AIR from
+`proof.public_binding_lanes` but previously allocated zero public-input targets
+for those lanes and did not set the recursive `PublicAir` binding lanes. The
+verifier now allocates `proof.public_binding_lanes * TRACE_D` Public AIR inputs
+and wires them into the in-circuit Public AIR constraints. Without that fix, an
+L2 wrapper over a statement-bound L1 proof would not have been an explicit
+cryptographic binding of the statement digest.
+
+After that fix, the batch-STARK L2 sweep still misses the production target.
+With the shared L1 proof at `lb=6,nq=10,pow=0,cap=4`, the L1 object is
+**173,171 bytes** and the required L1 witness proof takes **192.291s**. The
+three L2 shapes measure **207,241 bytes / 12.776s** at `lb=4,nq=15`,
+**178,719 bytes / 24.630s** at `lb=5,nq=12`, and **159,734 bytes / 48.154s**
+at `lb=6,nq=10`. The best final proof is therefore still about **156.0 KiB**,
+slightly above the relaxed `150 KiB` gate, and its own L2 proving time already
+exceeds `30s` before counting the L1 witness proof. This rules out a simple
+"add one more batch-STARK layer" approach. A Pearl-shaped route still needs a
+more compact terminal/compression proof, or a way to prove the recursive
+verifier relation without first materializing the expensive L1 batch-STARK
+witness proof.
 
 Verifier status after the 2026-06-05 hardening pass: the batch-STARK
 `AiPowRecursiveCertificate` verifier now calls
