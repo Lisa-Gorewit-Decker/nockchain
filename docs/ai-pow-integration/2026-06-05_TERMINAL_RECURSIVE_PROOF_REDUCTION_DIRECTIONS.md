@@ -65,15 +65,27 @@ Done and verified:
 - The corrected fast-L1/L2 compact batch-STARK diagnostic verifies with L1
   `lb=3,nq=20,cap=4,pow=0` and L2 `lb=5,nq=12,cap=4,pow=0`: actual compact
   wrapper `149,743` bytes, metadata-free compact body `148,866` bytes, core
-  compact proof `91,402` bytes, restoration payload `57,464` bytes, L1 prove
-  `30.448s`, L2 prove `54.137s`. This is the first soundly bound row inside
-  the relaxed `150 KiB` size target, but it still misses the total `~30s`
-  proving-time target.
+  compact proof `91,402` bytes, restoration payload `57,464` bytes. The full
+  three-row sweep measured L1 prove `30.448s` and L2 prove `54.137s`; the
+  focused selected-row rerun measured L1 prove `24.865s` and L2 prove
+  `48.281s`. This is the first soundly bound row inside the relaxed `150 KiB`
+  size target, but it still misses the total `~30s` proving-time target.
+- The selected L2 time is now phase-split: verifier-circuit definition `9ms`,
+  circuit build `41ms`, input packing `0ms`, AIR/setup `9.477s`, witness run
+  `36ms`, STARK prove `38.693s`, and STARK self-verify `20ms`. The blocker is
+  therefore L2 STARK proving plus setup, not recursive verifier witness
+  execution.
 - The smaller L2 `lb=6,nq=10` row verifies at `132,682` bytes actual compact
   wrapper and `131,803` bytes metadata-free body, but L2 proving rises to
   `107.617s`. The faster L2 `lb=4,nq=15` row proves in `27.342s` but measures
   `178,272` bytes, so it needs additional proof-body compression before it can
   satisfy the relaxed size gate.
+- A focused fast-L1 `lb4,nq15` frontier sweep rules out cheap FRI-shape or cap
+  tuning as the way to combine the faster L2 time with the relaxed size gate.
+  The best measured `lb4,nq15` compact wrapper is `174,676` bytes
+  (`lfp=2,mla=4,cap=4`) with `24.456s` L2 proving, still about `24.7 KiB`
+  above a decimal `150,000` byte gate and about `24.7 KiB` above the current
+  selected wrapper.
 - Production terminal cap height `3` is implemented, transcript-bound, and
   release/native measured. The best measured merged-only structural floor is
   `142,807` bytes.
@@ -136,8 +148,15 @@ What remains:
   preprocessed commitment restoration, public-value derivation, and strict
   rejection of prover-supplied verifier metadata.
 - Reduce end-to-end proving time. The current selected size row is about
-  `84.585s` serial L1+L2 proving (`30.448s + 54.137s`) before production
-  pipeline cleanup. The best time row is about `57.790s` but remains too large.
+  `73.146s` serial L1+L2 proving in the latest focused timing run
+  (`24.865s + 48.281s`) before production pipeline cleanup. The best
+  full-sweep time row is about `57.790s` but remains too large and misses the
+  size gate.
+- Split production prover setup from per-attempt proving. The selected focused
+  L2 row spends `9.477s` in canonical AIR/setup work that should become
+  verifier-key/prep-cache material for a fixed production shape. Even after
+  caching that, `38.693s` remains in L2 `prove_all_tables`, so core
+  batch-STARK proving time still needs a real reduction.
 - Count the final certificate bytes exactly, including any carried public-value
   limbs, verifier-key/setup digest, and chain-owned statement metadata that is
   not otherwise derivable by the verifier.
@@ -369,14 +388,14 @@ does not replace the required packed Tip5 support-theorem redesign.
 | Relaxed target | About `150 KiB` recursive proof artifact and about `30s` total release proving |
 | Soundness target | 60 pure FRI query bits per promoted layer; selected compact row uses L1 `lb=3,nq=20,pow=0` and L2 `lb=5,nq=12,pow=0` |
 | Most viable shape | Compact batch-STARK L2 with verifier-owned metadata/setup, canonical preprocessed-opening restoration, pruned paths, and explicit final public-value binding of the L1 statement digest |
-| Best measured compact batch-STARK candidate | Fast L1 `lb=3,nq=20,cap=4,pow=0` plus L2 `lb=5,nq=12,cap=4,pow=0`: actual compact wrapper `149,743` bytes, metadata-free body `148,866` bytes, L1 prove `30.448s`, L2 prove `54.137s` |
+| Best measured compact batch-STARK candidate | Fast L1 `lb=3,nq=20,cap=4,pow=0` plus L2 `lb=5,nq=12,cap=4,pow=0`: actual compact wrapper `149,743` bytes, metadata-free body `148,866` bytes; latest focused timing L1 prove `24.865s`, L2 prove `48.281s` |
 | Best measured complete base | Cap-height `3` full-context merged-only structural floor at `142,807` bytes; sound for its included relations, but missing internal Tip5 binding |
 | Best near-target standalone missing binding | Lane-selector-aware selected-to-packed NPO-IO bridge at `137,355` bytes / `134.1 KiB`, prove `28.526s`, verify `14.510s` |
 | Direct bridge diagnostic | Binding selected NPO values directly to compact packed trace lanes verifies at `205,950` bytes / `201.1 KiB`, prove `35.863s`; it removes the projection commitment/domain but is too large standalone because it still opens the full `436`-column packed trace |
 | Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; cap-height `3` merged-value plus packed-support optimistic single-FRI floor is `249,184` bytes, `95,584` bytes over binary `150 KiB`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s`; packed byte-LogUp group size 15 was measured and rejected at `206,759` bytes, prove `38.515s` |
 | Best measured outer task parallelism | Rayon-joining the current primitive R1CS, merged value-bridge, and packed-support subproofs gives `39.448s` post-prelude subproof wall time versus `53.355s` summed subproof timers, but leaves the same `249,184` byte optimistic single-FRI floor and `171.422s` full diagnostic wall |
-| Main current blocker | The compact batch-STARK L2 size row is in range, but total proving is still about `84.585s` before production cleanup; the time blocker is now L2 proving plus avoidable setup/serialization overhead, not final proof size |
-| Next implementation step | Promote compact batch-STARK L2 into the production certificate format, then reduce/prove-time-optimize the selected fast-L1/L2 path and add final artifact rejection tests |
+| Main current blocker | The compact batch-STARK L2 size row is in range, but total proving is still about `73.146s` in the focused selected-row diagnostic before production cleanup; the time blocker is L2 STARK proving (`38.693s`) plus L2 AIR/setup (`9.477s`), not witness execution or final proof size |
+| Next implementation step | Promote compact batch-STARK L2 into the production certificate format with verifier-owned setup/prep cache, then reduce the selected row's L2 `prove_all_tables` time and add final artifact rejection tests |
 
 ### Decision
 
@@ -391,8 +410,8 @@ The selected measurement row uses L1 `lb=3,nq=20,cap=4,pow=0` and L2
 for the L1 statement-digest base limbs and measures `149,743` bytes for the
 actual compact wrapper, `148,866` bytes for the metadata-free compact body, and
 `91,402` bytes for the core compact proof. That is inside the relaxed size
-gate. The current serial proving time is still too high: `30.448s` for L1 plus
-`54.137s` for L2 in the diagnostic.
+gate. The latest focused serial proving time is still too high: `24.865s` for
+L1 plus `48.281s` for L2 in the diagnostic.
 
 The terminal fallback keeps the production profile at pure-query 60-bit FRI
 soundness: `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`, and
@@ -1331,14 +1350,46 @@ correction:
 
 This no longer rules out the fast-L1/two-layer batch-STARK route. It is now the
 primary production candidate. The selected row is L2 `lb=5,nq=12`: it is inside
-the relaxed final-proof size gate with explicit public binding, but it still
-takes `54.137s` for the L2 proof alone and about `84.585s` with the L1 proof
-timer added. The L2 `lb=4,nq=15` row is much closer to the time gate at about
-`57.790s` total diagnostic proving, but it is `178,272` bytes as an actual
-compact wrapper. The L2 `lb=6,nq=10` row has ample size headroom, but its
-proving time is too high. The immediate engineering target is therefore not a
-new proof family; it is reducing the selected compact batch-STARK path's L2
-proving time and trimming the `lb4,nq15`/`lb5,nq12` size-time frontier.
+the relaxed final-proof size gate with explicit public binding, but it is still
+too slow. In the full three-row sweep it takes `54.137s` for the L2 proof alone
+and about `84.585s` with the L1 proof timer added; the focused timing breakdown
+below measures the same proof bytes with lower but still-too-high timings. The
+L2 `lb=4,nq=15` row is closer to the time gate, but it is too large. The L2
+`lb=6,nq=10` row has ample size headroom, but its proving time is too high. The
+immediate engineering target is therefore not a new proof family; it is
+reducing the selected compact batch-STARK path's L2 proving/setup time.
+
+A focused selected-row timing diagnostic narrows the L2 blocker. It reruns only
+the selected `lb5,nq12` row, so timings differ from the full three-row sweep
+but the proof bytes are unchanged:
+
+| Selected fast-L1/L2 row | Actual compact wrapper | Metadata-free compact body | L1 prove | L2 total | L2 AIR/setup | L2 witness run | L2 STARK prove |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| L1 `lb=3,nq=20,cap=4,pow=0`; L2 `lb=5,nq=12,lfp=2,mla=3,cap=4,pow=0` | `149,743` bytes | `148,866` bytes | `24.865s` | `48.281s` | `9.477s` | `36ms` | `38.693s` |
+
+The recursive verifier circuit and witness execution are not the bottleneck:
+definition/build/input packing sum to under `100ms`, and witness execution is
+`36ms`. The expensive pieces are canonical AIR/setup generation and the
+outermost batch-STARK proof itself.
+
+A focused fast-L1 `lb4,nq15` frontier sweep then checked whether the faster
+L2 row could be tuned under the relaxed size gate without proof-system PoW:
+
+| L2 `lb=4,nq=15,pow=0` over fast L1 `lb=3,nq=20,cap=4,pow=0` | Actual compact wrapper | Metadata-free compact body | Core compact `BatchProof` | Restoration payload | L2 prove |
+|---|---:|---:|---:|---:|---:|
+| `lfp=0,mla=3,cap=4` | `179,992` bytes | `179,111` bytes | `109,224` bytes | `69,887` bytes | `24.712s` |
+| `lfp=1,mla=3,cap=4` | `181,257` bytes | `180,376` bytes | `108,151` bytes | `72,225` bytes | `25.155s` |
+| `lfp=2,mla=2,cap=4` | `179,534` bytes | `178,656` bytes | `106,328` bytes | `72,328` bytes | `28.426s` |
+| `lfp=2,mla=3,cap=2` | `178,766` bytes | `178,452` bytes | `101,285` bytes | `77,167` bytes | `24.566s` |
+| `lfp=2,mla=3,cap=4` | `178,272` bytes | `177,394` bytes | `106,907` bytes | `70,487` bytes | `24.815s` |
+| `lfp=2,mla=3,cap=6` | `189,204` bytes | `186,041` bytes | `129,707` bytes | `56,334` bytes | `24.568s` |
+| `lfp=2,mla=4,cap=4` | `174,676` bytes | `173,798` bytes | `109,981` bytes | `63,817` bytes | `24.456s` |
+
+This rules out cheap FRI final-polynomial, folding-arity, or cap-height tuning
+as the way to combine the `lb4,nq15` proving time with the relaxed size gate.
+Even the best `lb4,nq15` wrapper remains `24,676` bytes above a decimal
+`150,000` byte gate. The primary row therefore stays `lb5,nq12`, and the next
+optimization target is L2 proving/setup time rather than a simple shape retune.
 
 Compact verifier artifacts now exist for the verifier-deterministic
 preprocessed material in that projection.
