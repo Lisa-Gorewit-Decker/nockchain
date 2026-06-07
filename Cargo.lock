@@ -130,6 +130,7 @@ dependencies = [
  "postcard",
  "proptest",
  "rand 0.10.1",
+ "rayon",
  "serde",
  "thiserror 2.0.18",
  "tracing",

@@ -85,6 +85,13 @@ Done and verified:
   `eval_0 + eval_1 = current_claim` before Fiat-Shamir challenge derivation;
   focused primitive round-trip tests and the release/native fusion-floor
   diagnostic pass.
+- Outer task parallelism has been measured, not just estimated. A Rayon-joined
+  diagnostic proves the primitive R1CS, merged value-bridge, and packed-support
+  subproofs from the same prepared prelude in parallel. It leaves proof bytes
+  unchanged and measures `38.118s` parallel subproof wall time, dominated by the
+  packed-support branch, versus a `52.117s` sum of the three subproof timers.
+  The full diagnostic wall remains `170.656s`, so parallelizing the existing
+  arguments is useful cleanup but is not enough for the `~30s` production goal.
 
 What remains:
 
@@ -142,6 +149,14 @@ sumcheck `eval_1` values; the other rows remain the prior cap-sweep brackets.
 | 3 | `336,389` | `249,363` | `142,807` | `152,791` | `46.134s` |
 | 4 | `335,064` | `249,227` | `146,442` | `157,925` | `46.470s` |
 | 5 | `345,711` | `258,780` | `151,420` | `165,191` | `53.182s` |
+
+The separate cap-height `3` Rayon diagnostic runs the current three
+post-prelude subproofs in parallel and measures `38.118s` wall time for that
+join. The individual proof timers in that run sum to `52.117s` because the
+packed-support branch consumes the whole parallel window. This is the best
+measured "slap the viable arguments together and parallelize" timing floor for
+the current proof language, and it still misses the full `~30s` production
+pipeline before counting setup work.
 
 A narrower cap-height `1` merged-value-bridge run measured `153,229` bytes for
 the base body, so it is ruled out. The historical cap-height `0` fusion floor
@@ -216,6 +231,12 @@ NPO-value to packed trace-lane binding.
   selected-lookup profile, commitment, and opening payload is `249,363` bytes.
   That is still `95,763` bytes over a binary `150 KiB` gate, so simple
   transcript/FRI sharing is ruled out as the relaxed-target route.
+- The parallel-subproof variant of the same diagnostic verifies with unchanged
+  size accounting. The Rayon join reports `38.118s` subproof wall time:
+  primitive R1CS `10.683s`, merged value-bridge `3.315s`, and packed support
+  `38.118s`, with `52.117s` total individual subproof time and `170.656s`
+  total diagnostic wall. This rules out outer task parallelism alone as the
+  route to the relaxed time target.
 - The current packed trace and Tip5 spec confirm the shape of the next
   relation-level candidate: the active packed trace has five rounds, four
   split lanes, eight split bytes per lane, and width `436`; the split lanes use
@@ -302,6 +323,7 @@ does not replace the required packed Tip5 support-theorem redesign.
 | Best near-target standalone missing binding | Lane-selector-aware selected-to-packed NPO-IO bridge at `137,355` bytes / `134.1 KiB`, prove `28.526s`, verify `14.510s` |
 | Direct bridge diagnostic | Binding selected NPO values directly to compact packed trace lanes verifies at `205,950` bytes / `201.1 KiB`, prove `35.863s`; it removes the projection commitment/domain but is too large standalone because it still opens the full `436`-column packed trace |
 | Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; cap-height `3` merged-value plus packed-support optimistic single-FRI floor is `249,363` bytes, `95,763` bytes over binary `150 KiB`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s`; packed byte-LogUp group size 15 was measured and rejected at `206,759` bytes, prove `38.515s` |
+| Best measured outer task parallelism | Rayon-joining the current primitive R1CS, merged value-bridge, and packed-support subproofs gives `38.118s` post-prelude subproof wall time versus `52.117s` summed subproof timers, but leaves the same `249,363` byte optimistic single-FRI floor and `170.656s` full diagnostic wall |
 | Main current blocker | All required packed Tip5/NPO subtheorems now verify, and PCS input-batch coalescing helps, but the cap-height `3` merged base is already `142,807` bytes; paired lookup alone leaves an optimistic floor of `219,317` bytes, and even a zero-support-FRI paired metadata floor is `152,791` bytes with only `809` bytes of binary headroom before real support payload |
 | Next implementation step | Design and measure a genuinely merged Tip5-support theorem or additional base-proof reduction; at cap height `3`, a support redesign must get all remaining support binding under `10,793` bytes unless it also reduces primitive/merged bytes |
 
@@ -319,8 +341,11 @@ height `3`. The cap height is bound into terminal proof parameters, proximity
 profile, and transcript material before challenge sampling. It also keeps the
 primitive sparse-R1CS row-product proof, but it must reuse prepared
 assignment/relation data and parallelize independent post-prelude work. The
-main remaining size and time lever is replacing exhaustive supported-NPO
-openings with a single NPO theorem that contains:
+parallelism is now measured: it saves the current subproof stage from a
+`52.117s` serial sum to a `38.118s` wall, but the packed-support branch still
+sets the whole parallel window and setup phases remain far too large. The main
+remaining size and time lever is replacing exhaustive supported-NPO openings
+with a single NPO theorem that contains:
 
 - merged residual-zero, recompose, padding, Merkle-direction-aware value bridge,
   and `mmcs_bit` constraints;
@@ -2169,26 +2194,27 @@ Remaining repeated or expensive work:
 Immediate work:
 
 1. Keep the real release measurement in the hot loop with `RUSTFLAGS="-C
-   target-cpu=native"` and `NOCK_TERMINAL_PROFILE_PROVER=1`; the current
-   merged padding/value-bridge proof is `151,448` bytes and `14.914s` to prove
-   after the prelude is fixed.
+   target-cpu=native"`. The current merged-plus-packed-support diagnostic is
+   the active timing floor for the production route, not the older
+   value-bridge-only timer.
 2. Keep the non-proving relation metric in the hot loop. The current PROD
    relation has `75,870` Horner operations before proof construction, so
    optimizing terminal proof serialization alone cannot satisfy the `<30s`
    full-stack target.
 3. Promote the prepared-data pattern into any production candidate before
    measuring production proving time.
-4. Run independent post-prelude subproofs in parallel; on the current
-   measurement this would bound the primitive-plus-merged body construction by
-   roughly `8.4s` instead of the serial `14.914s`.
+4. Keep independent post-prelude subproofs parallel in the final prover, but do
+   not count it as sufficient. The measured Rayon diagnostic lowers the current
+   three-subproof stage to `38.118s` wall from a `52.117s` summed timer, still
+   above the relaxed `~30s` target before setup work.
 5. Avoid recomputing verifier-derived columns/layout/profile in the hot path
    when the verifier key is unchanged.
 
 Assessment: low soundness risk and important for time because it changes only
-prover work reuse, not verifier acceptance. For the merged value-bridge
-checkpoint it is enough to satisfy the relaxed post-prelude body-construction
-time gate, but it does not by itself supply the missing NPO lookup/AIR/LogUp
-soundness theorem or remove full diagnostic setup cost.
+prover work reuse, not verifier acceptance. For the full current
+merged-plus-packed-support proof language it is not enough: the packed-support
+branch dominates the parallel window, does not reduce the proof bytes, and does
+not remove full diagnostic setup cost.
 
 ## Direction 5: Terminal FRI Parameter Tradeoff
 

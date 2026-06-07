@@ -130,6 +130,7 @@ required-features = ["recursion"]
 [dev-dependencies]
 proptest = { workspace = true }
 flate2 = { workspace = true }
+rayon = { workspace = true }
 # WHIR PCS feasibility prototype (2026-05-21) — dev-only; NOT in
 # the production trust surface. Used by `tests/test_whir_prototype.rs`
 # to measure WHIR proof bytes at parameters comparable to our FRI

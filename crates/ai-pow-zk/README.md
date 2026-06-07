@@ -26,9 +26,12 @@ the persisted block artifact.
 > metadata floor is `152,791` bytes, leaving only `809` bytes before any sound
 > support FRI payload or excluded overhead. The next viable route is a
 > genuinely merged packed Tip5 binding with much less additive
-> FRI/Merkle/metadata payload. The batch-STARK recursive certificate remains a
-> sound checkpoint/fallback, not the production wire target, and the relaxed
-> production milestone is not yet claimed.
+> FRI/Merkle/metadata payload. Outer task parallelism is measured but not
+> sufficient: Rayon-joining the current primitive R1CS, merged value-bridge, and
+> packed-support subproofs gives `38.118s` post-prelude wall time, unchanged
+> size, and `170.656s` full diagnostic wall. The batch-STARK recursive
+> certificate remains a sound checkpoint/fallback, not the production wire
+> target, and the relaxed production milestone is not yet claimed.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 

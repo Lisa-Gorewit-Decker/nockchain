@@ -7132,6 +7132,7 @@ mod tests {
     fn measure_terminal_merged_value_bridge_packed_support_fusion_floor_for_profile(
         label: &str,
         profile: CircuitConfig,
+        parallel_subproofs: bool,
     ) {
         init_terminal_prover_profile_tracing();
         assert_eq!(profile.johnson_fri_bits(), 60);
@@ -7280,42 +7281,118 @@ mod tests {
             prelude_elapsed.as_millis()
         );
 
-        let primitive_prove_start = std::time::Instant::now();
-        let primitive_r1cs_proof = compiler
-            .prove_terminal_r1cs_row_product_sumcheck_prelude_checked_goldilocks(
-                &vk, &witness.public_inputs, &prelude, &assignment_oracle, &witness,
+        let (
+            primitive_r1cs_proof,
+            primitive_prove_elapsed,
+            merged_value_bridge_proof,
+            merged_prove_elapsed,
+            packed_support_proof,
+            packed_support_prove_elapsed,
+            parallel_subproof_prove_elapsed,
+        ) = if parallel_subproofs {
+            let parallel_prove_start = std::time::Instant::now();
+            let (primitive, (merged, packed_support)) = rayon::join(
+                || {
+                    let prove_start = std::time::Instant::now();
+                    let proof = compiler
+                        .prove_terminal_r1cs_row_product_sumcheck_prelude_checked_goldilocks(
+                            &vk, &witness.public_inputs, &prelude, &assignment_oracle, &witness,
+                        )
+                        .expect("fusion floor diagnostic must prove primitive R1CS");
+                    (proof, prove_start.elapsed())
+                },
+                || {
+                    rayon::join(
+                        || {
+                            let prove_start = std::time::Instant::now();
+                            let proof = compiler
+                                .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_prepared_prelude_checked_goldilocks(
+                                    &prelude,
+                                    &merged_value_bridge_prepared,
+                                )
+                                .expect(
+                                    "fusion floor diagnostic must prove merged value bridge",
+                                );
+                            (proof, prove_start.elapsed())
+                        },
+                        || {
+                            let prove_start = std::time::Instant::now();
+                            let proof = compiler
+                                .prove_terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_goldilocks(
+                                    &vk,
+                                    &witness.public_inputs,
+                                    &witness,
+                                    &prelude,
+                                )
+                                .expect(
+                                    "fusion floor diagnostic must prove packed support theorem",
+                                );
+                            (proof, prove_start.elapsed())
+                        },
+                    )
+                },
+            );
+            let parallel_elapsed = parallel_prove_start.elapsed();
+            eprintln!(
+                "native terminal merged value-bridge + packed support fusion floor phase [{label}]: parallel_subproof_prove_ms={} primitive_prove_ms={} merged_value_bridge_prove_ms={} packed_support_prove_ms={} serial_sum_subproof_prove_ms={}",
+                parallel_elapsed.as_millis(),
+                primitive.1.as_millis(),
+                merged.1.as_millis(),
+                packed_support.1.as_millis(),
+                (primitive.1 + merged.1 + packed_support.1).as_millis(),
+            );
+            (
+                primitive.0,
+                primitive.1,
+                merged.0,
+                merged.1,
+                packed_support.0,
+                packed_support.1,
+                Some(parallel_elapsed),
             )
-            .expect("fusion floor diagnostic must prove primitive R1CS");
-        let primitive_prove_elapsed = primitive_prove_start.elapsed();
-        eprintln!(
-            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: primitive_prove_ms={}",
-            primitive_prove_elapsed.as_millis()
-        );
+        } else {
+            let primitive_prove_start = std::time::Instant::now();
+            let primitive_r1cs_proof = compiler
+                .prove_terminal_r1cs_row_product_sumcheck_prelude_checked_goldilocks(
+                    &vk, &witness.public_inputs, &prelude, &assignment_oracle, &witness,
+                )
+                .expect("fusion floor diagnostic must prove primitive R1CS");
+            let primitive_prove_elapsed = primitive_prove_start.elapsed();
+            eprintln!(
+                "native terminal merged value-bridge + packed support fusion floor phase [{label}]: primitive_prove_ms={}",
+                primitive_prove_elapsed.as_millis()
+            );
 
-        let merged_prove_start = std::time::Instant::now();
-        let merged_value_bridge_proof = compiler
-            .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_prepared_prelude_checked_goldilocks(
-                &prelude,
-                &merged_value_bridge_prepared,
-            )
-            .expect("fusion floor diagnostic must prove merged value bridge");
-        let merged_prove_elapsed = merged_prove_start.elapsed();
-        eprintln!(
-            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: merged_value_bridge_prove_ms={}",
-            merged_prove_elapsed.as_millis()
-        );
+            let merged_prove_start = std::time::Instant::now();
+            let merged_value_bridge_proof = compiler
+                .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_prepared_prelude_checked_goldilocks(
+                    &prelude,
+                    &merged_value_bridge_prepared,
+                )
+                .expect("fusion floor diagnostic must prove merged value bridge");
+            let merged_prove_elapsed = merged_prove_start.elapsed();
+            eprintln!(
+                "native terminal merged value-bridge + packed support fusion floor phase [{label}]: merged_value_bridge_prove_ms={}",
+                merged_prove_elapsed.as_millis()
+            );
 
-        let packed_support_prove_start = std::time::Instant::now();
-        let packed_support_proof = compiler
-            .prove_terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_goldilocks(
-                &vk, &witness.public_inputs, &witness, &prelude,
+            let packed_support_prove_start = std::time::Instant::now();
+            let packed_support_proof = compiler
+                .prove_terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_goldilocks(
+                    &vk, &witness.public_inputs, &witness, &prelude,
+                )
+                .expect("fusion floor diagnostic must prove packed support theorem");
+            let packed_support_prove_elapsed = packed_support_prove_start.elapsed();
+            eprintln!(
+                "native terminal merged value-bridge + packed support fusion floor phase [{label}]: packed_support_prove_ms={}",
+                packed_support_prove_elapsed.as_millis()
+            );
+
+            (
+                primitive_r1cs_proof, primitive_prove_elapsed, merged_value_bridge_proof,
+                merged_prove_elapsed, packed_support_proof, packed_support_prove_elapsed, None,
             )
-            .expect("fusion floor diagnostic must prove packed support theorem");
-        let packed_support_prove_elapsed = packed_support_prove_start.elapsed();
-        eprintln!(
-            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: packed_support_prove_ms={}",
-            packed_support_prove_elapsed.as_millis()
-        );
+        };
 
         let primitive_verify_start = std::time::Instant::now();
         compiler
@@ -7430,7 +7507,7 @@ mod tests {
         );
 
         eprintln!(
-            "native terminal merged value-bridge + packed support fusion floor over ai-pow composite verifier [{label}]: current_appended_body={} prelude={} primitive_r1cs={} merged_value_bridge={} merged_value_bridge_fri={} merged_non_fri={} packed_support={} packed_support_fri={} packed_support_non_fri={} single_fri_floor={} duplicate_selected_profile={} duplicate_lookup_io_profile={} duplicate_selected_commitment={} merged_selected_lookup_opening={} packed_support_selected_lookup_opening={} optimistic_selected_opening_dedup={} optimistic_duplicate_selected_binding={} optimistic_single_fri_floor_before_selected_dedup={} optimistic_single_fri_floor={} over_binary_150k={} over_decimal_150k={} l1_verify_ms={} compile_ms={} prelude_ms={} primitive_prove_ms={} merged_value_bridge_prove_ms={} packed_support_prove_ms={} total_subproof_prove_ms={} primitive_verify_ms={} merged_value_bridge_verify_ms={} packed_support_verify_ms={} total_subproof_verify_ms={} total_wall_ms={}",
+            "native terminal merged value-bridge + packed support fusion floor over ai-pow composite verifier [{label}]: current_appended_body={} prelude={} primitive_r1cs={} merged_value_bridge={} merged_value_bridge_fri={} merged_non_fri={} packed_support={} packed_support_fri={} packed_support_non_fri={} single_fri_floor={} duplicate_selected_profile={} duplicate_lookup_io_profile={} duplicate_selected_commitment={} merged_selected_lookup_opening={} packed_support_selected_lookup_opening={} optimistic_selected_opening_dedup={} optimistic_duplicate_selected_binding={} optimistic_single_fri_floor_before_selected_dedup={} optimistic_single_fri_floor={} over_binary_150k={} over_decimal_150k={} l1_verify_ms={} compile_ms={} prelude_ms={} primitive_prove_ms={} merged_value_bridge_prove_ms={} packed_support_prove_ms={} total_subproof_prove_ms={} parallel_subproof_prove_ms={} primitive_verify_ms={} merged_value_bridge_verify_ms={} packed_support_verify_ms={} total_subproof_verify_ms={} total_wall_ms={}",
             current_append_body_bytes,
             prelude_bytes,
             primitive_bytes,
@@ -7460,6 +7537,7 @@ mod tests {
             packed_support_prove_elapsed.as_millis(),
             (primitive_prove_elapsed + merged_prove_elapsed + packed_support_prove_elapsed)
                 .as_millis(),
+            parallel_subproof_prove_elapsed.map_or(0, |elapsed| elapsed.as_millis()),
             primitive_verify_elapsed.as_millis(),
             merged_verify_elapsed.as_millis(),
             packed_support_verify_elapsed.as_millis(),
@@ -7475,6 +7553,17 @@ mod tests {
         measure_terminal_merged_value_bridge_packed_support_fusion_floor_for_profile(
             "PROD",
             CircuitConfig::PROD,
+            false,
+        );
+    }
+
+    #[test]
+    #[ignore = "full composite merged value-bridge + packed support parallel subproof measurement is opt-in"]
+    fn terminal_merged_value_bridge_packed_support_parallel_subproof_floor_for_prod_measures() {
+        measure_terminal_merged_value_bridge_packed_support_fusion_floor_for_profile(
+            "PROD-PARALLEL-SUBPROOFS",
+            CircuitConfig::PROD,
+            true,
         );
     }
 
