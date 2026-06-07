@@ -2003,6 +2003,17 @@ where
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
+        SC::Pcs: Sync,
+        Val<SC>: Send + Sync,
+        SC::Challenge: Send + Sync,
+        Domain<SC>: Send + Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+        CircuitTableAir<SC, 1>: Sync,
+        CircuitTableAir<SC, 2>: Sync,
+        CircuitTableAir<SC, 4>: Sync,
+        CircuitTableAir<SC, 5>: Sync,
+        CircuitTableAir<SC, 6>: Sync,
+        CircuitTableAir<SC, 8>: Sync,
         SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     {
         let w_opt = EF::extract_w();
@@ -2112,7 +2123,13 @@ where
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
-        {
+        SC::Pcs: Sync,
+        Val<SC>: Send + Sync,
+        SC::Challenge: Send + Sync,
+        Domain<SC>: Send + Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+        CircuitTableAir<SC, D>: Sync,
+    {
         let primitive = &circuit_prover_data.primitive_columns;
         let non_primitive = &circuit_prover_data.non_primitive_columns;
 

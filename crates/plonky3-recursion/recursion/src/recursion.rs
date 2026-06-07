@@ -12,7 +12,9 @@ use p3_circuit::symbolic::ColumnsTargets;
 use p3_circuit::tables::Traces;
 use p3_circuit::{Circuit, CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::TableProver;
-use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::common::{
+    CircuitTableAir, NpoAirBuilder, NpoPreprocessor, get_airs_and_degrees_with_prep,
+};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
@@ -311,13 +313,24 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A, D>,
-    Val<SC>: PrimeField64 + StarkField,
+    Val<SC>: PrimeField64 + StarkField + Send + Sync,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
-        + ExtractBinomialW<Val<SC>>,
+        + ExtractBinomialW<Val<SC>>
+        + Send
+        + Sync,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    SC::Pcs: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+    CircuitTableAir<SC, 1>: Sync,
+    CircuitTableAir<SC, 2>: Sync,
+    CircuitTableAir<SC, 4>: Sync,
+    CircuitTableAir<SC, 5>: Sync,
+    CircuitTableAir<SC, 6>: Sync,
+    CircuitTableAir<SC, 8>: Sync,
 {
     let mut circuit_builder = CircuitBuilder::new();
     backend.prepare_circuit(config, &mut circuit_builder)?;
@@ -352,13 +365,24 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A, D>,
-    Val<SC>: PrimeField64 + StarkField,
+    Val<SC>: PrimeField64 + StarkField + Send + Sync,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
-        + ExtractBinomialW<Val<SC>>,
+        + ExtractBinomialW<Val<SC>>
+        + Send
+        + Sync,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    SC::Pcs: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+    CircuitTableAir<SC, 1>: Sync,
+    CircuitTableAir<SC, 2>: Sync,
+    CircuitTableAir<SC, 4>: Sync,
+    CircuitTableAir<SC, 5>: Sync,
+    CircuitTableAir<SC, 6>: Sync,
+    CircuitTableAir<SC, 8>: Sync,
 {
     let (airs_degrees, primitive_columns, non_primitive_columns) = {
         let preprocessors = backend.non_primitive_preprocessors();
@@ -417,13 +441,24 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A, D>,
-    Val<SC>: PrimeField64 + StarkField,
+    Val<SC>: PrimeField64 + StarkField + Send + Sync,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
-        + ExtractBinomialW<Val<SC>>,
+        + ExtractBinomialW<Val<SC>>
+        + Send
+        + Sync,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    SC::Pcs: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+    CircuitTableAir<SC, 1>: Sync,
+    CircuitTableAir<SC, 2>: Sync,
+    CircuitTableAir<SC, 4>: Sync,
+    CircuitTableAir<SC, 5>: Sync,
+    CircuitTableAir<SC, 6>: Sync,
+    CircuitTableAir<SC, 8>: Sync,
 {
     if let Some(cached) = prep {
         let terminal_witness = build_terminal_witness::<SC, A, B, D>(
@@ -499,13 +534,24 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A, D>,
-    Val<SC>: PrimeField64 + StarkField,
+    Val<SC>: PrimeField64 + StarkField + Send + Sync,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
-        + ExtractBinomialW<Val<SC>>,
+        + ExtractBinomialW<Val<SC>>
+        + Send
+        + Sync,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    SC::Pcs: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+    CircuitTableAir<SC, 1>: Sync,
+    CircuitTableAir<SC, 2>: Sync,
+    CircuitTableAir<SC, 4>: Sync,
+    CircuitTableAir<SC, 5>: Sync,
+    CircuitTableAir<SC, 6>: Sync,
+    CircuitTableAir<SC, 8>: Sync,
 {
     let (verification_circuit, verifier_result) =
         build_next_layer_circuit::<SC, A, B, D>(prev, config, backend)?;
@@ -547,13 +593,24 @@ where
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A1, D> + PcsRecursionBackend<SC, A2, D>,
-    Val<SC>: PrimeField64 + StarkField,
+    Val<SC>: PrimeField64 + StarkField + Send + Sync,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
-        + ExtractBinomialW<Val<SC>>,
+        + ExtractBinomialW<Val<SC>>
+        + Send
+        + Sync,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    SC::Pcs: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+    CircuitTableAir<SC, 1>: Sync,
+    CircuitTableAir<SC, 2>: Sync,
+    CircuitTableAir<SC, 4>: Sync,
+    CircuitTableAir<SC, 5>: Sync,
+    CircuitTableAir<SC, 6>: Sync,
+    CircuitTableAir<SC, 8>: Sync,
 {
     let mut circuit_builder = CircuitBuilder::new();
 
@@ -652,13 +709,24 @@ where
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A1, D> + PcsRecursionBackend<SC, A2, D>,
-    Val<SC>: PrimeField64 + StarkField,
+    Val<SC>: PrimeField64 + StarkField + Send + Sync,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
-        + ExtractBinomialW<Val<SC>>,
+        + ExtractBinomialW<Val<SC>>
+        + Send
+        + Sync,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    SC::Pcs: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+    CircuitTableAir<SC, 1>: Sync,
+    CircuitTableAir<SC, 2>: Sync,
+    CircuitTableAir<SC, 4>: Sync,
+    CircuitTableAir<SC, 5>: Sync,
+    CircuitTableAir<SC, 6>: Sync,
+    CircuitTableAir<SC, 8>: Sync,
 {
     let current_fp = aggregation_circuit_fingerprint(verification_circuit);
     if let Some(ref mut cache_slot) = prep_cache
@@ -769,13 +837,24 @@ where
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A1, D> + PcsRecursionBackend<SC, A2, D>,
-    Val<SC>: PrimeField64 + StarkField,
+    Val<SC>: PrimeField64 + StarkField + Send + Sync,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
-        + ExtractBinomialW<Val<SC>>,
+        + ExtractBinomialW<Val<SC>>
+        + Send
+        + Sync,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    SC::Pcs: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+    CircuitTableAir<SC, 1>: Sync,
+    CircuitTableAir<SC, 2>: Sync,
+    CircuitTableAir<SC, 4>: Sync,
+    CircuitTableAir<SC, 5>: Sync,
+    CircuitTableAir<SC, 6>: Sync,
+    CircuitTableAir<SC, 8>: Sync,
 {
     let (verification_circuit, (left_result, right_result)) =
         build_aggregation_layer_circuit::<SC, A1, A2, B, D>(left, right, config, backend)?;

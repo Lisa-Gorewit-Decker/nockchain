@@ -6635,7 +6635,6 @@ dependencies = [
 [[package]]
 name = "p3-batch-stark"
 version = "0.5.1"
-source = "git+https://github.com/Plonky3/Plonky3.git?rev=9fc13fa223665268f3bec16ddd43d4b592cd57a1#9fc13fa223665268f3bec16ddd43d4b592cd57a1"
 dependencies = [
  "hashbrown 0.17.0",
  "p3-air",
