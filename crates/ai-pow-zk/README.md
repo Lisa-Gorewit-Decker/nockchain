@@ -23,13 +23,13 @@ the persisted block artifact.
 > not enough by itself. The cap-height `3` structural floor is `142,807` bytes,
 > leaving only `10,793` bytes under binary `150 KiB` for all remaining Tip5
 > support binding unless the base also shrinks; even the paired zero-support-FRI
-> metadata floor is `152,791` bytes, leaving only `809` bytes before any sound
+> metadata floor is `152,612` bytes, leaving only `988` bytes before any sound
 > support FRI payload or excluded overhead. The next viable route is a
 > genuinely merged packed Tip5 binding with much less additive
 > FRI/Merkle/metadata payload. Outer task parallelism is measured but not
 > sufficient: Rayon-joining the current primitive R1CS, merged value-bridge, and
-> packed-support subproofs gives `38.118s` post-prelude wall time, unchanged
-> size, and `170.656s` full diagnostic wall. The batch-STARK recursive
+> packed-support subproofs gives `39.448s` post-prelude wall time, unchanged
+> proof language, and `171.422s` full diagnostic wall. The batch-STARK recursive
 > certificate remains a sound checkpoint/fallback, not the production wire
 > target, and the relaxed production milestone is not yet claimed.
 

@@ -1499,6 +1499,7 @@ pub struct TerminalNpoTip5PackedLookupAirLogupSelectedTraceBridgeProof {
     pub quotient_commitment: TerminalFriCommitment,
     pub logup_final_cumulative_basis: Vec<Vec<u64>>,
     pub selected_bridge_final_cumulative_basis: Vec<Vec<u64>>,
+    #[serde(skip)]
     pub packed_bridge_final_cumulative_basis: Vec<Vec<u64>>,
     pub opened_selected_lookup_basis: Vec<Vec<u64>>,
     pub opened_packed_trace_basis: Vec<Vec<u64>>,
@@ -33166,16 +33167,21 @@ impl NativeTerminalCompiler {
             );
         }
         let bridge_group_count = Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_groups();
-        if proof.selected_bridge_final_cumulative_basis.len() != bridge_group_count
-            || proof.packed_bridge_final_cumulative_basis.len() != bridge_group_count
+        if proof.selected_bridge_final_cumulative_basis.len() != bridge_group_count {
+            return Err(
+                NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
+                    expected: bridge_group_count,
+                    got: proof.selected_bridge_final_cumulative_basis.len(),
+                },
+            );
+        }
+        if !proof.packed_bridge_final_cumulative_basis.is_empty()
+            && proof.packed_bridge_final_cumulative_basis.len() != bridge_group_count
         {
             return Err(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
                     expected: bridge_group_count,
-                    got: proof
-                        .selected_bridge_final_cumulative_basis
-                        .len()
-                        .min(proof.packed_bridge_final_cumulative_basis.len()),
+                    got: proof.packed_bridge_final_cumulative_basis.len(),
                 },
             );
         }
@@ -33262,22 +33268,30 @@ impl NativeTerminalCompiler {
             Self::terminal_field_values_from_basis_u64::<TerminalFriChallenge>(
                 &proof.selected_bridge_final_cumulative_basis,
             )?;
-        let packed_bridge_final_cumulatives =
-            Self::terminal_field_values_from_basis_u64::<TerminalFriChallenge>(
-                &proof.packed_bridge_final_cumulative_basis,
-            )?;
-        for (selected, packed) in selected_bridge_final_cumulatives
+        let reconstructed_packed_bridge_final_cumulatives = selected_bridge_final_cumulatives
             .iter()
-            .zip(packed_bridge_final_cumulatives.iter())
+            .copied()
+            .map(|selected| -selected)
+            .collect::<Vec<_>>();
+        let packed_bridge_final_cumulatives = if proof
+            .packed_bridge_final_cumulative_basis
+            .is_empty()
         {
-            if *selected + *packed != TerminalFriChallenge::ZERO {
+            reconstructed_packed_bridge_final_cumulatives.clone()
+        } else {
+            let supplied =
+                Self::terminal_field_values_from_basis_u64::<TerminalFriChallenge>(
+                    &proof.packed_bridge_final_cumulative_basis,
+                )?;
+            if supplied != reconstructed_packed_bridge_final_cumulatives {
                 return Err(
                     NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch {
                         label: "tip5_packed_air_logup_selected_trace_bridge_final".into(),
                     },
                 );
             }
-        }
+            supplied
+        };
 
         let air_quotient =
             <TerminalFriChallenge as ExtensionField<Goldilocks>>::from_ext_basis_coefficients(
@@ -50471,6 +50485,10 @@ mod tests {
         ) = postcard::take_from_bytes(&serialized)
             .expect("packed AIR+LogUp selected trace bridge proof must deserialize");
         assert!(trailing.is_empty());
+        assert!(
+            roundtrip.packed_bridge_final_cumulative_basis.is_empty(),
+            "packed bridge final cumulatives are reconstructed from selected finals"
+        );
         compiler
             .verify_terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_goldilocks::<
                 Goldilocks,
@@ -50537,6 +50555,20 @@ mod tests {
             NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification { .. }
                 | NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { .. }
                 | NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch { .. }
+        ));
+
+        let mut tampered_packed_bridge_final = proof.clone();
+        tampered_packed_bridge_final.packed_bridge_final_cumulative_basis[0][0] =
+            tampered_packed_bridge_final.packed_bridge_final_cumulative_basis[0][0]
+                .wrapping_add(1);
+        let err = compiler
+            .verify_terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_goldilocks::<
+                Goldilocks,
+            >(&vk, &public_inputs, &prelude, &tampered_packed_bridge_final)
+            .expect_err("combined proof must reject inconsistent packed bridge final cumulative");
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalNpoPolynomialFriRelationMismatch { .. }
         ));
     }
 
