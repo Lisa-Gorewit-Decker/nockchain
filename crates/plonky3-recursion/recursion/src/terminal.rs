@@ -49,7 +49,7 @@ pub const MIN_TERMINAL_SECURITY_BITS: u16 = 60;
 /// as a commitment cap versus per-query authentication paths. It is bound in
 /// the terminal proof parameters and proximity profile before challenge
 /// sampling.
-pub const TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT: u8 = 4;
+pub const TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT: u8 = 3;
 
 /// Tip5 sponge used by the terminal FRI/MMCS backend.
 pub type TerminalTip5Sponge = PaddingFreeSponge<Tip5Perm, 16, 10, 5>;
@@ -324,7 +324,7 @@ pub struct TerminalProofBodyDigest(pub [u64; 5]);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalBindingDigest(pub [u64; 5]);
 
-/// Tip5 digest of a backend commitment root in the terminal transcript.
+/// Tip5 digest of a backend commitment root/cap in the terminal transcript.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalCommitmentDigest(pub [u64; 5]);
 
@@ -40913,20 +40913,29 @@ impl NativeTerminalCompiler {
     pub fn terminal_fri_commitment_digest(
         commitment: &TerminalFriCommitment,
     ) -> Result<TerminalCommitmentDigest, NativeTerminalVerifyError> {
-        if commitment.num_roots() != 1 {
+        if commitment.num_roots() == 0 {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialFriVerification {
-                    reason: format!(
-                        "terminal FRI commitment cap must have one root, got {}",
-                        commitment.num_roots()
-                    ),
+                    reason: "terminal FRI commitment cap must not be empty".into(),
                 },
             );
         }
-        let root = commitment.roots()[0];
-        Ok(TerminalCommitmentDigest(
-            root.map(|limb| limb.as_canonical_u64()),
-        ))
+        if commitment.num_roots() == 1 {
+            let root = commitment.roots()[0];
+            return Ok(TerminalCommitmentDigest(
+                root.map(|limb| limb.as_canonical_u64()),
+            ));
+        }
+
+        let mut sponge = TerminalDigestSponge::new();
+        sponge.absorb_str("nock-terminal-fri-commitment-cap-v1");
+        sponge.absorb_u64(commitment.num_roots() as u64);
+        for root in commitment.roots() {
+            for limb in root {
+                sponge.absorb_u64(limb.as_canonical_u64());
+            }
+        }
+        Ok(TerminalCommitmentDigest(sponge.finalize()))
     }
 
     fn verify_terminal_fri_prelude_commitments(
@@ -54831,6 +54840,45 @@ mod tests {
             err,
             NativeTerminalVerifyError::TerminalPreludeChallengeMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn goldilocks_terminal_fri_commitment_digest_binds_multi_root_cap() {
+        let profile = TerminalProximityProfile::production_60bit();
+        assert!(
+            profile.merkle_cap_height > 0,
+            "fixture must exercise a multi-root FRI cap"
+        );
+        let (pcs, _) = NativeTerminalCompiler::terminal_fri_pcs_and_challenger(profile)
+            .expect("terminal FRI PCS must build");
+        let domain =
+            <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
+                &pcs, 16,
+            );
+        let (zero_commitment, _) = <TerminalFriPcs as Pcs<
+            TerminalFriChallenge,
+            TerminalFriChallenger,
+        >>::commit(&pcs, [(domain, RowMajorMatrix::new(vec![Goldilocks::ZERO; 16], 1))]);
+        assert!(
+            zero_commitment.num_roots() > 1,
+            "production cap height must produce multiple FRI cap roots"
+        );
+        let zero_digest = NativeTerminalCompiler::terminal_fri_commitment_digest(&zero_commitment)
+            .expect("multi-root FRI cap must digest");
+
+        let mut changed_values = vec![Goldilocks::ZERO; 16];
+        changed_values[0] = Goldilocks::ONE;
+        let (changed_commitment, _) = <TerminalFriPcs as Pcs<
+            TerminalFriChallenge,
+            TerminalFriChallenger,
+        >>::commit(&pcs, [(domain, RowMajorMatrix::new(changed_values, 1))]);
+        let changed_digest =
+            NativeTerminalCompiler::terminal_fri_commitment_digest(&changed_commitment)
+                .expect("changed multi-root FRI cap must digest");
+        assert_ne!(
+            zero_digest, changed_digest,
+            "FRI cap digest must bind all cap roots"
+        );
     }
 
     #[test]

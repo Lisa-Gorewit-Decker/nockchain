@@ -15,17 +15,19 @@ the persisted block artifact.
 > checkpoint summary:
 > [Important Current Production-Proof Summary](../../docs/ai-pow-integration/2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md#important-current-production-proof-summary).
 > The active production route remains the native terminal certificate, not the
-> batch-STARK recursive certificate. The immediate lever to measure is
-> soundness-neutral terminal Merkle cap-height/base reduction, with the cap
-> height bound into terminal parameters/profile/transcript before challenge
-> sampling; release/native size and time measurement is still pending. If that
-> does not create enough headroom, the next viable route is a genuinely merged
+> batch-STARK recursive certificate. Soundness-neutral terminal Merkle
+> cap-height/base reduction is now implemented and measured: the retained
+> production cap height is `3`, bound into terminal parameters/profile/transcript
+> before challenge sampling, and full FRI caps are digested into the prelude
+> commitment list while the FRI verifier still observes the full cap. This is
+> not enough by itself. The cap-height `3` structural floor is `143,679` bytes,
+> leaving only `9,921` bytes under binary `150 KiB` for all remaining Tip5
+> support binding unless the base also shrinks; even the paired zero-support-FRI
+> metadata floor is `154,036` bytes. The next viable route is a genuinely merged
 > packed Tip5 binding with much less additive FRI/Merkle/metadata payload. The
-> current structural floor is tight: the already-sound merged base is `146,032`
-> bytes, leaving only `7,568` bytes under binary `150 KiB` for all remaining
-> Tip5 support binding unless the base also shrinks. The batch-STARK recursive
-> certificate remains a sound checkpoint/fallback, not the production wire
-> target, and the relaxed production milestone is not yet claimed.
+> batch-STARK recursive certificate remains a sound checkpoint/fallback, not the
+> production wire target, and the relaxed production milestone is not yet
+> claimed.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 
