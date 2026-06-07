@@ -84,7 +84,15 @@ Done and verified:
   `39ms`, STARK prove `32.122s`, and STARK self-verify `24ms`. Span profiling
   shows L2 quotient evaluation is under `1s`; the blocker is therefore
   upstream batch-STARK/PCS proving, not recursive-verifier witness execution,
-  reusable setup, or quotient evaluation.
+  reusable setup, or quotient evaluation. A deeper
+  `AI_POW_ZK_DEEP_BATCH_PROFILE=pcs` rerun measured L1 prove `22.501s`,
+  reusable L2 prep `10.475s`, cached L2 prove `31.815s`, and uncached L2 total
+  `42.290s`. Inside cached L2 proving, the main trace Merkle commitment took
+  `13.3s`, the permutation trace Merkle commitment took `12.9s`, the
+  quotient-chunk Merkle commitment took `3.12s`, and FRI commit/query took
+  `704ms`. The remaining time lever is now specific: shrink the committed
+  recursive-verifier matrix volume, especially the Tip5/MMCS verifier-table
+  main and permutation traces, or replace that verifier relation/proof shape.
 - The smaller L2 `lb=6,nq=10` row verifies at `132,682` bytes actual compact
   wrapper and `131,803` bytes metadata-free body, but L2 proving rises to
   `107.617s`. The faster L2 `lb=4,nq=15` row proves in `27.342s` but measures
@@ -418,8 +426,8 @@ does not replace the required packed Tip5 support-theorem redesign.
 | Direct bridge diagnostic | Binding selected NPO values directly to compact packed trace lanes verifies at `205,950` bytes / `201.1 KiB`, prove `35.863s`; it removes the projection commitment/domain but is too large standalone because it still opens the full `436`-column packed trace |
 | Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; cap-height `3` merged-value plus packed-support optimistic single-FRI floor is `249,184` bytes, `95,584` bytes over binary `150 KiB`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s`; packed byte-LogUp group size 15 was measured and rejected at `206,759` bytes, prove `38.515s` |
 | Best measured outer task parallelism | Rayon-joining the current primitive R1CS, merged value-bridge, and packed-support subproofs gives `39.448s` post-prelude subproof wall time versus `53.355s` summed subproof timers, but leaves the same `249,184` byte optimistic single-FRI floor and `171.422s` full diagnostic wall |
-| Main current blocker | The compact batch-STARK L2 size row is in range, but measured cached per-attempt proving is still about `54.271s` (`22.085s` L1 + `32.186s` cached L2); the dominant blocker is upstream batch-STARK/PCS proving, not witness execution, reusable setup, quotient evaluation, or final proof size |
-| Next implementation step | Promote compact batch-STARK L2 into the production certificate format by deriving/pinning the setup digest and public values from verifier-owned state, then reduce the selected row's L1/L2 batch-STARK/PCS proving time and add final artifact rejection tests |
+| Main current blocker | The compact batch-STARK L2 size row is in range, but measured cached per-attempt proving is still about `54s` (`22.501s` L1 + `31.815s` cached L2 in the deep profile); cached L2 proving is dominated by main/permutation trace Merkle commitments, not witness execution, reusable setup, quotient evaluation, FRI folding/query, or final proof size |
+| Next implementation step | Promote compact batch-STARK L2 into the production certificate format by deriving/pinning the setup digest and public values from verifier-owned state, then reduce committed recursive-verifier matrix volume, especially Tip5/MMCS verifier-table main/permutation traces, and add final artifact rejection tests |
 
 ### Decision
 
@@ -1401,6 +1409,31 @@ definition/build/input packing sum to under `100ms`, witness execution is
 compatible cached `ProverData` removes the repeated preprocessed-commitment
 rebuild inside `prove_all_tables`. Span profiling shows quotient evaluation is
 under `1s`; the expensive piece is the upstream batch-STARK/PCS proof itself.
+
+A deeper release/native selected-row profile with
+`AI_POW_ZK_DEEP_BATCH_PROFILE=pcs` makes that upstream bottleneck concrete. The
+rerun measured the same `149,743` byte compact wrapper, with L1 prove
+`22.501s`, reusable L2 prep `10.475s`, cached L2 prove `31.815s`, uncached L2
+total `42.290s`, and L2 STARK prove `31.756s`.
+
+| Cached L2 selected proof span | Time | Dimensions / implication |
+|---|---:|---|
+| Main trace Merkle commitment | `13.3s` | `[2x8192, 20x8192, 86x262144, 118x1048576, 2x8192, 2x131072]`; dominated by the Tip5 verifier table LDE |
+| Permutation trace Merkle commitment | `12.9s` | `[2x8192, 20x8192, 80x262144, 120x1048576, 2x8192, 6x131072]`; same Tip5-scale LDE appears in the permutation argument |
+| Quotient computation | `<1s` | Largest single AIR quotient span is Tip5 at about `632ms` |
+| Quotient-chunk Merkle commitment | `3.12s` | Multiple two-column quotient chunks, including repeated `2x1048576` chunks |
+| FRI commit/query | `704ms` | Query phase is sub-millisecond; FRI folding/query is not the current blocker |
+
+This is why the compact batch-STARK route is closer than the earlier
+native-terminal direction but still not production-complete. The final artifact
+is already inside the relaxed size gate, and the recursive verifier circuit
+definition/build/input packing/witness path is negligible. Generic Rayon
+tuning is unlikely to close the gap because the default parallel feature is on
+and the Merkle tree code already parallelizes chunk hashing. The next
+meaningful implementation lever is to reduce the committed matrix volume of
+the recursive verifier, especially the Tip5/MMCS verification tables at
+`2^20` LDE in L2, or to use a verifier relation/proof shape that avoids
+committing those large Tip5/permutation traces.
 
 A focused fast-L1 `lb4,nq15` frontier sweep then checked whether the faster
 L2 row could be tuned under the relaxed size gate without proof-system PoW:

@@ -3331,7 +3331,7 @@ mod tests {
         use tracing_subscriber::fmt::format::FmtSpan;
         use tracing_subscriber::EnvFilter;
 
-        let filter = EnvFilter::from_default_env()
+        let mut filter = EnvFilter::from_default_env()
             .add_directive(
                 "p3_batch_stark=info"
                     .parse()
@@ -3342,6 +3342,20 @@ mod tests {
                     .parse()
                     .expect("valid tracing directive"),
             );
+        if let Some(profile) = std::env::var_os("AI_POW_ZK_DEEP_BATCH_PROFILE") {
+            let mut directives =
+                vec!["p3_fri=info", "p3_fri::two_adic_pcs=debug", "p3_merkle_tree=debug"];
+            if matches!(profile.to_str(), Some("full" | "dft")) {
+                directives.push("p3_dft=debug");
+            }
+            for directive in directives {
+                filter = filter.add_directive(
+                    directive
+                        .parse()
+                        .expect("valid deep batch profile tracing directive"),
+                );
+            }
+        }
         let _ = tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_span_events(FmtSpan::CLOSE)

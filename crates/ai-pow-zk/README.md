@@ -43,7 +43,11 @@ artifact.
 > the latest release/native cached-setup rerun measuring `22.085s` L1 proving,
 > `10.373s` reusable L2 prep, and `32.186s` cached L2 proving. The cached L2
 > proving time is dominated by STARK proving (`32.122s`), not
-> recursive-verifier witness execution. A focused `lb4,nq15`
+> recursive-verifier witness execution. A deeper PCS profile rerun measures
+> `22.501s` L1 proving and `31.815s` cached L2 proving; cached L2 is dominated
+> by main/permutation trace Merkle commitments (`13.3s` + `12.9s`), so the next
+> production lever is reducing committed recursive-verifier matrix volume,
+> especially Tip5/MMCS verifier-table traces. A focused `lb4,nq15`
 > frontier sweep rules out cheap FRI/cap retuning: the fastest-size frontier is
 > still `174,676` bytes. The relaxed size gate is now plausibly in range; the
 > relaxed total proving-time gate is not yet met.
