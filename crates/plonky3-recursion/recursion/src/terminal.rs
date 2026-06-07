@@ -759,6 +759,7 @@ pub struct TerminalAssignmentEvaluationProof {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalR1csSumcheckRound {
     pub eval_0_basis: Vec<u64>,
+    #[serde(skip)]
     pub eval_1_basis: Vec<u64>,
     pub eval_2_basis: Vec<u64>,
 }
@@ -784,6 +785,7 @@ pub struct TerminalSparseR1csSumcheckProof {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalR1csRowProductRound {
     pub eval_0_basis: Vec<u64>,
+    #[serde(skip)]
     pub eval_1_basis: Vec<u64>,
     pub eval_2_basis: Vec<u64>,
     pub eval_3_basis: Vec<u64>,
@@ -19859,13 +19861,14 @@ impl NativeTerminalCompiler {
         let alpha_sq = alpha.square();
         let mut current_claim = claimed_a + alpha * claimed_b + alpha_sq * claimed_c;
         let mut variable_point = Vec::with_capacity(sparse_relation.log_variables);
+        let mut transcript_rounds = Vec::with_capacity(sparse_relation.log_variables);
 
         for (round, round_proof) in proof.rounds.iter().enumerate() {
             let eval_0 = Self::field_from_goldilocks_basis_u64::<F>(&round_proof.eval_0_basis)?;
-            let eval_1 = Self::field_from_goldilocks_basis_u64::<F>(&round_proof.eval_1_basis)?;
             let eval_2 = Self::field_from_goldilocks_basis_u64::<F>(&round_proof.eval_2_basis)?;
-            let evals = [eval_0, eval_1, eval_2];
-            if eval_0 + eval_1 != current_claim {
+            let eval_1 = current_claim - eval_0;
+            let eval_1_basis = Self::goldilocks_basis_u64(&eval_1);
+            if !round_proof.eval_1_basis.is_empty() && round_proof.eval_1_basis != eval_1_basis {
                 return Err(
                     NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
                         query: 0,
@@ -19873,6 +19876,12 @@ impl NativeTerminalCompiler {
                     },
                 );
             }
+            let evals = [eval_0, eval_1, eval_2];
+            transcript_rounds.push(TerminalR1csSumcheckRound {
+                eval_0_basis: round_proof.eval_0_basis.clone(),
+                eval_1_basis,
+                eval_2_basis: round_proof.eval_2_basis.clone(),
+            });
             let challenge = Self::derive_terminal_r1cs_sumcheck_round_challenge::<F>(
                 prelude,
                 assignment_commitment,
@@ -19881,7 +19890,7 @@ impl NativeTerminalCompiler {
                 &proof.claimed_b_basis,
                 &proof.claimed_c_basis,
                 &current_claim,
-                &proof.rounds[..=round],
+                &transcript_rounds,
                 round,
             )?;
             variable_point.push(challenge);
@@ -20097,13 +20106,14 @@ impl NativeTerminalCompiler {
         )?;
         let mut current_claim = F::ZERO;
         let mut row_point = Vec::with_capacity(sparse_relation.log_rows);
+        let mut transcript_rounds = Vec::with_capacity(sparse_relation.log_rows);
         for (round, round_proof) in proof.rounds.iter().enumerate() {
             let eval_0 = Self::field_from_goldilocks_basis_u64::<F>(&round_proof.eval_0_basis)?;
-            let eval_1 = Self::field_from_goldilocks_basis_u64::<F>(&round_proof.eval_1_basis)?;
             let eval_2 = Self::field_from_goldilocks_basis_u64::<F>(&round_proof.eval_2_basis)?;
             let eval_3 = Self::field_from_goldilocks_basis_u64::<F>(&round_proof.eval_3_basis)?;
-            let evals = [eval_0, eval_1, eval_2, eval_3];
-            if eval_0 + eval_1 != current_claim {
+            let eval_1 = current_claim - eval_0;
+            let eval_1_basis = Self::goldilocks_basis_u64(&eval_1);
+            if !round_proof.eval_1_basis.is_empty() && round_proof.eval_1_basis != eval_1_basis {
                 return Err(
                     NativeTerminalVerifyError::TerminalResidualFoldConsistencyMismatch {
                         query: 0,
@@ -20111,12 +20121,19 @@ impl NativeTerminalCompiler {
                     },
                 );
             }
+            let evals = [eval_0, eval_1, eval_2, eval_3];
+            transcript_rounds.push(TerminalR1csRowProductRound {
+                eval_0_basis: round_proof.eval_0_basis.clone(),
+                eval_1_basis,
+                eval_2_basis: round_proof.eval_2_basis.clone(),
+                eval_3_basis: round_proof.eval_3_basis.clone(),
+            });
             let challenge = Self::derive_terminal_r1cs_row_product_round_challenge::<F>(
                 prelude,
                 assignment_commitment,
                 &anchor_point,
                 &current_claim,
-                &proof.rounds[..=round],
+                &transcript_rounds,
                 round,
             )?;
             row_point.push(challenge);
@@ -54507,6 +54524,25 @@ mod tests {
                 &proof,
             )
             .expect("honest sparse R1CS matrix sumcheck must verify");
+        let serialized = postcard::to_allocvec(&proof)
+            .expect("sparse R1CS matrix sumcheck proof must serialize");
+        let (roundtrip, trailing): (TerminalSparseR1csSumcheckProof, &[u8]) =
+            postcard::take_from_bytes(&serialized)
+                .expect("sparse R1CS matrix sumcheck proof must deserialize");
+        assert!(trailing.is_empty());
+        assert!(roundtrip
+            .rounds
+            .iter()
+            .all(|round| round.eval_1_basis.is_empty()));
+        compiler
+            .verify_terminal_sparse_r1cs_sumcheck_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &assignment_commitment,
+                &roundtrip,
+            )
+            .expect("round-tripped sparse R1CS matrix sumcheck must verify");
 
         let mut tampered = proof;
         tampered.claimed_a_basis[0] += 1;
@@ -54603,6 +54639,30 @@ mod tests {
                 &proof,
             )
             .expect("honest R1CS row-product sumcheck must verify");
+        let serialized = postcard::to_allocvec(&proof)
+            .expect("R1CS row-product sumcheck proof must serialize");
+        let (roundtrip, trailing): (TerminalR1csRowProductSumcheckProof, &[u8]) =
+            postcard::take_from_bytes(&serialized)
+                .expect("R1CS row-product sumcheck proof must deserialize");
+        assert!(trailing.is_empty());
+        assert!(roundtrip
+            .rounds
+            .iter()
+            .all(|round| round.eval_1_basis.is_empty()));
+        assert!(roundtrip
+            .matrix_sumcheck
+            .rounds
+            .iter()
+            .all(|round| round.eval_1_basis.is_empty()));
+        compiler
+            .verify_terminal_r1cs_row_product_sumcheck_goldilocks(
+                &vk,
+                &public_inputs,
+                &prelude,
+                &assignment_commitment,
+                &roundtrip,
+            )
+            .expect("round-tripped R1CS row-product sumcheck must verify");
 
         let mut tampered_round = proof.clone();
         tampered_round.rounds[0].eval_0_basis[0] += 1;
