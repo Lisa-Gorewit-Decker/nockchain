@@ -14,9 +14,11 @@ use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon1_16, default_koalabear_poseidon2_16};
 use p3_symmetric::{CryptographicHasher, PaddingFreeSponge, Permutation};
 use p3_test_utils::LiftPermToQuintic;
+use p3_tip5_circuit_air::Tip5CircuitAir;
 
 use super::*;
 use crate::ConstraintProfile;
+use crate::air::{ConstAir, PublicAir, RecomposeAir};
 use crate::batch_stark_prover::{
     BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, Poseidon1Preprocessor, Poseidon2Preprocessor,
     poseidon1_air_builders_d5, poseidon1_table_provers_d5, poseidon2_air_builders,
@@ -24,6 +26,47 @@ use crate::batch_stark_prover::{
 };
 use crate::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use crate::config::{self, BabyBearConfig, GoldilocksConfig, GoldilocksTipsConfig, KoalaBearConfig};
+
+#[test]
+fn circuit_table_air_forwards_next_row_declarations() {
+    type SC = GoldilocksTipsConfig;
+    type F = Goldilocks;
+
+    let const_air = CircuitTableAir::<SC, 2>::Const(
+        ConstAir::<F, 2>::new_with_preprocessed(1, vec![F::ZERO; 2]),
+    );
+    assert!(const_air.main_next_row_columns().is_empty());
+    assert!(const_air.preprocessed_next_row_columns().is_empty());
+
+    let public_air = CircuitTableAir::<SC, 2>::Public(
+        PublicAir::<F, 2>::new_with_preprocessed(1, 1, vec![F::ZERO; 2]),
+    );
+    assert!(public_air.main_next_row_columns().is_empty());
+    assert!(public_air.preprocessed_next_row_columns().is_empty());
+
+    let recompose_air = RecomposeAir::<F, 2>::new_with_preprocessed(1, vec![F::ZERO; 2], 1, false);
+    let recompose_dynamic =
+        DynamicAirEntry::<SC>::new(Box::new(recompose_air.clone()));
+    assert!(recompose_dynamic.main_next_row_columns().is_empty());
+    assert!(recompose_dynamic.preprocessed_next_row_columns().is_empty());
+    let recompose_wrapped = CircuitTableAir::<SC, 2>::Dynamic(recompose_dynamic);
+    assert!(recompose_wrapped.main_next_row_columns().is_empty());
+    assert!(recompose_wrapped.preprocessed_next_row_columns().is_empty());
+
+    let tip5_dynamic =
+        DynamicAirEntry::<SC>::new(Box::new(Tip5CircuitAir::<F, 2>::new_with_preprocessed(
+            Vec::new(),
+            1,
+        )));
+    assert_eq!(
+        tip5_dynamic.main_next_row_columns().len(),
+        tip5_dynamic.width()
+    );
+    assert!(tip5_dynamic.preprocessed_next_row_columns().is_empty());
+    let tip5_wrapped = CircuitTableAir::<SC, 2>::Dynamic(tip5_dynamic);
+    assert_eq!(tip5_wrapped.main_next_row_columns().len(), tip5_wrapped.width());
+    assert!(tip5_wrapped.preprocessed_next_row_columns().is_empty());
+}
 
 fn prove_babybear_public_plus_const(
     constant: u64,

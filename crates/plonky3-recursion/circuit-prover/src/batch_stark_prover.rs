@@ -1462,6 +1462,42 @@ where
         }
     }
 
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        match self {
+            Self::Const(a) => a.main_next_row_columns(),
+            Self::Public(a) => a.main_next_row_columns(),
+            Self::Alu(a) => a.main_next_row_columns(),
+            Self::Dynamic(a) => a.main_next_row_columns(),
+        }
+    }
+
+    fn preprocessed_next_row_columns(&self) -> Vec<usize> {
+        match self {
+            Self::Const(a) => a.preprocessed_next_row_columns(),
+            Self::Public(a) => a.preprocessed_next_row_columns(),
+            Self::Alu(a) => a.preprocessed_next_row_columns(),
+            Self::Dynamic(a) => a.preprocessed_next_row_columns(),
+        }
+    }
+
+    fn num_constraints(&self) -> Option<usize> {
+        match self {
+            Self::Const(a) => a.num_constraints(),
+            Self::Public(a) => a.num_constraints(),
+            Self::Alu(a) => a.num_constraints(),
+            Self::Dynamic(a) => a.num_constraints(),
+        }
+    }
+
+    fn max_constraint_degree(&self) -> Option<usize> {
+        match self {
+            Self::Const(a) => a.max_constraint_degree(),
+            Self::Public(a) => a.max_constraint_degree(),
+            Self::Alu(a) => a.max_constraint_degree(),
+            Self::Dynamic(a) => a.max_constraint_degree(),
+        }
+    }
+
     fn num_public_values(&self) -> usize {
         match self {
             Self::Const(a) => a.num_public_values(),

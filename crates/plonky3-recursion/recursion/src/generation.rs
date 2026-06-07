@@ -2,7 +2,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use hashbrown::HashMap;
-use p3_air::Air;
+use p3_air::{Air, BaseAir};
 use p3_air::symbolic::AirLayout;
 use p3_batch_stark::symbolic::get_log_num_quotient_chunks as get_batch_log_num_quotient_chunks;
 use p3_batch_stark::{BatchProof, BatchTranscript, CommonData};
@@ -86,7 +86,7 @@ pub fn generate_batch_challenges<SC: StarkGenericConfig, A, LG: LookupProtocol>(
     lookup_gadget: &LG,
 ) -> Result<Vec<SC::Challenge>, GenerationError>
 where
-    A: Air<InteractionSymbolicBuilder<Val<SC>, SC::Challenge>>,
+    A: Air<InteractionSymbolicBuilder<Val<SC>, SC::Challenge>> + BaseAir<Val<SC>>,
     SC::Pcs: PcsGeneration<SC, <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
@@ -294,26 +294,27 @@ where
         .iter()
         .zip(trace_domains.iter())
         .zip(opened_values.instances.iter())
-        .map(|((ext_dom, trace_dom), inst)| {
-            let zeta_next =
-                trace_dom
-                    .next_point(zeta)
-                    .ok_or(GenerationError::InvalidProofShape(
-                        "trace domain lacks next point",
-                    ))?;
-            Ok((
-                *ext_dom,
-                vec![
-                    (zeta, inst.base_opened_values.trace_local.clone()),
-                    (
-                        zeta_next,
-                        inst.base_opened_values
-                            .trace_next
-                            .clone()
-                            .expect("trace_next is always present"),
-                    ),
-                ],
-            ))
+        .zip(airs.iter())
+        .map(|(((ext_dom, trace_dom), inst), air)| {
+            let mut points = vec![(zeta, inst.base_opened_values.trace_local.clone())];
+            if !air.main_next_row_columns().is_empty() {
+                let zeta_next =
+                    trace_dom
+                        .next_point(zeta)
+                        .ok_or(GenerationError::InvalidProofShape(
+                            "trace domain lacks next point",
+                        ))?;
+                points.push((
+                    zeta_next,
+                    inst.base_opened_values
+                        .trace_next
+                        .clone()
+                        .ok_or(GenerationError::InvalidProofShape(
+                            "trace_next values should exist",
+                        ))?,
+                ));
+            }
+            Ok((*ext_dom, points))
         })
         .collect::<Result<Vec<_>, GenerationError>>()?;
     coms_to_verify.push((commitments.main.clone(), trace_round));
@@ -385,9 +386,6 @@ where
             let local = inst.base_opened_values.preprocessed_local.as_ref().ok_or(
                 GenerationError::InvalidProofShape("preprocessed local values should exist"),
             )?;
-            let next = inst.base_opened_values.preprocessed_next.as_ref().ok_or(
-                GenerationError::InvalidProofShape("preprocessed next values should exist"),
-            )?;
 
             // Validate that the preprocessed data's degree metadata matches this instance.
             let ext_db = degree_bits[inst_idx];
@@ -406,14 +404,18 @@ where
 
             let base_db = meta.degree_bits;
             let pre_domain = pcs.natural_domain_for_degree(1 << base_db);
-            let zeta_next_i = trace_domains[inst_idx].next_point(zeta).ok_or(
-                GenerationError::InvalidProofShape("Preprocessed domain lacks next point"),
-            )?;
+            let mut points = vec![(zeta, local.clone())];
+            if !airs[inst_idx].preprocessed_next_row_columns().is_empty() {
+                let next = inst.base_opened_values.preprocessed_next.as_ref().ok_or(
+                    GenerationError::InvalidProofShape("preprocessed next values should exist"),
+                )?;
+                let zeta_next_i = trace_domains[inst_idx].next_point(zeta).ok_or(
+                    GenerationError::InvalidProofShape("Preprocessed domain lacks next point"),
+                )?;
+                points.push((zeta_next_i, next.clone()));
+            }
 
-            pre_round.push((
-                pre_domain,
-                vec![(zeta, local.clone()), (zeta_next_i, next.clone())],
-            ));
+            pre_round.push((pre_domain, points));
         }
 
         coms_to_verify.push((global.commitment.clone(), pre_round));

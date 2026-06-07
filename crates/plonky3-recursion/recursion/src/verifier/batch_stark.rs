@@ -81,6 +81,51 @@ where
             Self::Dynamic(a) => P3BaseAir::num_public_values(a),
         }
     }
+
+    fn preprocessed_width(&self) -> usize {
+        match self {
+            Self::Const(a) => P3BaseAir::preprocessed_width(a),
+            Self::Public(a) => P3BaseAir::preprocessed_width(a),
+            Self::Alu(a) => P3BaseAir::preprocessed_width(a),
+            Self::Dynamic(a) => P3BaseAir::preprocessed_width(a),
+        }
+    }
+
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        match self {
+            Self::Const(a) => P3BaseAir::main_next_row_columns(a),
+            Self::Public(a) => P3BaseAir::main_next_row_columns(a),
+            Self::Alu(a) => P3BaseAir::main_next_row_columns(a),
+            Self::Dynamic(a) => P3BaseAir::main_next_row_columns(a),
+        }
+    }
+
+    fn preprocessed_next_row_columns(&self) -> Vec<usize> {
+        match self {
+            Self::Const(a) => P3BaseAir::preprocessed_next_row_columns(a),
+            Self::Public(a) => P3BaseAir::preprocessed_next_row_columns(a),
+            Self::Alu(a) => P3BaseAir::preprocessed_next_row_columns(a),
+            Self::Dynamic(a) => P3BaseAir::preprocessed_next_row_columns(a),
+        }
+    }
+
+    fn num_constraints(&self) -> Option<usize> {
+        match self {
+            Self::Const(a) => P3BaseAir::num_constraints(a),
+            Self::Public(a) => P3BaseAir::num_constraints(a),
+            Self::Alu(a) => P3BaseAir::num_constraints(a),
+            Self::Dynamic(a) => P3BaseAir::num_constraints(a),
+        }
+    }
+
+    fn max_constraint_degree(&self) -> Option<usize> {
+        match self {
+            Self::Const(a) => P3BaseAir::max_constraint_degree(a),
+            Self::Public(a) => P3BaseAir::max_constraint_degree(a),
+            Self::Alu(a) => P3BaseAir::max_constraint_degree(a),
+            Self::Dynamic(a) => P3BaseAir::max_constraint_degree(a),
+        }
+    }
 }
 
 impl<SC, const D: usize>
@@ -357,7 +402,7 @@ pub fn verify_batch_circuit<
     challenger_perm_config: CP,
 ) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
 where
-    A: RecursiveAir<Val<SC>, SC::Challenge, LG>,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LG> + P3BaseAir<Val<SC>>,
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
             SC,
             InputProof,
@@ -470,16 +515,23 @@ where
 
         let local_prep_len = preprocessed_local_targets.as_ref().map_or(0, |v| v.len());
         let next_prep_len = preprocessed_next_targets.as_ref().map_or(0, |v| v.len());
-        if local_prep_len != pre_w || next_prep_len != pre_w {
+        let needs_prep_next = !P3BaseAir::preprocessed_next_row_columns(air).is_empty();
+        let expected_next_prep_len = if needs_prep_next { pre_w } else { 0 };
+        if local_prep_len != pre_w || next_prep_len != expected_next_prep_len {
             return Err(VerificationError::InvalidProofShape(format!(
-                "Instance has incorrect preprocessed width: expected {pre_w}, got {local_prep_len} / {next_prep_len}"
+                "Instance has incorrect preprocessed width: expected {pre_w} / {expected_next_prep_len}, got {local_prep_len} / {next_prep_len}"
             )));
         }
-        let air_width = A::width(air);
-        if trace_local_targets.len() != air_width || trace_next_targets.len() != air_width {
+        let air_width = P3BaseAir::width(air);
+        let needs_trace_next = !P3BaseAir::main_next_row_columns(air).is_empty();
+        let expected_trace_next_len = if needs_trace_next { air_width } else { 0 };
+        if trace_local_targets.len() != air_width
+            || trace_next_targets.len() != expected_trace_next_len
+        {
             return Err(VerificationError::InvalidProofShape(format!(
-                "Instance has incorrect trace width: expected {}, got {} / {}",
+                "Instance has incorrect trace width: expected {} / {}, got {} / {}",
                 air_width,
+                expected_trace_next_len,
                 trace_local_targets.len(),
                 trace_next_targets.len()
             )));
@@ -597,8 +649,10 @@ where
             circuit.alloc_const(SC::Challenge::from_usize(base_db), "base degree bits");
         let ext_db_target =
             circuit.alloc_const(SC::Challenge::from_usize(ext_db), "extended degree bits");
-        let width_target =
-            circuit.alloc_const(SC::Challenge::from_usize(A::width(air)), "air width");
+        let width_target = circuit.alloc_const(
+            SC::Challenge::from_usize(P3BaseAir::width(air)),
+            "air width",
+        );
         let quotient_chunks_target = circuit.alloc_const(
             SC::Challenge::from_usize(*quotient_degree),
             "quotient chunk count",
@@ -723,29 +777,28 @@ where
         .iter()
         .zip(trace_domains.iter())
         .zip(instances.iter())
-        .map(|((ext_dom, trace_dom), inst)| {
-            let first_point = pcs.first_point(trace_dom);
-            let next_point = trace_dom.next_point(first_point).ok_or_else(|| {
-                VerificationError::InvalidProofShape(
-                    "Trace domain does not provide next point".to_string(),
-                )
-            })?;
-            let generator = next_point * first_point.inverse();
-            let generator_const = circuit.define_const(generator);
-            let zeta_next = circuit.mul(zeta, generator_const);
-            Ok((
-                *ext_dom,
-                vec![
-                    (
-                        zeta,
-                        inst.opened_values_no_lookups.trace_local_targets.clone(),
-                    ),
-                    (
-                        zeta_next,
-                        inst.opened_values_no_lookups.trace_next_targets.clone(),
-                    ),
-                ],
-            ))
+        .zip(airs.iter())
+        .map(|(((ext_dom, trace_dom), inst), air)| {
+            let mut points = vec![(
+                zeta,
+                inst.opened_values_no_lookups.trace_local_targets.clone(),
+            )];
+            if !P3BaseAir::main_next_row_columns(air).is_empty() {
+                let first_point = pcs.first_point(trace_dom);
+                let next_point = trace_dom.next_point(first_point).ok_or_else(|| {
+                    VerificationError::InvalidProofShape(
+                        "Trace domain does not provide next point".to_string(),
+                    )
+                })?;
+                let generator = next_point * first_point.inverse();
+                let generator_const = circuit.define_const(generator);
+                let zeta_next = circuit.mul(zeta, generator_const);
+                points.push((
+                    zeta_next,
+                    inst.opened_values_no_lookups.trace_next_targets.clone(),
+                ));
+            }
+            Ok((*ext_dom, points))
         })
         .collect::<Result<_, VerificationError>>()?;
     coms_to_verify.push((commitments_targets.trace_targets.clone(), trace_round));
@@ -823,15 +876,6 @@ where
                         "Missing preprocessed local columns".to_string(),
                     )
                 })?;
-            let next = inst
-                .opened_values_no_lookups
-                .preprocessed_next_targets
-                .as_ref()
-                .ok_or_else(|| {
-                    VerificationError::InvalidProofShape(
-                        "Missing preprocessed next columns".to_string(),
-                    )
-                })?;
             // Validate that the preprocessed data's degree metadata matches this instance.
             let ext_db = degree_bits[inst_idx];
 
@@ -851,22 +895,31 @@ where
             // Compute base preprocessed domain (matching prover in generation.rs)
             let pre_domain = pcs.natural_domain_for_degree(1 << meta.degree_bits);
 
-            // Use the base trace domain for zeta_next computation.
-            let trace_dom = &trace_domains[inst_idx];
-            let first_point = pcs.first_point(trace_dom);
-            let next_point = trace_dom.next_point(first_point).ok_or_else(|| {
-                VerificationError::InvalidProofShape(
-                    "Preprocessed domain does not provide next point".to_string(),
-                )
-            })?;
-            let generator = next_point * first_point.inverse();
-            let generator_const = circuit.define_const(generator);
-            let zeta_next = circuit.mul(zeta, generator_const);
+            let mut points = vec![(zeta, local.clone())];
+            if !P3BaseAir::preprocessed_next_row_columns(&airs[inst_idx]).is_empty() {
+                let next = inst
+                    .opened_values_no_lookups
+                    .preprocessed_next_targets
+                    .as_ref()
+                    .ok_or_else(|| {
+                        VerificationError::InvalidProofShape(
+                            "Missing preprocessed next columns".to_string(),
+                        )
+                    })?;
+                let trace_dom = &trace_domains[inst_idx];
+                let first_point = pcs.first_point(trace_dom);
+                let next_point = trace_dom.next_point(first_point).ok_or_else(|| {
+                    VerificationError::InvalidProofShape(
+                        "Preprocessed domain does not provide next point".to_string(),
+                    )
+                })?;
+                let generator = next_point * first_point.inverse();
+                let generator_const = circuit.define_const(generator);
+                let zeta_next = circuit.mul(zeta, generator_const);
+                points.push((zeta_next, next.clone()));
+            }
 
-            pre_round.push((
-                pre_domain,
-                vec![(zeta, local.clone()), (zeta_next, next.clone())],
-            ));
+            pre_round.push((pre_domain, points));
         }
 
         coms_to_verify.push((global.commitment.clone(), pre_round));
@@ -1163,7 +1216,8 @@ fn lookup_data_to_pv_index(
 ///
 /// Observation order (matching native batch-STARK verifier):
 /// 1. Random round (if ZK): for each instance, observe random opened values (+ FRI random)
-/// 2. Trace round: for each instance, observe trace_local (+ FRI random) then trace_next (+ FRI random)
+/// 2. Trace round: for each instance, observe trace_local (+ FRI random) and
+///    trace_next (+ FRI random) only when that AIR opens a next row.
 /// 3. Quotient round: for each chunk, observe quotient values (+ FRI random)
 /// 4. Preprocessed round (if present): for each matrix, observe prep_local (+ FRI random) then prep_next (+ FRI random)
 /// 5. Permutation round (if present): for each instance, observe perm_local (+ FRI random) then perm_next (+ FRI random)
@@ -1217,7 +1271,8 @@ fn observe_opened_values_circuit<
         round_idx += 1;
     }
 
-    // 2. Trace round: for each instance (= mat), two points (zeta, zeta_next).
+    // 2. Trace round: for each instance (= mat), one or two points depending
+    // on whether that AIR opened a next row.
     {
         let rand_round = fri_random_rounds.get(round_idx);
         for (mat_idx, inst) in instances.iter().enumerate() {
@@ -1233,12 +1288,14 @@ fn observe_opened_values_circuit<
                 &inst.opened_values_no_lookups.trace_local_targets,
                 fri_rand_local,
             );
-            observe_point(
-                circuit,
-                challenger,
-                &inst.opened_values_no_lookups.trace_next_targets,
-                fri_rand_next,
-            );
+            if !inst.opened_values_no_lookups.trace_next_targets.is_empty() {
+                observe_point(
+                    circuit,
+                    challenger,
+                    &inst.opened_values_no_lookups.trace_next_targets,
+                    fri_rand_next,
+                );
+            }
         }
         round_idx += 1;
     }

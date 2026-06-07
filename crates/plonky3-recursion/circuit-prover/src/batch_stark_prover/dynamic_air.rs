@@ -82,6 +82,22 @@ where
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>> {
         <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_trace(self.air())
     }
+
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::main_next_row_columns(self.air())
+    }
+
+    fn preprocessed_next_row_columns(&self) -> Vec<usize> {
+        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_next_row_columns(self.air())
+    }
+
+    fn num_constraints(&self) -> Option<usize> {
+        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_constraints(self.air())
+    }
+
+    fn max_constraint_degree(&self) -> Option<usize> {
+        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::max_constraint_degree(self.air())
+    }
 }
 
 macro_rules! impl_air_for_dynamic_entry {

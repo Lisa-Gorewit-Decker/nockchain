@@ -41,16 +41,19 @@ artifact.
 > lanes and verifies compact bodies through a verifier-owned context containing
 > metadata/setup, expected FRI shape, and caller-supplied public values. The
 > corrected fast-L1/L2 row at L1
-> `lb=3,nq=20` and L2 `lb=5,nq=12` measures `149,743` bytes for the actual
-> compact wrapper and `148,866` bytes for the metadata-free compact body, with
-> the latest release/native cached-setup rerun measuring `22.085s` L1 proving,
-> `10.373s` reusable L2 prep, and `32.186s` cached L2 proving. The cached L2
-> proving time is dominated by STARK proving (`32.122s`), not
-> recursive-verifier witness execution. A deeper PCS profile rerun measures
-> `22.501s` L1 proving and `31.815s` cached L2 proving; cached L2 is dominated
-> by main/permutation trace Merkle commitments (`13.3s` + `12.9s`), so the next
-> production lever is reducing committed recursive-verifier matrix volume,
-> especially Tip5/MMCS verifier-table traces. A focused `lb4,nq15`
+> `lb=3,nq=20` and L2 `lb=5,nq=12` now measures `143,762` bytes for the actual
+> compact wrapper and `142,878` bytes for the metadata-free compact body after
+> forwarding AIR next-row declarations through the batch-STARK wrappers. Tip5
+> main next-row openings remain explicit because the inner lookup AIR links
+> rounds across rows. The latest release/native cached-setup rerun measures
+> `20.657s` L1 proving, `9.331s` reusable L2 prep, and `28.429s` cached L2
+> proving. The cached L2 proof is now under `30s`, but cached serial L1+L2
+> proving is still about `49.086s`, so the total proving-time gate is not met.
+> A prior deeper PCS profile showed cached L2 dominated by main/permutation
+> trace Merkle commitments (`13.3s` + `12.9s`), so the next production lever is
+> reducing committed recursive-verifier matrix volume, especially Tip5/MMCS
+> verifier-table traces, and reducing or overlapping the L1 stage. A focused
+> `lb4,nq15`
 > frontier sweep rules out cheap FRI/cap retuning: the fastest-size frontier is
 > still `174,676` bytes. The relaxed size gate is now plausibly in range; the
 > relaxed total proving-time gate is not yet met.

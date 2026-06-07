@@ -333,16 +333,17 @@ impl<F: Field, const WITNESS_EXT_D: usize> BaseAir<F> for Tip5CircuitAir<F, WITN
         None
     }
 
-    // Tip5 is a strictly **single-row** AIR: neither the composed-in
-    // `Tip5PermLookupAir` constraints/`tip5_l` bus nor the added
-    // `WitnessChecks` CTL ever reference the next row. Declaring this
-    // (as `RecomposeAir` does) keeps the rotated-opening set consistent
-    // between prover and verifier.
     fn main_next_row_columns(&self) -> Vec<usize> {
-        Vec::new()
+        // The composed `Tip5PermLookupAir` links each permutation round
+        // to the next row through `main.next_slice()`. Batch STARK currently
+        // treats this vector as a boolean and opens the full next row when it
+        // is non-empty, so expose every column here.
+        (0..self.width()).collect()
     }
 
     fn preprocessed_next_row_columns(&self) -> Vec<usize> {
+        // The lookup table selectors and witness-check controls are read
+        // only from the current preprocessed row.
         Vec::new()
     }
 }

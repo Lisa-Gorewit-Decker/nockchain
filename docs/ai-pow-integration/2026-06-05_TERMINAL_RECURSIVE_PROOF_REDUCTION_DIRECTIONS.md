@@ -71,10 +71,19 @@ Done and verified:
 - Compact batch-STARK L2 is now the committed primary production route. The full
   batch-STARK checkpoint remains a hardened checkpoint/fallback path, not the
   production wire artifact. Native terminal remains the fallback route.
+- Batch-STARK opening shape now respects each AIR's declared next-row usage
+  through the circuit-table and dynamic-AIR wrappers. The Tip5 circuit wrapper
+  explicitly keeps main next-row openings because its inner lookup AIR links
+  permutation rounds with `main.next_slice()`, while single-row Const/Public/
+  Recompose and Tip5 preprocessed openings can omit unnecessary next-row
+  values. The recursive verifier circuit and challenge-generation replay now
+  accept the same optional trace/preprocessed-next shape as the native
+  batch-STARK verifier. A focused wrapper regression passes, and the selected
+  fast-L1/L2 release measurement verifies end to end.
 - The corrected fast-L1/L2 compact batch-STARK diagnostic verifies with L1
   `lb=3,nq=20,cap=4,pow=0` and L2 `lb=5,nq=12,cap=4,pow=0`: actual compact
-  wrapper `149,743` bytes, metadata-free compact body `148,866` bytes, core
-  compact proof `91,402` bytes, restoration payload `57,464` bytes. The full
+  wrapper `143,762` bytes, metadata-free compact body `142,878` bytes, core
+  compact proof `90,307` bytes, restoration payload `52,571` bytes. The full
   three-row sweep measured L1 prove `30.448s` and L2 prove `54.137s`; the
   focused selected-row rerun measured L1 prove `24.865s` and L2 prove
   `48.281s`. This is the first soundly bound row inside the relaxed `150 KiB`
@@ -86,21 +95,18 @@ Done and verified:
   shape. `prove_all_tables` now reuses compatible cached `ProverData` instead
   of rebuilding the same preprocessed commitment/prover data per proof; it
   falls back to the old rebuild path when runtime lookup/preprocessed metadata
-  shape differs. The latest release/native selected rerun measured L1 prove
-  `22.085s`, L2 prep wall `10.373s`, cached L2 prove `32.186s`, and uncached
-  L2 total `42.559s`. The cached L2 proof was input packing `0ms`, witness run
-  `39ms`, STARK prove `32.122s`, and STARK self-verify `24ms`. Span profiling
-  shows L2 quotient evaluation is under `1s`; the blocker is therefore
-  upstream batch-STARK/PCS proving, not recursive-verifier witness execution,
-  reusable setup, or quotient evaluation. A deeper
-  `AI_POW_ZK_DEEP_BATCH_PROFILE=pcs` rerun measured L1 prove `22.501s`,
-  reusable L2 prep `10.475s`, cached L2 prove `31.815s`, and uncached L2 total
-  `42.290s`. Inside cached L2 proving, the main trace Merkle commitment took
-  `13.3s`, the permutation trace Merkle commitment took `12.9s`, the
-  quotient-chunk Merkle commitment took `3.12s`, and FRI commit/query took
-  `704ms`. The remaining time lever is now specific: shrink the committed
-  recursive-verifier matrix volume, especially the Tip5/MMCS verifier-table
-  main and permutation traces, or replace that verifier relation/proof shape.
+  shape differs. After next-row opening forwarding, the latest release/native
+  selected rerun measured L1 prove `20.657s`, L2 prep wall `9.331s`, cached L2
+  prove `28.429s`, and uncached L2 total `37.761s`. The cached L2 proof was
+  input packing `0ms`, witness run `35ms`, STARK prove `28.374s`, and STARK
+  self-verify `19ms`. The selected L2 proof is now under `30s` by itself, but
+  serial L1+cached-L2 proving is still about `49.086s`. The prior deep
+  `AI_POW_ZK_DEEP_BATCH_PROFILE=pcs` profile, run before next-row forwarding,
+  identified the L2 bottleneck as main/permutation trace Merkle commitments
+  rather than recursive-verifier witness execution, reusable setup, quotient
+  evaluation, or FRI query work. The remaining total-time lever is now specific:
+  reduce or overlap L1 proving, and shrink committed recursive-verifier matrix
+  volume, especially the Tip5/MMCS verifier-table main and permutation traces.
 - The smaller L2 `lb=6,nq=10` row verifies at `132,682` bytes actual compact
   wrapper and `131,803` bytes metadata-free body, but L2 proving rises to
   `107.617s`. The faster L2 `lb=4,nq=15` row proves in `27.342s` but measures
@@ -183,9 +189,9 @@ What remains:
   chain-owned statement metadata, and reject any prover-supplied verifier
   metadata instead of accepting it as context.
 - Reduce end-to-end proving time. The current selected size row is about
-  `64.644s` serial L1+uncached-L2 proving in the latest focused timing run
-  (`22.085s + 42.559s`). With the measured L2 prep cache, the comparable
-  per-attempt time is still about `54.271s` (`22.085s + 32.186s`). This is the
+  `58.418s` serial L1+uncached-L2 proving in the latest focused timing run
+  (`20.657s + 37.761s`). With the measured L2 prep cache, the comparable
+  per-attempt time is still about `49.086s` (`20.657s + 28.429s`). This is the
   best measured in-size route so far, but it still misses the `~30s` target.
 - Promote the diagnostic L2 prep cache into the production prover/verifier-key
   path. The test harness now proves that reusable setup is available and that
@@ -193,7 +199,7 @@ What remains:
   but production still needs canonical cache construction, setup digest
   pinning, and wire/API integration.
 - Reduce core batch-STARK proving time. After cached setup and cached
-  `ProverData` reuse, `32.122s` remains in L2 STARK proving and `22.085s`
+  `ProverData` reuse, `28.374s` remains in L2 STARK proving and `20.657s`
   remains in L1 proving. Reaching `~30s` total requires a real L1/L2
   batch-STARK/PCS reduction rather than only setup caching, quotient
   optimization, or recursive-witness optimization.
@@ -428,13 +434,13 @@ does not replace the required packed Tip5 support-theorem redesign.
 | Relaxed target | About `150 KiB` recursive proof artifact and about `30s` total release proving |
 | Soundness target | 60 pure FRI query bits per promoted layer; selected compact row uses L1 `lb=3,nq=20,pow=0` and L2 `lb=5,nq=12,pow=0` |
 | Most viable shape | Compact batch-STARK L2 with verifier-owned metadata/setup, canonical preprocessed-opening restoration, pruned paths, and explicit final public-value binding of the L1 statement digest |
-| Best measured compact batch-STARK candidate | Fast L1 `lb=3,nq=20,cap=4,pow=0` plus L2 `lb=5,nq=12,cap=4,pow=0`: actual compact wrapper `149,743` bytes, metadata-free body `148,866` bytes; latest cached-setup rerun L1 prove `22.085s`, reusable L2 prep `10.373s`, cached L2 prove `32.186s`, uncached L2 total `42.559s` |
+| Best measured compact batch-STARK candidate | Fast L1 `lb=3,nq=20,cap=4,pow=0` plus L2 `lb=5,nq=12,cap=4,pow=0`: actual compact wrapper `143,762` bytes, metadata-free body `142,878` bytes; latest cached-setup rerun L1 prove `20.657s`, reusable L2 prep `9.331s`, cached L2 prove `28.429s`, uncached L2 total `37.761s` |
 | Best measured complete base | Cap-height `3` full-context merged-only structural floor at `142,807` bytes; sound for its included relations, but missing internal Tip5 binding |
 | Best near-target standalone missing binding | Lane-selector-aware selected-to-packed NPO-IO bridge at `137,355` bytes / `134.1 KiB`, prove `28.526s`, verify `14.510s` |
 | Direct bridge diagnostic | Binding selected NPO values directly to compact packed trace lanes verifies at `205,950` bytes / `201.1 KiB`, prove `35.863s`; it removes the projection commitment/domain but is too large standalone because it still opens the full `436`-column packed trace |
 | Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; cap-height `3` merged-value plus packed-support optimistic single-FRI floor is `249,184` bytes, `95,584` bytes over binary `150 KiB`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s`; packed byte-LogUp group size 15 was measured and rejected at `206,759` bytes, prove `38.515s` |
 | Best measured outer task parallelism | Rayon-joining the current primitive R1CS, merged value-bridge, and packed-support subproofs gives `39.448s` post-prelude subproof wall time versus `53.355s` summed subproof timers, but leaves the same `249,184` byte optimistic single-FRI floor and `171.422s` full diagnostic wall |
-| Main current blocker | The compact batch-STARK L2 size row is in range, but measured cached per-attempt proving is still about `54s` (`22.501s` L1 + `31.815s` cached L2 in the deep profile); cached L2 proving is dominated by main/permutation trace Merkle commitments, not witness execution, reusable setup, quotient evaluation, FRI folding/query, or final proof size |
+| Main current blocker | The compact batch-STARK L2 size row is in range and cached L2 proving is now under `30s`, but measured cached serial L1+L2 proving is still about `49.1s` (`20.657s` L1 + `28.429s` cached L2); the previous deep L2 profile showed main/permutation trace Merkle commitments dominate L2, not witness execution, reusable setup, quotient evaluation, FRI folding/query, or final proof size |
 | Next implementation step | Promote compact batch-STARK L2 into the production certificate format by deriving/pinning the setup digest and public values from verifier-owned state, then reduce committed recursive-verifier matrix volume, especially Tip5/MMCS verifier-table main/permutation traces, and add final artifact rejection tests |
 
 ### Decision
@@ -448,13 +454,14 @@ soundness.
 
 The selected measurement row uses L1 `lb=3,nq=20,cap=4,pow=0` and L2
 `lb=5,nq=12,cap=4,pow=0`. It verifies with ten final L2 public-binding lanes
-for the L1 statement-digest base limbs and measures `149,743` bytes for the
-actual compact wrapper, `148,866` bytes for the metadata-free compact body, and
-`91,402` bytes for the core compact proof. That is inside the relaxed size
+for the L1 statement-digest base limbs and measures `143,762` bytes for the
+actual compact wrapper, `142,878` bytes for the metadata-free compact body, and
+`90,307` bytes for the core compact proof. That is inside the relaxed size
 gate. The earlier focused serial proving time was still too high: `24.865s`
 for L1 plus `48.281s` for L2 in the pre-cache diagnostic. The latest
-cached-setup rerun is still too high: `22.085s` for L1 plus `32.186s` cached L2
-proving, with `10.373s` of reusable L2 prep outside the per-attempt path.
+cached-setup rerun is still too high for the total route, but materially closer:
+`20.657s` for L1 plus `28.429s` cached L2 proving, with `9.331s` of reusable L2
+prep outside the per-attempt path.
 
 The terminal fallback keeps the production profile at pure-query 60-bit FRI
 soundness: `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`, and
@@ -1396,33 +1403,33 @@ committed primary production route. The selected row is L2 `lb=5,nq=12`: it is
 inside the relaxed final-proof size gate with explicit public binding, but it
 is still too slow. In the full three-row sweep it takes `54.137s` for the L2
 proof alone and about `84.585s` with the L1 proof timer added; the focused
-cached-prep timing breakdown below measures the same proof bytes with a
-reusable L2 setup split. The L2 `lb=4,nq=15` row is closer to the time gate, but
-it is too large. The L2 `lb=6,nq=10` row has ample size headroom, but its
-proving time is too high. The immediate engineering target is therefore not a
-new proof family; it is reducing the selected compact batch-STARK path's core
-L2 proving time.
+cached-prep timing breakdown below also includes AIR next-row declaration
+forwarding, so the selected row is smaller and faster than that older sweep.
+The L2 `lb=4,nq=15` row is closer to the time gate, but it is too large. The L2
+`lb=6,nq=10` row has ample size headroom, but its proving time is too high. The
+immediate engineering target is therefore not a new proof family; it is
+reducing the selected compact batch-STARK path's total L1+L2 proving time.
 
-A focused selected-row timing diagnostic narrows the L2 blocker. It reruns only
-the selected `lb5,nq12` row, so timings differ from the full three-row sweep
-but the proof bytes are unchanged:
+A focused selected-row timing diagnostic narrows the remaining blocker. It
+reruns only the selected `lb5,nq12` row after the next-row forwarding fix, so
+timings and bytes differ from the older full three-row sweep:
 
 | Selected fast-L1/L2 row | Actual compact wrapper | Metadata-free compact body | L1 prove | Reusable L2 prep | Cached L2 prove | Uncached L2 total | L2 witness run | L2 STARK prove |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| L1 `lb=3,nq=20,cap=4,pow=0`; L2 `lb=5,nq=12,lfp=2,mla=3,cap=4,pow=0` | `149,743` bytes | `148,866` bytes | `22.085s` | `10.373s` | `32.186s` | `42.559s` | `39ms` | `32.122s` |
+| L1 `lb=3,nq=20,cap=4,pow=0`; L2 `lb=5,nq=12,lfp=2,mla=3,cap=4,pow=0` | `143,762` bytes | `142,878` bytes | `20.657s` | `9.331s` | `28.429s` | `37.761s` | `35ms` | `28.374s` |
 
 The recursive verifier circuit and witness execution are not the bottleneck:
 definition/build/input packing sum to under `100ms`, witness execution is
-`39ms`, reusable L2 setup is now split out of the cached proof path, and
+`35ms`, reusable L2 setup is now split out of the cached proof path, and
 compatible cached `ProverData` removes the repeated preprocessed-commitment
 rebuild inside `prove_all_tables`. Span profiling shows quotient evaluation is
 under `1s`; the expensive piece is the upstream batch-STARK/PCS proof itself.
 
 A deeper release/native selected-row profile with
-`AI_POW_ZK_DEEP_BATCH_PROFILE=pcs` makes that upstream bottleneck concrete. The
-rerun measured the same `149,743` byte compact wrapper, with L1 prove
-`22.501s`, reusable L2 prep `10.475s`, cached L2 prove `31.815s`, uncached L2
-total `42.290s`, and L2 STARK prove `31.756s`.
+`AI_POW_ZK_DEEP_BATCH_PROFILE=pcs`, run before next-row opening forwarding,
+makes that upstream bottleneck concrete. It measured the old `149,743` byte
+compact wrapper, with L1 prove `22.501s`, reusable L2 prep `10.475s`, cached
+L2 prove `31.815s`, uncached L2 total `42.290s`, and L2 STARK prove `31.756s`.
 
 | Cached L2 selected proof span | Time | Dimensions / implication |
 |---|---:|---|

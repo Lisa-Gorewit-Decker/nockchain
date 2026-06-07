@@ -45,7 +45,7 @@ artifact.
 | Pure-query L2 actual-vs-frontier Merkle path diagnostic | Diagnostic for whether a true Merkle multiproof frontier can remove the remaining compact-body restoration payload; verifies the compact body and counts actual query-set siblings | L2 `lb=5,nq=12,cap=4` body `137,816` bytes / restoration `50,609` bytes; current prefix-pruned siblings `1,056`; ideal frontier siblings `1,024`; digest-only maximum savings `1,280` bytes before any frontier-position metadata or verifier changes; L2 prove `24.608s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_l1_l2_multiproof_frontier_estimate_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
 | Pure-query L2 Pearl-rate high-blowup diagnostic | Diagnostic for a no-PoW analogue of Pearl's final `rate_bits=7` shape; verifies the compact body, but the smaller proof is still above hard size and far above time | L2 `lb=7,nq=9,cap=4` carries `63` pure-query Johnson bits; body `120,722` bytes / core `72,415` bytes / restoration `48,307` bytes; L2 prove `97.358s`; shared slow L1 prove `196.064s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_l1_l2_pearl_rate7_final_shape_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
 | Fast-L1 pure-query L2-over-L1 batch-STARK sweep | Diagnostic for pairing the only sub-30s L1 profile with the actual compact final-layer body; verifies after the Tip5 MMCS direction-binding fix, but still misses size/time jointly | Shared fast L1 `lb=3,nq=20,cap=4`: `279,719` bytes, L1 prove `25.178s`; compact-body L2 `lb=4,nq=15,cap=4`: `174,707` bytes, L2 prove `25.245s`; compact-body L2 `lb=5,nq=12,cap=4`: `145,695` bytes, L2 prove `48.530s`; compact-body L2 `lb=6,nq=10,cap=4`: `129,804` bytes, L2 prove `98.584s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_fast_l1_statement_bound_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
-| Cached selected fast-L1 compact batch-STARK L2 route | Committed primary production candidate; verifies compact bodies through verifier-owned setup/metadata context and explicitly binds all L1 statement-digest limbs as final public values, but still misses the relaxed total proving-time gate | L1 `lb=3,nq=20,cap=4`: prove `22.085s`; selected L2 `lb=5,nq=12,cap=4`: actual compact wrapper `149,743` bytes, metadata-free body `148,866` bytes, reusable L2 prep `10.373s`, cached L2 prove `32.186s`, uncached L2 total `42.559s`; cached serial L1+L2 per-attempt time `54.271s`. Deep PCS profile rerun: L1 prove `22.501s`, reusable L2 prep `10.475s`, cached L2 prove `31.815s`; cached L2 dominated by main/permutation trace Merkle commitments (`13.3s` + `12.9s`) | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_fast_l1_selected_candidate_timing_breakdown_for_test_pearl -- --ignored --nocapture`; deep run adds `AI_POW_ZK_DEEP_BATCH_PROFILE=pcs`, 2026-06-07 |
+| Cached selected fast-L1 compact batch-STARK L2 route | Committed primary production candidate; verifies compact bodies through verifier-owned setup/metadata context and explicitly binds all L1 statement-digest limbs as final public values, but still misses the relaxed total proving-time gate | After AIR next-row declaration forwarding, L1 `lb=3,nq=20,cap=4`: prove `20.657s`; selected L2 `lb=5,nq=12,cap=4`: actual compact wrapper `143,762` bytes, metadata-free body `142,878` bytes, reusable L2 prep `9.331s`, cached L2 prove `28.429s`, uncached L2 total `37.761s`; cached serial L1+L2 per-attempt time `49.086s`. Prior deep PCS profile before next-row forwarding: L1 prove `22.501s`, reusable L2 prep `10.475s`, cached L2 prove `31.815s`; cached L2 dominated by main/permutation trace Merkle commitments (`13.3s` + `12.9s`) | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_fast_l1_selected_candidate_timing_breakdown_for_test_pearl -- --ignored --nocapture`; deep run adds `AI_POW_ZK_DEEP_BATCH_PROFILE=pcs`, 2026-06-07 |
 | Native terminal certificate fixture | Recursion-crate terminal proof over the real Tip5 verifier-circuit fixture; proves the terminal backend can be small, but is not yet the full `ai-pow-zk` composite verifier path | `85,948` bytes / `83.9 KiB`; release prove `1.492s`, verify `1.181s` | `RUSTFLAGS="-C target-cpu=native" cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --release --test test_l1_outer_cert_tip5_unified terminal_production_certificate_measures_real_tip5_l0_verifier_circuit -- --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier native terminal path | Opt-in diagnostic path for the actual composite L1 verifier circuit; not yet production-qualified because it misses both size and time gates | `lb=6,nq=10,pow=0` reduced-profile run after compact known-index proof encoding: terminal certificate `766,069` bytes / `748.1 KiB`; terminal public inputs `5,180` bytes; postcard wire certificate `771,249` bytes / `753.2 KiB`; release prove `80.829s`, verify `58.825s` | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_recursive_certificate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed full-composite size measurement. Prepared selected+lookup and trace-bundle PCS data reuse, batched-LDE quotient construction, and folded-AIR evaluator cleanup keep the recursion-crate synthetic production-candidate checkpoint at `96,017` bytes / `93.8 KiB` with `9.918s` total prove. In the latest full-composite diagnostic, selected+lookup reuse reduced merged value-bridge prove to `2.340s`; phase timings before the integrated proof were L0 `29.834s`, terminal compile `7.543s`, assignment commit `5.793s`, selected+lookup root `11.075s` with selected commit `3.85s`, trace-bundle root `6.261s` with trace commit `5.84s`, prelude `7.600s`, and primitive prove `14.435s`. The integrated proof still stayed inside `terminal_npo_integrated_logup.air_quotient_matrix` for more than 90 seconds after `integrated_logup_prove_start` and was stopped. The active PROD layout has `8,081` terminal Tip5 calls, which makes the current full-main lookup AIR a `65,536`-row trace and `524,288`-point quotient. | `NOCK_TERMINAL_PROFILE_PROVER=1 RUST_LOG=p3_recursion::terminal=info RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-06 |
@@ -69,13 +69,14 @@ The active production target is therefore:
 
 - regular Layer-0 proof: **296.9 KiB** if materialized;
 - compact batch-STARK L2 over fast statement-bound L1: the current committed
-  production candidate. The latest selected row measures **149,743 bytes** for
-  the actual compact wrapper and **148,866 bytes** for the metadata-free compact
+  production candidate. The latest selected row measures **143,762 bytes** for
+  the actual compact wrapper and **142,878 bytes** for the metadata-free compact
   body, so the relaxed size gate is plausibly in range. The same run still
-  measures **54.271s** cached serial L1+L2 per-attempt proving, so the route is
-  not yet production-complete. The deeper PCS profile rerun measures the same
-  size with **22.501s** L1 proving plus **31.815s** cached L2 proving; cached
-  L2 time is dominated by main/permutation trace Merkle commitments, not
+  measures **49.086s** cached serial L1+L2 per-attempt proving, so the route is
+  not yet production-complete. The latest L2 cached proving alone is
+  **28.429s**, now under the relaxed time gate if counted without L1. The prior
+  deeper PCS profile, run before next-row forwarding, showed cached L2 time was
+  dominated by main/permutation trace Merkle commitments, not
   recursive-verifier witness execution or FRI query work.
 - hardened batch-STARK L1 checkpoint: the submitted L1 proof body is
   **149.1 KiB**, and the full checkpoint certificate is **1.1 MiB+** before
@@ -382,27 +383,29 @@ the only sub-30s L2 row is too large, and the first row under the relaxed
 `150 KiB` size gate takes about **74s** end-to-end when the L1 witness proof is
 included.
 
-The selected-row rerun after verifier-context binding and cached prover-data
-reuse changes the route decision. The committed primary candidate is now the
-same fast-L1 plus compact L2 shape at L2 `lb=5,nq=12`: the actual compact
-wrapper is **149,743 bytes**, the metadata-free compact body is **148,866
-bytes**, and the compact proof body is **91,402 bytes**. The verifier owns the
-metadata/setup context, restores preprocessed openings from canonical setup,
-checks the expected FRI shape, and receives the L1 statement-digest limbs as
-explicit final public values. The latest release/native run measures **22.085s**
-L1 proving, **10.373s** reusable L2 prep, **32.186s** cached L2 proving, and
-**42.559s** uncached L2 total. That makes this path materially closer to the
-relaxed production target than the previous native-terminal direction, while
-also making the remaining blocker crisp: the in-size route is still about
-**54.271s** for cached serial L1+L2 proving, dominated by upstream
-batch-STARK/PCS proving rather than recursive witness execution or setup.
-A deeper `AI_POW_ZK_DEEP_BATCH_PROFILE=pcs` rerun measured **22.501s** L1
+The selected-row rerun after verifier-context binding, cached prover-data reuse,
+and AIR next-row declaration forwarding changes the route decision. The
+committed primary candidate is now the same fast-L1 plus compact L2 shape at L2
+`lb=5,nq=12`: the actual compact wrapper is **143,762 bytes**, the
+metadata-free compact body is **142,878 bytes**, and the compact proof body is
+**90,307 bytes**. The verifier owns the metadata/setup context, restores
+preprocessed openings from canonical setup, checks the expected FRI shape, and
+receives the L1 statement-digest limbs as explicit final public values. The
+latest release/native run measures **20.657s** L1 proving, **9.331s** reusable
+L2 prep, **28.429s** cached L2 proving, and **37.761s** uncached L2 total. That
+makes this path materially closer to the relaxed production target than the
+previous native-terminal direction, while also making the remaining blocker
+crisp: the in-size route is still about **49.086s** for cached serial L1+L2
+proving, dominated by upstream batch-STARK/PCS proving rather than recursive
+witness execution or setup.
+A prior deeper `AI_POW_ZK_DEEP_BATCH_PROFILE=pcs` rerun measured **22.501s** L1
 proving, **10.475s** reusable L2 prep, **31.815s** cached L2 proving, and
-**42.290s** uncached L2 total. The cached L2 proof is dominated by main and
-permutation trace Merkle commitments (**13.3s** + **12.9s**); quotient compute
-is under **1s**, quotient-chunk Merkle commit is **3.12s**, and FRI
-commit/query is **704ms**. That points the next production lever at reducing
-the committed recursive-verifier matrix volume, especially the Tip5/MMCS
+**42.290s** uncached L2 total before next-row forwarding. That prior profile
+showed cached L2 proof dominated by main and permutation trace Merkle
+commitments (**13.3s** + **12.9s**); quotient compute was under **1s**,
+quotient-chunk Merkle commit was **3.12s**, and FRI commit/query was **704ms**.
+That points the next production lever at reducing the committed
+recursive-verifier matrix volume, especially the Tip5/MMCS
 verifier-table traces, rather than at more witness, setup, quotient, or Rayon
 tuning.
 
@@ -482,8 +485,9 @@ does not submit the full `AiPowRecursiveCertificate` envelope, and it does not
 trust prover-supplied verifier metadata as the certificate context. The final
 artifact candidate is the compact L2 proof body plus the explicitly required
 public values and verifier-key/setup binding. The current selected row is
-already inside the relaxed size envelope at **149,743 bytes** for the actual
-wrapper, but release/native cached serial L1+L2 proving is still **54.271s**.
+already inside the relaxed size envelope at **143,762 bytes** for the actual
+wrapper and **142,878 bytes** for the metadata-free body, but release/native
+cached serial L1+L2 proving is still **49.086s**.
 That is why the route is committed for implementation while the milestone is
 not yet claimed.
 
@@ -1111,18 +1115,17 @@ For the intended production path, the block-facing recursive proof target is
 now compact batch-STARK L2 over a fast statement-bound L1 proof, not the large
 batch-STARK checkpoint envelope and not the native terminal fallback. However,
 the full end-to-end production claim is not yet proven. The current selected
-route is inside the relaxed size envelope at **149,743 bytes** for the actual
-compact wrapper and **148,866 bytes** for the metadata-free body, with the L1
+route is inside the relaxed size envelope at **143,762 bytes** for the actual
+compact wrapper and **142,878 bytes** for the metadata-free body, with the L1
 statement digest carried as explicit final public lanes and verifier-owned
 metadata/setup context. It still misses the relaxed time gate: the latest
-release/native run measures **22.085 s** L1 proving plus **32.186 s** cached L2
-proving, or **54.271 s** cached serial L1+L2 per attempt. The materialized
+release/native run measures **20.657 s** L1 proving plus **28.429 s** cached L2
+proving, or **49.086 s** cached serial L1+L2 per attempt. The materialized
 Layer-0 proof is **304,048 bytes / 296.9 KiB**, but it is an intermediate
 diagnostic artifact rather than the target consensus wire object.
-The deeper PCS profile rerun varies only within timing noise
-(**22.501 s** L1 plus **31.815 s** cached L2) and attributes the L2 time mostly
-to main/permutation trace Merkle commitments, not the recursive witness or FRI
-query phase.
+The prior deeper PCS profile rerun, before next-row forwarding, attributes the
+L2 time mostly to main/permutation trace Merkle commitments, not the recursive
+witness or FRI query phase.
 
 The native terminal fallback remains relevant but is no longer the leading
 route. The recursion-crate Tip5 verifier fixture satisfies the hard constraint
