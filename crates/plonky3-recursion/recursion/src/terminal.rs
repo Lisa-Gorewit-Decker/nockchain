@@ -43,6 +43,14 @@ use serde::{Deserialize, Serialize};
 /// Minimum production soundness accepted for native terminal certificates.
 pub const MIN_TERMINAL_SECURITY_BITS: u16 = 60;
 
+/// Production terminal Merkle cap height for FRI/MMCS commitments.
+///
+/// This is soundness-neutral: it changes how much of each Merkle tree is sent
+/// as a commitment cap versus per-query authentication paths. It is bound in
+/// the terminal proof parameters and proximity profile before challenge
+/// sampling.
+pub const TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT: u8 = 4;
+
 /// Tip5 sponge used by the terminal FRI/MMCS backend.
 pub type TerminalTip5Sponge = PaddingFreeSponge<Tip5Perm, 16, 10, 5>;
 
@@ -430,6 +438,7 @@ pub struct TerminalProofParameters {
     pub log_blowup: u8,
     pub num_queries: u16,
     pub query_pow_bits: u16,
+    pub merkle_cap_height: u8,
 }
 
 impl TerminalProofParameters {
@@ -439,6 +448,7 @@ impl TerminalProofParameters {
             log_blowup: 4,
             num_queries: 15,
             query_pow_bits: 0,
+            merkle_cap_height: TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT,
         }
     }
 
@@ -458,6 +468,7 @@ pub struct TerminalProximityProfile {
     pub log_blowup: u8,
     pub num_queries: u16,
     pub query_pow_bits: u16,
+    pub merkle_cap_height: u8,
     pub max_log_arity: u8,
     pub log_final_poly_len: u8,
     pub pure_query_bits: u16,
@@ -472,6 +483,7 @@ impl TerminalProximityProfile {
             log_blowup: 4,
             num_queries: 15,
             query_pow_bits: 0,
+            merkle_cap_height: TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT,
             max_log_arity: 3,
             log_final_poly_len: 0,
             pure_query_bits: MIN_TERMINAL_SECURITY_BITS,
@@ -484,6 +496,7 @@ impl TerminalProximityProfile {
             log_blowup: self.log_blowup,
             num_queries: self.num_queries,
             query_pow_bits: self.query_pow_bits,
+            merkle_cap_height: self.merkle_cap_height,
         }
     }
 }
@@ -27261,7 +27274,7 @@ impl NativeTerminalCompiler {
         let perm = Tip5Perm;
         let hash = TerminalTip5Sponge::new(perm);
         let compress = TerminalTip5Compress::new(perm);
-        let val_mmcs = TerminalFriValMmcs::new(hash, compress, 0);
+        let val_mmcs = TerminalFriValMmcs::new(hash, compress, profile.merkle_cap_height as usize);
         let challenge_mmcs = TerminalFriChallengeMmcs::new(val_mmcs.clone());
         let fri_parameters = Self::terminal_fri_parameters(profile, challenge_mmcs)?;
         Ok((
@@ -27322,6 +27335,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_fri_u64(challenger, profile.rows as u64);
         Self::observe_terminal_fri_u64(challenger, profile.padded_rows as u64);
@@ -37561,6 +37575,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_fri_u64(challenger, profile.column_set as u64);
         Self::observe_terminal_fri_u64(challenger, profile.rows as u64);
@@ -37594,6 +37609,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, profile);
     }
@@ -37618,6 +37634,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, io_profile);
         Self::observe_terminal_npo_tip5_lookup_io_zero_quotient_profile(
@@ -37647,6 +37664,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, lookup_io_profile);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, npo_io_profile);
@@ -37677,6 +37695,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, lookup_io_profile);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, npo_io_profile);
@@ -37706,6 +37725,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_profile);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, io_profile);
@@ -37733,6 +37753,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_profile);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, lookup_io_profile);
@@ -37764,6 +37785,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, selected_profile);
         Self::observe_terminal_npo_tip5_lookup_npo_rows_io_profile(challenger, lookup_io_profile);
@@ -37795,6 +37817,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, selected_profile);
         Self::observe_terminal_npo_tip5_lookup_npo_rows_io_profile(challenger, lookup_io_profile);
@@ -37837,6 +37860,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_profile);
         Self::observe_terminal_npo_tip5_lookup_air_algebra_quotient_profile(
@@ -37865,6 +37889,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_packed_lookup_trace_profile(challenger, trace_profile);
         Self::observe_terminal_npo_tip5_packed_lookup_air_algebra_quotient_profile(
@@ -37894,6 +37919,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_packed_lookup_trace_profile(challenger, trace_profile);
         Self::observe_terminal_npo_tip5_packed_lookup_npo_io_profile(
@@ -37931,6 +37957,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, selected_profile);
         Self::observe_terminal_npo_tip5_lookup_npo_rows_io_profile(challenger, lookup_io_profile);
@@ -37981,6 +38008,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, selected_profile);
         Self::observe_terminal_npo_tip5_lookup_npo_rows_io_profile(challenger, lookup_io_profile);
@@ -38038,6 +38066,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, selected_profile);
         Self::observe_terminal_npo_tip5_lookup_npo_rows_io_profile(challenger, lookup_io_profile);
@@ -38108,6 +38137,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, selected_profile);
         Self::observe_terminal_npo_tip5_lookup_npo_rows_io_profile(challenger, lookup_io_profile);
@@ -38163,6 +38193,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_packed_lookup_trace_profile(challenger, trace_profile);
         Self::observe_terminal_npo_tip5_packed_lookup_logup_table_profile(
@@ -38195,6 +38226,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_profile);
     }
@@ -38220,6 +38252,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_profile);
         Self::observe_terminal_npo_tip5_lookup_logup_accumulator_profile(
@@ -38251,6 +38284,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_profile);
         Self::observe_terminal_npo_tip5_lookup_air_algebra_quotient_profile(
@@ -38292,6 +38326,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_profile);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, lookup_io_profile);
@@ -38347,6 +38382,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_profile);
         Self::observe_terminal_npo_tip5_lookup_fri_profile(challenger, trace_npo_io_profile);
@@ -38406,6 +38442,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_tip5_lookup_npo_rows_io_profile(challenger, lookup_io_profile);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, value_profile);
@@ -38813,6 +38850,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, value_profile);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, quotient_profile);
@@ -38838,6 +38876,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, selected_profile);
         Self::observe_terminal_compact_composition_fri_profile(challenger, composition_profile);
@@ -38863,6 +38902,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, selected_profile);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, quotient_profile);
@@ -38889,6 +38929,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, selected_profile);
         Self::observe_terminal_compact_composition_fri_profile(challenger, composition_profile);
@@ -38920,6 +38961,7 @@ impl NativeTerminalCompiler {
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.log_blowup as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.num_queries as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.parameters.query_pow_bits as u64);
+        Self::observe_terminal_fri_u64(challenger, prelude.parameters.merkle_cap_height as u64);
         Self::observe_terminal_fri_u64(challenger, prelude.query_pow_nonce);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, selected_profile);
         Self::observe_terminal_npo_polynomial_fri_profile(challenger, value_profile);
@@ -44938,6 +44980,7 @@ impl NativeTerminalCompiler {
         sponge.absorb_u64(parameters.log_blowup as u64);
         sponge.absorb_u64(parameters.num_queries as u64);
         sponge.absorb_u64(parameters.query_pow_bits as u64);
+        sponge.absorb_u64(parameters.merkle_cap_height as u64);
         sponge.absorb_u64(parameters.johnson_bits() as u64);
     }
 
@@ -44971,6 +45014,7 @@ impl NativeTerminalCompiler {
         sponge.absorb_u64(profile.log_blowup as u64);
         sponge.absorb_u64(profile.num_queries as u64);
         sponge.absorb_u64(profile.query_pow_bits as u64);
+        sponge.absorb_u64(profile.merkle_cap_height as u64);
         sponge.absorb_u64(profile.max_log_arity as u64);
         sponge.absorb_u64(profile.log_final_poly_len as u64);
         sponge.absorb_u64(profile.pure_query_bits as u64);
@@ -53944,6 +53988,7 @@ mod tests {
             log_blowup: 5,
             num_queries: 12,
             query_pow_bits: 0,
+            merkle_cap_height: TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT,
         };
         proof.prelude.parameters = noncanonical_sixty_bits;
         proof.prelude.challenge_digest = NativeTerminalCompiler::transcript_challenge_digest(
@@ -54693,6 +54738,10 @@ mod tests {
         assert_eq!(prelude.parameters.num_queries, 15);
         assert_eq!(prelude.parameters.query_pow_bits, 0);
         assert_eq!(
+            prelude.parameters.merkle_cap_height,
+            TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT
+        );
+        assert_eq!(
             prelude.relation_profile.proximity,
             TerminalProximityProfile::production_60bit()
         );
@@ -54732,6 +54781,19 @@ mod tests {
         tampered_proximity.relation_profile.proximity.num_queries += 1;
         let err = compiler
             .verify_proof_prelude_goldilocks(&vk, &public_inputs, &tampered_proximity)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeTerminalVerifyError::TerminalPreludeProfileMismatch { .. }
+        ));
+
+        let mut tampered_cap_height = prelude.clone();
+        tampered_cap_height
+            .relation_profile
+            .proximity
+            .merkle_cap_height += 1;
+        let err = compiler
+            .verify_proof_prelude_goldilocks(&vk, &public_inputs, &tampered_cap_height)
             .unwrap_err();
         assert!(matches!(
             err,
@@ -54793,6 +54855,7 @@ mod tests {
             log_blowup: 4,
             num_queries: 15,
             query_pow_bits: 0,
+            merkle_cap_height: TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT,
         };
         let err = compiler
             .build_proof_prelude_goldilocks(&vk, &public_inputs, weak_params, vec![commitment])
@@ -54810,6 +54873,7 @@ mod tests {
             log_blowup: 4,
             num_queries: 16,
             query_pow_bits: 0,
+            merkle_cap_height: TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT,
         };
         let err = compiler
             .build_proof_prelude_goldilocks(
@@ -54832,6 +54896,7 @@ mod tests {
             log_blowup: 4,
             num_queries: 14,
             query_pow_bits: 0,
+            merkle_cap_height: TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT,
         };
         let err = compiler
             .build_proof_prelude_goldilocks(
@@ -54854,6 +54919,7 @@ mod tests {
             log_blowup: 4,
             num_queries: 12,
             query_pow_bits: 0,
+            merkle_cap_height: TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT,
         };
         let err = compiler
             .build_proof_prelude_goldilocks(
@@ -54876,6 +54942,7 @@ mod tests {
             log_blowup: 4,
             num_queries: 16,
             query_pow_bits: 0,
+            merkle_cap_height: TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT,
         };
         let err = compiler
             .build_proof_prelude_goldilocks(
@@ -54898,6 +54965,7 @@ mod tests {
             log_blowup: 4,
             num_queries: 12,
             query_pow_bits: 12,
+            merkle_cap_height: TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT,
         };
         let err = compiler
             .build_proof_prelude_goldilocks(&vk, &public_inputs, pow_only_params, vec![commitment])
@@ -54912,6 +54980,7 @@ mod tests {
             log_blowup: 4,
             num_queries: 15,
             query_pow_bits: 12,
+            merkle_cap_height: TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT,
         };
         let err = compiler
             .build_proof_prelude_goldilocks(&vk, &public_inputs, pow_params, vec![commitment])
@@ -54926,6 +54995,7 @@ mod tests {
             log_blowup: 4,
             num_queries: 15,
             query_pow_bits: 0,
+            merkle_cap_height: TERMINAL_PRODUCTION_MERKLE_CAP_HEIGHT,
         };
         let mut noncanonical_zero_pow = compiler
             .build_proof_prelude_goldilocks(&vk, &public_inputs, zero_pow_params, vec![commitment])

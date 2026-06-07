@@ -9,25 +9,23 @@ an opt-in diagnostic but has not yet met the release-time gate. The plain
 `MatmulProof` remains a miner diagnostic / pre-ZKP target-hit check; it is not
 the persisted block artifact.
 
-> **Important - current production-proof direction:** before changing the
-> recursive proof path, proof shape, FRI parameters, certificate wire format, or
-> packed Tip5/NPO bridge code, read the live checkpoint summary:
+> **IMPORTANT - current production recursive-proof summary:** before changing
+> the recursive proof path, proof shape, FRI parameters, terminal commitment
+> shape, certificate wire format, or packed Tip5/NPO bridge code, read the live
+> checkpoint summary:
 > [Important Current Production-Proof Summary](../../docs/ai-pow-integration/2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md#important-current-production-proof-summary).
-> The active route remains native terminal plus fused FRI-native NPO work, but
-> even the compact-trace coalesced shared packed-trace AIR+LogUp/bridge theorem
-> is still too large at `198,287` bytes and `33.277s` proof time. A measured
-> merged-value plus packed-support optimistic single-FRI floor is still
-> `252,753` bytes, so the next step is a relation-level leaner packed Tip5
-> binding with much less FRI leaf payload folded into the merged value-bridge
-> theorem. A paired 16-bit Tip5 lookup / two-domain LogUp payload estimate is
-> now measured and is useful but insufficient by itself: the optimistic floor
-> would still be `222,759` bytes before new table-domain overhead. The next
-> viable route must account for the tighter structural floor: the already-sound
-> merged base is `146,032` bytes, leaving only `7,568` bytes under binary
-> `150 KiB` for all remaining Tip5 support binding unless the base also
-> shrinks. The batch-STARK recursive certificate remains a sound
-> checkpoint/fallback, not the production wire target, and the relaxed
-> production milestone is not yet claimed.
+> The active production route remains the native terminal certificate, not the
+> batch-STARK recursive certificate. The immediate lever to measure is
+> soundness-neutral terminal Merkle cap-height/base reduction, with the cap
+> height bound into terminal parameters/profile/transcript before challenge
+> sampling; release/native size and time measurement is still pending. If that
+> does not create enough headroom, the next viable route is a genuinely merged
+> packed Tip5 binding with much less additive FRI/Merkle/metadata payload. The
+> current structural floor is tight: the already-sound merged base is `146,032`
+> bytes, leaving only `7,568` bytes under binary `150 KiB` for all remaining
+> Tip5 support binding unless the base also shrinks. The batch-STARK recursive
+> certificate remains a sound checkpoint/fallback, not the production wire
+> target, and the relaxed production milestone is not yet claimed.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 
