@@ -3316,6 +3316,7 @@ mod tests {
     #[test]
     #[ignore = "selected fast-L1 compact L2 candidate timing breakdown is opt-in"]
     fn pure_query_l2_over_fast_l1_selected_candidate_timing_breakdown_for_test_pearl() {
+        init_batch_stark_profile_tracing_for_test_pearl();
         run_pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl(
             "lb3_nq20_cap4",
             3,
@@ -3324,6 +3325,28 @@ mod tests {
             2,
             &[("lb5_nq12_lfp2_mla3_cap4", 5, 12, 2, 3, 4)],
         );
+    }
+
+    fn init_batch_stark_profile_tracing_for_test_pearl() {
+        use tracing_subscriber::fmt::format::FmtSpan;
+        use tracing_subscriber::EnvFilter;
+
+        let filter = EnvFilter::from_default_env()
+            .add_directive(
+                "p3_batch_stark=info"
+                    .parse()
+                    .expect("valid tracing directive"),
+            )
+            .add_directive(
+                "p3_circuit_prover::batch_stark_prover=info"
+                    .parse()
+                    .expect("valid tracing directive"),
+            );
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_span_events(FmtSpan::CLOSE)
+            .with_test_writer()
+            .try_init();
     }
 
     #[test]

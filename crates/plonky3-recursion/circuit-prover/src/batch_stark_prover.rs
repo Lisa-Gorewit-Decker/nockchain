@@ -1571,6 +1571,116 @@ where
     }
 }
 
+fn lookup_shapes_eq<F: Field>(left: &Lookups<F>, right: &Lookups<F>) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right.iter()).all(|(left, right)| {
+            left.kind == right.kind
+                && left.column == right.column
+                && left.elements.len() == right.elements.len()
+                && left.multiplicities.len() == right.multiplicities.len()
+                && left
+                    .elements
+                    .iter()
+                    .zip(&right.elements)
+                    .all(|(left, right)| left.len() == right.len())
+        })
+}
+
+fn cached_preprocessed_metadata_matches_runtime_shape<SC, const D: usize>(
+    common: &CommonData<SC>,
+    airs: &[CircuitTableAir<SC, D>],
+    trace_ext_degree_bits: &[usize],
+    is_zk: usize,
+) -> bool
+where
+    SC: StarkGenericConfig,
+{
+    if airs.len() != trace_ext_degree_bits.len() {
+        return false;
+    }
+
+    let mut expected_instances = Vec::with_capacity(airs.len());
+    let mut expected_matrix_to_instance = Vec::new();
+    for (i, (air, &ext_db)) in airs.iter().zip(trace_ext_degree_bits).enumerate() {
+        let Some(base_db) = ext_db.checked_sub(is_zk) else {
+            return false;
+        };
+        let Some(preprocessed) = air.preprocessed_trace() else {
+            expected_instances.push(None);
+            continue;
+        };
+        let width = preprocessed.width();
+        if width == 0 {
+            expected_instances.push(None);
+            continue;
+        }
+        if preprocessed.height() != (1usize << base_db) {
+            return false;
+        }
+        let matrix_index = expected_matrix_to_instance.len();
+        expected_matrix_to_instance.push(i);
+        expected_instances.push(Some((matrix_index, width, ext_db)));
+    }
+
+    match &common.preprocessed {
+        None => expected_matrix_to_instance.is_empty(),
+        Some(cached) => {
+            cached.matrix_to_instance == expected_matrix_to_instance
+                && cached.instances.len() == expected_instances.len()
+                && cached
+                    .instances
+                    .iter()
+                    .zip(expected_instances)
+                    .all(|(cached, expected)| match (cached, expected) {
+                        (None, None) => true,
+                        (Some(cached), Some((matrix_index, width, degree_bits))) => {
+                            cached.matrix_index == matrix_index
+                                && cached.width == width
+                                && cached.degree_bits == degree_bits
+                        }
+                        _ => false,
+                    })
+        }
+    }
+}
+
+fn cached_prover_data_matches_runtime_shape<SC, const D: usize>(
+    cached: &ProverData<SC>,
+    airs: &[CircuitTableAir<SC, D>],
+    trace_ext_degree_bits: &[usize],
+    is_zk: usize,
+) -> bool
+where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    // This is a prover-side cache compatibility guard, not a verifier
+    // soundness check. Verification still rebuilds AIRs/lookups from proof
+    // metadata and binds preprocessed commitments through `CommonData`.
+    if !cached_preprocessed_metadata_matches_runtime_shape(
+        &cached.common,
+        airs,
+        trace_ext_degree_bits,
+        is_zk,
+    ) {
+        return false;
+    }
+    if cached.common.preprocessed.is_some()
+        != cached.prover_only.preprocessed_prover_data.is_some()
+    {
+        return false;
+    }
+    if cached.common.lookups.len() != airs.len() {
+        return false;
+    }
+    cached.common.lookups.iter().zip(airs).all(|(cached, air)| {
+        let expected = lookups_for_circuit_table_air::<SC, D>(air);
+        lookup_shapes_eq(cached, &expected)
+    })
+}
+
 /// Const-generic dispatch for [`BatchStarkProver::register_poseidon2_table`]: only the chosen
 /// extension degree's `BinomiallyExtendable` bound is required on `Val<SC>`.
 #[doc(hidden)]
@@ -2250,11 +2360,22 @@ where
             .iter()
             .map(strip_public_binding_for_lookup_metadata)
             .collect();
-        let effective_prover_data = ProverData::from_airs_and_degrees(
-            &self.config,
+        let rebuilt_prover_data;
+        let effective_prover_data = if cached_prover_data_matches_runtime_shape::<SC, D>(
+            &circuit_prover_data.prover_data,
             &lookup_metadata_airs,
             &trace_ext_degree_bits,
-        );
+            self.config.is_zk(),
+        ) {
+            &circuit_prover_data.prover_data
+        } else {
+            rebuilt_prover_data = ProverData::from_airs_and_degrees(
+                &self.config,
+                &lookup_metadata_airs,
+                &trace_ext_degree_bits,
+            );
+            &rebuilt_prover_data
+        };
 
         let proof = {
             let trace_refs: Vec<&RowMajorMatrix<Val<SC>>> = trace_storage.iter().collect();
