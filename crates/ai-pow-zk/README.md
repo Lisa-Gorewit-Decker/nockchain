@@ -64,12 +64,14 @@ artifact.
 > This route is now promoted inside `ai-pow-zk` as a typed
 > `AiPowCompactBatchRecursiveCertificate` plus verifier-owned
 > `AiPowCompactBatchVerifierContext`. The current encoded certificate carries
-> only the final L2 compact body. A release/native round trip measured
-> `142,225` bytes, `19.190s` L1 outer proving, `9.347s` L2 prep,
-> `28.968s` L2 proving, `41ms` compact verification, and `57.691s` uncached
-> proof wall; decoded verification passes and wrong public inputs reject. The
-> bridge, miner noun, Hoon wire path, and verifier-key/setup digest pinning are
-> still not wired to this compact certificate.
+> a Tip5 verifier-key/setup digest plus the final L2 compact body. A
+> release/native round trip measured `142,274` bytes, `19.223s` L1 outer
+> proving, `9.440s` L2 prep, `29.743s` L2 proving, `37ms` compact
+> verification, and `58.603s` uncached proof wall; decoded verification passes,
+> wrong public inputs reject, wrong certificate digest rejects, and stale
+> context digest rejects. The bridge, miner noun, Hoon wire path, and
+> production-pinned expected digest are still not wired to this compact
+> certificate.
 > A prior deeper PCS profile showed cached L2 dominated by main/permutation
 > trace Merkle commitments (`13.3s` + `12.9s`), so the next production lever is
 > reducing committed recursive-verifier matrix volume, especially Tip5/MMCS

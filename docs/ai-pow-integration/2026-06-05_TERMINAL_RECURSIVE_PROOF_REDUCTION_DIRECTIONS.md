@@ -241,11 +241,14 @@ Done and verified:
   `AiPowCompactBatchVerifierContext`,
   `prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof`,
   and encode/decode/context-verifier helpers. The promoted crate-level
-  round-trip measures `142,225` encoded certificate bytes, `19.190s` L1 outer
-  proving, `9.347s` L2 prep, `28.968s` L2 proving, `41ms` compact verification,
-  and `57.691s` uncached proof wall; decoded verification passes and wrong
-  public inputs reject. The bridge, miner noun, Hoon wire path, and pinned
-  verifier-key/setup digest are still not wired to this compact certificate.
+  certificate carries a Tip5 verifier-key/setup digest plus the final L2 compact
+  body. The release/native round-trip measures `142,274` encoded certificate
+  bytes, `19.223s` L1 outer proving, `9.440s` L2 prep, `29.743s` L2 proving,
+  `37ms` compact verification, and `58.603s` uncached proof wall; decoded
+  verification passes, wrong public inputs reject, wrong certificate digest
+  rejects, and stale context digest rejects. The bridge, miner noun, Hoon wire
+  path, and production-pinned expected digest are still not wired to this
+  compact certificate.
 
 What remains:
 
@@ -514,7 +517,7 @@ does not replace the required packed Tip5 support-theorem redesign.
 | Soundness target | 60 pure FRI query bits per promoted layer; selected compact row uses L1 `lb=3,nq=20,pow=0` and L2 `lb=5,nq=12,pow=0` |
 | Most viable shape | Compact batch-STARK L2 with verifier-owned metadata/setup, canonical preprocessed-opening restoration, pruned paths, and explicit final public-value binding of the L1 statement digest |
 | Best measured compact batch-STARK candidate | Fast L1 `lb=3,nq=20,cap=4,pow=0` plus L2 `lb=5,nq=12,cap=4,pow=0`, with L1 `alu_lanes=4,horner_k=5`: actual compact wrapper `143,106` bytes, metadata-free body `142,225` bytes, cached L1 prove `15.029s`, cached L2 prove `28.555s`, cached serial L1+L2 `43.584s`. The baseline L1 `alu_lanes=8` row remains close at `143,762` bytes / `142,878` bytes body, cached L1 `15.305s`, cached L2 `28.726s`, cached serial `44.031s` in the focused rerun and `43.893s` in the L1-packing sweep |
-| Promoted `ai-pow-zk` API | `AiPowCompactBatchRecursiveCertificate` now carries only the final L2 compact body, with `AiPowCompactBatchVerifierContext` held by the verifier. The release/native round-trip measures `142,225` encoded certificate bytes, L1 build `135ms`, L1 outer prove `19.190s`, L2 prep `9.347s`, L2 prove `28.968s`, compact verify `41ms`, and uncached proof wall `57.691s`; decoded verification passes and wrong public inputs reject. It is not yet wired through the bridge, miner noun, Hoon wire path, or a pinned setup digest |
+| Promoted `ai-pow-zk` API | `AiPowCompactBatchRecursiveCertificate` now carries a Tip5 verifier-key/setup digest plus the final L2 compact body, with `AiPowCompactBatchVerifierContext` held by the verifier. The release/native round-trip measures `142,274` encoded certificate bytes, L1 build `126ms`, L1 outer prove `19.223s`, L2 prep `9.440s`, L2 prove `29.743s`, compact verify `37ms`, and uncached proof wall `58.603s`; decoded verification passes, wrong public inputs reject, wrong certificate digest rejects, and stale context digest rejects. It is not yet wired through the bridge, miner noun, Hoon wire path, or a production-pinned expected digest |
 | Best measured compact-L2 size reserve | The selected L2 table-packing sweep verifies the same compact body with `alu_lanes=2,horner_k=5` at `126,862` bytes actual compact wrapper and `125,979` bytes metadata-free body, but cached L2 proving rises to `30.801s`, so this is useful size margin, not the current time route |
 | Best measured L1-packing size reserve | The selected compact L2 over L1-packing sweep verifies L1 `alu_lanes=2,horner_k=5` at `141,148` bytes compact wrapper and `140,260` bytes metadata-free body, with cached serial L1+L2 `44.391s`; useful for byte headroom, not a time fix |
 | Best measured complete base | Cap-height `3` full-context merged-only structural floor at `142,807` bytes; sound for its included relations, but missing internal Tip5 binding |
@@ -1731,7 +1734,8 @@ metadata/setup pair.
 
 This checkpoint now wires that adapter as the compact recursive certificate API
 inside `ai-pow-zk`; it still does **not** wire it through the production
-bridge, miner noun, Hoon artifact path, or pinned verifier-key/setup digest.
+bridge, miner noun, Hoon artifact path, or production-pinned expected
+verifier-key/setup digest.
 It removes the prior public-binding measurement blocker and shows that the
 compact batch-STARK route is closer to the relaxed target than the native
 terminal route. Omitting any additional value without transcript replay and

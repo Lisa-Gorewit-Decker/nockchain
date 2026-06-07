@@ -48,6 +48,13 @@ use crate::{AiPowStarkConfig, CompositeFullAirWithLookupsPinned, Val};
 type AiPowL1OuterProof =
     p3_circuit_prover::BatchStarkProof<p3_circuit_prover::config::GoldilocksTipsConfig>;
 
+/// Tip5 digest identifying the verifier-owned compact batch recursive setup.
+///
+/// This is carried by the compact certificate only as a route/setup selector.
+/// The verifier recomputes it from trusted metadata and setup-derived FRI
+/// shape before accepting the compact body.
+pub type AiPowCompactBatchVerifierKeyDigest = [Val; DIGEST_ELEMS];
+
 /// Native terminal recursive proof artifact for the AI-PoW L1 verifier
 /// circuit.
 ///
@@ -145,20 +152,30 @@ impl AiPowRecursiveCertificate {
 /// Compact final-layer batch-STARK recursive proof candidate for AI-PoW.
 ///
 /// This is the production-candidate wire body for the committed compact L2
-/// route. It deliberately carries only the final L2 compact proof body. The
-/// verifier must provide a verifier-owned [`AiPowCompactBatchVerifierContext`]
-/// for the canonical setup, metadata, FRI shape, and public-value binding.
-/// Accepting those values from the prover would make this object unsound.
+/// route. It carries a small verifier-key/setup digest plus the final L2
+/// compact proof body. The verifier must provide a verifier-owned
+/// [`AiPowCompactBatchVerifierContext`] for the canonical setup, metadata, FRI
+/// shape, and public-value binding. Accepting those values from the prover
+/// would make this object unsound.
 #[derive(Serialize, Deserialize)]
 pub struct AiPowCompactBatchRecursiveCertificate {
+    verifier_key_digest: AiPowCompactBatchVerifierKeyDigest,
     l2_compact_body: p3_circuit_prover::GoldilocksTip5PathPrunedCompactBatchStarkProofBody,
 }
 
 impl AiPowCompactBatchRecursiveCertificate {
     fn new(
+        verifier_key_digest: AiPowCompactBatchVerifierKeyDigest,
         l2_compact_body: p3_circuit_prover::GoldilocksTip5PathPrunedCompactBatchStarkProofBody,
     ) -> Self {
-        Self { l2_compact_body }
+        Self {
+            verifier_key_digest,
+            l2_compact_body,
+        }
+    }
+
+    pub const fn verifier_key_digest(&self) -> &AiPowCompactBatchVerifierKeyDigest {
+        &self.verifier_key_digest
     }
 
     pub fn l2_compact_body(
@@ -175,10 +192,17 @@ impl AiPowCompactBatchRecursiveCertificate {
 /// The compact certificate verifier treats all fields here as verifier-owned
 /// and binds statement-specific public values separately.
 pub struct AiPowCompactBatchVerifierContext {
+    verifier_key_digest: AiPowCompactBatchVerifierKeyDigest,
     metadata: p3_circuit_prover::GoldilocksTip5BatchStarkProofMetadata,
     circuit_prover_data:
         p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksTipsConfig>,
     fri_shape: p3_circuit_prover::GoldilocksTip5FriShape,
+}
+
+impl AiPowCompactBatchVerifierContext {
+    pub const fn verifier_key_digest(&self) -> &AiPowCompactBatchVerifierKeyDigest {
+        &self.verifier_key_digest
+    }
 }
 
 /// Tip5 digest width (`DIGEST_ELEMS`), sponge `WIDTH`, sponge `RATE` —
@@ -262,6 +286,50 @@ fn compact_batch_l2_fri_shape() -> p3_circuit_prover::GoldilocksTip5FriShape {
             p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
         cap_height: COMPACT_BATCH_L2_CAP_HEIGHT,
     }
+}
+
+fn append_len_prefixed_bytes_as_fields(out: &mut Vec<Val>, bytes: &[u8]) {
+    out.push(Val::from_u64(bytes.len() as u64));
+    for chunk in bytes.chunks(7) {
+        let mut limb = 0u64;
+        for (shift, byte) in chunk.iter().enumerate() {
+            limb |= u64::from(*byte) << (8 * shift);
+        }
+        out.push(Val::from_u64(limb));
+    }
+}
+
+fn compact_batch_verifier_key_digest_from_parts(
+    metadata: &p3_circuit_prover::GoldilocksTip5BatchStarkProofMetadata,
+    fri_shape: p3_circuit_prover::GoldilocksTip5FriShape,
+) -> Result<AiPowCompactBatchVerifierKeyDigest, postcard::Error> {
+    let route_params = (
+        COMPACT_BATCH_L1_LOG_BLOWUP, COMPACT_BATCH_L1_NUM_QUERIES, COMPACT_BATCH_L1_CAP_HEIGHT,
+        COMPACT_BATCH_L1_LOG_FINAL_POLY_LEN, COMPACT_BATCH_L1_ALU_LANES,
+        COMPACT_BATCH_L1_HORNER_PACK_K, COMPACT_BATCH_L2_LOG_BLOWUP, COMPACT_BATCH_L2_NUM_QUERIES,
+        COMPACT_BATCH_L2_CAP_HEIGHT, COMPACT_BATCH_L2_LOG_FINAL_POLY_LEN,
+        COMPACT_BATCH_L2_MAX_LOG_ARITY, COMPACT_BATCH_L2_ALU_LANES, COMPACT_BATCH_L2_HORNER_PACK_K,
+    );
+    let route_params = postcard::to_allocvec(&route_params)?;
+    let metadata = postcard::to_allocvec(metadata)?;
+    let fri_shape = postcard::to_allocvec(&fri_shape)?;
+
+    let mut inputs = Vec::new();
+    append_len_prefixed_bytes_as_fields(&mut inputs, b"ai-pow-compact-batch-vk-v1");
+    append_len_prefixed_bytes_as_fields(&mut inputs, &route_params);
+    append_len_prefixed_bytes_as_fields(&mut inputs, &metadata);
+    append_len_prefixed_bytes_as_fields(&mut inputs, &fri_shape);
+
+    let mut state = [Val::ZERO; WIDTH];
+    for chunk in inputs.chunks(RATE) {
+        for (i, slot) in state.iter_mut().take(RATE).enumerate() {
+            *slot = chunk.get(i).copied().unwrap_or(Val::ZERO);
+        }
+        state = RecTip5Perm.permute(state);
+    }
+    Ok(state[..DIGEST_ELEMS]
+        .try_into()
+        .expect("digest slice width is fixed"))
 }
 
 #[cfg(test)]
@@ -1052,7 +1120,8 @@ pub struct L1CertificateRun {
 ///
 /// The certificate is the only wire candidate. The verifier context is returned
 /// here for tests and local verification; production must derive or pin an
-/// equivalent context out of band instead of accepting it from a miner.
+/// equivalent context out of band instead of accepting it from a miner. The
+/// certificate carries only a digest of that verifier-owned context.
 pub struct CompactBatchCertificateRun {
     pub l1_circuit_build_ms: u128,
     pub l1_outer_cert_ms: u128,
@@ -1541,6 +1610,12 @@ pub fn prove_compact_batch_recursive_certificate_from_chain_verified_composite_p
     let l2_metadata =
         p3_circuit_prover::GoldilocksTip5BatchStarkProofMetadata::from_proof(&l2_proof);
     let l2_fri_shape = compact_batch_l2_fri_shape();
+    let verifier_key_digest =
+        compact_batch_verifier_key_digest_from_parts(&l2_metadata, l2_fri_shape).map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "compact batch verifier-key digest construction failed: {e:?}"
+            ))
+        })?;
     let CompactBatchL2Prep {
         circuit_prover_data,
         prover,
@@ -1558,8 +1633,10 @@ pub fn prove_compact_batch_recursive_certificate_from_chain_verified_composite_p
         })?;
     let l2_compact_ms = t.elapsed().as_millis();
 
-    let compact_cert = AiPowCompactBatchRecursiveCertificate::new(l2_compact.into_body());
+    let compact_cert =
+        AiPowCompactBatchRecursiveCertificate::new(verifier_key_digest, l2_compact.into_body());
     let verifier_context = AiPowCompactBatchVerifierContext {
+        verifier_key_digest,
         metadata: l2_metadata,
         circuit_prover_data,
         fri_shape: l2_fri_shape,
@@ -1604,6 +1681,26 @@ pub fn verify_compact_batch_recursive_certificate_with_context(
     cert: AiPowCompactBatchRecursiveCertificate,
     public_inputs: &crate::composite_public::CompositePublicInputs,
 ) -> Result<(), VerificationError> {
+    let expected_digest =
+        compact_batch_verifier_key_digest_from_parts(&context.metadata, context.fri_shape)
+            .map_err(|e| {
+                VerificationError::InvalidProofShape(format!(
+                    "compact batch verifier-key digest reconstruction failed: {e:?}"
+                ))
+            })?;
+    if context.verifier_key_digest != expected_digest {
+        return Err(VerificationError::InvalidProofShape(
+            "compact batch verifier context digest does not match its metadata/FRI shape"
+                .to_string(),
+        ));
+    }
+    if cert.verifier_key_digest != expected_digest {
+        return Err(VerificationError::InvalidProofShape(
+            "compact batch certificate verifier-key digest does not match verifier context"
+                .to_string(),
+        ));
+    }
+
     let expected_l2_packing = compact_batch_l2_table_packing(context.metadata.public_binding_lanes);
     if context.metadata.table_packing != expected_l2_packing {
         return Err(VerificationError::InvalidProofShape(format!(
@@ -4803,6 +4900,24 @@ mod tests {
             &run.verifier_context, wrong_decoded, &wrong_pis,
         )
         .expect_err("compact batch recursive certificate must reject wrong public inputs");
+
+        let mut wrong_digest_cert = decode_compact_batch_recursive_certificate(&bytes)
+            .expect("decode compact batch recursive certificate for digest test");
+        wrong_digest_cert.verifier_key_digest[0] =
+            wrong_digest_cert.verifier_key_digest[0] + Val::ONE;
+        verify_compact_batch_recursive_certificate_with_context(
+            &run.verifier_context, wrong_digest_cert, &pis,
+        )
+        .expect_err("compact batch recursive certificate must reject wrong verifier-key digest");
+
+        let mut wrong_context = run.verifier_context;
+        wrong_context.verifier_key_digest[0] = wrong_context.verifier_key_digest[0] + Val::ONE;
+        let decoded_for_wrong_context = decode_compact_batch_recursive_certificate(&bytes)
+            .expect("decode compact batch recursive certificate for context digest test");
+        verify_compact_batch_recursive_certificate_with_context(
+            &wrong_context, decoded_for_wrong_context, &pis,
+        )
+        .expect_err("compact batch recursive verifier must reject stale context digest");
 
         eprintln!(
             "compact batch recursive certificate route [TEST_PEARL]: cert={} bytes l1_build_ms={} l1_outer_ms={} l2_prep_ms={} l2_prove_ms={} l2_compact_ms={} l2_compact_verify_ms={} prove_wall_ms={}",
