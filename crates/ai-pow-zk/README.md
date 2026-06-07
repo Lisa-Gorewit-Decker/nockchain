@@ -1,21 +1,26 @@
 # `ai-pow-zk`
 
 EXPERIMENTAL — a Plonky3 STARK and recursive-certificate stack for the
-[`ai-pow`](../ai-pow/) tiling matmul puzzle. The native terminal backend is the
-intended production recursive proof target. The batch-STARK recursion path in
-this crate is a hardened checkpoint/fallback path and is too large for the
-production wire budget. The full composite-verifier terminal path is wired as
-an opt-in diagnostic but has not yet met the release-time gate. The plain
-`MatmulProof` remains a miner diagnostic / pre-ZKP target-hit check; it is not
-the persisted block artifact.
+[`ai-pow`](../ai-pow/) tiling matmul puzzle. The production recursive proof
+target is not yet met. The current candidates are the native terminal
+certificate and a compact final-layer batch-STARK route with verifier-owned
+metadata/setup binding. The existing full batch-STARK checkpoint envelope is
+too large for the production wire budget, but batch-STARK is no longer ruled
+out if the compact route proves better and meets the relaxed gates. The full
+composite-verifier terminal path is wired as an opt-in diagnostic but has not
+yet met the release-time gate. The plain `MatmulProof` remains a miner
+diagnostic / pre-ZKP target-hit check; it is not the persisted block artifact.
 
 > **IMPORTANT - current production recursive-proof summary:** before changing
 > the recursive proof path, proof shape, FRI parameters, terminal commitment
 > shape, certificate wire format, or packed Tip5/NPO bridge code, read the live
 > checkpoint summary:
 > [Clean Checkpoint](../../docs/ai-pow-integration/2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md#clean-checkpoint).
-> The active production route remains the native terminal certificate, not the
-> batch-STARK recursive certificate. Soundness-neutral terminal Merkle
+> The active production artifact is still unsettled: native terminal remains
+> the leading fallback, while compact batch-STARK L2 is now an allowed
+> production candidate if it beats the terminal route under the same soundness
+> and binding rules. The large batch-STARK recursive checkpoint certificate
+> remains too large. Soundness-neutral terminal Merkle
 > cap-height/base reduction is now implemented and measured: the retained
 > production cap height is `3`, bound into terminal parameters/profile/transcript
 > before challenge sampling, and full FRI caps are digested into the prelude
@@ -29,9 +34,12 @@ the persisted block artifact.
 > FRI/Merkle/metadata payload. Outer task parallelism is measured but not
 > sufficient: Rayon-joining the current primitive R1CS, merged value-bridge, and
 > packed-support subproofs gives `39.448s` post-prelude wall time, unchanged
-> proof language, and `171.422s` full diagnostic wall. The batch-STARK recursive
-> certificate remains a sound checkpoint/fallback, not the production wire
-> target, and the relaxed production milestone is not yet claimed.
+> proof language, and `171.422s` full diagnostic wall. The compact batch-STARK
+> L2 candidate now exposes the statement digest as final proof public values
+> and verifies compact bodies through caller-supplied public values plus
+> verifier-owned metadata/setup; it still needs release/native remeasurement
+> after that binding correction. The relaxed production milestone is not yet
+> claimed.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 
@@ -501,9 +509,11 @@ anchor merge-mining compat.
 `ai-pow` bridge constructs a `CompositeTrace` and `CompositePublicInputs` from
 verifier-derived attempt data, proves the Layer-0 composite STARK, and can wrap
 that proof with the batch-STARK recursive checkpoint certificate. The
-production recursive proof target is the native terminal certificate; the
-batch-STARK noun path is retained for soundness regression and fallback
-validation.
+production recursive proof target is currently unsettled between native
+terminal reduction and compact batch-STARK L2. The large batch-STARK checkpoint
+noun path is retained for soundness regression and fallback validation, while
+the compact batch-STARK candidate must use verifier-owned setup metadata and
+explicit public-value binding before it can be considered for production.
 
 The `composite_prove` / `composite_verify` APIs are Layer-0 primitives. They
 are useful for circuit tests and for the recursive-certificate builder, but the

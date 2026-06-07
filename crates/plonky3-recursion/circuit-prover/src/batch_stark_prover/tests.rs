@@ -8,7 +8,7 @@ use p3_circuit::ops::{
     KoalaBearD1Width16, Poseidon1Config, Poseidon2Config, generate_poseidon1_trace,
     generate_poseidon2_trace, generate_recompose_trace,
 };
-use p3_field::PrimeCharacteristicRing;
+use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_field::extension::QuinticTrinomialExtensionField;
 use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon1_16, default_koalabear_poseidon2_16};
@@ -88,6 +88,21 @@ fn prove_goldilocks_tip5_ext2_public_plus_const(
     CircuitProverData<GoldilocksTipsConfig>,
     GoldilocksTip5FriShape,
 ) {
+    let (prover, proof, circuit_prover_data, fri_shape, _) =
+        prove_goldilocks_tip5_ext2_public_plus_const_with_public_binding(extra_addend, 0);
+    (prover, proof, circuit_prover_data, fri_shape)
+}
+
+fn prove_goldilocks_tip5_ext2_public_plus_const_with_public_binding(
+    extra_addend: Option<u64>,
+    public_binding_lanes: usize,
+) -> (
+    BatchStarkProver<GoldilocksTipsConfig>,
+    BatchStarkProof<GoldilocksTipsConfig>,
+    CircuitProverData<GoldilocksTipsConfig>,
+    GoldilocksTip5FriShape,
+    Vec<Goldilocks>,
+) {
     const D: usize = 2;
     type Ext2 = BinomialExtensionField<Goldilocks, D>;
 
@@ -99,8 +114,9 @@ fn prove_goldilocks_tip5_ext2_public_plus_const(
         fri_shape.max_log_arity,
         fri_shape.cap_height,
     );
-    let table_packing =
-        TablePacking::default().with_fri_params(fri_shape.log_final_poly_len, fri_shape.log_blowup);
+    let table_packing = TablePacking::default()
+        .with_public_binding_lanes(public_binding_lanes)
+        .with_fri_params(fri_shape.log_final_poly_len, fri_shape.log_blowup);
 
     let mut builder = CircuitBuilder::<Ext2>::new();
     let x = builder.public_input();
@@ -150,14 +166,22 @@ fn prove_goldilocks_tip5_ext2_public_plus_const(
     runner
         .set_public_inputs(&[x_value, expected_value])
         .unwrap();
+    let public_values = [x_value, expected_value]
+        .iter()
+        .take(public_binding_lanes)
+        .flat_map(<Ext2 as BasedVectorSpace<Goldilocks>>::as_basis_coefficients_slice)
+        .copied()
+        .collect::<Vec<_>>();
     let traces = runner.run().unwrap();
 
     let prover = BatchStarkProver::new(cfg).with_table_packing(table_packing);
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
-    prover.verify_all_tables(&proof).unwrap();
-    (prover, proof, circuit_prover_data, fri_shape)
+    prover
+        .verify_all_tables_with_public_values(&proof, &public_values)
+        .unwrap();
+    (prover, proof, circuit_prover_data, fri_shape, public_values)
 }
 
 #[test]
@@ -1503,6 +1527,33 @@ fn test_goldilocks_tip5_path_pruned_compact_body_rejects_wrong_metadata() {
             &wrong_setup,
         )
         .expect_err("compact body must not verify under a different canonical metadata template");
+}
+
+#[test]
+fn test_goldilocks_tip5_path_pruned_compact_body_rejects_wrong_public_values() {
+    let (prover, proof, circuit_prover_data, fri_shape, public_values) =
+        prove_goldilocks_tip5_ext2_public_plus_const_with_public_binding(None, 1);
+    let metadata = GoldilocksTip5BatchStarkProofMetadata::from_proof(&proof);
+
+    let compact_body = prover
+        .compact_goldilocks_tip5_path_pruned_preprocessed_body_with_public_values(
+            proof,
+            &public_values,
+            &circuit_prover_data,
+            fri_shape,
+        )
+        .expect("path-prune compact Goldilocks/Tip5 proof body");
+
+    let mut wrong_public_values = public_values.clone();
+    wrong_public_values[0] += Goldilocks::ONE;
+    prover
+        .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_public_values(
+            compact_body,
+            &wrong_public_values,
+            &metadata,
+            &circuit_prover_data,
+        )
+        .expect_err("compact body must bind caller-supplied public values");
 }
 
 #[test]

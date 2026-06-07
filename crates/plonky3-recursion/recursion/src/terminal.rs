@@ -934,15 +934,15 @@ impl TerminalNpoIntegratedLogupProverData {
     }
 }
 
-/// Production proof-body for the terminal relation.
+/// Current native terminal production proof-body for the terminal relation.
 ///
 /// This proof binds an assignment oracle for primitive sparse-R1CS sumcheck and,
-/// for keys with supported NPO rows, an exhaustive row proof opening every
-/// supported Tip5/recompose NPO callsite against the same assignment oracle.
-/// The polynomial/proximity NPO backend remains a diagnostic and hardening
-/// track, but the measured production wire path uses exhaustive NPO checking
-/// because it is currently the native terminal path that satisfies the size and
-/// proving-time targets.
+/// for keys with supported NPO rows, an exhaustive row proof opening supported
+/// Tip5/recompose NPO callsites against the same assignment oracle. It is still
+/// the native terminal certificate body shape, but the full AI-PoW composite
+/// verifier path has not met the relaxed production size/time gates. The
+/// polynomial/proximity NPO backends and compact batch-STARK routes remain
+/// active candidates while the final production wire artifact is measured.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TerminalProductionProof {
     pub prelude: TerminalProofPrelude,
