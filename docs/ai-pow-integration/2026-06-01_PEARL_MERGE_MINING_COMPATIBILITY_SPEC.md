@@ -493,8 +493,9 @@ Implemented in this branch:
   structured checkpoint certificate jams below 110 KiB.
 - Historical batch-STARK recursive certificate harnesses measured
   representative structured certificate nouns above the production target. They
-  remain useful checkpoint measurements, but the final production recursive
-  proof shape is the native terminal backend.
+  remain useful checkpoint measurements, but the active production recursive
+  proof candidate is the compact final-layer batch-STARK route over a fast
+  statement-bound L1 proof.
 - Hoon exports only `ai-pow-nonce`, `ai-pow-certificate`, and
   `ai-pow-artifact` concepts. No Pearl-specific molds are exported.
 - Dumbnet consensus recognizes only `%ai-pow` for AI proof version `%3` and

@@ -491,8 +491,9 @@ The recursive certificate has two distinct verification layers:
 
 - `verify_recursive_certificate(cert, public_inputs)` accepts only the
   batch-STARK recursive checkpoint certificate and a verifier-derived
-  `CompositePublicInputs`. The production recursive proof target is the native
-  terminal certificate.
+  `CompositePublicInputs`. The active production recursive proof candidate is
+  the compact final-layer batch-STARK certificate; this older checkpoint
+  verifier remains a hardened regression/fallback path.
 - `verify_recursive_certificate_with_public_values(cert, public_values)` is the
   lower-level equivalent for callers that already hold the exact Layer-0 public
   input vector. It rejects empty statement vectors on the normal recursive path.

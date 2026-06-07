@@ -158,9 +158,9 @@ impl MatmulProof {
     /// bytes before attempting shape-specific verification.
     ///
     /// This is not a Nockchain AI-PoW production block/wire artifact. The
-    /// production recursive target is the native terminal certificate; the
-    /// existing structured batch-STARK certificate noun remains a checkpoint
-    /// path, not this legacy plain proof.
+    /// active recursive production candidate is the compact final-layer
+    /// batch-STARK certificate; the existing structured batch-STARK certificate
+    /// noun remains a checkpoint path, not this legacy plain proof.
     #[deprecated(
         note = "legacy plain MatmulProof envelope; production AI-PoW uses a recursive certificate, not this proof"
     )]

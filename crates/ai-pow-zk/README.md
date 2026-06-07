@@ -61,6 +61,15 @@ artifact.
 > native-terminal fallback and the large batch-STARK checkpoint, but it still
 > needs a real proving-time reduction before production-readiness can be
 > claimed.
+> This route is now promoted inside `ai-pow-zk` as a typed
+> `AiPowCompactBatchRecursiveCertificate` plus verifier-owned
+> `AiPowCompactBatchVerifierContext`. The current encoded certificate carries
+> only the final L2 compact body. A release/native round trip measured
+> `142,225` bytes, `19.190s` L1 outer proving, `9.347s` L2 prep,
+> `28.968s` L2 proving, `41ms` compact verification, and `57.691s` uncached
+> proof wall; decoded verification passes and wrong public inputs reject. The
+> bridge, miner noun, Hoon wire path, and verifier-key/setup digest pinning are
+> still not wired to this compact certificate.
 > A prior deeper PCS profile showed cached L2 dominated by main/permutation
 > trace Merkle commitments (`13.3s` + `12.9s`), so the next production lever is
 > reducing committed recursive-verifier matrix volume, especially Tip5/MMCS
@@ -558,10 +567,12 @@ anchor merge-mining compat.
 verifier-derived attempt data, proves the Layer-0 composite STARK, and can wrap
 that proof with the batch-STARK recursive checkpoint certificate. The current
 primary production recursive proof candidate is compact batch-STARK L2 over a
-fast statement-bound L1 proof. The large batch-STARK checkpoint noun path is
-retained for soundness regression and fallback validation, while the compact
-batch-STARK candidate must use verifier-owned setup metadata and explicit
-public-value binding before it can be wired as the production artifact.
+fast statement-bound L1 proof. `ai-pow-zk` now exposes a typed compact
+certificate/context API for that route, but the bridge, miner noun, and Hoon
+wire path still encode the large batch-STARK checkpoint. That checkpoint noun
+path is retained for soundness regression and fallback validation while the
+compact certificate gains verifier-key/setup digest pinning and production wire
+integration.
 
 The `composite_prove` / `composite_verify` APIs are Layer-0 primitives. They
 are useful for circuit tests and for the recursive-certificate builder, but the

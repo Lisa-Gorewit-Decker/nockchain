@@ -6,10 +6,11 @@
 //! recursive certificate embeds Layer-0 proof/program context so verification
 //! can rebuild the L1 circuit binding. Its verifier boundary also runs the
 //! full-matmul statement precheck before recursive proof reconstruction or
-//! verification. This batch-STARK noun path is a soundness-hardened checkpoint
-//! path, not the native terminal production target. Those recursive verifier
-//! helpers are Rust boundaries only; Hoon consensus remains fail-closed and
-//! does not call them in the current milestone.
+//! verification. This noun path still encodes the large soundness-hardened
+//! batch-STARK checkpoint, not the compact final-layer batch-STARK production
+//! candidate. Those recursive verifier helpers are Rust boundaries only; Hoon
+//! consensus remains fail-closed and does not call them in the current
+//! milestone.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 

@@ -296,7 +296,7 @@ pub(crate) struct ZkProofArtifact {
 
 /// Prover-side result for a recursive AI-PoW certificate.
 ///
-/// This is the object production callers should hand to the Hoon noun encoder:
+/// This is the object current checkpoint callers hand to the Hoon noun encoder:
 /// it contains the hardened batch-STARK recursive checkpoint certificate plus
 /// only the statement data needed to verify it later. The certificate embeds
 /// its Layer-0 proof/program as verifier context; callers cannot supply a raw
@@ -306,8 +306,9 @@ pub(crate) struct ZkProofArtifact {
 /// [`prove_ai_pow_recursive_certificate`] rejects before producing this value.
 /// Fields are private so downstream crates cannot synthesize a fake prover-run
 /// handle and accidentally feed noncanonical proof material into artifact
-/// builders. This batch-STARK run object is not the final production terminal
-/// certificate target.
+/// builders. This large checkpoint run object is not the compact final-layer
+/// batch-STARK production candidate, which is promoted inside `ai-pow-zk` but
+/// not yet wired through this bridge/noun path.
 pub struct AiPowRecursiveCertificateRun {
     zk_params: ZkParams,
     found_idx: u32,
@@ -956,8 +957,9 @@ fn prove_ai_pow_block(
 /// that proof in the L1 circuit, and returns the batch-STARK recursive
 /// certificate plus typed statement data for the Hoon noun encoder. The
 /// returned value deliberately does not expose the plain `MatmulProof`. The
-/// production recursive proof target remains the native terminal certificate
-/// because the batch-STARK certificate exceeds the wire-size budget.
+/// active production recursive proof candidate is the compact final-layer
+/// batch-STARK certificate; this larger checkpoint certificate exceeds the
+/// wire-size budget and remains a hardened regression/fallback path.
 ///
 /// Current soundness boundary: the recursive Layer-0 statement proves one
 /// verifier-derived jackpot tile. For native AI-PoW, `params.num_tiles() > 1`
@@ -1040,8 +1042,8 @@ pub fn prove_ai_pow_recursive_certificate(
 /// Pearl's `s_A` directly as the jackpot key, and returns a Nockchain-native
 /// batch-STARK recursive certificate. It intentionally does not serialize or
 /// reuse Pearl's own ZKP. This checkpoint path remains useful for soundness
-/// regression, but the production recursive proof target is the native terminal
-/// certificate.
+/// regression, but the active production recursive proof candidate is the
+/// compact final-layer batch-STARK certificate.
 pub fn prove_pearl_merge_recursive_certificate(
     attempt: &PearlMergeTicketAttempt,
     params: &MatmulParams,

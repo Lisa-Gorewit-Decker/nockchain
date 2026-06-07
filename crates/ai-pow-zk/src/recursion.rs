@@ -142,11 +142,64 @@ impl AiPowRecursiveCertificate {
     }
 }
 
+/// Compact final-layer batch-STARK recursive proof candidate for AI-PoW.
+///
+/// This is the production-candidate wire body for the committed compact L2
+/// route. It deliberately carries only the final L2 compact proof body. The
+/// verifier must provide a verifier-owned [`AiPowCompactBatchVerifierContext`]
+/// for the canonical setup, metadata, FRI shape, and public-value binding.
+/// Accepting those values from the prover would make this object unsound.
+#[derive(Serialize, Deserialize)]
+pub struct AiPowCompactBatchRecursiveCertificate {
+    l2_compact_body: p3_circuit_prover::GoldilocksTip5PathPrunedCompactBatchStarkProofBody,
+}
+
+impl AiPowCompactBatchRecursiveCertificate {
+    fn new(
+        l2_compact_body: p3_circuit_prover::GoldilocksTip5PathPrunedCompactBatchStarkProofBody,
+    ) -> Self {
+        Self { l2_compact_body }
+    }
+
+    pub fn l2_compact_body(
+        &self,
+    ) -> &p3_circuit_prover::GoldilocksTip5PathPrunedCompactBatchStarkProofBody {
+        &self.l2_compact_body
+    }
+}
+
+/// Verifier-owned setup for the compact final-layer batch-STARK route.
+///
+/// This context is not serialized with [`AiPowCompactBatchRecursiveCertificate`].
+/// Production must derive or pin it from trusted code/config/verifier-key state.
+/// The compact certificate verifier treats all fields here as verifier-owned
+/// and binds statement-specific public values separately.
+pub struct AiPowCompactBatchVerifierContext {
+    metadata: p3_circuit_prover::GoldilocksTip5BatchStarkProofMetadata,
+    circuit_prover_data:
+        p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksTipsConfig>,
+    fri_shape: p3_circuit_prover::GoldilocksTip5FriShape,
+}
+
 /// Tip5 digest width (`DIGEST_ELEMS`), sponge `WIDTH`, sponge `RATE` —
 /// the ai-pow-zk Layer-0 MMCS parameters (`circuit.rs`).
 const DIGEST_ELEMS: usize = 5;
 const WIDTH: usize = 16;
 const RATE: usize = 10;
+
+pub const COMPACT_BATCH_L1_LOG_BLOWUP: usize = 3;
+pub const COMPACT_BATCH_L1_NUM_QUERIES: usize = 20;
+pub const COMPACT_BATCH_L1_CAP_HEIGHT: usize = 4;
+pub const COMPACT_BATCH_L1_LOG_FINAL_POLY_LEN: usize = 2;
+pub const COMPACT_BATCH_L1_ALU_LANES: usize = 4;
+pub const COMPACT_BATCH_L1_HORNER_PACK_K: usize = 5;
+pub const COMPACT_BATCH_L2_LOG_BLOWUP: usize = 5;
+pub const COMPACT_BATCH_L2_NUM_QUERIES: usize = 12;
+pub const COMPACT_BATCH_L2_CAP_HEIGHT: usize = 4;
+pub const COMPACT_BATCH_L2_LOG_FINAL_POLY_LEN: usize = 2;
+pub const COMPACT_BATCH_L2_MAX_LOG_ARITY: usize = 3;
+pub const COMPACT_BATCH_L2_ALU_LANES: usize = 8;
+pub const COMPACT_BATCH_L2_HORNER_PACK_K: usize = 5;
 
 fn production_l1_table_packing(public_binding_lanes: usize) -> p3_circuit_prover::TablePacking {
     p3_circuit_prover::TablePacking::new(DIGEST_ELEMS, 8)
@@ -156,6 +209,59 @@ fn production_l1_table_packing(public_binding_lanes: usize) -> p3_circuit_prover
 
 fn production_l1_stark_config() -> p3_circuit_prover::config::GoldilocksTipsConfig {
     p3_circuit_prover::config::goldilocks_tip5_60bit()
+}
+
+fn compact_batch_l1_table_packing(public_binding_lanes: usize) -> p3_circuit_prover::TablePacking {
+    p3_circuit_prover::TablePacking::new(DIGEST_ELEMS, COMPACT_BATCH_L1_ALU_LANES)
+        .with_public_binding_lanes(public_binding_lanes)
+        .with_horner_pack_k(COMPACT_BATCH_L1_HORNER_PACK_K)
+}
+
+fn compact_batch_l2_table_packing(public_binding_lanes: usize) -> p3_circuit_prover::TablePacking {
+    p3_circuit_prover::TablePacking::new(public_binding_lanes, COMPACT_BATCH_L2_ALU_LANES)
+        .with_public_binding_lanes(public_binding_lanes)
+        .with_fri_params(
+            COMPACT_BATCH_L2_LOG_FINAL_POLY_LEN, COMPACT_BATCH_L2_LOG_BLOWUP,
+        )
+        .with_horner_pack_k(COMPACT_BATCH_L2_HORNER_PACK_K)
+}
+
+fn compact_batch_l1_stark_config() -> p3_circuit_prover::config::GoldilocksTipsConfig {
+    p3_circuit_prover::config::goldilocks_tip5_pure_query_60bit_with_shape_and_cap(
+        COMPACT_BATCH_L1_LOG_BLOWUP, COMPACT_BATCH_L1_NUM_QUERIES, COMPACT_BATCH_L1_CAP_HEIGHT,
+    )
+}
+
+fn compact_batch_l2_stark_config() -> p3_circuit_prover::config::GoldilocksTipsConfig {
+    p3_circuit_prover::config::goldilocks_tip5_pure_query_60bit_with_fri_shape(
+        COMPACT_BATCH_L2_LOG_BLOWUP, COMPACT_BATCH_L2_NUM_QUERIES,
+        COMPACT_BATCH_L2_LOG_FINAL_POLY_LEN, COMPACT_BATCH_L2_MAX_LOG_ARITY,
+        COMPACT_BATCH_L2_CAP_HEIGHT,
+    )
+}
+
+fn compact_batch_l1_fri_verifier_params() -> FriVerifierParams {
+    FriVerifierParams::with_mmcs(
+        COMPACT_BATCH_L1_LOG_BLOWUP,
+        COMPACT_BATCH_L1_LOG_FINAL_POLY_LEN,
+        p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+        p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+        Tip5Config::GOLDILOCKS_W16,
+    )
+}
+
+fn compact_batch_l2_fri_shape() -> p3_circuit_prover::GoldilocksTip5FriShape {
+    p3_circuit_prover::GoldilocksTip5FriShape {
+        log_blowup: COMPACT_BATCH_L2_LOG_BLOWUP,
+        log_final_poly_len: COMPACT_BATCH_L2_LOG_FINAL_POLY_LEN,
+        max_log_arity: COMPACT_BATCH_L2_MAX_LOG_ARITY,
+        num_queries: COMPACT_BATCH_L2_NUM_QUERIES,
+        commit_pow_bits:
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+        query_pow_bits:
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+        cap_height: COMPACT_BATCH_L2_CAP_HEIGHT,
+    }
 }
 
 #[cfg(test)]
@@ -201,6 +307,87 @@ fn statement_public_digest(public_values: &[Val]) -> Vec<Val> {
     state[..DIGEST_ELEMS].to_vec()
 }
 
+fn compact_batch_l1_public_values_for_statement(public_values: &[Val]) -> Vec<Val> {
+    statement_public_digest(public_values)
+        .into_iter()
+        .flat_map(|value| {
+            let lifted = Challenge::from(value);
+            <Challenge as BasedVectorSpace<Val>>::as_basis_coefficients_slice(&lifted)
+                .iter()
+                .copied()
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn compact_batch_l1_public_values_from_built(built: &BuiltCompositeL1) -> Vec<Val> {
+    built
+        .public_inputs
+        .iter()
+        .take(DIGEST_ELEMS)
+        .flat_map(|value| {
+            <Challenge as BasedVectorSpace<Val>>::as_basis_coefficients_slice(value)
+                .iter()
+                .copied()
+        })
+        .collect()
+}
+
+fn compact_batch_l2_public_values_for_l1(
+    l1: &AiPowL1OuterProof,
+    statement_digest_public_values: &[Val],
+) -> Result<Vec<Vec<Val>>, VerificationError> {
+    use p3_circuit::ops::PrimitiveOpType;
+    use p3_circuit_prover::batch_stark_prover::NUM_PRIMITIVE_TABLES;
+
+    let expected_public_values = l1.public_binding_lanes * l1.ext_degree;
+    if statement_digest_public_values.len() != expected_public_values {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "compact batch L2 expected {expected_public_values} L1 statement public values, got {}",
+            statement_digest_public_values.len()
+        )));
+    }
+    let mut public_values = Vec::with_capacity(NUM_PRIMITIVE_TABLES + l1.non_primitives.len());
+    public_values.resize_with(NUM_PRIMITIVE_TABLES, Vec::new);
+    public_values[PrimitiveOpType::Public as usize] = statement_digest_public_values.to_vec();
+    public_values.extend(
+        l1.non_primitives
+            .iter()
+            .map(|entry| entry.public_values.clone()),
+    );
+    Ok(public_values)
+}
+
+fn compact_batch_l2_statement_public_values_for_l1(
+    statement_digest_public_values: &[Val],
+) -> Vec<Val> {
+    let basis_dim = <Challenge as BasedVectorSpace<Val>>::DIMENSION;
+    let mut public_values = Vec::with_capacity(statement_digest_public_values.len() * basis_dim);
+    for &value in statement_digest_public_values {
+        let lifted = Challenge::from(value);
+        public_values.extend_from_slice(
+            <Challenge as BasedVectorSpace<Val>>::as_basis_coefficients_slice(&lifted),
+        );
+    }
+    public_values
+}
+
+fn tip5_recompose_table_provers_for_compact_l2(
+) -> Vec<Box<dyn p3_circuit_prover::TableProver<p3_circuit_prover::config::GoldilocksTipsConfig>>> {
+    use p3_circuit_prover::{recompose_table_provers, ConstraintProfile, TableProver, Tip5Prover};
+
+    let mut provers: Vec<Box<dyn TableProver<p3_circuit_prover::config::GoldilocksTipsConfig>>> =
+        vec![Box::new(Tip5Prover::new(
+            Tip5Config::GOLDILOCKS_W16,
+            ConstraintProfile::Standard,
+        ))];
+    provers.extend(recompose_table_provers::<
+        p3_circuit_prover::config::GoldilocksTipsConfig,
+        2,
+    >(1, true));
+    provers
+}
+
 fn non_primitive_metadata_eq(
     left: &[p3_circuit_prover::NonPrimitiveTableEntry<
         p3_circuit_prover::config::GoldilocksTipsConfig,
@@ -232,6 +419,46 @@ type InnerFri = FriProofTargets<
         RecValMmcs<Val, DIGEST_ELEMS, Tip5Sponge, Tip5Compress>,
     >,
     InputProofTargets<Val, Challenge, RecValMmcs<Val, DIGEST_ELEMS, Tip5Sponge, Tip5Compress>>,
+    Witness<Val>,
+>;
+
+struct CompactBatchRecScalarValMmcs<const DIGEST_ELEMS: usize, H, C>(
+    core::marker::PhantomData<(H, C)>,
+);
+
+impl<const DIGEST_ELEMS: usize, H, C> p3_recursion::RecursiveMmcs<Val, Challenge>
+    for CompactBatchRecScalarValMmcs<DIGEST_ELEMS, H, C>
+where
+    H: p3_symmetric::CryptographicHasher<Val, [Val; DIGEST_ELEMS]> + Sync,
+    C: p3_symmetric::PseudoCompressionFunction<[Val; DIGEST_ELEMS], 2> + Sync,
+    [Val; DIGEST_ELEMS]: serde::Serialize + for<'a> serde::Deserialize<'a>,
+{
+    type Input = p3_merkle_tree::MerkleTreeMmcs<Val, Val, H, C, 2, DIGEST_ELEMS>;
+    type Commitment = MerkleCapTargets<Val, DIGEST_ELEMS>;
+    type Proof = p3_recursion::pcs::fri::HashProofTargets<Val, DIGEST_ELEMS>;
+}
+
+type CompactBatchL2Hash = p3_symmetric::PaddingFreeSponge<RecTip5Perm, WIDTH, RATE, DIGEST_ELEMS>;
+type CompactBatchL2Compress =
+    p3_symmetric::TruncatedPermutation<RecTip5Perm, 2, DIGEST_ELEMS, WIDTH>;
+type CompactBatchL2ValMmcs = p3_merkle_tree::MerkleTreeMmcs<
+    Val,
+    Val,
+    CompactBatchL2Hash,
+    CompactBatchL2Compress,
+    2,
+    DIGEST_ELEMS,
+>;
+type CompactBatchL2ChallengeMmcs = p3_commit::ExtensionMmcs<Val, Challenge, CompactBatchL2ValMmcs>;
+type CompactBatchL2Comm = MerkleCapTargets<Val, DIGEST_ELEMS>;
+type CompactBatchL2RecValMmcs =
+    CompactBatchRecScalarValMmcs<DIGEST_ELEMS, CompactBatchL2Hash, CompactBatchL2Compress>;
+type CompactBatchL2InputProof = InputProofTargets<Val, Challenge, CompactBatchL2RecValMmcs>;
+type CompactBatchL2InnerFri = FriProofTargets<
+    Val,
+    Challenge,
+    RecExtensionValMmcs<Val, Challenge, DIGEST_ELEMS, CompactBatchL2RecValMmcs>,
+    CompactBatchL2InputProof,
     Witness<Val>,
 >;
 
@@ -611,74 +838,23 @@ fn prove_composite_l1_outer_cert_with_config_and_public_binding_lanes(
     outer_config: p3_circuit_prover::config::GoldilocksTipsConfig,
     public_binding_lanes: usize,
 ) -> Result<AiPowL1OuterProof, VerificationError> {
-    use p3_batch_stark::ProverData;
-    use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
-    use p3_circuit_prover::{
-        config, recompose_air_builders, strip_public_binding_for_lookup_metadata,
-        tip5_air_builders, BatchStarkProver, CircuitProverData, ConstraintProfile,
-        RecomposePreprocessor, Tip5Preprocessor,
-    };
-
-    type OuterConfig = config::GoldilocksTipsConfig;
-
-    // D=2 outer-cert table layout — Tip5 NPO (D=1 perm) + recompose
-    // with split coeff tables (the verifier circuit set
-    // `set_recompose_coeff_ctl_for_decompose_links(true)`).
     let table_packing = production_l1_table_packing(public_binding_lanes);
-    let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
-        vec![Box::new(Tip5Preprocessor), Box::new(RecomposePreprocessor::new(true))];
-    let mut air_builders = tip5_air_builders::<OuterConfig, 2>();
-    air_builders.extend(recompose_air_builders::<OuterConfig, 2>(1, true));
-
-    let (airs_degrees, primitive_columns, non_primitive_columns) =
-        get_airs_and_degrees_with_prep::<OuterConfig, Challenge, 2>(
-            &built.circuit,
-            &table_packing,
-            &npo_prep,
-            &air_builders,
-            ConstraintProfile::Standard,
-        )
-        .map_err(|e| {
-            VerificationError::InvalidProofShape(format!(
-                "composite L1 outer cert — get_airs_and_degrees: {e:?}"
-            ))
-        })?;
-    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-
-    // Run the verifier circuit to obtain its execution traces.
-    let mut runner = built.circuit.runner();
-    runner
-        .set_public_inputs(&built.public_inputs)
-        .map_err(VerificationError::Circuit)?;
-    runner
-        .set_private_inputs(&built.private_inputs)
-        .map_err(VerificationError::Circuit)?;
-    set_fri_mmcs_private_data::<
-        Val,
-        Challenge,
-        crate::circuit::ChallengeMmcs,
-        crate::circuit::ValMmcs,
-        Tip5Sponge,
-        Tip5Compress,
-        DIGEST_ELEMS,
-    >(
-        &mut runner,
-        &built.mmcs_op_ids,
-        &proof.opening_proof,
-        Tip5Config::GOLDILOCKS_W16,
+    prove_composite_l1_outer_cert_with_config_and_table_packing(
+        built, proof, outer_config, table_packing,
     )
-    .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
-    let traces = runner.run().map_err(VerificationError::Circuit)?;
+}
 
-    // Prove the verifier circuit as a D=2 batch-STARK.
-    let lookup_metadata_airs = airs
-        .iter()
-        .map(strip_public_binding_for_lookup_metadata)
-        .collect::<Vec<_>>();
-    let prover_data =
-        ProverData::from_airs_and_degrees(&outer_config, &lookup_metadata_airs, &degrees);
-    let circuit_prover_data =
-        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+fn prove_composite_l1_outer_cert_with_config_and_table_packing(
+    built: &BuiltCompositeL1,
+    proof: &BatchProof<AiPowStarkConfig>,
+    outer_config: p3_circuit_prover::config::GoldilocksTipsConfig,
+    table_packing: p3_circuit_prover::TablePacking,
+) -> Result<AiPowL1OuterProof, VerificationError> {
+    use p3_circuit_prover::BatchStarkProver;
+
+    let (table_packing, circuit_prover_data) =
+        l1_circuit_prover_data_with_config_and_table_packing(built, &outer_config, table_packing)?;
+    let traces = run_composite_l1_verifier_traces(built, proof)?;
     let mut prover = BatchStarkProver::new(outer_config).with_table_packing(table_packing);
     prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
     prover.register_recompose_table::<2>(true);
@@ -869,6 +1045,23 @@ pub struct L1CertificateRun {
     pub l1_outer_cert_ms: u128,
     /// The batch-STARK recursive checkpoint certificate.
     pub l1_cert: AiPowRecursiveCertificate,
+}
+
+/// Timings, compact certificate, and verifier-owned context for the committed
+/// compact final-layer batch-STARK route.
+///
+/// The certificate is the only wire candidate. The verifier context is returned
+/// here for tests and local verification; production must derive or pin an
+/// equivalent context out of band instead of accepting it from a miner.
+pub struct CompactBatchCertificateRun {
+    pub l1_circuit_build_ms: u128,
+    pub l1_outer_cert_ms: u128,
+    pub l2_prep_ms: u128,
+    pub l2_prove_ms: u128,
+    pub l2_compact_ms: u128,
+    pub l2_compact_verify_ms: u128,
+    pub compact_cert: AiPowCompactBatchRecursiveCertificate,
+    pub verifier_context: AiPowCompactBatchVerifierContext,
 }
 
 /// Timings and certificate for recursively certifying an already-built Layer-0
@@ -1077,6 +1270,20 @@ impl<'a> ChainVerifiedCompositeProof<'a> {
     }
 }
 
+struct CompactBatchL2Prep {
+    verification_circuit: p3_circuit::Circuit<Challenge>,
+    verifier_inputs: BatchStarkVerifierInputsBuilder<
+        p3_circuit_prover::config::GoldilocksTipsConfig,
+        CompactBatchL2Comm,
+        CompactBatchL2InnerFri,
+    >,
+    mmcs_op_ids: Vec<NonPrimitiveOpId>,
+    circuit_prover_data:
+        p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksTipsConfig>,
+    prover: p3_circuit_prover::BatchStarkProver<p3_circuit_prover::config::GoldilocksTipsConfig>,
+    l2_statement_public_binding_lanes: usize,
+}
+
 /// Produce a recursive AI-PoW certificate from bridge-verified Layer-0
 /// proof parts.
 ///
@@ -1119,6 +1326,337 @@ pub fn prove_recursive_certificate_from_chain_verified_composite_proof(
         l1_outer_cert_ms,
         l1_cert,
     })
+}
+
+fn build_compact_batch_l2_over_l1_prep(
+    l1: &AiPowL1OuterProof,
+) -> Result<CompactBatchL2Prep, VerificationError> {
+    use p3_batch_stark::ProverData;
+    use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
+    use p3_circuit_prover::{
+        recompose_air_builders, strip_public_binding_for_lookup_metadata, tip5_air_builders,
+        BatchStarkProver, CircuitProverData, ConstraintProfile, RecomposePreprocessor,
+        Tip5Preprocessor,
+    };
+
+    const TRACE_D: usize = 2;
+
+    let l2_statement_public_binding_lanes = l1.public_binding_lanes * l1.ext_degree;
+    if l2_statement_public_binding_lanes == 0 {
+        return Err(VerificationError::InvalidProofShape(
+            "compact batch L2 requires non-empty L1 public binding lanes".to_string(),
+        ));
+    }
+
+    let mut circuit_builder = CircuitBuilder::<Challenge>::new();
+    circuit_builder.enable_tip5_perm::<Tip5Goldilocks, _>(
+        generate_tip5_trace::<Challenge, Tip5Goldilocks>, LiftTip5,
+    );
+    circuit_builder.enable_recompose::<Val>(generate_recompose_trace::<Val, Challenge>);
+    circuit_builder.set_recompose_coeff_ctl_for_decompose_links(true);
+
+    let lookup_gadget = LogUpGadget::new();
+    let l1_table_provers = tip5_recompose_table_provers_for_compact_l2();
+    let (verifier_inputs, mmcs_op_ids) = p3_recursion::verifier::verify_p3_batch_proof_circuit::<
+        p3_circuit_prover::config::GoldilocksTipsConfig,
+        CompactBatchL2Comm,
+        CompactBatchL2InputProof,
+        CompactBatchL2InnerFri,
+        LogUpGadget,
+        Tip5Config,
+        WIDTH,
+        RATE,
+        TRACE_D,
+    >(
+        &compact_batch_l1_stark_config(),
+        &mut circuit_builder,
+        l1,
+        &compact_batch_l1_fri_verifier_params(),
+        &l1.stark_common,
+        &lookup_gadget,
+        Tip5Config::GOLDILOCKS_W16,
+        &l1_table_provers,
+    )
+    .map_err(|e| {
+        VerificationError::InvalidProofShape(format!(
+            "compact batch L2 verifier circuit over L1 proof failed: {e:?}"
+        ))
+    })?;
+
+    let verification_circuit = circuit_builder.build()?;
+    let l2_table_packing = compact_batch_l2_table_packing(l2_statement_public_binding_lanes);
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
+        vec![Box::new(Tip5Preprocessor), Box::new(RecomposePreprocessor::new(true))];
+    let mut air_builders =
+        tip5_air_builders::<p3_circuit_prover::config::GoldilocksTipsConfig, 2>();
+    air_builders.extend(recompose_air_builders::<
+        p3_circuit_prover::config::GoldilocksTipsConfig,
+        2,
+    >(1, true));
+
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<
+            p3_circuit_prover::config::GoldilocksTipsConfig,
+            Challenge,
+            2,
+        >(
+            &verification_circuit,
+            &l2_table_packing,
+            &npo_prep,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "compact batch L2 AIR setup failed: {e:?}"
+            ))
+        })?;
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let lookup_metadata_airs = airs
+        .iter()
+        .map(strip_public_binding_for_lookup_metadata)
+        .collect::<Vec<_>>();
+    let prover_data = ProverData::from_airs_and_degrees(
+        &compact_batch_l2_stark_config(),
+        &lookup_metadata_airs,
+        &degrees,
+    );
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+    let mut prover =
+        BatchStarkProver::new(compact_batch_l2_stark_config()).with_table_packing(l2_table_packing);
+    prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+    prover.register_recompose_table::<2>(true);
+
+    Ok(CompactBatchL2Prep {
+        verification_circuit,
+        verifier_inputs,
+        mmcs_op_ids,
+        circuit_prover_data,
+        prover,
+        l2_statement_public_binding_lanes,
+    })
+}
+
+fn prove_compact_batch_l2_with_prep(
+    prep: &CompactBatchL2Prep,
+    l1: &AiPowL1OuterProof,
+    statement_digest_public_values: &[Val],
+) -> Result<AiPowL1OuterProof, VerificationError> {
+    let l1_public_values =
+        compact_batch_l2_public_values_for_l1(l1, statement_digest_public_values)?;
+    if statement_digest_public_values.len() != prep.l2_statement_public_binding_lanes {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "compact batch L2 prep public binding lane mismatch: prep has {}, proof statement has {}",
+            prep.l2_statement_public_binding_lanes,
+            statement_digest_public_values.len()
+        )));
+    }
+    let (public_inputs, private_inputs) = prep
+        .verifier_inputs
+        .pack_values(&l1_public_values, &l1.proof, &l1.stark_common);
+
+    let mut runner = prep.verification_circuit.runner();
+    runner
+        .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner
+        .set_private_inputs(&private_inputs)
+        .map_err(VerificationError::Circuit)?;
+    set_fri_mmcs_private_data::<
+        Val,
+        Challenge,
+        CompactBatchL2ChallengeMmcs,
+        CompactBatchL2ValMmcs,
+        CompactBatchL2Hash,
+        CompactBatchL2Compress,
+        DIGEST_ELEMS,
+    >(
+        &mut runner,
+        &prep.mmcs_op_ids,
+        &l1.proof.opening_proof,
+        Tip5Config::GOLDILOCKS_W16,
+    )
+    .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
+    let traces = runner.run().map_err(VerificationError::Circuit)?;
+    prep.prover
+        .prove_all_tables(&traces, &prep.circuit_prover_data)
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "compact batch L2 prove_all_tables failed: {e:?}"
+            ))
+        })
+}
+
+/// Produce the compact final-layer batch-STARK recursive candidate from
+/// bridge-verified Layer-0 proof parts.
+///
+/// This implements the committed compact L2 route with pure-query 60-bit
+/// parameters and no proof-system PoW grinding: L1 `lb=3,nq=20`, L2
+/// `lb=5,nq=12`. The returned verifier context is for local verification and
+/// verifier-key integration work; it is not part of the certificate wire body.
+pub fn prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof(
+    zk_params: &crate::params::ZkParams,
+    profile: &crate::circuit::CircuitConfig,
+    verified: &ChainVerifiedCompositeProof<'_>,
+) -> Result<CompactBatchCertificateRun, VerificationError> {
+    use std::time::Instant;
+
+    let cfg = crate::composite_proof::build_config(zk_params, profile);
+    let t = Instant::now();
+    let air = CompositeFullAirWithLookupsPinned::new_with(verified.program.clone(), true);
+    let pd = crate::composite_proof::logup_common_for(&cfg, &verified.program, true);
+    let built = build_composite_l1_verifier_circuit(
+        &cfg,
+        &air,
+        &verified.proof,
+        &pd.common,
+        &verified.public_inputs.to_vec(),
+        profile,
+    )?;
+    let l1_circuit_build_ms = t.elapsed().as_millis();
+    let statement_digest_public_values = compact_batch_l1_public_values_from_built(&built);
+
+    let t = Instant::now();
+    let l1_outer_proof = prove_composite_l1_outer_cert_with_config_and_table_packing(
+        &built,
+        &verified.proof,
+        compact_batch_l1_stark_config(),
+        compact_batch_l1_table_packing(DIGEST_ELEMS),
+    )?;
+    let l1_outer_cert_ms = t.elapsed().as_millis();
+
+    let t = Instant::now();
+    let l2_prep = build_compact_batch_l2_over_l1_prep(&l1_outer_proof)?;
+    let l2_prep_ms = t.elapsed().as_millis();
+
+    let t = Instant::now();
+    let l2_proof = prove_compact_batch_l2_with_prep(
+        &l2_prep, &l1_outer_proof, &statement_digest_public_values,
+    )?;
+    let l2_prove_ms = t.elapsed().as_millis();
+
+    let l2_statement_public_values =
+        compact_batch_l2_statement_public_values_for_l1(&statement_digest_public_values);
+    let l2_metadata =
+        p3_circuit_prover::GoldilocksTip5BatchStarkProofMetadata::from_proof(&l2_proof);
+    let l2_fri_shape = compact_batch_l2_fri_shape();
+    let CompactBatchL2Prep {
+        circuit_prover_data,
+        prover,
+        ..
+    } = l2_prep;
+    let t = Instant::now();
+    let l2_compact = prover
+        .compact_goldilocks_tip5_path_pruned_preprocessed_with_public_values(
+            l2_proof, &l2_statement_public_values, &circuit_prover_data, l2_fri_shape,
+        )
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "compact batch L2 body construction failed: {e:?}"
+            ))
+        })?;
+    let l2_compact_ms = t.elapsed().as_millis();
+
+    let compact_cert = AiPowCompactBatchRecursiveCertificate::new(l2_compact.into_body());
+    let verifier_context = AiPowCompactBatchVerifierContext {
+        metadata: l2_metadata,
+        circuit_prover_data,
+        fri_shape: l2_fri_shape,
+    };
+
+    let verify_bytes = encode_compact_batch_recursive_certificate(&compact_cert).map_err(|e| {
+        VerificationError::InvalidProofShape(format!(
+            "compact batch recursive certificate encoding failed: {e:?}"
+        ))
+    })?;
+    let verify_cert = decode_compact_batch_recursive_certificate(&verify_bytes).map_err(|e| {
+        VerificationError::InvalidProofShape(format!(
+            "compact batch recursive certificate decoding failed: {e:?}"
+        ))
+    })?;
+    let t = Instant::now();
+    verify_compact_batch_recursive_certificate_with_context(
+        &verifier_context, verify_cert, verified.public_inputs,
+    )?;
+    let l2_compact_verify_ms = t.elapsed().as_millis();
+
+    Ok(CompactBatchCertificateRun {
+        l1_circuit_build_ms,
+        l1_outer_cert_ms,
+        l2_prep_ms,
+        l2_prove_ms,
+        l2_compact_ms,
+        l2_compact_verify_ms,
+        compact_cert,
+        verifier_context,
+    })
+}
+
+/// Verify a compact final-layer batch-STARK certificate with verifier-owned
+/// context.
+///
+/// The context must be derived from trusted verifier-key/setup state. The
+/// statement-specific final public values are derived here from trusted
+/// Layer-0 public inputs, not from the proof body.
+pub fn verify_compact_batch_recursive_certificate_with_context(
+    context: &AiPowCompactBatchVerifierContext,
+    cert: AiPowCompactBatchRecursiveCertificate,
+    public_inputs: &crate::composite_public::CompositePublicInputs,
+) -> Result<(), VerificationError> {
+    let expected_l2_packing = compact_batch_l2_table_packing(context.metadata.public_binding_lanes);
+    if context.metadata.table_packing != expected_l2_packing {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "compact batch verifier context uses table packing {:?}; expected {:?}",
+            context.metadata.table_packing, expected_l2_packing
+        )));
+    }
+    if context.fri_shape != compact_batch_l2_fri_shape() {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "compact batch verifier context uses FRI shape {:?}; expected {:?}",
+            context.fri_shape,
+            compact_batch_l2_fri_shape()
+        )));
+    }
+
+    let l1_statement_public_values =
+        compact_batch_l1_public_values_for_statement(&public_inputs.to_vec());
+    let l2_statement_public_values =
+        compact_batch_l2_statement_public_values_for_l1(&l1_statement_public_values);
+    let compact_context = p3_circuit_prover::GoldilocksTip5PathPrunedCompactVerifierContext::new(
+        &context.metadata, &context.circuit_prover_data, context.fri_shape,
+        &l2_statement_public_values,
+    );
+    let mut verifier = p3_circuit_prover::BatchStarkProver::new(compact_batch_l2_stark_config())
+        .with_table_packing(expected_l2_packing);
+    verifier.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+    verifier.register_recompose_table::<2>(true);
+    verifier
+        .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_context(
+            cert.l2_compact_body, compact_context,
+        )
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "compact batch recursive certificate verification failed: {e:?}"
+            ))
+        })
+}
+
+pub fn encode_compact_batch_recursive_certificate(
+    cert: &AiPowCompactBatchRecursiveCertificate,
+) -> Result<Vec<u8>, postcard::Error> {
+    postcard::to_allocvec(cert)
+}
+
+pub fn decode_compact_batch_recursive_certificate(
+    bytes: &[u8],
+) -> Result<AiPowCompactBatchRecursiveCertificate, postcard::Error> {
+    let (cert, trailing): (AiPowCompactBatchRecursiveCertificate, &[u8]) =
+        postcard::take_from_bytes(bytes)?;
+    if !trailing.is_empty() {
+        return Err(postcard::Error::DeserializeUnexpectedEnd);
+    }
+    Ok(cert)
 }
 
 fn terminal_compiler() -> NativeTerminalCompiler {
@@ -4202,6 +4740,86 @@ mod tests {
                 "metadata-free compact L2 over L1 packing variant should be smaller than the compact wrapper"
             );
         }
+    }
+
+    #[test]
+    #[ignore = "compact batch recursive certificate route is opt-in"]
+    fn compact_batch_recursive_certificate_round_trip_for_test_pearl() {
+        use std::time::Instant;
+
+        init_batch_stark_profile_tracing_for_test_pearl();
+
+        assert_eq!(
+            COMPACT_BATCH_L1_LOG_BLOWUP * COMPACT_BATCH_L1_NUM_QUERIES,
+            60
+        );
+        assert_eq!(
+            COMPACT_BATCH_L2_LOG_BLOWUP * COMPACT_BATCH_L2_NUM_QUERIES,
+            60
+        );
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+            0
+        );
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+            0
+        );
+
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program, proof, &pis,
+            )
+        };
+
+        let prove_start = Instant::now();
+        let run = prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof(
+            &zk, &profile, &verified,
+        )
+        .expect("compact batch recursive certificate must prove");
+        let prove_wall_ms = prove_start.elapsed().as_millis();
+
+        let bytes = encode_compact_batch_recursive_certificate(&run.compact_cert)
+            .expect("encode compact batch recursive certificate");
+        let decoded = decode_compact_batch_recursive_certificate(&bytes)
+            .expect("decode compact batch recursive certificate");
+        verify_compact_batch_recursive_certificate_with_context(
+            &run.verifier_context, decoded, &pis,
+        )
+        .expect("decoded compact batch recursive certificate must verify");
+
+        let mut wrong_pis = pis.clone();
+        wrong_pis.hash_jackpot[0] ^= 1;
+        let wrong_decoded = decode_compact_batch_recursive_certificate(&bytes)
+            .expect("decode compact batch recursive certificate for tamper test");
+        verify_compact_batch_recursive_certificate_with_context(
+            &run.verifier_context, wrong_decoded, &wrong_pis,
+        )
+        .expect_err("compact batch recursive certificate must reject wrong public inputs");
+
+        eprintln!(
+            "compact batch recursive certificate route [TEST_PEARL]: cert={} bytes l1_build_ms={} l1_outer_ms={} l2_prep_ms={} l2_prove_ms={} l2_compact_ms={} l2_compact_verify_ms={} prove_wall_ms={}",
+            bytes.len(),
+            run.l1_circuit_build_ms,
+            run.l1_outer_cert_ms,
+            run.l2_prep_ms,
+            run.l2_prove_ms,
+            run.l2_compact_ms,
+            run.l2_compact_verify_ms,
+            prove_wall_ms,
+        );
+
+        assert!(
+            bytes.len() < 150_000,
+            "compact batch recursive certificate should remain inside the relaxed size gate"
+        );
     }
 
     #[test]
