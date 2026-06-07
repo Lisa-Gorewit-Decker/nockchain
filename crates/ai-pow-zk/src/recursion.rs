@@ -1799,6 +1799,31 @@ mod tests {
         provers
     }
 
+    struct L1ProofForTestPearl {
+        proof: AiPowL1OuterProof,
+        timings: L1ProofTimingsForTestPearl,
+    }
+
+    struct L1OuterPrepForTestPearl {
+        circuit_prover_data: std::rc::Rc<
+            p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksTipsConfig>,
+        >,
+        prover:
+            p3_circuit_prover::BatchStarkProver<p3_circuit_prover::config::GoldilocksTipsConfig>,
+        timings: L1PrepTimingsForTestPearl,
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct L1PrepTimingsForTestPearl {
+        air_setup_ms: u128,
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct L1ProofTimingsForTestPearl {
+        witness_run_ms: u128,
+        stark_prove_ms: u128,
+    }
+
     struct L2ProofForTestPearl {
         proof: AiPowL1OuterProof,
         circuit_prover_data: std::rc::Rc<
@@ -1907,6 +1932,59 @@ mod tests {
             p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
             Tip5Config::GOLDILOCKS_W16,
         )
+    }
+
+    fn build_l1_outer_prep_for_test_pearl(
+        built: &BuiltCompositeL1,
+        l1_config: p3_circuit_prover::config::GoldilocksTipsConfig,
+        public_binding_lanes: usize,
+    ) -> Result<L1OuterPrepForTestPearl, String> {
+        use p3_circuit::ops::Tip5Config;
+        use p3_circuit_prover::BatchStarkProver;
+
+        let air_setup_start = std::time::Instant::now();
+        let (table_packing, circuit_prover_data) =
+            l1_circuit_prover_data_with_config_and_public_binding_lanes(
+                built, &l1_config, public_binding_lanes,
+            )
+            .map_err(|e| format!("L1 prep: {e:?}"))?;
+        let air_setup_ms = air_setup_start.elapsed().as_millis();
+
+        let mut prover = BatchStarkProver::new(l1_config).with_table_packing(table_packing);
+        prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+        prover.register_recompose_table::<2>(true);
+
+        Ok(L1OuterPrepForTestPearl {
+            circuit_prover_data: std::rc::Rc::new(circuit_prover_data),
+            prover,
+            timings: L1PrepTimingsForTestPearl { air_setup_ms },
+        })
+    }
+
+    fn prove_l1_outer_with_prep_for_test_pearl(
+        prep: &L1OuterPrepForTestPearl,
+        built: &BuiltCompositeL1,
+        proof: &BatchProof<AiPowStarkConfig>,
+    ) -> Result<L1ProofForTestPearl, String> {
+        let witness_run_start = std::time::Instant::now();
+        let traces = run_composite_l1_verifier_traces(built, proof)
+            .map_err(|e| format!("L1 verifier circuit rejected L0 proof: {e:?}"))?;
+        let witness_run_ms = witness_run_start.elapsed().as_millis();
+
+        let stark_prove_start = std::time::Instant::now();
+        let proof = prep
+            .prover
+            .prove_all_tables(&traces, prep.circuit_prover_data.as_ref())
+            .map_err(|e| format!("L1 prove_all_tables: {e:?}"))?;
+        let stark_prove_ms = stark_prove_start.elapsed().as_millis();
+
+        Ok(L1ProofForTestPearl {
+            proof,
+            timings: L1ProofTimingsForTestPearl {
+                witness_run_ms,
+                stark_prove_ms,
+            },
+        })
     }
 
     fn build_l2_over_l1_outer_prep_for_test_pearl(
@@ -2961,15 +3039,21 @@ mod tests {
         let l1_config = pure_query_l1_stark_config_with_shape_and_cap(
             l1_log_blowup, l1_num_queries, l1_cap_height,
         );
-        let l1_prove_start = Instant::now();
-        let l1 = prove_composite_l1_outer_cert_with_config_and_public_binding_lanes(
-            &built,
-            &proof,
-            l1_config.clone(),
-            DIGEST_ELEMS,
-        )
-        .expect("pure-query cap-4 L1 recursive certificate");
-        let l1_prove_ms = l1_prove_start.elapsed().as_millis();
+        let l1_total_prove_start = Instant::now();
+        let l1_prep_wall_start = Instant::now();
+        let l1_prep = build_l1_outer_prep_for_test_pearl(&built, l1_config.clone(), DIGEST_ELEMS)
+            .expect("pure-query cap-4 L1 prep");
+        let l1_prep_wall_ms = l1_prep_wall_start.elapsed().as_millis();
+        let l1_prep_timings = l1_prep.timings;
+        let l1_cached_prove_start = Instant::now();
+        let l1_artifact = prove_l1_outer_with_prep_for_test_pearl(&l1_prep, &built, &proof)
+            .expect("pure-query cap-4 L1 recursive certificate with cached prep");
+        let l1_cached_prove_ms = l1_cached_prove_start.elapsed().as_millis();
+        let l1_prove_ms = l1_total_prove_start.elapsed().as_millis();
+        let L1ProofForTestPearl {
+            proof: l1,
+            timings: l1_timings,
+        } = l1_artifact;
 
         let mut l1_verifier = BatchStarkProver::new(l1_config.clone())
             .with_table_packing(production_l1_table_packing(DIGEST_ELEMS));
@@ -3187,7 +3271,7 @@ mod tests {
             let l2_compact_verify_ms = l2_compact_verify_start.elapsed().as_millis();
 
             eprintln!(
-                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 {l1_label} -> L2 {l2_label}]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_preprocessed_ood={} l1_preprocessed_input_batch={} l1_preprocessed_input_opened_values={} l1_preprocessed_input_merkle={} l1_preprocessed_omitted_projected_outer={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_preprocessed_ood={} l2_preprocessed_input_batch={} l2_preprocessed_input_opened_values={} l2_preprocessed_input_merkle={} l2_preprocessed_omitted_projected_outer={} l2_actual_compact={} l2_actual_compact_body={} l2_actual_compact_proof_body={} l2_actual_compact_restoration={} l2_actual_compact_input_paths={} l2_actual_compact_commit_paths={} l2_actual_compact_path_sets={} l2_actual_compact_original_orders={} l2_actual_compact_pruned_paths={} l2_actual_compact_pruned_siblings={} l2_actual_compact_frontier_siblings={} l2_actual_compact_frontier_sibling_savings={} l2_actual_compact_frontier_digest_savings={} l2_actual_compact_build_ms={} l2_actual_compact_body_verify_ms={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_log_final_poly_len={} l2_max_log_arity={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prep_wall_ms={} l2_cached_prove_ms={} l2_circuit_define_ms={} l2_circuit_build_ms={} l2_input_pack_ms={} l2_air_setup_ms={} l2_witness_run_ms={} l2_stark_prove_ms={} l2_stark_verify_ms={} l2_prove_ms={}",
+                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 {l1_label} -> L2 {l2_label}]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_preprocessed_ood={} l1_preprocessed_input_batch={} l1_preprocessed_input_opened_values={} l1_preprocessed_input_merkle={} l1_preprocessed_omitted_projected_outer={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_prep_wall_ms={} l1_cached_prove_ms={} l1_air_setup_ms={} l1_witness_run_ms={} l1_stark_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_preprocessed_ood={} l2_preprocessed_input_batch={} l2_preprocessed_input_opened_values={} l2_preprocessed_input_merkle={} l2_preprocessed_omitted_projected_outer={} l2_actual_compact={} l2_actual_compact_body={} l2_actual_compact_proof_body={} l2_actual_compact_restoration={} l2_actual_compact_input_paths={} l2_actual_compact_commit_paths={} l2_actual_compact_path_sets={} l2_actual_compact_original_orders={} l2_actual_compact_pruned_paths={} l2_actual_compact_pruned_siblings={} l2_actual_compact_frontier_siblings={} l2_actual_compact_frontier_sibling_savings={} l2_actual_compact_frontier_digest_savings={} l2_actual_compact_build_ms={} l2_actual_compact_body_verify_ms={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_log_final_poly_len={} l2_max_log_arity={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prep_wall_ms={} l2_cached_prove_ms={} l2_circuit_define_ms={} l2_circuit_build_ms={} l2_input_pack_ms={} l2_air_setup_ms={} l2_witness_run_ms={} l2_stark_prove_ms={} l2_stark_verify_ms={} l2_prove_ms={}",
                 l1_outer_bytes,
                 l1_proof_body_bytes,
                 l1_path_pruned_projected_outer_bytes,
@@ -3207,6 +3291,11 @@ mod tests {
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
                 l1_log_blowup * l1_num_queries,
                 l1_prove_ms,
+                l1_prep_wall_ms,
+                l1_cached_prove_ms,
+                l1_prep_timings.air_setup_ms,
+                l1_timings.witness_run_ms,
+                l1_timings.stark_prove_ms,
                 l1_verify_ms,
                 l2_outer_bytes,
                 l2_proof_body_bytes,

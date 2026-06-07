@@ -46,9 +46,11 @@ artifact.
 > forwarding AIR next-row declarations through the batch-STARK wrappers. Tip5
 > main next-row openings remain explicit because the inner lookup AIR links
 > rounds across rows. The latest release/native cached-setup rerun measures
-> `20.657s` L1 proving, `9.331s` reusable L2 prep, and `28.429s` cached L2
-> proving. The cached L2 proof is now under `30s`, but cached serial L1+L2
-> proving is still about `49.086s`, so the total proving-time gate is not met.
+> `4.772s` reusable L1 prep, `15.305s` cached L1 proving, `9.364s` reusable
+> L2 prep, and `28.726s` cached L2 proving. The cached L2 proof is now under
+> `30s`, but cached serial L1+L2 proving is still about `44.031s` with both
+> prep stages cached (`58.167s` if setup is included), so the total
+> proving-time gate is not met.
 > A prior deeper PCS profile showed cached L2 dominated by main/permutation
 > trace Merkle commitments (`13.3s` + `12.9s`), so the next production lever is
 > reducing committed recursive-verifier matrix volume, especially Tip5/MMCS
