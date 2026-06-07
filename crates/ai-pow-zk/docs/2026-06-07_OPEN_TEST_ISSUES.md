@@ -18,13 +18,7 @@ Validated so far:
 - `RUSTFLAGS="-C target-cpu=native" cargo check -p ai-pow-zk --features recursion`
 - `RUSTFLAGS="-C target-cpu=native" cargo check -p ai-pow --features zk`
 - `RUSTFLAGS="-C target-cpu=native" cargo check -p ai-pow-miner --features node`
-
-After removing the local `p3-batch-stark` patch, the full
-`RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --features recursion`
-suite was started and reached the final recursive-certificate tests with the
-Route-A/LogUp negative tests passing, but was interrupted before completion.
-Rerun it to completion before treating the upstream batch-STARK cleanup as fully
-regression-tested.
+- `cargo test -p ai-pow-zk --features recursion`
 
 The published Plonky3 `v0.5.3` tag was checked during the bump. It is not a
 drop-in target for this branch: its lookup and `BaseAir` APIs do not match the
