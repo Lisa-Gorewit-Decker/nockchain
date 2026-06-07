@@ -40,9 +40,10 @@ artifact.
 > corrected fast-L1/L2 row at L1
 > `lb=3,nq=20` and L2 `lb=5,nq=12` measures `149,743` bytes for the actual
 > compact wrapper and `148,866` bytes for the metadata-free compact body, with
-> latest focused timings of `24.865s` L1 proving and `48.281s` L2 proving. The
-> L2 timing is dominated by STARK proving (`38.693s`) plus AIR/setup
-> (`9.477s`), not recursive-verifier witness execution. A focused `lb4,nq15`
+> the latest release/native cached-prep rerun measuring `29.831s` L1 proving,
+> `11.136s` reusable L2 prep, and `44.936s` cached L2 proving. The cached L2
+> proving time is dominated by STARK proving (`44.877s`), not
+> recursive-verifier witness execution. A focused `lb4,nq15`
 > frontier sweep rules out cheap FRI/cap retuning: the fastest-size frontier is
 > still `174,676` bytes. The relaxed size gate is now plausibly in range; the
 > relaxed total proving-time gate is not yet met.

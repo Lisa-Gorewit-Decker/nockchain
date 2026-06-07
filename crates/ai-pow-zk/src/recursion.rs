@@ -1801,17 +1801,39 @@ mod tests {
 
     struct L2ProofForTestPearl {
         proof: AiPowL1OuterProof,
-        circuit_prover_data:
+        circuit_prover_data: std::rc::Rc<
             p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksTipsConfig>,
+        >,
         timings: L2ProofTimingsForTestPearl,
+    }
+
+    struct L2VerifierPrepForTestPearl {
+        verification_circuit: p3_circuit::Circuit<Challenge>,
+        verifier_inputs: BatchStarkVerifierInputsBuilder<
+            p3_circuit_prover::config::GoldilocksTipsConfig,
+            L2Comm,
+            L2InnerFri,
+        >,
+        mmcs_op_ids: Vec<NonPrimitiveOpId>,
+        circuit_prover_data: std::rc::Rc<
+            p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksTipsConfig>,
+        >,
+        prover:
+            p3_circuit_prover::BatchStarkProver<p3_circuit_prover::config::GoldilocksTipsConfig>,
+        l2_statement_public_binding_lanes: usize,
+        timings: L2PrepTimingsForTestPearl,
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct L2PrepTimingsForTestPearl {
+        circuit_define_ms: u128,
+        circuit_build_ms: u128,
+        air_setup_ms: u128,
     }
 
     #[derive(Clone, Copy, Debug, Default)]
     struct L2ProofTimingsForTestPearl {
-        circuit_define_ms: u128,
-        circuit_build_ms: u128,
         input_pack_ms: u128,
-        air_setup_ms: u128,
         witness_run_ms: u128,
         stark_prove_ms: u128,
         stark_verify_ms: u128,
@@ -1887,15 +1909,14 @@ mod tests {
         )
     }
 
-    fn prove_l2_over_l1_outer_for_test_pearl(
+    fn build_l2_over_l1_outer_prep_for_test_pearl(
         l1: &AiPowL1OuterProof,
-        statement_digest_public_values: &[Val],
         l1_config: p3_circuit_prover::config::GoldilocksTipsConfig,
         l1_fri_verifier_params: &FriVerifierParams,
         l2_config: p3_circuit_prover::config::GoldilocksTipsConfig,
         l2_log_blowup: usize,
         l2_log_final_poly_len: usize,
-    ) -> Result<L2ProofForTestPearl, String> {
+    ) -> Result<L2VerifierPrepForTestPearl, String> {
         use p3_batch_stark::ProverData;
         use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
         use p3_circuit_prover::{
@@ -1907,10 +1928,10 @@ mod tests {
 
         const TRACE_D: usize = 2;
 
-        let l1_public_values = l2_public_values_for_l1(l1, statement_digest_public_values);
-        let l2_statement_public_values =
-            l2_statement_public_values_for_l1(statement_digest_public_values);
-        let l2_statement_public_binding_lanes = statement_digest_public_values.len();
+        let l2_statement_public_binding_lanes = l1.public_binding_lanes * l1.ext_degree;
+        if l2_statement_public_binding_lanes == 0 {
+            return Err("L2 prep requires non-empty L1 public binding lanes".to_string());
+        }
         let circuit_define_start = std::time::Instant::now();
         let mut circuit_builder = CircuitBuilder::<Challenge>::new();
         circuit_builder.enable_tip5_perm::<Tip5Goldilocks, _>(
@@ -1949,10 +1970,6 @@ mod tests {
             .build()
             .map_err(|e| format!("build L2 circuit: {e:?}"))?;
         let circuit_build_ms = circuit_build_start.elapsed().as_millis();
-        let input_pack_start = std::time::Instant::now();
-        let (public_inputs, private_inputs) =
-            verifier_inputs.pack_values(&l1_public_values, &l1.proof, &l1.stark_common);
-        let input_pack_ms = input_pack_start.elapsed().as_millis();
 
         let air_setup_start = std::time::Instant::now();
         let l2_table_packing = TablePacking::new(l2_statement_public_binding_lanes, 8)
@@ -1988,12 +2005,53 @@ mod tests {
             .collect::<Vec<_>>();
         let prover_data =
             ProverData::from_airs_and_degrees(&l2_config, &lookup_metadata_airs, &degrees);
-        let circuit_prover_data =
-            CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+        let circuit_prover_data = std::rc::Rc::new(CircuitProverData::new(
+            prover_data, primitive_columns, non_primitive_columns,
+        ));
         let air_setup_ms = air_setup_start.elapsed().as_millis();
 
+        let mut prover = BatchStarkProver::new(l2_config).with_table_packing(l2_table_packing);
+        prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+        prover.register_recompose_table::<2>(true);
+
+        Ok(L2VerifierPrepForTestPearl {
+            verification_circuit,
+            verifier_inputs,
+            mmcs_op_ids,
+            circuit_prover_data,
+            prover,
+            l2_statement_public_binding_lanes,
+            timings: L2PrepTimingsForTestPearl {
+                circuit_define_ms,
+                circuit_build_ms,
+                air_setup_ms,
+            },
+        })
+    }
+
+    fn prove_l2_over_l1_outer_with_prep_for_test_pearl(
+        prep: &L2VerifierPrepForTestPearl,
+        l1: &AiPowL1OuterProof,
+        statement_digest_public_values: &[Val],
+    ) -> Result<L2ProofForTestPearl, String> {
+        let l1_public_values = l2_public_values_for_l1(l1, statement_digest_public_values);
+        let l2_statement_public_values =
+            l2_statement_public_values_for_l1(statement_digest_public_values);
+        if statement_digest_public_values.len() != prep.l2_statement_public_binding_lanes {
+            return Err(format!(
+                "L2 prep public binding lane mismatch: prep has {}, proof statement has {}",
+                prep.l2_statement_public_binding_lanes,
+                statement_digest_public_values.len()
+            ));
+        }
+        let input_pack_start = std::time::Instant::now();
+        let (public_inputs, private_inputs) = prep
+            .verifier_inputs
+            .pack_values(&l1_public_values, &l1.proof, &l1.stark_common);
+        let input_pack_ms = input_pack_start.elapsed().as_millis();
+
         let witness_run_start = std::time::Instant::now();
-        let mut runner = verification_circuit.runner();
+        let mut runner = prep.verification_circuit.runner();
         runner
             .set_public_inputs(&public_inputs)
             .map_err(|e| format!("L2 set public inputs: {e:?}"))?;
@@ -2010,7 +2068,7 @@ mod tests {
             DIGEST_ELEMS,
         >(
             &mut runner,
-            &mmcs_op_ids,
+            &prep.mmcs_op_ids,
             &l1.proof.opening_proof,
             Tip5Config::GOLDILOCKS_W16,
         )
@@ -2020,27 +2078,22 @@ mod tests {
             .map_err(|e| format!("L2 verifier circuit rejected L1 proof: {e:?}"))?;
         let witness_run_ms = witness_run_start.elapsed().as_millis();
 
-        let mut prover = BatchStarkProver::new(l2_config).with_table_packing(l2_table_packing);
-        prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
-        prover.register_recompose_table::<2>(true);
         let stark_prove_start = std::time::Instant::now();
-        let proof = prover
-            .prove_all_tables(&traces, &circuit_prover_data)
+        let proof = prep
+            .prover
+            .prove_all_tables(&traces, prep.circuit_prover_data.as_ref())
             .map_err(|e| format!("L2 prove_all_tables: {e:?}"))?;
         let stark_prove_ms = stark_prove_start.elapsed().as_millis();
         let stark_verify_start = std::time::Instant::now();
-        prover
+        prep.prover
             .verify_all_tables_with_public_values(&proof, &l2_statement_public_values)
             .map_err(|e| format!("L2 verify_all_tables: {e:?}"))?;
         let stark_verify_ms = stark_verify_start.elapsed().as_millis();
         Ok(L2ProofForTestPearl {
             proof,
-            circuit_prover_data,
+            circuit_prover_data: std::rc::Rc::clone(&prep.circuit_prover_data),
             timings: L2ProofTimingsForTestPearl {
-                circuit_define_ms,
-                circuit_build_ms,
                 input_pack_ms,
-                air_setup_ms,
                 witness_run_ms,
                 stark_prove_ms,
                 stark_verify_ms,
@@ -2978,18 +3031,26 @@ mod tests {
                 l2_log_blowup, l2_num_queries, l2_log_final_poly_len, l2_max_log_arity,
                 l2_cap_height,
             );
-            let l2_prove_start = Instant::now();
-            let l2_artifact = prove_l2_over_l1_outer_for_test_pearl(
+            let l2_total_prove_start = Instant::now();
+            let l2_prep_wall_start = Instant::now();
+            let l2_prep = build_l2_over_l1_outer_prep_for_test_pearl(
                 &l1,
-                &statement_digest_public_values,
                 l1_config.clone(),
                 &pure_query_fri_verifier_params_for_l1(l1_log_blowup, l1_log_final_poly_len),
                 l2_config.clone(),
                 l2_log_blowup,
                 l2_log_final_poly_len,
             )
-            .expect("pure-query L2 proof over statement-bound L1");
-            let l2_prove_ms = l2_prove_start.elapsed().as_millis();
+            .expect("pure-query L2 prep over statement-bound L1");
+            let l2_prep_wall_ms = l2_prep_wall_start.elapsed().as_millis();
+            let l2_prep_timings = l2_prep.timings;
+            let l2_cached_prove_start = Instant::now();
+            let l2_artifact = prove_l2_over_l1_outer_with_prep_for_test_pearl(
+                &l2_prep, &l1, &statement_digest_public_values,
+            )
+            .expect("pure-query L2 proof over statement-bound L1 with cached prep");
+            let l2_cached_prove_ms = l2_cached_prove_start.elapsed().as_millis();
+            let l2_prove_ms = l2_total_prove_start.elapsed().as_millis();
             let L2ProofForTestPearl {
                 proof: l2,
                 circuit_prover_data: l2_circuit_prover_data,
@@ -3064,7 +3125,10 @@ mod tests {
             let l2_compact_start = Instant::now();
             let l2_compact = l2_compact_verifier
                 .compact_goldilocks_tip5_path_pruned_preprocessed_with_public_values(
-                    l2, &l2_statement_public_values, &l2_circuit_prover_data, l2_fri_shape,
+                    l2,
+                    &l2_statement_public_values,
+                    l2_circuit_prover_data.as_ref(),
+                    l2_fri_shape,
                 )
                 .expect("compact L2 proof with path-pruned preprocessed adapter");
             let l2_compact_ms = l2_compact_start.elapsed().as_millis();
@@ -3110,7 +3174,9 @@ mod tests {
             let l2_compact_verify_start = Instant::now();
             let l2_compact_context =
                 p3_circuit_prover::GoldilocksTip5PathPrunedCompactVerifierContext::new(
-                    &l2_metadata, &l2_circuit_prover_data, l2_fri_shape,
+                    &l2_metadata,
+                    l2_circuit_prover_data.as_ref(),
+                    l2_fri_shape,
                     &l2_statement_public_values,
                 );
             l2_compact_verifier
@@ -3121,7 +3187,7 @@ mod tests {
             let l2_compact_verify_ms = l2_compact_verify_start.elapsed().as_millis();
 
             eprintln!(
-                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 {l1_label} -> L2 {l2_label}]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_preprocessed_ood={} l1_preprocessed_input_batch={} l1_preprocessed_input_opened_values={} l1_preprocessed_input_merkle={} l1_preprocessed_omitted_projected_outer={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_preprocessed_ood={} l2_preprocessed_input_batch={} l2_preprocessed_input_opened_values={} l2_preprocessed_input_merkle={} l2_preprocessed_omitted_projected_outer={} l2_actual_compact={} l2_actual_compact_body={} l2_actual_compact_proof_body={} l2_actual_compact_restoration={} l2_actual_compact_input_paths={} l2_actual_compact_commit_paths={} l2_actual_compact_path_sets={} l2_actual_compact_original_orders={} l2_actual_compact_pruned_paths={} l2_actual_compact_pruned_siblings={} l2_actual_compact_frontier_siblings={} l2_actual_compact_frontier_sibling_savings={} l2_actual_compact_frontier_digest_savings={} l2_actual_compact_build_ms={} l2_actual_compact_body_verify_ms={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_log_final_poly_len={} l2_max_log_arity={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_circuit_define_ms={} l2_circuit_build_ms={} l2_input_pack_ms={} l2_air_setup_ms={} l2_witness_run_ms={} l2_stark_prove_ms={} l2_stark_verify_ms={} l2_prove_ms={}",
+                "pure-query L2-over-L1 statement-bound candidate [TEST_PEARL L1 {l1_label} -> L2 {l2_label}]: l1_outer={} l1_proof_body={} l1_path_pruned_projected_outer={} l1_path_raw_siblings={} l1_path_mean_compressed_siblings={} l1_path_mean_digest_savings={} l1_preprocessed_ood={} l1_preprocessed_input_batch={} l1_preprocessed_input_opened_values={} l1_preprocessed_input_merkle={} l1_preprocessed_omitted_projected_outer={} l1_public_binding_lanes={} l1_log_blowup={} l1_num_queries={} l1_cap_height={} l1_commit_pow_bits={} l1_query_pow_bits={} l1_johnson_bits={} l1_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_metadata={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_path_pruned_projected_outer={} l2_path_raw_siblings={} l2_path_mean_compressed_siblings={} l2_path_mean_digest_savings={} l2_preprocessed_ood={} l2_preprocessed_input_batch={} l2_preprocessed_input_opened_values={} l2_preprocessed_input_merkle={} l2_preprocessed_omitted_projected_outer={} l2_actual_compact={} l2_actual_compact_body={} l2_actual_compact_proof_body={} l2_actual_compact_restoration={} l2_actual_compact_input_paths={} l2_actual_compact_commit_paths={} l2_actual_compact_path_sets={} l2_actual_compact_original_orders={} l2_actual_compact_pruned_paths={} l2_actual_compact_pruned_siblings={} l2_actual_compact_frontier_siblings={} l2_actual_compact_frontier_sibling_savings={} l2_actual_compact_frontier_digest_savings={} l2_actual_compact_build_ms={} l2_actual_compact_body_verify_ms={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_log_final_poly_len={} l2_max_log_arity={} l2_cap_height={} l2_commit_pow_bits={} l2_query_pow_bits={} l2_johnson_bits={} l2_prep_wall_ms={} l2_cached_prove_ms={} l2_circuit_define_ms={} l2_circuit_build_ms={} l2_input_pack_ms={} l2_air_setup_ms={} l2_witness_run_ms={} l2_stark_prove_ms={} l2_stark_verify_ms={} l2_prove_ms={}",
                 l1_outer_bytes,
                 l1_proof_body_bytes,
                 l1_path_pruned_projected_outer_bytes,
@@ -3182,10 +3248,12 @@ mod tests {
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
                 p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
                 l2_log_blowup * l2_num_queries,
-                l2_timings.circuit_define_ms,
-                l2_timings.circuit_build_ms,
+                l2_prep_wall_ms,
+                l2_cached_prove_ms,
+                l2_prep_timings.circuit_define_ms,
+                l2_prep_timings.circuit_build_ms,
                 l2_timings.input_pack_ms,
-                l2_timings.air_setup_ms,
+                l2_prep_timings.air_setup_ms,
                 l2_timings.witness_run_ms,
                 l2_timings.stark_prove_ms,
                 l2_timings.stark_verify_ms,
