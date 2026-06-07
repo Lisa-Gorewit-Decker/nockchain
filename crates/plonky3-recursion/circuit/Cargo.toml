@@ -37,7 +37,6 @@ tracing.workspace = true
 unroll.workspace = true
 
 [dev-dependencies]
-criterion = { version = "0.8", features = ["html_reports"] }
 p3-air.workspace = true
 p3-baby-bear.workspace = true
 p3-batch-stark.workspace = true
@@ -59,10 +58,6 @@ tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 [features]
 debugging = []
 profiling = ["debugging"]
-
-[[bench]]
-name = "runner_traces"
-harness = false
 
 [lints]
 workspace = true

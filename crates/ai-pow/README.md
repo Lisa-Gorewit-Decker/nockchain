@@ -14,29 +14,18 @@ boundary. Plain proofs are mining internals and diagnostics.
 An earlier experimental verifiable-inference crate (`ai-pow-vi`) was
 removed — it was offline tooling, not on the production path.
 
-## Open lines of work
+## Production certificate path
 
-The **active in-flight residuals** on the ai-pow side. Each row
-points to the design / status doc that owns it. Pearl-byte-
-equivalence on the *mineable unit* is the byte-equiv anchor for
-the SNARK side (`ai-pow-zk`); open ai-pow-side residuals are
-primarily Pearl-reference + quant-extraction.
+`ai-pow` owns the Pearl-compatible mineable work unit and plain-proof
+diagnostics. The production recursive certificate is built and verified through
+`ai-pow-zk` and the miner integration. The current production pipeline,
+including every cryptographic binding and the verifier-key digest, is documented
+in
+[`../ai-pow-zk/docs/2026-06-07_COMPACT_RECURSIVE_PRODUCTION_PIPELINE.md`](../ai-pow-zk/docs/2026-06-07_COMPACT_RECURSIVE_PRODUCTION_PIPELINE.md).
 
-| Open work | Doc (in [`docs/`](docs/)) | Status |
-|---|---|---|
-| **Pearl divergence inventory** (the primary closure tracker) | [`2026-05-13_PEARL_COMPARISON.md`](docs/2026-05-13_PEARL_COMPARISON.md) | Live |
-| **Pearl-spec audit** that drove the v2 → v3 redesign | [`2026-05-13_FLAWS.md`](docs/2026-05-13_FLAWS.md) | Live (historical) |
-| **Phase B1.1 Pearl-faithfulness audit** — vendored reference ≡ Pearl `zk-pow` line-for-line + real 16 GB weights byte-process | [`2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md`](docs/2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md) | COMPLETE on the real shipped model (see Phase-B in roadmap) |
-| **B1 — Pearl reference vectors** from Pearl's miner (golden `(κ, s_a, s_b, E/F, tile digest)` to bit-anchor `ai-pow` against Pearl) | (planned; see roadmap Phase B1 in [`../ai-pow-zk/docs/2026-05-17_PRODUCTION_ROADMAP.md`](../ai-pow-zk/docs/2026-05-17_PRODUCTION_ROADMAP.md)) | Open — needs Pearl-side artifacts |
-| **B2 — Quant-extraction contract** for the vLLM plugin's INT7/INT8 → Pearl type-0 `[−64,64]` int8 `(A,B,μ)` mapping | same roadmap Phase B2 | Open — needs Pearl-side artifacts |
-| **Production roadmap** (where Phase B / D1 / D2 / FP8 are scoped) | [`../ai-pow-zk/docs/2026-05-17_PRODUCTION_ROADMAP.md`](../ai-pow-zk/docs/2026-05-17_PRODUCTION_ROADMAP.md) | Live (lives in ai-pow-zk's docs but covers ai-pow too) |
-
-The downstream SNARK side (`ai-pow-zk`) has its own open lines
-of work tracker — see [`../ai-pow-zk/README.md#open-lines-of-work`](../ai-pow-zk/README.md#open-lines-of-work)
-for M-S5b / C4 / measurements / etc.
-
-The [`docs/`](docs/) directory has the full categorized index in
-[`docs/README.md`](docs/README.md).
+The [`docs/`](docs/) directory intentionally keeps only a small current index.
+Historical Pearl-audit and route-comparison notes remain available in git
+history, but they are not part of the current production API guidance.
 
 ## Scope
 
@@ -89,10 +78,9 @@ What `ai-pow` deliberately does **not** include:
 
 ## Pearl alignment
 
-Cross-implementation byte-equivalence against the Pearl upstream is
-tracked in [`2026-05-13_PEARL_COMPARISON.md`](docs/2026-05-13_PEARL_COMPARISON.md). Every
-load-bearing protocol surface has a captured Pearl byte-fixture in
-`tests/fixtures/pearl.rs`, exercised by `tests/pearl_compat_fixtures.rs`:
+Cross-implementation byte-equivalence against the Pearl upstream is captured by
+the fixture table in `tests/fixtures/pearl.rs` and exercised by
+`tests/pearl_compat_fixtures.rs`:
 
 | Section | Topic | Status |
 |---|---|---|
@@ -127,8 +115,7 @@ list of `ai-pow`-side derived portions.
 | `src/proof.rs` | `MatmulProof`, `TileOpening`, encode / decode |
 | `src/synth.rs` | Deterministic `(A, B)` test synthesis |
 | `tests/` | End-to-end, adversarial, soundness simulation, LLM-shape, Pearl-compat fixtures |
-| `docs/2026-05-13_FLAWS.md` | The Pearl-spec audit that drove the v2 → v3 redesign |
-| `docs/2026-05-13_PEARL_COMPARISON.md` | Divergence inventory + closure tracking |
+| `docs/README.md` | Current documentation index |
 
 ## Tests
 

@@ -203,10 +203,9 @@ fn b1_0e_difficulty_target_well_formed_at_real_preset() {
 
 // ── B1.1 — ai-pow byte-processes the REAL model weights ─────────
 //
-// The B1 *protocol-equivalence* risk is audit-closed
-// (`2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md`: vendored ref ≡ current real
-// `Pearl zk-pow`, line-for-line). With the real shipped weights
-// now available (`~/Dev/Llama-3.1-8B-Instruct-pearl`, set
+// The B1 protocol-equivalence risk is closed by the retained Pearl fixtures
+// and by this real-weight regression. With the real shipped weights
+// available (`~/Dev/Llama-3.1-8B-Instruct-pearl`, set
 // `PEARL_MODEL_DIR` to override), B1.1 exercises ai-pow's full
 // audited mineable-unit pipeline on a **real `gate_proj` INT7
 // weight tile** at the real `μ` (`k=4096, r=64, tile=64`).
@@ -224,8 +223,7 @@ fn b1_0e_difficulty_target_well_formed_at_real_preset() {
 /// `model.layers.0.mlp.gate_proj.weight` (dtype I8, shape
 /// [14336,4096]); the file's safetensors JSON-header length and
 /// the tensor's data offset. If the model file changes upstream,
-/// the header-length assertion fails fast (regenerate via the
-/// `python3` snippet in `2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md`).
+/// the header-length assertion fails fast.
 const ST_HEADER_LEN: u64 = 36_688;
 const GATE0_DATA_OFFSET: u64 = 2_512_125_952;
 const ORACLE_ROW0_HEAD: [i8; 8] = [-23, -10, -2, -1, 11, 5, -5, -35];
@@ -260,9 +258,8 @@ fn read_real_gate_proj_tile(path: &std::path::Path) -> Vec<i8> {
     let hdr_len = u64::from_le_bytes(len8);
     assert_eq!(
         hdr_len, ST_HEADER_LEN,
-        "safetensors header length changed — model file differs from \
-         the recorded Python oracle; regenerate (see \
-         2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md)"
+        "safetensors header length changed; model file differs from \
+         the recorded Python oracle"
     );
     let abs = 8 + hdr_len + GATE0_DATA_OFFSET;
     f.seek(SeekFrom::Start(abs)).expect("seek tile");

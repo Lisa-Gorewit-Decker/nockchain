@@ -5494,12 +5494,9 @@ mod tests {
     ///    the C3 identity that ties leaf-row `UINT8_DATA[0..64]`
     ///    to `BLAKE3_MSG ∈ HASH_A` at a specific position.
     ///
-    /// Per `crates/ai-pow-zk/docs/2026-05-20_TAMPER_GAP_LIST.md`
-    /// § 3.1, this 3-layer coverage **subsumes** the conceptual
-    /// "h_a / h_b root binding at strip-opening leaf rows" gap
-    /// (GAP-G1 in the CSA categorization). A dedicated root-side
-    /// tamper would not exercise a new rejection mechanism — the
-    /// existing 3-layer coverage already binds the entire chain.
+    /// This 3-layer coverage binds the strip-opening leaf bytes to the
+    /// public matrix root. A root-side tamper would exercise the same
+    /// rejection mechanism because the whole chain is already bound.
     #[test]
     fn sec_4c2_cx2_g1_p16_position_exact_adversarial_rejects() {
         use ai_pow_zk::composite_layout::{IS_MSG_MAT, TOTAL_TRACE_WIDTH, UINT8_DATA_START};

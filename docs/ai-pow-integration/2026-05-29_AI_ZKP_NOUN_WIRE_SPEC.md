@@ -1,7 +1,7 @@
 # AI-PoW ZKP Noun Wire Specification
 
 Date: 2026-05-29
-Status: Draft specification, sizing note, and implementation checklist.
+Status: Historical draft specification and implementation checklist.
 
 > Supersession note, 2026-06-01: the recursive certificate structure in this
 > document remains useful background, but the canonical production `%ai-pow`
@@ -10,13 +10,13 @@ Status: Draft specification, sizing note, and implementation checklist.
 > submission shape and Pearl-compatible nonce envelope are specified in
 > `2026-06-01_PEARL_MERGE_MINING_COMPATIBILITY_SPEC.md`.
 >
-> Route decision, 2026-06-07: the active production recursive-certificate
-> candidate is the compact final-layer batch-STARK L2 route over a fast
-> statement-bound L1 proof, summarized in
-> `2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md`. Native
-> terminal remains the fallback route. The older large batch-STARK checkpoint
-> certificate remains a hardened verifier checkpoint/fallback object, but it is
-> not the production wire artifact.
+> Route decision, 2026-06-07: the active production recursive-certificate path
+> is the compact final-layer batch-STARK route over a fast statement-bound L1
+> proof. The current source of truth is
+> `crates/ai-pow-zk/docs/2026-06-07_COMPACT_RECURSIVE_PRODUCTION_PIPELINE.md`.
+> Native terminal compression experiments were removed from the AI-PoW API. The
+> older full recursive checkpoint remains a regression/checkpoint object, not
+> the production wire artifact.
 
 ## 1. Goal
 
@@ -67,9 +67,8 @@ an `AiPowBatchProof`/Layer-0 ZKP proof arm.
 The active production proof artifact target is now the compact final-layer
 batch-STARK L2 route over a fast statement-bound L1 proof, with
 verifier-owned setup/metadata binding and explicit final public-value binding
-of the L1 statement digest. Native terminal compression remains the fallback
-route described in `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md`. The older
-large batch-STARK recursive certificate exposed by
+of the L1 statement digest. Native terminal compression experiments were
+removed from the AI-PoW API. The older large batch-STARK recursive certificate exposed by
 `ai_pow_zk::recursion::AiPowRecursiveCertificate` and produced through
 `prove_canonical_ai_pow_certificate` is a soundness-hardened
 recursive-verifier checkpoint/fallback path, not the final production wire
@@ -363,193 +362,11 @@ also bounded by the caller's `CertificateNounLimits`; attackers cannot bypass
 the jam/cue decoder limits by handing an already-materialized `AiProofNode` to
 the Rust verifier path.
 
-The current real recursive certificate noun measurement is:
-
-```text
-GNORT_DISABLE=1 cargo test -p ai-pow-miner --features node \
-  real_recursive_certificate_noun_roundtrips_and_prints_size \
-  --release -- --ignored --nocapture
-```
-
-Measured on 2026-06-01 with the then-current small recursive fixture
-(pre-2026-06-03 fixed-int byte helper):
-
-| Artifact | Bytes | KiB |
-|---|---:|---:|
-| jammed structured `ai-pow-certificate` noun | 193,093 | 188.6 KiB |
-| legacy postcard L1 recursive certificate | 125,162 | 122.2 KiB |
-
-That fixture proves the structural path, but it is not yet the final
-production-size benchmark. Exact byte counts can vary slightly across proof
-runs because some encoded vectors use variable-width atom/jam representation.
-The production `prod_recursion_measure` harness below remains the better
-estimate for the compact L1 certificate payload. The expected structured-noun
-size profile is:
-
-| Encoding choice | Expected size impact |
-|---|---:|
-| one proof-wide bincode atom | about 383 KiB today, but rejected by this spec |
-| fully exploded Hoon lists of every field element and digest limb | likely materially larger than bincode and not acceptable |
-| structured noun with packed homogeneous vectors as specified here | currently about 1.54x postcard on the small real recursive fixture |
-| future ~100 KiB recursive/compressed certificate using the same structured-vector approach | about 100-110 KiB, depending on certificate shape |
-
-The packed-vector structure is necessary. A pure list encoding would add one cell per field element, per extension limb, and per Merkle digest limb. That is precisely the cost we need to avoid while still giving Hoon a proof-shaped noun.
-
-The implementation includes an ignored measurement test
-`real_recursive_certificate_noun_roundtrips_and_prints_size` that prints,
-for a real recursive certificate:
-
-- total jammed `ai-pow-certificate` size;
-- canonical fixed-int L1 byte-helper size;
-- recursive prove/build/verify timing;
-- proof-node reconstruction and recursive verification success after jam/cue.
-
-### Hardened Batch-STARK Recursive Checkpoint Benchmark
-
-The historical batch-STARK recursive checkpoint is the recursive L1
-certificate, not the Layer-0 composite proof. The current repository has a
-dedicated measurement harness:
-
-```text
-RUSTFLAGS="-Ctarget-cpu=native" \
-  cargo run -p ai-pow-zk --release --features recursion \
-  --example prod_recursion_measure -- 15
-```
-
-This benchmark uses the production AI-PoW Layer-0 shape and the hardened
-batch-STARK recursive checkpoint profile documented in the harness:
-
-- model params: `m=4096 k=4096 n=14336 noise_rank=64 tile=8`;
-- L0 profile: `CircuitConfig::PROD` with `log_blowup=4`, `num_queries=15`, `pow_bits=0`;
-- L1 profile: `goldilocks_tip5_60bit()` with `log_blowup=4`, `num_queries=9`, `query_pow_bits=24`, `cap_height=5`;
-- trace: `2^15 = 32768` rows by `1917` columns;
-- trace contents: zero-activity baseline at production dimensions. The
-  STARK/FRI proof cost is data-oblivious for this benchmark, so size
-  and prover time are dimension/profile measurements without needing
-  16 GB of model weights.
-
-Measured on 2026-06-05 after the position-keyed `noised_packed`
-constraint update, the `urange8` redundant-query reduction, L1 Horner
-packing, digest-binding the outer certificate's statement public
-values, removing Layer-0 proof-system PoW grinding
-(`CircuitConfig::PROD.pow_bits=0`), and removing the low-soundness L1
-`goldilocks_tip5()` testing
-profile. The hardened L1 outer certificate profile is now
-`goldilocks_tip5_60bit()` only: `log_blowup=4`, `num_queries=9`,
-`query_pow_bits=24`, `cap_height=5`, for 60 Johnson bits.
-
-| Stage | Time |
-|---|---:|
-| L0 composite prove | 34.11 s |
-| L1 verifier-circuit build | 0.51 s |
-| L1 in-circuit verify | 0.06 s |
-| L1 outer certificate prove + verify | 59.21 s |
-| End-to-end trace-to-recursive-proof time | 93.88 s |
-| Recursive-only time after L0 proof exists | 59.77 s |
-
-Serialized sizes from the same run:
-
-| Artifact | Bytes | KiB |
-|---|---:|---:|
-| L0 composite proof | 304,048 | 296.9 KiB |
-| L1 batch-STARK proof body inside checkpoint | 152,700 | 149.1 KiB |
-| L1 batch-STARK checkpoint certificate (legacy postcard comparison) | 1,162,800 | 1,135.5 KiB |
-| L1 batch-STARK checkpoint certificate (fixed-int bincode helper) | 5,933,764 | 5,794.7 KiB |
-| L1 batch-STARK checkpoint certificate (gzip-best envelope) | 366,944 | 358.3 KiB |
-
-The batch-STARK L1 certificate breakdown from the same run was:
-
-| Component | KiB |
-|---|---:|
-| proof commitments | 4.5 KiB |
-| opened values | 24.0 KiB |
-| opening proof | 117.3 KiB |
-| global lookup data | 3.4 KiB |
-
-The opening proof still dominates the L1 proof body under the required
-9-query, 60-bit L1 FRI profile, but the full checkpoint certificate is
-now much larger than the proof body because it carries verifier context.
-A direct Pearl/Plonky2-style Merkle path-compression model in the
-2026-06-05 rerun saw 11 tree groups and 1008 raw auth siblings; it saved
-only 1.4 KiB on average (5.4 KiB best sampled, 0 KiB worst sampled).
-This route cannot reach the ~100 KiB target, and any real version would
-have to rederive query indices from the Fiat-Shamir transcript rather
-than trusting serialized indices.
-
-A further measured `nq=8, query_pow=28` profile reduced the canonical
-fixed-int L1 certificate to 185.6 KiB, but rejected itself on
-performance: the L1 outer stage rose to 61.90 s and end-to-end time to
-94.17 s. A soundness-neutral cap-height trial (`cap_height=6`) was also
-rejected: it grew the fixed-int L1 certificate to 209.6 KiB and raised
-the L1 outer stage to 56.86 s. The earlier ~100 KiB result was not
-production-sound: it used the now-removed tiny L1 testing profile
-(`log_blowup=2`, `num_queries=2`, about five FRI bits). That measurement
-is retained below only as a superseded data point and must not be used as
-a production certificate size.
-
-Process-level `/usr/bin/time -l` for the same hot-build run reported
-`63.68 real`, `666.90 user`, `11.33 sys`, and `11,745,460,224` bytes
-maximum resident set size.
-
-For comparison, the 2026-05-29 native run before this constraint update
-was:
-
-```text
-CSV,15,32768,1911,27141,436,59,11980,258032,103023
-```
-
-The 2026-06-03 post-audit, pre-optimization native hot-build result was:
-
-```text
-CSV,15,32768,1917,35336,485,67,13117,308368,125207
-```
-
-The superseded 2026-06-03 low-soundness optimized result was:
-
-```text
-CSV,15,32768,1917,33127,494,63,8276,304205,103045
-```
-
-That row hit ~100 KiB only because L1 used the five-bit testing
-profile. The current production-sound hot-build result is:
-
-```text
-CSV,15,32768,1917,33156,488,65,27289,304448,336632
-```
-
-The rejected optimization candidates were: removing all live `urange8`
-queries, which made the recursive proof shape fail lookup verification;
-larger L1 ALU lane packing, which widened the proof and increased S5
-time; NPO lane packing, which increased the certificate without lowering
-total time; and lower FRI-query settings, which are now disallowed for
-production because the recursive certificate must retain at least 60
-Johnson bits. The accepted L1 packing change is soundness-neutral: it
-changes only how consecutive Horner accumulator operations are packed
-into the recursive verifier's ALU table, and the chosen packing is
-stored in the certificate metadata and checked by
-`verify_recursive_certificate`.
-
-The accepted statement-size optimization binds a 5-limb Tip5 digest of
-the 60 Layer-0 statement public values as the outer certificate's public
-statement instead of binding all 60 values directly. The L1 verifier
-circuit still consumes the full 60 values while verifying the Layer-0
-proof and constrains the public digest to those values in-circuit, so a
-metadata-swapped statement changes the digest and is rejected by
-`verify_recursive_certificate`.
-
-CSV columns are:
-
-```text
-log2_rows, rows, width, l0_prove_ms, l1_build_ms,
-l1_verify_ms, l1_cert_ms, l0_bytes, l1_bytes
-```
-
-Important caveat: these byte counts are `postcard` serialization of the
-current Rust proof objects. The final consensus artifact is the structured noun
-encoder described here. The current structured-noun harness proves the noun
-roundtrip on a small real recursive certificate; the final production-size gate
-must run the same structured noun measurement on the final production L1
-certificate shape.
+The current compact recursive certificate sizing, timing, commitment bindings,
+and accepted/rejected route decisions are documented in
+`crates/ai-pow-zk/docs/2026-06-07_COMPACT_RECURSIVE_PRODUCTION_PIPELINE.md`.
+Historical native-terminal measurements and deleted measurement examples are
+intentionally not part of the current API or production documentation.
 
 ## 10. Verification Checks Required By This Shape
 
@@ -575,10 +392,9 @@ Before accepting `%ai-pow`, consensus must require:
 18. `public-inputs.hash-b == commitments.h-b-chunk`.
 19. `public-inputs.hash-jackpot <= target`.
 20. Rust verifies the structured recursive certificate with the production
-    terminal verifier once wired. The batch-STARK checkpoint verifier
-    `verify_recursive_certificate` remains soundness-hardened and verifies the
-    outer recursive STARK envelope plus submitted outer proof body, but is not
-    the final production size/time path.
+    compact batch-STARK verifier once wired. The older checkpoint verifier
+    remains soundness-hardened for regression use, but is not the production
+    wire artifact.
 21. Rust verifies that the certificate's bound public values match the
     canonical statement. For native AI-PoW this means the full public-input
     vector rebuilt from config, commitments, `found-idx`, block commitment,

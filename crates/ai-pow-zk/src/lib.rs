@@ -92,7 +92,6 @@
 //!   verifier-derived statement from block data, and calls the Rust verifier.
 //!   Until that hook is wired, the Hoon/kernel path remains fail-closed.
 
-pub mod bench_suite;
 pub mod blake3_tree;
 pub mod canonical;
 pub mod chips;

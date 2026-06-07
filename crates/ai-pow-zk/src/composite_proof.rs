@@ -991,10 +991,8 @@ mod tests {
     /// becomes `1 · (SX_XR[1] − SX_XR[0]) ≠ 0` ⇒ M1 rejection at
     /// `composite_verify_pinned_logup`.
     ///
-    /// Per `2026-05-20_TAMPER_TEST_SPECIFICATION.md` § 3.1 (S3 spec)
-    /// and `2026-05-20_TAMPER_GAP_LIST.md` § 2.2 (S2 reclassification
-    /// of K3 from GAP-G2 implicit-coverage to explicit-named test).
-    /// Closes the K3-G2-EXPLICIT backlog item.
+    /// This is the explicit K3 regression for stripe-pin binding: a wrong
+    /// selected lane must reject at `composite_verify_pinned_logup`.
     #[test]
     fn high2_2_g2_xstep_stripe_pin_rejects() {
         use p3_field::integers::QuotientMap;

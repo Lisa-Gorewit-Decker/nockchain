@@ -5,7 +5,7 @@
 //! `tests/pearl_compat_fixtures.rs` to verify our crate against Pearl
 //! without keeping the Pearl vendor code around at test time.
 //!
-//! Sections mirror `2026-05-13_PEARL_COMPARISON.md`:
+//! Sections:
 //!   S0 — Pearl protocol constants (lock-in)
 //!   S1 — `get_random_hash` PRNG byte streams (D3)
 //!   S2 — `generate_permutation_matrix` outputs (D4)

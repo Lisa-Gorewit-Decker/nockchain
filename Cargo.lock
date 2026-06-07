@@ -104,7 +104,6 @@ version = "0.1.0-experimental"
 dependencies = [
  "bincode 2.0.1",
  "blake3",
- "flate2",
  "hashbrown 0.15.5",
  "nockchain-math",
  "p3-air",
@@ -121,20 +120,14 @@ dependencies = [
  "p3-lookup",
  "p3-matrix",
  "p3-merkle-tree",
- "p3-multilinear-util",
  "p3-recursion",
  "p3-symmetric",
  "p3-tip5-circuit-air",
  "p3-uni-stark",
- "p3-whir",
  "postcard",
  "proptest",
- "rand 0.10.1",
- "rayon",
  "serde",
  "thiserror 2.0.18",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -7122,27 +7115,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "p3-sumcheck"
-version = "0.5.1"
-source = "git+https://github.com/Plonky3/Plonky3.git?rev=9fc13fa223665268f3bec16ddd43d4b592cd57a1#9fc13fa223665268f3bec16ddd43d4b592cd57a1"
-dependencies = [
- "itertools 0.14.0",
- "p3-challenger",
- "p3-commit",
- "p3-dft",
- "p3-field",
- "p3-matrix",
- "p3-maybe-rayon",
- "p3-multilinear-util",
- "p3-util",
- "p3-zk-codes",
- "rand 0.10.1",
- "serde",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
 name = "p3-symmetric"
 version = "0.5.1"
 source = "git+https://github.com/Plonky3/Plonky3.git?rev=9fc13fa223665268f3bec16ddd43d4b592cd57a1#9fc13fa223665268f3bec16ddd43d4b592cd57a1"
@@ -7193,45 +7165,6 @@ source = "git+https://github.com/Plonky3/Plonky3.git?rev=9fc13fa223665268f3bec16
 dependencies = [
  "serde",
  "transpose",
-]
-
-[[package]]
-name = "p3-whir"
-version = "0.5.1"
-source = "git+https://github.com/Plonky3/Plonky3.git?rev=9fc13fa223665268f3bec16ddd43d4b592cd57a1#9fc13fa223665268f3bec16ddd43d4b592cd57a1"
-dependencies = [
- "hashbrown 0.17.0",
- "itertools 0.14.0",
- "libm",
- "p3-challenger",
- "p3-commit",
- "p3-dft",
- "p3-field",
- "p3-matrix",
- "p3-maybe-rayon",
- "p3-merkle-tree",
- "p3-multilinear-util",
- "p3-sumcheck",
- "p3-symmetric",
- "p3-util",
- "p3-zk-codes",
- "rand 0.10.1",
- "serde",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "p3-zk-codes"
-version = "0.5.1"
-source = "git+https://github.com/Plonky3/Plonky3.git?rev=9fc13fa223665268f3bec16ddd43d4b592cd57a1#9fc13fa223665268f3bec16ddd43d4b592cd57a1"
-dependencies = [
- "itertools 0.14.0",
- "p3-dft",
- "p3-field",
- "p3-matrix",
- "p3-util",
- "rand 0.10.1",
 ]
 
 [[package]]

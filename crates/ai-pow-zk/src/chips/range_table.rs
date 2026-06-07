@@ -364,16 +364,13 @@ mod tests {
     }
 
     // =====================================================================
-    //  CSA S4 — explicit constraint-rejection tests for URange13 /
-    //  IRange7P1 / IRange8 (per
-    //  `crates/ai-pow-zk/docs/2026-05-20_TAMPER_TEST_SPECIFICATION.md` §2).
+    //  Explicit constraint-rejection tests for URange13 / IRange7P1 / IRange8.
     //
     //  The U8 + I8-non-boolean-delta variants already exist above. These
     //  fill in the missing first-row / last-row / non-boolean-delta
-    //  variants for the other three chips, closing the GAP-G2 (rename-only)
-    //  items in `2026-05-20_TAMPER_GAP_LIST.md` §2.1. Each test is a
-    //  single-cell C1 tamper rejecting via mechanism M1 (AIR `eval()`
-    //  constraint violation ⇒ `verify` returns `Err`). The paired
+    //  variants for the other three chips. Each test is a single-cell C1
+    //  tamper rejecting via mechanism M1 (AIR `eval()` constraint violation
+    //  => `verify` returns `Err`). The paired
     //  acceptance positive controls are the existing
     //  `prove_and_verify_{urange13,irange7p1,irange8}_table` tests.
     // =====================================================================

@@ -119,40 +119,6 @@ recursion = [
     "dep:postcard",
 ]
 
-# Production caller / measurement harness for the §recursion
-# integration — drives `recurse_composite_to_l1` at the real
-# Llama-3.1-8B mining params. Gated on `recursion`; the default
-# build does not compile it.
-[[example]]
-name = "prod_recursion_measure"
-required-features = ["recursion"]
-
 [dev-dependencies]
 proptest = { workspace = true }
-flate2 = { workspace = true }
-rayon = { workspace = true }
-# WHIR PCS feasibility prototype (2026-05-21) — dev-only; NOT in
-# the production trust surface. Used by `tests/test_whir_prototype.rs`
-# to measure WHIR proof bytes at parameters comparable to our FRI
-# production config + compare per-PCS bytes vs FRI head-to-head.
-p3-whir = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-multilinear-util = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-commit = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-symmetric = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-dft = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
 postcard = { version = "1.1.3", features = ["alloc"] }
-# rand 0.10 — required by Plonky3's `Perm::new_from_rng_128`
-# bound on `rand_core::Rng` (0.10 line). Workspace rand (0.9.x)
-# trait is incompatible. Use `Xoshiro128PlusPlus` directly to avoid
-# the chacha20 transitive-dep version conflict (rand-0.10 default
-# `SmallRng` pulls chacha20).
-rand_010 = { package = "rand", version = "0.10", default-features = false }
-# Prover profiling — installs a span-timing subscriber so the
-# `bench_suite` profiling test can attribute the inner ai-pow STARK
-# prove wall-clock to Plonky3's `info_span!`-instrumented phases
-# (commit-to-trace / compute-quotient / commit-to-quotient / open).
-# Dev-only; not in the production trust surface.
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }

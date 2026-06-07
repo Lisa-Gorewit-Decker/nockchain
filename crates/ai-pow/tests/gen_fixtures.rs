@@ -24,7 +24,7 @@
 //! included at `crates/ai-pow/LICENSE-PEARL` and applies to the
 //! reference functions in this file.
 //!
-//! Fixture coverage mirrors `2026-05-13_PEARL_COMPARISON.md`:
+//! Fixture coverage mirrors the section labels in `tests/fixtures/pearl.rs`:
 //!
 //!   * **Lock-in (already byte-identical)**: noise reconstruction
 //!     (matvec_sparse_perm), tile loop, jackpot hash, difficulty target.

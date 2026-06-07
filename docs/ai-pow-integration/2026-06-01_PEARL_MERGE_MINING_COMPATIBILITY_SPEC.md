@@ -218,9 +218,10 @@ verification work.
 This is separate from recursive proof bytes. Hoon sees only `[len data]` for
 the nonce and a recursive certificate artifact. As of the 2026-06-07 route
 decision, the active production recursive-proof candidate is compact
-batch-STARK L2 over a fast statement-bound L1 proof. Native terminal remains
-fallback, and the older large batch-STARK checkpoint noun remains a hardened
-checkpoint/fallback object rather than the production wire artifact.
+batch-STARK over a fast statement-bound L1 proof. Native terminal compression
+experiments were removed from the AI-PoW API, and the older large batch-STARK
+checkpoint noun remains a hardened regression/checkpoint object rather than the
+production wire artifact.
 
 ## Work Unit Terminology
 
@@ -457,10 +458,10 @@ Implemented in this branch:
   represented by an explicit strip schedule derived from the public ticket.
 - `ai_pow_miner::certificate_noun` emits `%ai-pow` artifacts with an opaque
   `[len data]` nonce and structured recursive certificate. The active
-  production candidate is compact final-layer batch-STARK L2 over a fast
-  statement-bound L1 proof, with native terminal retained as fallback. The
-  older large batch-STARK checkpoint certificate exceeds the wire-size budget
-  and must not be treated as the production artifact.
+  production candidate is compact final-layer batch-STARK over a fast
+  statement-bound L1 proof. The older large batch-STARK checkpoint certificate
+  exceeds the wire-size budget and must not be treated as the production
+  artifact.
 - Public certificate-noun construction is typed around
   the opaque `AiPowRecursiveCertificateRun`; generic serde proof-node
   serializers and raw-node certificate builders are crate-internal
