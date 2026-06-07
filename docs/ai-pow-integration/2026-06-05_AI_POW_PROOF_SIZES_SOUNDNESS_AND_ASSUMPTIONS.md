@@ -1,7 +1,8 @@
 # AI-PoW Proof Sizes, Soundness, And Assumptions
 
 Date: 2026-06-05
-Status: current measurement and cryptographic-assumption checkpoint.
+Status: current measurement, cryptographic-assumption, and route-decision
+checkpoint.
 
 ## Scope
 
@@ -17,12 +18,14 @@ batch-STARK produced by `composite_prove_pinned_logup`. It does not mean the
 legacy/plain `MatmulProof`, which is a miner diagnostic and pre-ZKP target-hit
 object, not the production block artifact.
 
-The active production recursive-certificate candidate is now the compact
+The selected production recursive-proof direction is now the compact
 final-layer batch-STARK L2 route summarized in
 `2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md`. This is a route
 decision: using a batch-STARK final layer is acceptable if it is the most viable
 way to hit the relaxed `~150 KiB` / `~30s` target without weakening the
-soundness story. The native terminal backend from
+soundness story. This is not yet a production-complete claim because total
+proving time and production boundary wiring remain open. The native terminal
+backend from
 `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md` remains the fallback route.
 The older full L1 batch-STARK recursive certificate remains an important
 hardened verifier path and regression target, but it is too large for the

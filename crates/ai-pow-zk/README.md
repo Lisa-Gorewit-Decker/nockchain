@@ -8,7 +8,10 @@ public-value binding of the L1 statement digest. The existing full batch-STARK
 checkpoint envelope is too large for the production wire budget, and the
 native terminal certificate remains a fallback rather than the leading path.
 The full composite-verifier terminal path is wired as an opt-in diagnostic but
-has not met the production size/time gates. The plain `MatmulProof` remains a
+has not met the production size/time gates. This is a route commitment, not a
+production-complete claim: final acceptance still requires bridge/miner/Hoon
+wiring, production-pinned digest selection, and a measured total proving-time
+reduction. The plain `MatmulProof` remains a
 miner diagnostic / pre-ZKP target-hit check; it is not the persisted block
 artifact.
 
@@ -95,8 +98,8 @@ artifact.
 > raises cached L2 proving to `30.801s`, while the baseline `alu_lanes=8`
 > remains the best time row at `143,762` bytes and `28.530s` cached L2 proving
 > in that run. L1 table packing gives a smaller size/time nudge but the same
-> conclusion: compact batch-STARK is the committed candidate route, simple
-> packing retunes do not close the total-time gap by themselves. The relaxed
+> conclusion: compact batch-STARK is the selected primary route, simple packing
+> retunes do not close the total-time gap by themselves. The relaxed
 > size gate is now plausibly in range; the relaxed total proving-time gate is
 > not yet met.
 

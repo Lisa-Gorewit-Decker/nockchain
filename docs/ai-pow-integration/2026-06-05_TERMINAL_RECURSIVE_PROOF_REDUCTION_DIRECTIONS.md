@@ -5,11 +5,11 @@ Status: accepted decision checkpoint, revised after stack-level integration
 audit and 2026-06-07 route decision. The exhaustive-NPO terminal fixture passes
 the byte and time gates, but the full `ai-pow-zk` composite-verifier terminal
 path has not yet met either the production byte gate or the production time
-gate. The compact final-layer batch-STARK route is now the committed primary
-production route because the corrected fast-L1/L2 sweep hits the relaxed
-final-proof size target with explicit public-value binding. Native terminal
-remains the fallback route if this path cannot meet the time gate. The large
-batch-STARK checkpoint envelope remains too large.
+gate. The compact final-layer batch-STARK route is now the selected primary
+production-proof direction because the corrected fast-L1/L2 sweep hits the
+relaxed final-proof size target with explicit public-value binding. Native
+terminal remains the fallback route if this path cannot meet the time gate. The
+large batch-STARK checkpoint envelope remains too large.
 
 ## Goal
 
@@ -37,14 +37,16 @@ not to force the native terminal backend if the batch-STARK route is smaller,
 faster, and has the cleaner soundness/binding story. Native terminal remains a
 fallback only if compact batch-STARK cannot be brought under the proving-time
 gate without weakening the proof. The large full-checkpoint batch-STARK
-envelope remains rejected for production wire use because it is too large.
+envelope remains rejected for production wire use because it is too large. New
+implementation work should advance this compact L2 route first unless a later
+measurement or soundness finding falsifies it.
 
 The relaxed milestone is not yet fully claimed. The target is approximately
 `150 KiB` total recursive-proof size and approximately `30s` total release
 proving time, with 60 bits of soundness coming from FRI queries rather than
 proof-system grinding. Compact batch-STARK L2 is now the committed primary
-production route. Native terminal remains the fallback if compact batch-STARK
-proving time cannot be reduced without invasive changes.
+production-proof direction. Native terminal remains the fallback if compact
+batch-STARK proving time cannot be reduced without invasive changes.
 
 #### Clean Checkpoint
 
@@ -68,9 +70,10 @@ or a further base-proof reduction.
 
 Done and verified:
 
-- Compact batch-STARK L2 is now the committed primary production route. The full
-  batch-STARK checkpoint remains a hardened checkpoint/fallback path, not the
-  production wire artifact. Native terminal remains the fallback route.
+- Compact batch-STARK L2 is now the selected primary production-proof
+  direction. The full batch-STARK checkpoint remains a hardened
+  checkpoint/fallback path, not the production wire artifact. Native terminal
+  remains the fallback route.
 - Batch-STARK opening shape now respects each AIR's declared next-row usage
   through the circuit-table and dynamic-AIR wrappers. The Tip5 circuit wrapper
   explicitly keeps main next-row openings because its inner lookup AIR links

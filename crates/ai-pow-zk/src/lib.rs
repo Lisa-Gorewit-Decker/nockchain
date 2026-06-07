@@ -3,9 +3,9 @@
 //! Mirrors Pearl's `zk-pow` role at the proof-certificate layer: where Pearl
 //! uses a compact proof to certify the opened useful-work statement, this
 //! crate uses Plonky3 over Goldilocks + Tip5 + FRI plus recursion to build
-//! Nockchain's AI-PoW proof stack. The active production recursive certificate
-//! candidate is the compact final-layer batch-STARK route over a fast
-//! statement-bound L1 proof; native terminal remains a fallback direction, and
+//! Nockchain's AI-PoW proof stack. The selected production recursive-proof
+//! direction is the compact final-layer batch-STARK route over a fast
+//! statement-bound L1 proof. Native terminal remains a fallback direction, and
 //! the older full batch-STARK checkpoint is too large for the production wire
 //! budget. The plain
 //! `MatmulProof` remains a miner-side diagnostic/pre-ZKP target-hit check,
@@ -30,7 +30,7 @@
 //!   to be the production consensus, block-persistence, or wire-transmission
 //!   artifact.
 //! - [`recursion::prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof`]
-//!   — compact final-layer batch-STARK production candidate. It proves the
+//!   — selected compact final-layer batch-STARK production direction. It proves the
 //!   statement-bound L1 proof inside a compact L2 proof, carries only the final
 //!   compact body plus an explicit verifier-key digest, and verifies against
 //!   verifier-owned metadata/setup and public values.
@@ -76,10 +76,10 @@
 //!
 //! M10.1c is the Layer-0 composite pipeline. The production recursive target is
 //! a recursive certificate, not the raw Layer-0 proof and not the oversized
-//! batch-STARK L1 checkpoint. The current leading candidate is compact
-//! final-layer batch-STARK L2; it still needs bridge/miner/Hoon wiring,
-//! verifier-key/setup digest pinning at the production boundary, and a measured
-//! total proving-time reduction before production readiness is claimed.
+//! batch-STARK L1 checkpoint. The selected direction is compact final-layer
+//! batch-STARK L2; it still needs bridge/miner/Hoon wiring, verifier-key/setup
+//! digest pinning at the production boundary, and a measured total proving-time
+//! reduction before production readiness is claimed.
 //! Earlier M9.1 / M10.1b prototypes were retired once M10.1c had full LogUp +
 //! PI binding + bench data.
 //! See `2026-05-14_ENGINEERING_REPORT.md` for the architectural review and bench
