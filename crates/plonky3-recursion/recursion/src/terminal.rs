@@ -3,9 +3,11 @@
 //! The recursion crate already builds a verifier [`Circuit`] for the previous
 //! proof.  A terminal compressor is responsible for proving that circuit's
 //! execution without forcing the final artifact to be another batch-STARK.
-//! The native terminal backend is the production size target for the recursive
-//! proof. The batch-STARK path remains a soundness-relevant checkpoint/fallback
-//! implementation, but it is too large for the production wire budget.
+//! The native terminal backend remains the compact direct-terminal route for
+//! recursive verifier circuits. In AI-PoW integration it is currently fallback
+//! evidence, while the selected production candidate is the compact final-layer
+//! batch-STARK route; the large batch-STARK checkpoint remains too large for the
+//! production wire budget.
 
 use alloc::string::String;
 use alloc::vec::Vec;

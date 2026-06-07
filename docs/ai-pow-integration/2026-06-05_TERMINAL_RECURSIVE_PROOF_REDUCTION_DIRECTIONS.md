@@ -41,6 +41,12 @@ envelope remains rejected for production wire use because it is too large. New
 implementation work should advance this compact L2 route first unless a later
 measurement or soundness finding falsifies it.
 
+Maintainer checkpoint, 2026-06-07: it is acceptable for the final production
+route to use batch-STARK machinery if the compact final-layer proof is the most
+viable way to hit the relaxed `~150 KiB` proof-size and `~30s` proving-time
+targets. The disallowed route is the old large checkpoint envelope, not
+batch-STARK as a category.
+
 The relaxed milestone is not yet fully claimed. The target is approximately
 `150 KiB` total recursive-proof size and approximately `30s` total release
 proving time, with 60 bits of soundness coming from FRI queries rather than

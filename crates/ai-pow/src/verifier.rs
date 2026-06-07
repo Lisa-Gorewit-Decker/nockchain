@@ -97,9 +97,9 @@ pub fn verify(
 /// but it does not enforce the production consensus envelope; plain-proof
 /// callers that need those extra checks must use [`verify_prod_at_target`].
 /// Nockchain block acceptance must verify a recursive certificate artifact
-/// instead of a plain proof. The current batch-STARK certificate noun is a
-/// hardened checkpoint path; the production recursive proof target is the
-/// native terminal certificate.
+/// instead of a plain proof. The current production candidate is the compact
+/// final-layer batch-STARK certificate; the large batch-STARK checkpoint and
+/// native terminal certificate are fallback/regression paths.
 pub fn verify_at_target(
     block_commitment: &[u8],
     nonce: &[u8],

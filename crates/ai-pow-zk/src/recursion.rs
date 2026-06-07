@@ -58,11 +58,12 @@ pub type AiPowCompactBatchVerifierKeyDigest = [Val; DIGEST_ELEMS];
 /// Native terminal recursive proof artifact for the AI-PoW L1 verifier
 /// circuit.
 ///
-/// The terminal certificate is the size-bounded production target. It proves
-/// execution of the same L1 verifier circuit used by the batch-STARK
-/// checkpoint, but the certificate itself binds only a digest of the terminal
-/// public input vector. Callers must preserve and verify `terminal_public_inputs`
-/// with the certificate; otherwise the terminal binding is incomplete.
+/// This is the native-terminal fallback route, not the currently selected
+/// compact batch-STARK production candidate. It proves execution of the same
+/// L1 verifier circuit used by the batch-STARK checkpoint, but the certificate
+/// itself binds only a digest of the terminal public input vector. Callers must
+/// preserve and verify `terminal_public_inputs` with the certificate; otherwise
+/// the terminal binding is incomplete.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AiPowTerminalRecursiveCertificate {
     /// Public inputs supplied to the terminal verifier circuit. This vector is
@@ -2373,7 +2374,8 @@ pub fn verify_terminal_certificate_from_chain_verified_composite_proof(
 /// This is a name-level guardrail against raw Layer-0 proof submission: the
 /// returned certificate is recursive and cryptographically verifies the L1
 /// verifier-circuit proof body. It is not the production terminal certificate
-/// target because the batch-STARK certificate is too large for the wire budget.
+/// target and it is not the selected compact batch-STARK artifact, because the
+/// full checkpoint certificate is too large for the wire budget.
 /// Consensus callers must separately derive the exact public statement and
 /// reject selected-tile statements that do not prove the intended full-matmul
 /// work unit.
@@ -2392,7 +2394,8 @@ pub fn prove_canonical_ai_pow_certificate(
 /// the Layer-0 proof/program context needed to rebuild the L1 verifier circuit.
 /// It does not accept or produce a standalone Layer-0 `AiPowBatchProof`,
 /// because raw Layer-0 proofs are not block/wire certificates for Nockchain
-/// AI-PoW. This helper is not the native terminal production wire format.
+/// AI-PoW. This helper is not the compact final-layer batch-STARK production
+/// candidate and is not the native terminal fallback wire format.
 pub fn encode_recursive_certificate(
     cert: &AiPowRecursiveCertificate,
 ) -> Result<Vec<u8>, bincode::error::EncodeError> {
