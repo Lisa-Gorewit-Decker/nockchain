@@ -110,6 +110,21 @@ Done and verified:
   evaluation, or FRI query work. The remaining total-time lever is now specific:
   reduce or overlap L1 proving, and shrink committed recursive-verifier matrix
   volume, especially the Tip5/MMCS verifier-table main and permutation traces.
+- The selected compact L2 table-packing sweep now verifies low/default/high ALU
+  packing variants through the same verifier-owned compact context. It rules
+  out simple ALU lane retuning as the time lever. Baseline
+  `alu_lanes=8,horner_k=5` remains the best time row in the same run: compact
+  wrapper `143,762` bytes, metadata-free body `142,878` bytes, cached L2 prove
+  `28.530s`, cached serial L1+L2 `44.198s`. Smaller ALU lanes give real size
+  margin but not time: `alu_lanes=4` verifies at `133,736` bytes compact /
+  `30.875s` cached L2, and `alu_lanes=2` verifies at `126,862` bytes compact /
+  `30.801s` cached L2. Larger lanes are worse: `alu_lanes=16` verifies at
+  `163,875` bytes / `30.945s`, `alu_lanes=32` at `203,804` bytes / `36.279s`,
+  and `alu_lanes=16,horner_k=8` at `167,211` bytes / `32.108s`. The AIR
+  layouts explain the tradeoff: low lanes reduce ALU width (`lanes=2` uses
+  `38` main columns) but increase ALU rows (`23,136`), while high lanes keep
+  rows flat at `5,960` and widen columns (`150` or `278` main columns). This is
+  a useful emergency size knob, not a route to the `~30s` total target.
 - A selected L2 verifier trace profile now quantifies the Tip5 boundary. The
   L2 verifier circuit has `75,391` ops: `66,564` primitive ops, `1,981` hints,
   and `6,846` non-primitive ops. Non-primitives split into `4,791` Tip5 rows,
@@ -237,11 +252,12 @@ What remains:
   Tip5 rows are already fully explained by MMCS leaf/path hashing plus
   challenger rows. L1 `lb=4,nq=15` proves that halving the Tip5 table alone is
   not enough on this machine: cached L2 proving remains `28.743s`, and the
-  slower L1 row makes the cached serial total worse. The next viable work must
-  either reduce the large ALU/permutation table volume that remains after the
-  Tip5 table halves, reduce both L1 and L2 commitment work together, or change
-  the recursive verifier proof shape so these large tables are not committed at
-  the current L2 LDE volume.
+  slower L1 row makes the cached serial total worse. ALU lane retuning also
+  does not solve time: lower lanes shrink compact bytes while raising L2 prove
+  time, and higher lanes widen the ALU table. The next viable work must either
+  remove real verifier operations, reduce both L1 and L2 commitment work
+  together, overlap the L1/L2 stages, or change the recursive verifier proof
+  shape so these large tables are not committed at the current L2 LDE volume.
 - Count the final certificate bytes exactly, including any carried public-value
   limbs, verifier-key/setup digest, and chain-owned statement metadata that is
   not otherwise derivable by the verifier.
@@ -474,13 +490,14 @@ does not replace the required packed Tip5 support-theorem redesign.
 | Soundness target | 60 pure FRI query bits per promoted layer; selected compact row uses L1 `lb=3,nq=20,pow=0` and L2 `lb=5,nq=12,pow=0` |
 | Most viable shape | Compact batch-STARK L2 with verifier-owned metadata/setup, canonical preprocessed-opening restoration, pruned paths, and explicit final public-value binding of the L1 statement digest |
 | Best measured compact batch-STARK candidate | Fast L1 `lb=3,nq=20,cap=4,pow=0` plus L2 `lb=5,nq=12,cap=4,pow=0`: actual compact wrapper `143,762` bytes, metadata-free body `142,878` bytes; latest cached-prep rerun L1 prep `4.772s`, cached L1 prove `15.305s`, total L1 prove `20.077s`, reusable L2 prep `9.364s`, cached L2 prove `28.726s`, uncached L2 total `38.090s` |
+| Best measured compact-L2 size reserve | The selected L2 table-packing sweep verifies the same compact body with `alu_lanes=2,horner_k=5` at `126,862` bytes actual compact wrapper and `125,979` bytes metadata-free body, but cached L2 proving rises to `30.801s`, so this is useful size margin, not the current time route |
 | Best measured complete base | Cap-height `3` full-context merged-only structural floor at `142,807` bytes; sound for its included relations, but missing internal Tip5 binding |
 | Best near-target standalone missing binding | Lane-selector-aware selected-to-packed NPO-IO bridge at `137,355` bytes / `134.1 KiB`, prove `28.526s`, verify `14.510s` |
 | Direct bridge diagnostic | Binding selected NPO values directly to compact packed trace lanes verifies at `205,950` bytes / `201.1 KiB`, prove `35.863s`; it removes the projection commitment/domain but is too large standalone because it still opens the full `436`-column packed trace |
 | Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; cap-height `3` merged-value plus packed-support optimistic single-FRI floor is `249,184` bytes, `95,584` bytes over binary `150 KiB`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s`; packed byte-LogUp group size 15 was measured and rejected at `206,759` bytes, prove `38.515s` |
 | Best measured outer task parallelism | Rayon-joining the current primitive R1CS, merged value-bridge, and packed-support subproofs gives `39.448s` post-prelude subproof wall time versus `53.355s` summed subproof timers, but leaves the same `249,184` byte optimistic single-FRI floor and `171.422s` full diagnostic wall |
-| Main current blocker | The compact batch-STARK L2 size row is in range and cached L2 proving is now under `30s`, but measured cached serial L1+L2 proving is still about `44.0s` (`15.305s` cached L1 + `28.726s` cached L2). The selected L2 verifier has `4,791` Tip5 rows padded to `8,192`, only `695` rows above the `4,096` halving boundary; the previous deep L2 profile showed this table's main/permutation trace Merkle commitments dominate L2, not witness execution, reusable setup, quotient evaluation, FRI folding/query, or final proof size |
-| Next implementation step | Promote compact batch-STARK L2 into the production certificate format by deriving/pinning the setup digest and public values from verifier-owned state, then reduce at least `695` selected-L2 Tip5 verifier rows or otherwise avoid committing the `8,192`-row Tip5 table. Hidden-L1 cap retuning is not enough as tested: cap `3 -> 4` saves only `176` rows, and cap `5/6` currently fail inside the recursive verifier despite native L1 verification passing. Add final artifact rejection tests as the production wire path is promoted |
+| Main current blocker | The compact batch-STARK L2 size row is in range and cached L2 proving is now under `30s`, but measured cached serial L1+L2 proving is still about `44.0s` (`15.305s` cached L1 + `28.726s` cached L2). The selected L2 verifier has `4,791` Tip5 rows padded to `8,192`, only `695` rows above the `4,096` halving boundary. A table-packing sweep shows ALU lane retuning can trade size for time but does not reduce total proving time: `alu_lanes=2` shrinks compact L2 to `126,862` bytes but raises cached L2 proving to `30.801s`, while `alu_lanes=16/32` widens ALU columns and is worse on both size and time. |
+| Next implementation step | Promote compact batch-STARK L2 into the production certificate format by deriving/pinning the setup digest and public values from verifier-owned state, then reduce or overlap L1 proving and reduce committed L2 verifier matrix volume without merely shifting the ALU size/time tradeoff. Hidden-L1 cap retuning is not enough as tested: cap `3 -> 4` saves only `176` rows, and cap `5/6` currently fail inside the recursive verifier despite native L1 verification passing. Add final artifact rejection tests as the production wire path is promoted |
 
 ### Decision
 
@@ -1528,10 +1545,12 @@ metadata-free compact body `141,769` bytes, but L1 cached proving rises to
 `29.584s` (`38.977s` with L1 prep) and L2 cached proving remains `28.743s`
 (`38.115s` with L2 prep). Cached serial L1+L2 proving is therefore about
 `58.327s`, worse than the selected `lb=3,nq=20` L1 row. The L2 prove time
-staying flat after halving the Tip5 padded height means the remaining commitment
-bottleneck is not solved by Tip5-row reduction alone; ALU/permutation table
-volume and other committed matrices still dominate enough to keep L2 near
-`29s`.
+staying flat after halving the Tip5 padded height means the remaining
+commitment bottleneck is not solved by Tip5-row reduction alone. Later
+table-packing measurements show that ALU lane count retuning only trades bytes
+against time, so the remaining lever is real verifier-operation reduction,
+cross-stage overlap, or a proof shape that avoids committing the same large
+verifier matrices at the current L2 LDE volume.
 
 A hidden-L1 cap-height profile checked the cheapest possible way to reduce
 MMCS path hashing before redesigning the verifier relation. It is not enough.
@@ -1562,11 +1581,13 @@ native-terminal direction but still not production-complete. The final artifact
 is already inside the relaxed size gate, and the recursive verifier circuit
 definition/build/input packing/witness path is negligible. Generic Rayon
 tuning is unlikely to close the gap because the default parallel feature is on
-and the Merkle tree code already parallelizes chunk hashing. The next
+and the Merkle tree code already parallelizes chunk hashing. ALU lane retuning
+is now also measured as a size reserve rather than a time lever. The next
 meaningful implementation lever is to reduce the committed matrix volume of
 the recursive verifier, especially the Tip5/MMCS verification tables at
-`2^20` LDE in L2, or to use a verifier relation/proof shape that avoids
-committing those large Tip5/permutation traces.
+`2^20` LDE in L2, overlap the L1/L2 proving stages, or use a verifier
+relation/proof shape that avoids committing those large Tip5/permutation
+traces.
 
 A focused fast-L1 `lb4,nq15` frontier sweep then checked whether the faster
 L2 row could be tuned under the relaxed size gate without proof-system PoW:

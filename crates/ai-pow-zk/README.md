@@ -68,8 +68,13 @@ artifact.
 > lever. A focused
 > `lb4,nq15`
 > frontier sweep rules out cheap FRI/cap retuning: the fastest-size frontier is
-> still `174,676` bytes. The relaxed size gate is now plausibly in range; the
-> relaxed total proving-time gate is not yet met.
+> still `174,676` bytes. A selected L2 table-packing sweep also rules out simple
+> ALU lane retuning as the time lever: `alu_lanes=2` verifies a much smaller
+> compact wrapper (`126,862` bytes; metadata-free body `125,979` bytes) but
+> raises cached L2 proving to `30.801s`, while the baseline `alu_lanes=8`
+> remains the best time row at `143,762` bytes and `28.530s` cached L2 proving
+> in that run. The relaxed size gate is now plausibly in range; the relaxed
+> total proving-time gate is not yet met.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 
