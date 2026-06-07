@@ -110,6 +110,21 @@ Done and verified:
   evaluation, or FRI query work. The remaining total-time lever is now specific:
   reduce or overlap L1 proving, and shrink committed recursive-verifier matrix
   volume, especially the Tip5/MMCS verifier-table main and permutation traces.
+- A selected L2 verifier trace profile now quantifies the Tip5 boundary. The
+  L2 verifier circuit has `75,391` ops: `66,564` primitive ops, `1,981` hints,
+  and `6,846` non-primitive ops. Non-primitives split into `4,791` Tip5 rows,
+  `2,001` `recompose/coeff` rows, and `54` regular recompose rows. The Tip5
+  table is padded to `8,192` rows, so the selected route needs to remove only
+  `695` Tip5 rows to halve the dominant Tip5 table height to `4,096`. The
+  compiled Tip5 calls split into `2,220` MMCS op IDs and `2,571` non-MMCS
+  challenger/transcript rows; the generated trace has `2,620` rows carrying
+  explicit `mmcs_bit` bindings. A hidden-L1 cap-height profile does not provide
+  a cheap crossing: cap `3` has `4,967` Tip5 rows, cap `4` has `4,791`, and
+  cap `5/6` L1 proofs verify natively but the current L2 recursive verifier
+  rejects them with witness conflicts. Cap retuning is therefore not a
+  production lever until the higher-cap recursive-verifier support gap is
+  fixed, and even then the cap `3 -> 4` slope suggests it will not remove
+  `695` rows without other changes.
 - The smaller L2 `lb=6,nq=10` row verifies at `132,682` bytes actual compact
   wrapper and `131,803` bytes metadata-free body, but L2 proving rises to
   `107.617s`. The faster L2 `lb=4,nq=15` row proves in `27.342s` but measures
@@ -443,8 +458,8 @@ does not replace the required packed Tip5 support-theorem redesign.
 | Direct bridge diagnostic | Binding selected NPO values directly to compact packed trace lanes verifies at `205,950` bytes / `201.1 KiB`, prove `35.863s`; it removes the projection commitment/domain but is too large standalone because it still opens the full `436`-column packed trace |
 | Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; cap-height `3` merged-value plus packed-support optimistic single-FRI floor is `249,184` bytes, `95,584` bytes over binary `150 KiB`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s`; packed byte-LogUp group size 15 was measured and rejected at `206,759` bytes, prove `38.515s` |
 | Best measured outer task parallelism | Rayon-joining the current primitive R1CS, merged value-bridge, and packed-support subproofs gives `39.448s` post-prelude subproof wall time versus `53.355s` summed subproof timers, but leaves the same `249,184` byte optimistic single-FRI floor and `171.422s` full diagnostic wall |
-| Main current blocker | The compact batch-STARK L2 size row is in range and cached L2 proving is now under `30s`, but measured cached serial L1+L2 proving is still about `44.0s` (`15.305s` cached L1 + `28.726s` cached L2); the previous deep L2 profile showed main/permutation trace Merkle commitments dominate L2, not witness execution, reusable setup, quotient evaluation, FRI folding/query, or final proof size |
-| Next implementation step | Promote compact batch-STARK L2 into the production certificate format by deriving/pinning the setup digest and public values from verifier-owned state, then reduce committed recursive-verifier matrix volume, especially Tip5/MMCS verifier-table main/permutation traces, and add final artifact rejection tests |
+| Main current blocker | The compact batch-STARK L2 size row is in range and cached L2 proving is now under `30s`, but measured cached serial L1+L2 proving is still about `44.0s` (`15.305s` cached L1 + `28.726s` cached L2). The selected L2 verifier has `4,791` Tip5 rows padded to `8,192`, only `695` rows above the `4,096` halving boundary; the previous deep L2 profile showed this table's main/permutation trace Merkle commitments dominate L2, not witness execution, reusable setup, quotient evaluation, FRI folding/query, or final proof size |
+| Next implementation step | Promote compact batch-STARK L2 into the production certificate format by deriving/pinning the setup digest and public values from verifier-owned state, then reduce at least `695` selected-L2 Tip5 verifier rows or otherwise avoid committing the `8,192`-row Tip5 table. Hidden-L1 cap retuning is not enough as tested: cap `3 -> 4` saves only `176` rows, and cap `5/6` currently fail inside the recursive verifier despite native L1 verification passing. Add final artifact rejection tests as the production wire path is promoted |
 
 ### Decision
 
@@ -1428,6 +1443,27 @@ of the cached proof path, and compatible cached `ProverData` removes the
 repeated preprocessed-commitment rebuild inside `prove_all_tables`. Span
 profiling shows quotient evaluation is under `1s`; the expensive piece is the
 upstream batch-STARK/PCS proof itself.
+
+The selected L2 verifier trace profile makes the immediate threshold concrete.
+The circuit has `75,391` ops: `66,564` primitive ops, `1,981` hints, and
+`6,846` non-primitive ops. Non-primitives are `4,791` Tip5 rows, `2,001`
+`recompose/coeff` rows, and `54` regular recompose rows. The Tip5 table is
+padded to `8,192` rows, so reducing the selected verifier by `695` Tip5 rows
+would cross the `4,096` boundary and should materially reduce the dominant
+main/permutation trace Merkle commitments. The split is not purely MMCS:
+`2,220` compiled Tip5 op IDs are MMCS private-data ops, while `2,571` are
+non-MMCS challenger/transcript rows; the generated trace has `2,620` rows with
+explicit `mmcs_bit` bindings.
+
+A hidden-L1 cap-height profile checked the cheapest possible way to reduce
+MMCS path hashing before redesigning the verifier relation. It is not enough.
+With the same selected L2 shape, L1 cap `3` profiles at `4,967` Tip5 rows and
+L1 cap `4` profiles at `4,791` rows. L1 cap `5` and `6` proofs verify natively
+in `32-33ms`, but the current L2 recursive verifier rejects both during witness
+execution with `WitnessConflict`. The cap `3 -> 4` slope saves only `176` Tip5
+rows, so even after fixing the higher-cap recursive-verifier support gap, cap
+retuning alone is unlikely to remove the needed `695` rows without increasing
+other circuit volume.
 
 A deeper release/native selected-row profile with
 `AI_POW_ZK_DEEP_BATCH_PROFILE=pcs`, run before next-row opening forwarding,

@@ -54,7 +54,11 @@ artifact.
 > A prior deeper PCS profile showed cached L2 dominated by main/permutation
 > trace Merkle commitments (`13.3s` + `12.9s`), so the next production lever is
 > reducing committed recursive-verifier matrix volume, especially Tip5/MMCS
-> verifier-table traces, and reducing or overlapping the L1 stage. A focused
+> verifier-table traces, and reducing or overlapping the L1 stage. The selected
+> L2 verifier profile now counts `4,791` Tip5 rows, padded to `8,192`, only
+> `695` rows above the `4,096` halving boundary; simple hidden-L1 cap retuning
+> does not cross it, and cap `5/6` currently exposes a recursive-verifier
+> support gap despite native L1 verification passing. A focused
 > `lb4,nq15`
 > frontier sweep rules out cheap FRI/cap retuning: the fastest-size frontier is
 > still `174,676` bytes. The relaxed size gate is now plausibly in range; the

@@ -398,8 +398,15 @@ cached L1 proving, **20.077s** total L1 proving, **9.364s** reusable L2 prep,
 makes this path materially closer to the relaxed production target than the
 previous native-terminal direction, while also making the remaining blocker
 crisp: the in-size route is still about **44.031s** for cached serial L1+L2
-proving with both prep stages cached, dominated by upstream batch-STARK/PCS proving rather than recursive
-witness execution or setup.
+proving with both prep stages cached, dominated by upstream batch-STARK/PCS
+proving rather than recursive witness execution or setup. The selected L2
+verifier profile now measures **4,791** Tip5 rows padded to **8,192**, only
+**695** rows above the **4,096** halving boundary. Those rows split into
+**2,220** MMCS op IDs and **2,571** non-MMCS challenger/transcript rows, with
+**2,620** generated rows carrying explicit `mmcs_bit` bindings. A hidden-L1
+cap-height sweep is not enough: cap **3** has **4,967** Tip5 rows, cap **4**
+has **4,791**, and cap **5/6** L1 proofs verify natively but currently fail
+inside the L2 recursive verifier with witness conflicts.
 A prior deeper `AI_POW_ZK_DEEP_BATCH_PROFILE=pcs` rerun measured **22.501s** L1
 proving, **10.475s** reusable L2 prep, **31.815s** cached L2 proving, and
 **42.290s** uncached L2 total before next-row forwarding. That prior profile
