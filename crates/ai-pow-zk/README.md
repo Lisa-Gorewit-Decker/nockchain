@@ -48,7 +48,8 @@ artifact.
 > compact wrapper and `142,878` bytes for the metadata-free compact body after
 > forwarding AIR next-row declarations through the batch-STARK wrappers. Tip5
 > main next-row openings remain explicit because the inner lookup AIR links
-> rounds across rows. The latest release/native cached-setup rerun measures
+> rounds across rows. The earlier release/native cached-setup baseline rerun
+> before L2 recompose-lane promotion measures
 > `4.772s` reusable L1 prep, `15.305s` cached L1 proving, `9.364s` reusable
 > L2 prep, and `28.726s` cached L2 proving. The cached L2 proof is now under
 > `30s`, but cached serial L1+L2 proving is still about `44.031s` with both
@@ -60,6 +61,14 @@ artifact.
 > cached L1 proving `15.029s`, cached L2 proving `28.555s`, and cached serial
 > L1+L2 proving `43.584s`. L1 `alu_lanes=2,horner_k=5` gives the smallest
 > measured compact wrapper, `141,148` bytes, but serial proving is `44.391s`.
+> A follow-up selected-L2 recompose-lane sweep shows a small verifier-table
+> packing win: `recompose_lanes=2` keeps the compact wrapper inside the relaxed
+> size gate at `145,318` bytes and improves cached serial L1+L2 from `44.309s`
+> to `43.856s` in that L2-only sweep. `recompose_lanes=4` is slightly faster
+> (`43.735s`) but grows past the decimal and binary `150 KiB` gates at
+> `154,197` bytes, while `recompose_lanes=8` is worse. The promoted compact L2
+> route therefore uses `recompose_lanes=2`; this is a small nudge, not the
+> missing total-time reduction.
 > The route is therefore clearly closer to the relaxed size target than the
 > native-terminal fallback and the large batch-STARK checkpoint, but it still
 > needs a real proving-time reduction before production-readiness can be
@@ -68,17 +77,18 @@ artifact.
 > `AiPowCompactBatchRecursiveCertificate` plus verifier-owned
 > `AiPowCompactBatchVerifierContext`. The current encoded certificate carries
 > a Tip5 verifier-key/setup digest plus the final L2 compact body. A
-> release/native round trip measured `142,274` bytes, `19.223s` L1 outer
-> proving, `9.440s` L2 prep, `29.743s` L2 proving, `37ms` compact
-> verification, and `58.603s` uncached proof wall; decoded verification passes,
+> release/native round trip after promoting L2 `recompose_lanes=2` measured
+> `143,250` bytes, `19.123s` L1 outer proving, `9.452s` L2 prep, `28.617s`
+> L2 proving, `38ms` compact verification, and `57.406s` uncached proof wall;
+> decoded verification passes,
 > wrong public inputs reject, wrong certificate digest rejects, and stale
 > context digest rejects. The Rust `ai-pow` bridge now exposes compact
 > recursive run builders, and `ai-pow-miner`'s Pearl-compatible submission
 > builder now packages the compact certificate as canonical postcard bytes in
 > a bounded proof-node atom so the noun boundary does not structurally
 > re-inflate the proof. A release/native miner artifact measurement now gives
-> a full jammed Pearl-compatible `%ai-pow` artifact of `141,916` bytes with a
-> `141,103` byte compact certificate, and confirms the decoded proof node is
+> a full jammed Pearl-compatible `%ai-pow` artifact of `143,661` bytes with a
+> `142,849` byte compact certificate, and confirms the decoded proof node is
 > canonical compact postcard bytes. The Rust miner verifier boundary now has a
 > compact-artifact entry point that requires a caller-supplied expected
 > verifier-key/setup digest and rejects a mismatched context or certificate
@@ -112,9 +122,10 @@ artifact.
 > compact wrapper (`126,862` bytes; metadata-free body `125,979` bytes) but
 > raises cached L2 proving to `30.801s`, while the baseline `alu_lanes=8`
 > remains the best time row at `143,762` bytes and `28.530s` cached L2 proving
-> in that run. L1 table packing gives a smaller size/time nudge but the same
-> conclusion: compact batch-STARK is the selected primary route, simple packing
-> retunes do not close the total-time gap by themselves. The relaxed
+> in that run. L2 recompose packing at lanes `2` is now promoted because it
+> saves about half a second while staying inside the relaxed byte gate, but L1,
+> ALU, and recompose packing together still do not close the total-time gap by
+> themselves. The relaxed
 > size gate is now plausibly in range; the relaxed total proving-time gate is
 > not yet met.
 
@@ -592,7 +603,7 @@ proof route is compact batch-STARK L2 over a fast statement-bound L1 proof.
 existing `%ai-pow` noun envelope for Pearl-compatible submissions. The large
 checkpoint noun path is retained for soundness regression and fallback
 validation. The full jammed Pearl-compatible `%ai-pow` artifact now measures
-`141,916` bytes with the compact certificate preserved as canonical bytes.
+`143,661` bytes with the compact certificate preserved as canonical bytes.
 Rust-side compact artifact verification now requires a verifier-owned context
 and expected verifier-key/setup digest. The verifier-key/setup digest is
 encoded for production configuration as canonical 40-byte Goldilocks limbs;

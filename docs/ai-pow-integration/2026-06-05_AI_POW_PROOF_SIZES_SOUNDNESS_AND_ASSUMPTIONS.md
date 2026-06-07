@@ -48,10 +48,10 @@ artifact.
 | Pure-query L2 actual-vs-frontier Merkle path diagnostic | Diagnostic for whether a true Merkle multiproof frontier can remove the remaining compact-body restoration payload; verifies the compact body and counts actual query-set siblings | L2 `lb=5,nq=12,cap=4` body `137,816` bytes / restoration `50,609` bytes; current prefix-pruned siblings `1,056`; ideal frontier siblings `1,024`; digest-only maximum savings `1,280` bytes before any frontier-position metadata or verifier changes; L2 prove `24.608s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_l1_l2_multiproof_frontier_estimate_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
 | Pure-query L2 Pearl-rate high-blowup diagnostic | Diagnostic for a no-PoW analogue of Pearl's final `rate_bits=7` shape; verifies the compact body, but the smaller proof is still above hard size and far above time | L2 `lb=7,nq=9,cap=4` carries `63` pure-query Johnson bits; body `120,722` bytes / core `72,415` bytes / restoration `48,307` bytes; L2 prove `97.358s`; shared slow L1 prove `196.064s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_l1_l2_pearl_rate7_final_shape_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
 | Fast-L1 pure-query L2-over-L1 batch-STARK sweep | Diagnostic for pairing the only sub-30s L1 profile with the actual compact final-layer body; verifies after the Tip5 MMCS direction-binding fix, but still misses size/time jointly | Shared fast L1 `lb=3,nq=20,cap=4`: `279,719` bytes, L1 prove `25.178s`; compact-body L2 `lb=4,nq=15,cap=4`: `174,707` bytes, L2 prove `25.245s`; compact-body L2 `lb=5,nq=12,cap=4`: `145,695` bytes, L2 prove `48.530s`; compact-body L2 `lb=6,nq=10,cap=4`: `129,804` bytes, L2 prove `98.584s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_fast_l1_statement_bound_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
-| Cached selected fast-L1 compact batch-STARK L2 route | Committed primary production candidate; verifies compact bodies through verifier-owned setup/metadata context and explicitly binds all L1 statement-digest limbs as final public values, but still misses the relaxed total proving-time gate | After AIR next-row declaration forwarding and L1 prep splitting, L1 `lb=3,nq=20,cap=4`: prep `4.772s`, cached prove `15.305s`, total prove `20.077s`; selected L2 `lb=5,nq=12,cap=4`: actual compact wrapper `143,762` bytes, metadata-free body `142,878` bytes, reusable L2 prep `9.364s`, cached L2 prove `28.726s`, uncached L2 total `38.090s`; cached serial L1+L2 per-attempt time `44.031s` with both prep stages cached; setup-included serial L1+L2 time `58.167s`. Prior deep PCS profile before next-row forwarding: L1 prove `22.501s`, reusable L2 prep `10.475s`, cached L2 prove `31.815s`; cached L2 dominated by main/permutation trace Merkle commitments (`13.3s` + `12.9s`) | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_fast_l1_selected_candidate_timing_breakdown_for_test_pearl -- --ignored --nocapture`; deep run adds `AI_POW_ZK_DEEP_BATCH_PROFILE=pcs`, 2026-06-07 |
-| Selected compact L2 table-packing sweep | Verifies low/default/high ALU packing variants through the same verifier-owned compact context; identifies a size reserve but rules out simple ALU lane retuning as the total-time lever | Same fast L1 in one run: cached L1 prove `15.668s`. L2 `alu_lanes=2,horner_k=5`: compact wrapper `126,862` bytes, body `125,979`, cached L2 prove `30.801s`, ALU shape `38` main cols x `23,136` rows. `alu_lanes=4`: `133,736` bytes, body `132,851`, cached L2 prove `30.875s`, ALU `54 x 11,568`. Baseline `alu_lanes=8`: `143,762` bytes, body `142,878`, cached L2 prove `28.530s`, ALU `86 x 5,960`. `alu_lanes=16`: `163,875` bytes, cached L2 prove `30.945s`; `alu_lanes=32`: `203,804` bytes, cached L2 prove `36.279s`; `alu_lanes=16,horner_k=8`: `167,211` bytes, cached L2 prove `32.108s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion selected_fast_l1_compact_l2_table_packing_sweep_for_test_pearl -- --ignored --nocapture`, 2026-06-07 |
+| Cached selected fast-L1 compact batch-STARK L2 route before L2 recompose promotion | Historical baseline for the committed primary route; verifies compact bodies through verifier-owned setup/metadata context and explicitly binds all L1 statement-digest limbs as final public values, but misses the relaxed total proving-time gate | After AIR next-row declaration forwarding and L1 prep splitting, L1 `lb=3,nq=20,cap=4`: prep `4.772s`, cached prove `15.305s`, total prove `20.077s`; selected L2 `lb=5,nq=12,cap=4`: actual compact wrapper `143,762` bytes, metadata-free body `142,878` bytes, reusable L2 prep `9.364s`, cached L2 prove `28.726s`, uncached L2 total `38.090s`; cached serial L1+L2 per-attempt time `44.031s` with both prep stages cached; setup-included serial L1+L2 time `58.167s`. Prior deep PCS profile before next-row forwarding: L1 prove `22.501s`, reusable L2 prep `10.475s`, cached L2 prove `31.815s`; cached L2 dominated by main/permutation trace Merkle commitments (`13.3s` + `12.9s`) | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_fast_l1_selected_candidate_timing_breakdown_for_test_pearl -- --ignored --nocapture`; deep run adds `AI_POW_ZK_DEEP_BATCH_PROFILE=pcs`, 2026-06-07 |
+| Selected compact L2 table-packing sweep | Verifies low/default/high ALU packing variants and recompose-lane variants through the same verifier-owned compact context; identifies size reserve and a small promoted recompose-lane win, but rules out packing as the total-time lever | Same fast L1 in one run: cached L1 prove `15.578s`. L2 `alu_lanes=2,horner_k=5,recompose_lanes=1`: compact wrapper `126,890` bytes, body `125,979`, cached L2 prove `30.948s`, ALU shape `38` main cols x `23,136` rows. `alu_lanes=4`: `133,764` bytes, body `132,851`, cached L2 prove `31.502s`, ALU `54 x 11,568`. Baseline `alu_lanes=8,recompose_lanes=1`: `143,790` bytes, body `142,878`, cached L2 prove `28.731s`, serial `44.309s`. Promoted `alu_lanes=8,recompose_lanes=2`: `145,318` bytes, body `144,406`, cached L2 prove `28.278s`, serial `43.856s`. `recompose_lanes=4`: `154,197` bytes, cached L2 prove `28.157s`, serial `43.735s` but above the relaxed byte gate; `recompose_lanes=8`: `155,951` bytes, cached L2 prove `28.586s`, serial `44.164s`. `alu_lanes=16`: `163,903` bytes, cached L2 prove `31.102s`; `alu_lanes=32`: `203,832` bytes, cached L2 prove `36.302s`; `alu_lanes=16,horner_k=8`: `167,239` bytes, cached L2 prove `31.802s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion selected_fast_l1_compact_l2_table_packing_sweep_for_test_pearl -- --ignored --nocapture`, 2026-06-07 |
 | Selected compact L2 over L1 table-packing sweep | Verifies that retuning the inner L1 proof packing remains explicitly bound by the L2 verifier-owned context and public values; identifies the closest measured complete compact batch-STARK row so far, but still misses total time | Same selected FRI shapes in one run. L1 `alu_lanes=2,horner_k=5`: L1 outer `240,303` bytes, cached L1 `15.956s`, L2 compact `141,148` bytes, body `140,260`, cached L2 `28.435s`, serial `44.391s`. L1 `alu_lanes=4`: L1 outer `251,897` bytes, cached L1 `15.029s`, L2 compact `143,106` bytes, body `142,225`, cached L2 `28.555s`, serial `43.584s`. Baseline L1 `alu_lanes=8`: L1 outer `278,037` bytes, cached L1 `15.472s`, L2 compact `143,762` bytes, body `142,878`, cached L2 `28.421s`, serial `43.893s`. L1 `alu_lanes=16`: L2 compact `149,688` bytes, serial `45.773s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion selected_fast_l1_compact_l2_l1_table_packing_sweep_for_test_pearl -- --ignored --nocapture`, 2026-06-07 |
-| Promoted compact batch recursive certificate API | Current committed production candidate inside `ai-pow-zk`; typed certificate carries a Tip5 verifier-key/setup digest plus the final L2 compact body, while metadata/setup, FRI shape, and public-value derivation stay verifier-owned. Now has Rust bridge builders, cached compact builder variants, miner noun packaging, and a Rust compact artifact verifier that requires verifier-owned context plus a caller-supplied expected digest. That expected digest has an explicit canonical production-config encoding: five Goldilocks limbs as 40 little-endian bytes. Hoon verifier wiring and the production source for the pinned digest remain open. | Encoded `AiPowCompactBatchRecursiveCertificate` `142,274` bytes. Timings: L1 circuit build `126ms`, L1 outer prove `19.223s`, L2 prep `9.440s`, L2 prove `29.743s`, compact body construction `3ms`, compact verify `37ms`, uncached proof wall `58.603s`. Decoded certificate verifies; wrong public inputs, wrong certificate digest, and stale context digest reject. The compact prover cache now owns reusable L2 verifier/AIR setup, shares setup with the returned verifier context, and rejects stale L1 metadata/setup before reuse. The miner noun integration preserves those canonical postcard bytes as a bounded proof-node atom instead of expanding the compact proof into a serde tree. The full Pearl-compatible `%ai-pow` artifact now measures `141,916` jammed bytes (`138.59 KiB`) with a `141,103` byte compact certificate (`137.80 KiB`); bounded decode, statement precheck, canonical compact byte-node re-encoding, decoded compact verification, jammed compact verification, wrong expected-digest rejection, and wrong-length/noncanonical expected-digest byte rejection pass. | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion compact_batch_recursive_certificate_round_trip_for_test_pearl -- --ignored --nocapture`; `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-miner --release --features node real_compact_pearl_merge_artifact_jam_size_for_selected_route -- --ignored --nocapture`; `RUSTFLAGS="-C target-cpu=native" cargo check -p ai-pow --features zk`; `RUSTFLAGS="-C target-cpu=native" cargo check -p ai-pow-miner --features node`, 2026-06-07 |
+| Promoted compact batch recursive certificate API | Current committed production candidate inside `ai-pow-zk`; typed certificate carries a Tip5 verifier-key/setup digest plus the final L2 compact body, while metadata/setup, FRI shape, and public-value derivation stay verifier-owned. Now has Rust bridge builders, cached compact builder variants, miner noun packaging, and a Rust compact artifact verifier that requires verifier-owned context plus a caller-supplied expected digest. The promoted L2 route uses `recompose_lanes=2`; the expected digest has an explicit canonical production-config encoding as five Goldilocks limbs / 40 little-endian bytes. Hoon verifier wiring and the production source for the pinned digest remain open. | Encoded `AiPowCompactBatchRecursiveCertificate` `143,250` bytes. Timings: L1 circuit build `140ms`, L1 outer prove `19.123s`, L2 prep `9.452s`, L2 prove `28.617s`, compact body construction `3ms`, compact verify `38ms`, uncached proof wall `57.406s`. Decoded certificate verifies; wrong public inputs, wrong certificate digest, and stale context digest reject. The compact prover cache owns reusable L2 verifier/AIR setup, shares setup with the returned verifier context, and rejects stale L1 metadata/setup before reuse. The miner noun integration preserves canonical postcard bytes as a bounded proof-node atom instead of expanding the compact proof into a serde tree. The full Pearl-compatible `%ai-pow` artifact now measures `143,661` jammed bytes (`140.29 KiB`) with a `142,849` byte compact certificate (`139.50 KiB`); bounded decode, statement precheck, canonical compact byte-node re-encoding, decoded compact verification, jammed compact verification, wrong expected-digest rejection, and wrong-length/noncanonical expected-digest byte rejection pass. | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion compact_batch_recursive_certificate_round_trip_for_test_pearl -- --ignored --nocapture`; `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-miner --release --features node real_compact_pearl_merge_artifact_jam_size_for_selected_route -- --ignored --nocapture`; `RUSTFLAGS="-C target-cpu=native" cargo check -p ai-pow --features zk`; `RUSTFLAGS="-C target-cpu=native" cargo check -p ai-pow-miner --features node`, 2026-06-07 |
 | Native terminal certificate fixture | Recursion-crate terminal proof over the real Tip5 verifier-circuit fixture; proves the terminal backend can be small, but is not yet the full `ai-pow-zk` composite verifier path | `85,948` bytes / `83.9 KiB`; release prove `1.492s`, verify `1.181s` | `RUSTFLAGS="-C target-cpu=native" cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --release --test test_l1_outer_cert_tip5_unified terminal_production_certificate_measures_real_tip5_l0_verifier_circuit -- --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier native terminal path | Opt-in diagnostic path for the actual composite L1 verifier circuit; not yet production-qualified because it misses both size and time gates | `lb=6,nq=10,pow=0` reduced-profile run after compact known-index proof encoding: terminal certificate `766,069` bytes / `748.1 KiB`; terminal public inputs `5,180` bytes; postcard wire certificate `771,249` bytes / `753.2 KiB`; release prove `80.829s`, verify `58.825s` | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_recursive_certificate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed full-composite size measurement. Prepared selected+lookup and trace-bundle PCS data reuse, batched-LDE quotient construction, and folded-AIR evaluator cleanup keep the recursion-crate synthetic production-candidate checkpoint at `96,017` bytes / `93.8 KiB` with `9.918s` total prove. In the latest full-composite diagnostic, selected+lookup reuse reduced merged value-bridge prove to `2.340s`; phase timings before the integrated proof were L0 `29.834s`, terminal compile `7.543s`, assignment commit `5.793s`, selected+lookup root `11.075s` with selected commit `3.85s`, trace-bundle root `6.261s` with trace commit `5.84s`, prelude `7.600s`, and primitive prove `14.435s`. The integrated proof still stayed inside `terminal_npo_integrated_logup.air_quotient_matrix` for more than 90 seconds after `integrated_logup_prove_start` and was stopped. The active PROD layout has `8,081` terminal Tip5 calls, which makes the current full-main lookup AIR a `65,536`-row trace and `524,288`-point quotient. | `NOCK_TERMINAL_PROFILE_PROVER=1 RUST_LOG=p3_recursion::terminal=info RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-06 |
@@ -75,35 +75,26 @@ The active production target is therefore:
 
 - regular Layer-0 proof: **296.9 KiB** if materialized;
 - compact batch-STARK L2 over fast statement-bound L1: the current committed
-  production candidate. The latest best measured complete row uses L1
-  `alu_lanes=4,horner_k=5` and measures **143,106 bytes** for the actual
-  compact wrapper and **142,225 bytes** for the metadata-free compact body, so
-  the relaxed size gate is plausibly in range. The same run still measures
-  **43.584s** cached serial L1+L2 per-attempt proving with both prep stages
-  cached, so the route is not yet production-complete. The baseline selected
-  row remains close at **143,762 bytes** / **142,878 bytes** body and about
-  **44.031s** cached serial in the focused rerun. The latest L2 cached proving
-  alone is under the relaxed time gate if counted without L1. Verified
-  table-packing sweeps find smaller size reserves: L2 `alu_lanes=2` gives
-  **126,862 bytes** compact wrapper / **125,979 bytes** body but raises cached
-  L2 proving to **30.801s**, and L1 `alu_lanes=2` gives **141,148 bytes**
-  compact wrapper / **140,260 bytes** body with **44.391s** cached serial.
-  Lower ALU lanes are therefore size knobs, not the time route. The prior
-  deeper PCS profile, run before next-row forwarding, showed cached L2 time was
-  dominated by main/permutation trace Merkle commitments, not
-  recursive-verifier witness execution or FRI query work. This route is now
-  promoted inside `ai-pow-zk` as `AiPowCompactBatchRecursiveCertificate`; the
-  encoded crate-level certificate measures **142,274 bytes** including its
-  Tip5 verifier-key/setup digest, decoded verification passes, wrong public
-  inputs reject, wrong certificate digest rejects, stale context digest rejects,
-  and the uncached round-trip wall is **58.603s**. The miner noun boundary now
-  measures **141,916 jammed bytes / 138.59 KiB** for the full
-  Pearl-compatible `%ai-pow` artifact, with the compact certificate preserved
-  as **141,103** canonical postcard bytes. The Rust compact artifact verifier
-  now verifies decoded and jammed compact artifacts against verifier-owned
-  context plus a caller-supplied expected digest and rejects a wrong expected
-  digest. The expected digest is now encoded at config boundaries as 40
-  canonical Goldilocks bytes, with wrong-length and noncanonical encodings
+  production candidate. The promoted route uses L1 `alu_lanes=4,horner_k=5`
+  and L2 `recompose_lanes=2`. The latest release/native crate-level
+  round-trip measures **143,250 bytes** for the encoded compact certificate,
+  **19.123s** L1 outer proving, **28.617s** L2 proving, and **57.406s**
+  uncached proof wall. The miner noun boundary measures **143,661 jammed bytes
+  / 140.29 KiB** for the full Pearl-compatible `%ai-pow` artifact, with the
+  compact certificate preserved as **142,849 bytes / 139.50 KiB** canonical
+  postcard bytes. The relaxed size gate is therefore still in range, but total
+  proving time is not production-complete. The latest L2 cached proving alone
+  is under the relaxed time gate if counted without L1. Verified table-packing
+  sweeps show L2 `recompose_lanes=2` saves about `0.45s` cached serial at
+  roughly `+1.5 KiB`, while lower ALU lanes are size knobs rather than a time
+  route. The prior deeper PCS profile, run before next-row forwarding, showed
+  cached L2 time was dominated by main/permutation trace Merkle commitments,
+  not recursive-verifier witness execution or FRI query work. Decoded
+  verification passes, wrong public inputs reject, wrong certificate digest
+  rejects, stale context digest rejects, and decoded/jammed compact artifacts
+  verify against verifier-owned context plus a caller-supplied expected digest.
+  The expected digest is encoded at config boundaries as 40 canonical
+  Goldilocks bytes, with wrong-length and noncanonical encodings
   rejected before proof verification. The compact L2 prep/cache is now exposed
   through Rust prover APIs and rejects stale L1 metadata/setup before reuse. The
   remaining gaps are Hoon verifier wiring, production pinned-digest source,
@@ -421,15 +412,16 @@ metadata-free compact body is **142,878 bytes**, and the compact proof body is
 **90,307 bytes**. The verifier owns the metadata/setup context, restores
 preprocessed openings from canonical setup, checks the expected FRI shape, and
 receives the L1 statement-digest limbs as explicit final public values. The
-latest release/native run measures **4.772s** reusable L1 prep, **15.305s**
-cached L1 proving, **20.077s** total L1 proving, **9.364s** reusable L2 prep,
-**28.726s** cached L2 proving, and **38.090s** uncached L2 total. That
-makes this path materially closer to the relaxed production target than the
-previous native-terminal direction, while also making the remaining blocker
-crisp: the in-size route is still about **44.031s** for cached serial L1+L2
-proving with both prep stages cached, dominated by upstream batch-STARK/PCS
-proving rather than recursive witness execution or setup. The selected L2
-verifier profile now measures **4,791** Tip5 rows padded to **8,192**, only
+latest direct release/native compact-certificate round trip measures
+**143,250** encoded certificate bytes, **19.123s** L1 outer proving,
+**28.617s** L2 proving, and **57.406s** uncached proof wall. Focused cached
+diagnostics put the route in the low-to-mid **43s** range after the L1
+`alu_lanes=4` and L2 `recompose_lanes=2` packing wins. That makes this path
+materially closer to the relaxed production target than the previous
+native-terminal direction, while also making the remaining blocker crisp:
+proving time is dominated by upstream batch-STARK/PCS proving rather than
+recursive witness execution or setup. The selected L2 verifier profile now
+measures **4,791** Tip5 rows padded to **8,192**, only
 **695** rows above the **4,096** halving boundary. Those rows split into
 **2,220** MMCS op IDs and **2,571** non-MMCS challenger/transcript rows, with
 **2,620** generated rows carrying explicit `mmcs_bit` bindings. A hidden-L1
@@ -477,7 +469,7 @@ not be conflated:
    canonical preprocessed openings, and binds the L1 statement digest through
    final L2 public lanes. It is now wired through the Rust bridge and miner
    noun path as canonical compact bytes, with the full Pearl-compatible
-   `%ai-pow` artifact measured at `141,916` jammed bytes. The Rust compact
+   `%ai-pow` artifact measured at `143,661` jammed bytes. The Rust compact
    artifact verifier requires verifier-owned context and a caller-supplied
    expected digest encoded as 40 canonical Goldilocks bytes; wrong-length and
    noncanonical digest bytes reject before proof verification. It is not yet
@@ -535,11 +527,12 @@ does not submit the full `AiPowRecursiveCertificate` envelope, and it does not
 trust prover-supplied verifier metadata as the certificate context. The final
 artifact candidate is the compact L2 proof body plus the explicitly required
 public values and verifier-key/setup binding. The current selected row is
-already inside the relaxed size envelope at **143,762 bytes** for the actual
-wrapper and **142,878 bytes** for the metadata-free body, but release/native
-cached serial L1+L2 proving is still **44.031s** with both prep stages cached.
-That is why the route is committed for implementation while the milestone is
-not yet claimed.
+already inside the relaxed size envelope. The promoted crate-level compact
+certificate is **143,250 bytes**, and the full Pearl-compatible `%ai-pow`
+artifact is **143,661** jammed bytes, but release/native L1+L2 proving remains
+well above `~30s` total wall (`57.406s` crate-level uncached round trip in the
+latest direct test). That is why the route is committed for implementation
+while the milestone is not yet claimed.
 
 The opening proof dominates because the outer proof is a conventional
 multi-table batch-STARK over the executed verifier circuit. The active
@@ -576,7 +569,7 @@ The `lb=6,nq=10,pow=0` profile is the smallest relation measured so far, but
 the full composite terminal path is still more than seven times the byte target
 and well over the time target. The higher-level miner noun path now uses the
 compact batch-STARK certificate for the selected Pearl-compatible recursive
-builder and measures `141,916` jammed bytes for the full `%ai-pow` artifact;
+builder and measures `143,661` jammed bytes for the full `%ai-pow` artifact;
 the large checkpoint object remains a fallback/regression artifact.
 
 This `lb=6,nq=10` measurement is a lower-bound diagnostic for recursive
@@ -1167,13 +1160,13 @@ For the intended production path, the block-facing recursive proof target is
 now compact batch-STARK L2 over a fast statement-bound L1 proof, not the large
 batch-STARK checkpoint envelope and not the native terminal fallback. However,
 the full end-to-end production claim is not yet proven. The current selected
-route is inside the relaxed size envelope at **143,762 bytes** for the actual
-compact wrapper and **142,878 bytes** for the metadata-free body, with the L1
-statement digest carried as explicit final public lanes and verifier-owned
-metadata/setup context. It still misses the relaxed time gate: the latest
-release/native run measures **15.305 s** cached L1 proving plus **28.726 s**
-cached L2 proving, or **44.031 s** cached serial L1+L2 per attempt with both
-prep stages cached. The materialized
+route is inside the relaxed size envelope at **143,250 bytes** for the encoded
+crate-level compact certificate and **143,661** jammed bytes for the full
+Pearl-compatible `%ai-pow` artifact, with the L1 statement digest carried as
+explicit final public lanes and verifier-owned metadata/setup context. It
+still misses the relaxed time gate: the latest direct release/native compact
+round trip measures **19.123 s** L1 outer proving plus **28.617 s** L2 proving,
+with **57.406 s** uncached proof wall. The materialized
 Layer-0 proof is **304,048 bytes / 296.9 KiB**, but it is an intermediate
 diagnostic artifact rather than the target consensus wire object.
 The prior deeper PCS profile rerun, before next-row forwarding, attributes the

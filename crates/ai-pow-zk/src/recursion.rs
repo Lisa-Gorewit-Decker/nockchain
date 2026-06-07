@@ -17,7 +17,9 @@
 //!   composite AIR as the single generic `A` (the de-risk's path 3a).
 
 use p3_batch_stark::{BatchProof, CommonData};
-use p3_circuit::ops::{generate_recompose_trace, generate_tip5_trace, Tip5Config, Tip5Goldilocks};
+use p3_circuit::ops::{
+    generate_recompose_trace, generate_tip5_trace, NpoTypeId, Tip5Config, Tip5Goldilocks,
+};
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
@@ -280,6 +282,7 @@ pub const COMPACT_BATCH_L2_LOG_FINAL_POLY_LEN: usize = 2;
 pub const COMPACT_BATCH_L2_MAX_LOG_ARITY: usize = 3;
 pub const COMPACT_BATCH_L2_ALU_LANES: usize = 8;
 pub const COMPACT_BATCH_L2_HORNER_PACK_K: usize = 5;
+pub const COMPACT_BATCH_L2_RECOMPOSE_LANES: usize = 2;
 
 fn production_l1_table_packing(public_binding_lanes: usize) -> p3_circuit_prover::TablePacking {
     p3_circuit_prover::TablePacking::new(DIGEST_ELEMS, 8)
@@ -304,6 +307,11 @@ fn compact_batch_l2_table_packing(public_binding_lanes: usize) -> p3_circuit_pro
             COMPACT_BATCH_L2_LOG_FINAL_POLY_LEN, COMPACT_BATCH_L2_LOG_BLOWUP,
         )
         .with_horner_pack_k(COMPACT_BATCH_L2_HORNER_PACK_K)
+        .with_npo_lanes(NpoTypeId::recompose(), COMPACT_BATCH_L2_RECOMPOSE_LANES)
+        .with_npo_lanes(
+            NpoTypeId::recompose_with_coeff_lookups(),
+            COMPACT_BATCH_L2_RECOMPOSE_LANES,
+        )
 }
 
 fn compact_batch_l1_stark_config() -> p3_circuit_prover::config::GoldilocksTipsConfig {
@@ -1550,7 +1558,7 @@ fn build_compact_batch_l2_over_l1_prep(
     air_builders.extend(recompose_air_builders::<
         p3_circuit_prover::config::GoldilocksTipsConfig,
         2,
-    >(1, true));
+    >(COMPACT_BATCH_L2_RECOMPOSE_LANES, true));
 
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<
@@ -2878,7 +2886,8 @@ mod tests {
     ) -> Result<L2VerifierPrepForTestPearl, String> {
         build_l2_over_l1_outer_prep_for_test_pearl_with_profile_and_packing(
             l1, l1_config, l1_fri_verifier_params, l2_config, l2_log_blowup, l2_log_final_poly_len,
-            verifier_profile_mode, 8, 5,
+            verifier_profile_mode, COMPACT_BATCH_L2_ALU_LANES, COMPACT_BATCH_L2_HORNER_PACK_K,
+            COMPACT_BATCH_L2_RECOMPOSE_LANES,
         )
     }
 
@@ -2892,8 +2901,10 @@ mod tests {
         verifier_profile_mode: L2VerifierProfileModeForTestPearl,
         l2_alu_lanes: usize,
         l2_horner_pack_k: usize,
+        l2_recompose_lanes: usize,
     ) -> Result<L2VerifierPrepForTestPearl, String> {
         use p3_batch_stark::ProverData;
+        use p3_circuit::ops::NpoTypeId;
         use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
         use p3_circuit_prover::{
             recompose_air_builders, strip_public_binding_for_lookup_metadata, tip5_air_builders,
@@ -2998,7 +3009,12 @@ mod tests {
         let l2_table_packing = TablePacking::new(l2_statement_public_binding_lanes, l2_alu_lanes)
             .with_public_binding_lanes(l2_statement_public_binding_lanes)
             .with_fri_params(l2_log_final_poly_len, l2_log_blowup)
-            .with_horner_pack_k(l2_horner_pack_k);
+            .with_horner_pack_k(l2_horner_pack_k)
+            .with_npo_lanes(NpoTypeId::recompose(), l2_recompose_lanes)
+            .with_npo_lanes(
+                NpoTypeId::recompose_with_coeff_lookups(),
+                l2_recompose_lanes,
+            );
         let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
             vec![Box::new(Tip5Preprocessor), Box::new(RecomposePreprocessor::new(true))];
         let mut air_builders =
@@ -3006,7 +3022,7 @@ mod tests {
         air_builders.extend(recompose_air_builders::<
             p3_circuit_prover::config::GoldilocksTipsConfig,
             2,
-        >(1, true));
+        >(l2_recompose_lanes, true));
 
         let (airs_degrees, primitive_columns, non_primitive_columns) =
             get_airs_and_degrees_with_prep::<
@@ -4633,13 +4649,16 @@ mod tests {
         let l1_fri_verifier_params =
             pure_query_fri_verifier_params_for_l1(L1_LOG_BLOWUP, L1_LOG_FINAL_POLY_LEN);
 
-        for (label, l2_alu_lanes, l2_horner_pack_k) in [
-            ("alu2_horner5", 2usize, 5usize),
-            ("alu4_horner5", 4usize, 5usize),
-            ("baseline_alu8_horner5", 8usize, 5usize),
-            ("alu16_horner5", 16, 5),
-            ("alu32_horner5", 32, 5),
-            ("alu16_horner8", 16, 8),
+        for (label, l2_alu_lanes, l2_horner_pack_k, l2_recompose_lanes) in [
+            ("alu2_horner5", 2usize, 5usize, 1usize),
+            ("alu4_horner5", 4usize, 5usize, 1usize),
+            ("baseline_alu8_horner5", 8usize, 5usize, 1usize),
+            ("baseline_alu8_horner5_recompose2", 8usize, 5usize, 2usize),
+            ("baseline_alu8_horner5_recompose4", 8usize, 5usize, 4usize),
+            ("baseline_alu8_horner5_recompose8", 8usize, 5usize, 8usize),
+            ("alu16_horner5", 16, 5, 1),
+            ("alu32_horner5", 32, 5, 1),
+            ("alu16_horner8", 16, 8, 1),
         ] {
             let l2_prep_wall_start = Instant::now();
             let l2_prep = build_l2_over_l1_outer_prep_for_test_pearl_with_profile_and_packing(
@@ -4652,6 +4671,7 @@ mod tests {
                 L2VerifierProfileModeForTestPearl::FullNative,
                 l2_alu_lanes,
                 l2_horner_pack_k,
+                l2_recompose_lanes,
             )
             .expect("selected L2 prep over statement-bound L1 with packing variant");
             let l2_prep_wall_ms = l2_prep_wall_start.elapsed().as_millis();
@@ -4685,7 +4705,12 @@ mod tests {
                     )
                     .with_public_binding_lanes(l2_statement_public_binding_lanes)
                     .with_fri_params(L2_LOG_FINAL_POLY_LEN, L2_LOG_BLOWUP)
-                    .with_horner_pack_k(l2_horner_pack_k),
+                    .with_horner_pack_k(l2_horner_pack_k)
+                    .with_npo_lanes(p3_circuit::ops::NpoTypeId::recompose(), l2_recompose_lanes)
+                    .with_npo_lanes(
+                        p3_circuit::ops::NpoTypeId::recompose_with_coeff_lookups(),
+                        l2_recompose_lanes,
+                    ),
                 );
             l2_compact_verifier.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
             l2_compact_verifier.register_recompose_table::<2>(true);
@@ -4735,7 +4760,7 @@ mod tests {
             let l2_compact_verify_ms = l2_compact_verify_start.elapsed().as_millis();
 
             eprintln!(
-                "selected compact L2 table-packing candidate [{label}]: l1_cached_prove_ms={} l1_prep_wall_ms={} l1_air_setup_ms={} l1_witness_run_ms={} l1_stark_prove_ms={} l2_alu_lanes={} l2_horner_pack_k={} l2_outer={} l2_proof_body={} l2_actual_compact={} l2_actual_compact_body={} l2_actual_compact_proof_body={} l2_actual_compact_restoration={} l2_actual_compact_build_ms={} l2_actual_compact_body_verify_ms={} l2_prep_wall_ms={} l2_cached_prove_ms={} l2_circuit_define_ms={} l2_circuit_build_ms={} l2_air_setup_ms={} l2_input_pack_ms={} l2_witness_run_ms={} l2_stark_prove_ms={} l2_stark_verify_ms={} cached_serial_l1_l2_ms={}",
+                "selected compact L2 table-packing candidate [{label}]: l1_cached_prove_ms={} l1_prep_wall_ms={} l1_air_setup_ms={} l1_witness_run_ms={} l1_stark_prove_ms={} l2_alu_lanes={} l2_horner_pack_k={} l2_recompose_lanes={} l2_outer={} l2_proof_body={} l2_actual_compact={} l2_actual_compact_body={} l2_actual_compact_proof_body={} l2_actual_compact_restoration={} l2_actual_compact_build_ms={} l2_actual_compact_body_verify_ms={} l2_prep_wall_ms={} l2_cached_prove_ms={} l2_circuit_define_ms={} l2_circuit_build_ms={} l2_air_setup_ms={} l2_input_pack_ms={} l2_witness_run_ms={} l2_stark_prove_ms={} l2_stark_verify_ms={} cached_serial_l1_l2_ms={}",
                 l1_cached_prove_ms,
                 l1_prep_wall_ms,
                 l1_prep.timings.air_setup_ms,
@@ -4743,6 +4768,7 @@ mod tests {
                 l1_timings.stark_prove_ms,
                 l2_alu_lanes,
                 l2_horner_pack_k,
+                l2_recompose_lanes,
                 l2_outer_bytes,
                 l2_proof_body_bytes,
                 l2_compact_bytes,
