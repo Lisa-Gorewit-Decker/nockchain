@@ -3108,10 +3108,14 @@ mod tests {
             let l2_compact_frontier_digest_savings_bytes =
                 l2_compact_frontier_sibling_savings * core::mem::size_of::<[Val; DIGEST_ELEMS]>();
             let l2_compact_verify_start = Instant::now();
+            let l2_compact_context =
+                p3_circuit_prover::GoldilocksTip5PathPrunedCompactVerifierContext::new(
+                    &l2_metadata, &l2_circuit_prover_data, l2_fri_shape,
+                    &l2_statement_public_values,
+                );
             l2_compact_verifier
-                .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_public_values(
-                    l2_compact_body, &l2_statement_public_values, &l2_metadata,
-                    &l2_circuit_prover_data,
+                .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_context(
+                    l2_compact_body, l2_compact_context,
                 )
                 .expect("actual compact L2 proof must verify");
             let l2_compact_verify_ms = l2_compact_verify_start.elapsed().as_millis();

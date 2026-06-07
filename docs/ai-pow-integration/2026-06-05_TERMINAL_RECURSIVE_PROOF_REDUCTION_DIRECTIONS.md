@@ -137,16 +137,18 @@ Done and verified:
   from canonical setup, and the final L2 proof binds all L1 statement-digest
   base limbs as final public lanes. For the D=2 candidate this is
   `DIGEST_ELEMS * TRACE_D = 10` base-valued L2 public lanes; the verifier API
-  receives their D=2 basis expansion. The diagnostic compacts and verifies the
-  body through the public-value-binding APIs, and a focused regression rejects
-  wrong caller-supplied public values for the compact body.
+  receives their D=2 basis expansion. The compact body now verifies through a
+  single verifier-owned context containing the metadata template, canonical
+  setup/prep data, expected FRI shape, and public values. Focused regressions
+  reject wrong public values, wrong FRI shape, and metadata/setup mismatches.
 
 What remains:
 
 - Promote the compact batch-STARK body format into a canonical recursive
-  certificate: pinned verifier key/setup digest, pinned FRI shape, canonical
-  preprocessed commitment restoration, public-value derivation, and strict
-  rejection of prover-supplied verifier metadata.
+  certificate. The verifier-owned context API now exists; the remaining wire
+  work is to derive/pin the verifier-key/setup digest, derive public values from
+  chain-owned statement metadata, and reject any prover-supplied verifier
+  metadata instead of accepting it as context.
 - Reduce end-to-end proving time. The current selected size row is about
   `73.146s` serial L1+L2 proving in the latest focused timing run
   (`24.865s + 48.281s`) before production pipeline cleanup. The best
@@ -395,7 +397,7 @@ does not replace the required packed Tip5 support-theorem redesign.
 | Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; cap-height `3` merged-value plus packed-support optimistic single-FRI floor is `249,184` bytes, `95,584` bytes over binary `150 KiB`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s`; packed byte-LogUp group size 15 was measured and rejected at `206,759` bytes, prove `38.515s` |
 | Best measured outer task parallelism | Rayon-joining the current primitive R1CS, merged value-bridge, and packed-support subproofs gives `39.448s` post-prelude subproof wall time versus `53.355s` summed subproof timers, but leaves the same `249,184` byte optimistic single-FRI floor and `171.422s` full diagnostic wall |
 | Main current blocker | The compact batch-STARK L2 size row is in range, but total proving is still about `73.146s` in the focused selected-row diagnostic before production cleanup; the time blocker is L2 STARK proving (`38.693s`) plus L2 AIR/setup (`9.477s`), not witness execution or final proof size |
-| Next implementation step | Promote compact batch-STARK L2 into the production certificate format with verifier-owned setup/prep cache, then reduce the selected row's L2 `prove_all_tables` time and add final artifact rejection tests |
+| Next implementation step | Promote compact batch-STARK L2 into the production certificate format by deriving/pinning the setup digest and public values from verifier-owned state, then reduce the selected row's L2 `prove_all_tables` time and add final artifact rejection tests |
 
 ### Decision
 
@@ -1393,6 +1395,15 @@ optimization target is L2 proving/setup time rather than a simple shape retune.
 
 Compact verifier artifacts now exist for the verifier-deterministic
 preprocessed material in that projection.
+
+`GoldilocksTip5PathPrunedCompactVerifierContext` is the current verifier-owned
+contract for the metadata-free compact body. It binds the trusted
+`GoldilocksTip5BatchStarkProofMetadata`, canonical `CircuitProverData`, expected
+`GoldilocksTip5FriShape`, and final public values into one API boundary before
+restoration. The context verifier rejects metadata/setup binding mismatches,
+FRI-shape mismatches, malformed public-value lengths, and wrong public values.
+The AI-PoW selected-row diagnostic now verifies compact bodies through this
+context entrypoint.
 
 `PreprocessedOodCompactBatchStarkProof` is the generic first step. It consumes
 a full `BatchStarkProof`, omits the verifier-deterministic

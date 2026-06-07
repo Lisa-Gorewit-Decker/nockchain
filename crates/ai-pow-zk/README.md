@@ -34,8 +34,9 @@ the persisted block artifact.
 > packed-support subproofs gives `39.448s` post-prelude wall time, unchanged
 > proof language, and `171.422s` full diagnostic wall. The compact batch-STARK
 > L2 candidate now binds all L1 statement-digest base limbs as final public
-> lanes and verifies compact bodies through caller-supplied public values plus
-> verifier-owned metadata/setup. The corrected fast-L1/L2 row at L1
+> lanes and verifies compact bodies through a verifier-owned context containing
+> metadata/setup, expected FRI shape, and caller-supplied public values. The
+> corrected fast-L1/L2 row at L1
 > `lb=3,nq=20` and L2 `lb=5,nq=12` measures `149,743` bytes for the actual
 > compact wrapper and `148,866` bytes for the metadata-free compact body, with
 > latest focused timings of `24.865s` L1 proving and `48.281s` L2 proving. The

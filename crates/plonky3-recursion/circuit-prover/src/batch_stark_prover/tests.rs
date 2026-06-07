@@ -1557,6 +1557,88 @@ fn test_goldilocks_tip5_path_pruned_compact_body_rejects_wrong_public_values() {
 }
 
 #[test]
+fn test_goldilocks_tip5_path_pruned_compact_body_context_binds_setup_shape_and_public_values() {
+    let (prover, proof, circuit_prover_data, fri_shape, public_values) =
+        prove_goldilocks_tip5_ext2_public_plus_const_with_public_binding(None, 1);
+    let metadata = GoldilocksTip5BatchStarkProofMetadata::from_proof(&proof);
+    let compact_body = prover
+        .compact_goldilocks_tip5_path_pruned_preprocessed_body_with_public_values(
+            proof,
+            &public_values,
+            &circuit_prover_data,
+            fri_shape,
+        )
+        .expect("path-prune compact Goldilocks/Tip5 proof body");
+    let compact_body_bytes = postcard::to_allocvec(&compact_body).expect("serialize compact body");
+    let decode_body = || -> GoldilocksTip5PathPrunedCompactBatchStarkProofBody {
+        postcard::from_bytes(&compact_body_bytes).expect("deserialize compact body")
+    };
+
+    let context = GoldilocksTip5PathPrunedCompactVerifierContext::new(
+        &metadata,
+        &circuit_prover_data,
+        fri_shape,
+        &public_values,
+    );
+    prover
+        .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_context(
+            decode_body(),
+            context,
+        )
+        .expect("compact verifier context should verify the honest compact body");
+
+    let mut wrong_shape = fri_shape;
+    wrong_shape.num_queries += 1;
+    let err = prover
+        .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_context(
+            decode_body(),
+            GoldilocksTip5PathPrunedCompactVerifierContext::new(
+                &metadata,
+                &circuit_prover_data,
+                wrong_shape,
+                &public_values,
+            ),
+        )
+        .expect_err("compact verifier context must pin the expected FRI shape");
+    assert!(
+        format!("{err:?}").contains("FRI shape mismatch"),
+        "unexpected wrong-shape error: {err:?}"
+    );
+
+    let (_, _, wrong_setup, _, _) =
+        prove_goldilocks_tip5_ext2_public_plus_const_with_public_binding(Some(1), 1);
+    let err = prover
+        .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_context(
+            decode_body(),
+            GoldilocksTip5PathPrunedCompactVerifierContext::new(
+                &metadata,
+                &wrong_setup,
+                fri_shape,
+                &public_values,
+            ),
+        )
+        .expect_err("compact verifier context must bind metadata to canonical setup");
+    assert!(
+        format!("{err:?}").contains("metadata/setup binding mismatch"),
+        "unexpected wrong-setup error: {err:?}"
+    );
+
+    let mut wrong_public_values = public_values.clone();
+    wrong_public_values[0] += Goldilocks::ONE;
+    prover
+        .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_context(
+            decode_body(),
+            GoldilocksTip5PathPrunedCompactVerifierContext::new(
+                &metadata,
+                &circuit_prover_data,
+                fri_shape,
+                &wrong_public_values,
+            ),
+        )
+        .expect_err("compact verifier context must bind caller-supplied public values");
+}
+
+#[test]
 fn test_goldilocks_tip5_path_pruned_compact_rejects_tampered_merkle_path() {
     let (prover, proof, circuit_prover_data, fri_shape) =
         prove_goldilocks_tip5_ext2_public_plus_const(None);

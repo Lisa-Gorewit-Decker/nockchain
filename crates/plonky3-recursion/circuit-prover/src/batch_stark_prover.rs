@@ -598,6 +598,28 @@ impl GoldilocksTip5BatchStarkProofMetadata {
         }
     }
 
+    /// Re-check the structural invariants that compact-body verifiers rely on
+    /// after this metadata has been rebuilt or deserialized from trusted
+    /// verifier state.
+    pub fn validate(&self) -> Result<(), ProofMetadataError> {
+        match self.ext_degree {
+            1 | 2 | 4 | 5 | 6 | 8 => {}
+            d => return Err(ProofMetadataError::UnsupportedExtDegree(d)),
+        }
+        self.rows.validate()?;
+        self.table_packing.validate()?;
+        if self.public_binding_lanes != self.table_packing.public_binding_lanes() {
+            return Err(ProofMetadataError::PublicBindingMismatch {
+                proof_lanes: self.public_binding_lanes,
+                packing_lanes: self.table_packing.public_binding_lanes(),
+            });
+        }
+        for entry in &self.non_primitives {
+            entry.validate()?;
+        }
+        Ok(())
+    }
+
     /// Rehydrate a compact proof body with this verifier-owned metadata.
     pub fn into_proof_with_body(
         &self,
@@ -871,6 +893,57 @@ impl GoldilocksTip5PathPrunedCompactBatchStarkProofBody {
             input_batch_paths: self.input_batch_paths,
             commit_phase_paths: self.commit_phase_paths,
         }
+    }
+}
+
+/// Verifier-owned context for checking a canonical-metadata Goldilocks/Tip5
+/// path-pruned compact body.
+///
+/// The compact body is not self-describing. A sound verifier must own all
+/// context here: the proof metadata template, canonical setup used to restore
+/// omitted preprocessed openings, expected FRI shape, and final public values.
+/// None of these fields may be accepted from the prover as trusted context.
+pub struct GoldilocksTip5PathPrunedCompactVerifierContext<'a> {
+    pub metadata: &'a GoldilocksTip5BatchStarkProofMetadata,
+    pub canonical_setup: &'a CircuitProverData<GoldilocksTipsConfig>,
+    pub fri_shape: GoldilocksTip5FriShape,
+    pub public_values: &'a [Goldilocks],
+}
+
+impl<'a> GoldilocksTip5PathPrunedCompactVerifierContext<'a> {
+    pub const fn new(
+        metadata: &'a GoldilocksTip5BatchStarkProofMetadata,
+        canonical_setup: &'a CircuitProverData<GoldilocksTipsConfig>,
+        fri_shape: GoldilocksTip5FriShape,
+        public_values: &'a [Goldilocks],
+    ) -> Self {
+        Self {
+            metadata,
+            canonical_setup,
+            fri_shape,
+            public_values,
+        }
+    }
+
+    fn validate(&self) -> Result<(), BatchStarkProverError> {
+        self.metadata.validate()?;
+        self.fri_shape.validate()?;
+        if !common_preprocessed_binding_eq(
+            &self.metadata.stark_common,
+            &self.canonical_setup.prover_data.common,
+        ) {
+            return Err(BatchStarkProverError::Verify(String::from(
+                "Goldilocks/Tip5 compact verifier context metadata/setup binding mismatch",
+            )));
+        }
+        let expected_public_values = self.metadata.public_binding_lanes * self.metadata.ext_degree;
+        if self.public_values.len() != expected_public_values {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 compact verifier context public values length mismatch: expected {expected_public_values}, got {}",
+                self.public_values.len()
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -2959,6 +3032,41 @@ impl BatchStarkProver<GoldilocksTipsConfig> {
             proof.into_wrapped(metadata),
             public_values,
             canonical_setup,
+        )
+    }
+
+    /// Verify a canonical-metadata compact body against a single verifier-owned
+    /// context.
+    ///
+    /// This is the production-oriented entrypoint for compact bodies: it checks
+    /// the trusted metadata/setup binding, expected FRI shape, and explicit
+    /// public-value binding before restoring omitted openings and delegating to
+    /// the normal upstream verifier.
+    pub fn verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_context(
+        &self,
+        proof: GoldilocksTip5PathPrunedCompactBatchStarkProofBody,
+        context: GoldilocksTip5PathPrunedCompactVerifierContext<'_>,
+    ) -> Result<(), BatchStarkProverError>
+    where
+        <GoldilocksTipsConfig as StarkGenericConfig>::Pcs: Pcs<
+                GoldilocksTip5Challenge,
+                <GoldilocksTipsConfig as StarkGenericConfig>::Challenger,
+                Commitment = <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment,
+            >,
+        <GoldilocksTip5ValMmcs as Mmcs<Goldilocks>>::Commitment: PartialEq,
+    {
+        context.validate()?;
+        if proof.fri_shape != context.fri_shape {
+            return Err(BatchStarkProverError::Verify(format!(
+                "Goldilocks/Tip5 compact body FRI shape mismatch: expected {:?}, got {:?}",
+                context.fri_shape, proof.fri_shape
+            )));
+        }
+        self.verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_public_values(
+            proof,
+            context.public_values,
+            context.metadata,
+            context.canonical_setup,
         )
     }
 
