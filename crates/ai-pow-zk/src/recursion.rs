@@ -1711,10 +1711,12 @@ fn _composite_conforms_to_recursive_air() {
 #[cfg(test)]
 mod tests {
     use p3_recursion::terminal::{
-        NativeTerminalConstraint, NativeTerminalVerifyingKey, TerminalCompressedFriProof,
-        TerminalNpoPolynomialFriColumnSet, TerminalNpoPolynomialTable,
-        TerminalNpoPolynomialTableRow, TerminalNpoRowKind, TerminalProductionNpoPolynomialProof,
-        TerminalProductionProof, TerminalR1csRowProductSumcheckProof, TerminalSparseR1csRelation,
+        NativeTerminalConstraint, NativeTerminalVerifyingKey, TerminalCompressedFriInputBatch,
+        TerminalCompressedFriProof, TerminalNpoPolynomialFriColumnSet, TerminalNpoPolynomialTable,
+        TerminalNpoPolynomialTableRow, TerminalNpoRowKind,
+        TerminalNpoTip5PackedLookupAirLogupSelectedTraceBridgeProof,
+        TerminalProductionNpoPolynomialProof, TerminalProductionProof,
+        TerminalR1csRowProductSumcheckProof, TerminalSparseR1csRelation,
     };
 
     use super::*;
@@ -4069,6 +4071,19 @@ mod tests {
     }
 
     #[derive(Clone, Debug)]
+    struct TerminalCompactFriInputBatchByteBreakdown {
+        index: usize,
+        total_bytes: usize,
+        opened_values_bytes: usize,
+        merkle_bytes: usize,
+        opened_field_values: usize,
+        opened_unique_leaves: usize,
+        original_order_entries: usize,
+        pruned_paths: usize,
+        pruned_siblings: usize,
+    }
+
+    #[derive(Clone, Debug)]
     struct TerminalCompactFriByteBreakdown {
         total_bytes: usize,
         commit_phase_commits_bytes: usize,
@@ -4084,6 +4099,48 @@ mod tests {
         input_batches: usize,
         commit_rounds: usize,
         query_count: usize,
+        input_batch_breakdowns: Vec<TerminalCompactFriInputBatchByteBreakdown>,
+    }
+
+    fn terminal_compact_fri_opened_values_field_count(opened_values: &[Vec<Vec<Val>>]) -> usize {
+        opened_values
+            .iter()
+            .flat_map(|matrix| matrix.iter())
+            .map(|point_values| point_values.len())
+            .sum()
+    }
+
+    fn terminal_compact_fri_input_batch_byte_breakdown(
+        index: usize,
+        batch: &TerminalCompressedFriInputBatch,
+    ) -> TerminalCompactFriInputBatchByteBreakdown {
+        let total_bytes = postcard_len(batch, "terminal compact FRI input batch");
+        let opened_values_bytes = postcard_len(
+            &batch.opened_values, "terminal compact FRI input batch values",
+        );
+        let merkle_bytes = postcard_len(
+            &batch.pruned_opening_proof, "terminal compact FRI input batch Merkle paths",
+        );
+        let pruned_siblings = batch
+            .pruned_opening_proof
+            .paths
+            .iter()
+            .map(|path| path.siblings.len())
+            .sum();
+
+        TerminalCompactFriInputBatchByteBreakdown {
+            index,
+            total_bytes,
+            opened_values_bytes,
+            merkle_bytes,
+            opened_field_values: terminal_compact_fri_opened_values_field_count(
+                &batch.opened_values,
+            ),
+            opened_unique_leaves: batch.opened_values.len(),
+            original_order_entries: batch.pruned_opening_proof.original_order.len(),
+            pruned_paths: batch.pruned_opening_proof.paths.len(),
+            pruned_siblings,
+        }
     }
 
     fn terminal_compact_fri_byte_breakdown(
@@ -4099,6 +4156,12 @@ mod tests {
         );
         let input_batches_bytes =
             postcard_len(&proof.input_batches, "terminal compact FRI input batches");
+        let input_batch_breakdowns = proof
+            .input_batches
+            .iter()
+            .enumerate()
+            .map(|(index, batch)| terminal_compact_fri_input_batch_byte_breakdown(index, batch))
+            .collect::<Vec<_>>();
         let input_opened_values_bytes = proof
             .input_batches
             .iter()
@@ -4163,6 +4226,7 @@ mod tests {
             input_batches: proof.input_batches.len(),
             commit_rounds: proof.commit_rounds.len(),
             query_count,
+            input_batch_breakdowns,
         }
     }
 
@@ -4186,6 +4250,263 @@ mod tests {
             breakdown.input_batches,
             breakdown.commit_rounds,
             breakdown.query_count,
+        );
+        for batch in &breakdown.input_batch_breakdowns {
+            eprintln!(
+                "native terminal compact FRI input batch [{label}#{}]: total={} opened_values={} merkle={} opened_field_values={} opened_unique_leaves={} original_order_entries={} pruned_paths={} pruned_siblings={}",
+                batch.index,
+                batch.total_bytes,
+                batch.opened_values_bytes,
+                batch.merkle_bytes,
+                batch.opened_field_values,
+                batch.opened_unique_leaves,
+                batch.original_order_entries,
+                batch.pruned_paths,
+                batch.pruned_siblings,
+            );
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct TerminalPackedTip5PairedLookupPayloadEstimate {
+        current_trace_width: usize,
+        paired_trace_width_floor: usize,
+        current_split_columns: usize,
+        paired_split_columns: usize,
+        current_query_interactions: usize,
+        paired_query_interactions: usize,
+        current_logup_interactions: usize,
+        paired_logup_interactions: usize,
+        logup_group_size: usize,
+        current_logup_groups: usize,
+        paired_logup_groups: usize,
+        current_logup_accumulator_basis: usize,
+        paired_logup_accumulator_basis: usize,
+        current_trace_table_opened_basis: usize,
+        paired_trace_table_opened_basis: usize,
+        current_accumulator_opened_basis_per_point: usize,
+        paired_accumulator_opened_basis_per_point: usize,
+        trace_table_opened_values_bytes: usize,
+        trace_table_estimated_opened_values_bytes: usize,
+        accumulator_opened_values_bytes: usize,
+        accumulator_estimated_opened_values_bytes: usize,
+        fri_opened_value_savings_bytes: usize,
+        packed_trace_zeta_opening_bytes: usize,
+        packed_trace_zeta_estimated_opening_bytes: usize,
+        logup_accumulator_zeta_opening_bytes: usize,
+        logup_accumulator_zeta_estimated_opening_bytes: usize,
+        non_fri_opening_savings_bytes: usize,
+        current_packed_support_fri_bytes: usize,
+        estimated_packed_support_fri_after_opened_value_savings_bytes: usize,
+        current_optimistic_single_fri_floor_bytes: usize,
+        estimated_optimistic_single_fri_floor_after_savings_bytes: usize,
+    }
+
+    fn terminal_scaled_byte_count(bytes: usize, current_units: usize, new_units: usize) -> usize {
+        assert!(current_units > 0, "current_units must be nonzero");
+        ((bytes as u128 * new_units as u128 + current_units as u128 - 1) / current_units as u128)
+            as usize
+    }
+
+    fn terminal_div_ceil(numerator: usize, denominator: usize) -> usize {
+        assert!(denominator > 0, "denominator must be nonzero");
+        numerator.div_ceil(denominator)
+    }
+
+    fn terminal_packed_tip5_paired_lookup_payload_estimate(
+        proof: &TerminalNpoTip5PackedLookupAirLogupSelectedTraceBridgeProof,
+        fri_breakdown: &TerminalCompactFriByteBreakdown,
+        current_optimistic_single_fri_floor_bytes: usize,
+    ) -> TerminalPackedTip5PairedLookupPayloadEstimate {
+        let trace_table_batch = fri_breakdown
+            .input_batch_breakdowns
+            .get(1)
+            .expect("packed support FRI batch 1 must be packed trace/table");
+        let accumulator_batch = fri_breakdown
+            .input_batch_breakdowns
+            .get(2)
+            .expect("packed support FRI batch 2 must be accumulators");
+
+        let split_lanes = 4usize;
+        let split_bytes_per_lane = 8usize;
+        let paired_bytes_per_lane = split_bytes_per_lane / 2;
+        let split_bc_columns_per_byte = 2usize;
+        let current_split_columns = proof
+            .packed_trace_profile
+            .tip5_rounds
+            .checked_mul(split_lanes)
+            .and_then(|value| value.checked_mul(split_bytes_per_lane))
+            .and_then(|value| value.checked_mul(split_bc_columns_per_byte))
+            .expect("current split column count must fit usize");
+        let paired_split_columns = proof
+            .packed_trace_profile
+            .tip5_rounds
+            .checked_mul(split_lanes)
+            .and_then(|value| value.checked_mul(paired_bytes_per_lane))
+            .and_then(|value| value.checked_mul(split_bc_columns_per_byte))
+            .expect("paired split column count must fit usize");
+        let current_trace_width = proof.packed_trace_profile.main_width;
+        let paired_trace_width_floor = current_trace_width
+            .checked_sub(current_split_columns)
+            .and_then(|value| value.checked_add(paired_split_columns))
+            .expect("paired trace width must fit usize");
+
+        let current_query_interactions = proof
+            .packed_trace_profile
+            .tip5_rounds
+            .checked_mul(split_lanes)
+            .and_then(|value| value.checked_mul(split_bytes_per_lane))
+            .expect("current query interaction count must fit usize");
+        let paired_query_interactions = proof
+            .packed_trace_profile
+            .tip5_rounds
+            .checked_mul(split_lanes)
+            .and_then(|value| value.checked_mul(paired_bytes_per_lane))
+            .expect("paired query interaction count must fit usize");
+        let current_logup_interactions = current_query_interactions + 1;
+        let paired_logup_interactions = paired_query_interactions + 1;
+        let logup_group_size = 7usize;
+        let current_logup_groups = terminal_div_ceil(current_logup_interactions, logup_group_size);
+        assert_eq!(
+            current_logup_groups, proof.logup_accumulator_profile.field_columns,
+            "paired lookup estimate must match the measured packed LogUp group shape"
+        );
+        let paired_logup_groups = terminal_div_ceil(paired_logup_interactions, logup_group_size);
+        let paired_logup_accumulator_basis =
+            paired_logup_groups * proof.logup_accumulator_profile.field_basis_dimension;
+
+        let current_trace_table_opened_basis =
+            current_trace_width + proof.logup_table_profile.basis_columns;
+        let paired_trace_table_opened_basis =
+            paired_trace_width_floor + proof.logup_table_profile.basis_columns;
+        let trace_table_estimated_opened_values_bytes = terminal_scaled_byte_count(
+            trace_table_batch.opened_values_bytes, current_trace_table_opened_basis,
+            paired_trace_table_opened_basis,
+        );
+
+        let current_accumulator_opened_basis_per_point =
+            proof.logup_accumulator_profile.basis_columns
+                + proof.selected_bridge_accumulator_profile.basis_columns
+                + proof.packed_bridge_accumulator_profile.basis_columns;
+        let paired_accumulator_opened_basis_per_point = paired_logup_accumulator_basis
+            + proof.selected_bridge_accumulator_profile.basis_columns
+            + proof.packed_bridge_accumulator_profile.basis_columns;
+        let accumulator_estimated_opened_values_bytes = terminal_scaled_byte_count(
+            accumulator_batch.opened_values_bytes, current_accumulator_opened_basis_per_point,
+            paired_accumulator_opened_basis_per_point,
+        );
+
+        let fri_opened_value_savings_bytes = trace_table_batch
+            .opened_values_bytes
+            .saturating_sub(trace_table_estimated_opened_values_bytes)
+            + accumulator_batch
+                .opened_values_bytes
+                .saturating_sub(accumulator_estimated_opened_values_bytes);
+
+        let packed_trace_zeta_opening_bytes = postcard_len(
+            &proof.opened_packed_trace_basis, "packed support opened packed trace basis",
+        );
+        let packed_trace_zeta_estimated_opening_bytes = terminal_scaled_byte_count(
+            packed_trace_zeta_opening_bytes, current_trace_width, paired_trace_width_floor,
+        );
+        let logup_accumulator_zeta_opening_bytes = postcard_len(
+            &proof.opened_logup_accumulator_points_basis,
+            "packed support opened LogUp accumulator basis",
+        );
+        let logup_accumulator_zeta_estimated_opening_bytes = terminal_scaled_byte_count(
+            logup_accumulator_zeta_opening_bytes, proof.logup_accumulator_profile.basis_columns,
+            paired_logup_accumulator_basis,
+        );
+        let non_fri_opening_savings_bytes = packed_trace_zeta_opening_bytes
+            .saturating_sub(packed_trace_zeta_estimated_opening_bytes)
+            + logup_accumulator_zeta_opening_bytes
+                .saturating_sub(logup_accumulator_zeta_estimated_opening_bytes);
+
+        TerminalPackedTip5PairedLookupPayloadEstimate {
+            current_trace_width,
+            paired_trace_width_floor,
+            current_split_columns,
+            paired_split_columns,
+            current_query_interactions,
+            paired_query_interactions,
+            current_logup_interactions,
+            paired_logup_interactions,
+            logup_group_size,
+            current_logup_groups,
+            paired_logup_groups,
+            current_logup_accumulator_basis: proof.logup_accumulator_profile.basis_columns,
+            paired_logup_accumulator_basis,
+            current_trace_table_opened_basis,
+            paired_trace_table_opened_basis,
+            current_accumulator_opened_basis_per_point,
+            paired_accumulator_opened_basis_per_point,
+            trace_table_opened_values_bytes: trace_table_batch.opened_values_bytes,
+            trace_table_estimated_opened_values_bytes,
+            accumulator_opened_values_bytes: accumulator_batch.opened_values_bytes,
+            accumulator_estimated_opened_values_bytes,
+            fri_opened_value_savings_bytes,
+            packed_trace_zeta_opening_bytes,
+            packed_trace_zeta_estimated_opening_bytes,
+            logup_accumulator_zeta_opening_bytes,
+            logup_accumulator_zeta_estimated_opening_bytes,
+            non_fri_opening_savings_bytes,
+            current_packed_support_fri_bytes: fri_breakdown.total_bytes,
+            estimated_packed_support_fri_after_opened_value_savings_bytes: fri_breakdown
+                .total_bytes
+                .saturating_sub(fri_opened_value_savings_bytes),
+            current_optimistic_single_fri_floor_bytes,
+            estimated_optimistic_single_fri_floor_after_savings_bytes:
+                current_optimistic_single_fri_floor_bytes
+                    .saturating_sub(fri_opened_value_savings_bytes)
+                    .saturating_sub(non_fri_opening_savings_bytes),
+        }
+    }
+
+    fn log_terminal_packed_tip5_paired_lookup_payload_estimate(
+        label: &str,
+        estimate: &TerminalPackedTip5PairedLookupPayloadEstimate,
+    ) {
+        let target_binary_150k = 150usize * 1024;
+        let target_decimal_150k = 150_000usize;
+        eprintln!(
+            "native terminal packed Tip5 paired 16-bit lookup payload estimate [{label}]: current_trace_width={} paired_trace_width_floor={} current_split_columns={} paired_split_columns={} current_query_interactions={} paired_query_interactions={} current_logup_interactions={} paired_logup_interactions={} logup_group_size={} current_logup_groups={} paired_logup_groups={} current_logup_accumulator_basis={} paired_logup_accumulator_basis={} current_trace_table_opened_basis={} paired_trace_table_opened_basis={} current_accumulator_opened_basis_per_point={} paired_accumulator_opened_basis_per_point={} trace_table_opened_values={} trace_table_estimated_opened_values={} accumulator_opened_values={} accumulator_estimated_opened_values={} fri_opened_value_savings={} packed_trace_zeta_opening={} packed_trace_zeta_estimated_opening={} logup_accumulator_zeta_opening={} logup_accumulator_zeta_estimated_opening={} non_fri_opening_savings={} current_packed_support_fri={} estimated_packed_support_fri_after_opened_value_savings={} current_optimistic_single_fri_floor={} estimated_optimistic_single_fri_floor_after_savings={} over_binary_150k={} over_decimal_150k={} estimate_excludes_two_domain_table_merkle_overhead=1 estimate_excludes_new_quotient_shape=1",
+            estimate.current_trace_width,
+            estimate.paired_trace_width_floor,
+            estimate.current_split_columns,
+            estimate.paired_split_columns,
+            estimate.current_query_interactions,
+            estimate.paired_query_interactions,
+            estimate.current_logup_interactions,
+            estimate.paired_logup_interactions,
+            estimate.logup_group_size,
+            estimate.current_logup_groups,
+            estimate.paired_logup_groups,
+            estimate.current_logup_accumulator_basis,
+            estimate.paired_logup_accumulator_basis,
+            estimate.current_trace_table_opened_basis,
+            estimate.paired_trace_table_opened_basis,
+            estimate.current_accumulator_opened_basis_per_point,
+            estimate.paired_accumulator_opened_basis_per_point,
+            estimate.trace_table_opened_values_bytes,
+            estimate.trace_table_estimated_opened_values_bytes,
+            estimate.accumulator_opened_values_bytes,
+            estimate.accumulator_estimated_opened_values_bytes,
+            estimate.fri_opened_value_savings_bytes,
+            estimate.packed_trace_zeta_opening_bytes,
+            estimate.packed_trace_zeta_estimated_opening_bytes,
+            estimate.logup_accumulator_zeta_opening_bytes,
+            estimate.logup_accumulator_zeta_estimated_opening_bytes,
+            estimate.non_fri_opening_savings_bytes,
+            estimate.current_packed_support_fri_bytes,
+            estimate.estimated_packed_support_fri_after_opened_value_savings_bytes,
+            estimate.current_optimistic_single_fri_floor_bytes,
+            estimate.estimated_optimistic_single_fri_floor_after_savings_bytes,
+            estimate
+                .estimated_optimistic_single_fri_floor_after_savings_bytes
+                .saturating_sub(target_binary_150k),
+            estimate
+                .estimated_optimistic_single_fri_floor_after_savings_bytes
+                .saturating_sub(target_decimal_150k),
         );
     }
 
@@ -7043,6 +7364,10 @@ mod tests {
             .saturating_sub(optimistic_duplicate_selected_binding_bytes);
         let target_binary_150k = 150usize * 1024;
         let target_decimal_150k = 150_000usize;
+        let paired_lookup_estimate = terminal_packed_tip5_paired_lookup_payload_estimate(
+            &packed_support_proof, &packed_support_fri, optimistic_single_fri_floor_bytes,
+        );
+        log_terminal_packed_tip5_paired_lookup_payload_estimate(label, &paired_lookup_estimate);
 
         eprintln!(
             "native terminal merged value-bridge + packed support fusion floor over ai-pow composite verifier [{label}]: current_appended_body={} prelude={} primitive_r1cs={} merged_value_bridge={} merged_value_bridge_fri={} merged_non_fri={} packed_support={} packed_support_fri={} packed_support_non_fri={} single_fri_floor={} duplicate_selected_profile={} duplicate_lookup_io_profile={} duplicate_selected_commitment={} merged_selected_lookup_opening={} packed_support_selected_lookup_opening={} optimistic_selected_opening_dedup={} optimistic_duplicate_selected_binding={} optimistic_single_fri_floor_before_selected_dedup={} optimistic_single_fri_floor={} over_binary_150k={} over_decimal_150k={} l1_verify_ms={} compile_ms={} prelude_ms={} primitive_prove_ms={} merged_value_bridge_prove_ms={} packed_support_prove_ms={} total_subproof_prove_ms={} primitive_verify_ms={} merged_value_bridge_verify_ms={} packed_support_verify_ms={} total_subproof_verify_ms={} total_wall_ms={}",

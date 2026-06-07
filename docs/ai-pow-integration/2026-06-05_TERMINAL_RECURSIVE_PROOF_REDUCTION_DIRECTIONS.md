@@ -41,24 +41,25 @@ The next viable step must redesign the packed Tip5 binding so the support FRI
 leaf payload is materially smaller before it is folded into the merged
 value-bridge theorem.
 
-The leading concrete candidate to measure is a paired 16-bit Tip5 lookup
-binding, not another serialization or FRI-parameter tweak. The current compact
-packed trace carries 160 split-byte lookup interactions and 320 split `(b,c)`
-columns across the five Tip5 rounds. Pairing adjacent bytes as
-`x = b0 + 256*b1` and `y = L(b0) + 256*L(b1)` would reduce that to 80 paired
-lookup interactions and about 160 split word columns, while preserving the
-same Tip5 split-and-lookup semantics. Because the paired fixed table has
-65,536 rows, the candidate must be measured as a two-domain binding that keeps
-the query trace on its 8,192-row packed domain and proves membership against a
-narrow 65,536-row fixed table/multiplicity domain. Inflating the main packed
-trace to the table domain would likely lose the benefit.
+The paired 16-bit Tip5 lookup candidate has now been measured as a payload
+estimate against the actual packed-support proof and is not sufficient by
+itself. Pairing adjacent bytes as `x = b0 + 256*b1` and
+`y = L(b0) + 256*L(b1)` would reduce the current 160 split-byte lookup
+interactions to 80 paired interactions and reduce packed split columns from
+320 to about 160. The measured estimate saves about `25.9 KiB` from compact-FRI
+opened values and about `4.0 KiB` from non-FRI zeta openings, but the
+optimistic single-FRI floor would still be `222,759` bytes, `69,159` bytes over
+a binary `150 KiB` gate. The candidate may still be useful as a subcomponent,
+but the current most viable direction must also remove or radically change the
+packed-support theorem's separate FRI input-batch, Merkle, accumulator, and
+commit-round payload.
 
 The relations that still need to coexist in the final theorem are:
 
 - the merged terminal NPO value bridge;
 - packed one-row-per-permutation Tip5 AIR algebra;
-- packed Tip5 lookup membership, with the 16-bit paired lookup/two-domain
-  LogUp as the current leading candidate to measure;
+- packed Tip5 lookup membership, with any paired-lookup reduction treated only
+  as a subcomponent unless it is combined with a larger support-FRI redesign;
 - lane-selector-aware selected NPO-value to packed trace-lane binding.
 
 #### Done And Verified
@@ -106,6 +107,15 @@ The relations that still need to coexist in the final theorem are:
   Therefore a direct `x^7` replacement for split lanes is not sound; any
   smaller binding must still prove the fixed `L`-table semantics and its
   selected-value/round-link bindings.
+- The paired 16-bit lookup payload estimate verifies inside the same
+  fusion-floor diagnostic. Packed support FRI input batches are now attributed:
+  selected lookup `21,459` bytes, packed trace/table `72,133` bytes, accumulators
+  `21,934` bytes, quotients `11,653` bytes. The packed trace/table batch alone
+  carries `62,176` opened-value bytes. Pairing bytes estimates the packed trace
+  width floor at `276`, LogUp accumulator basis columns at `24`, and packed
+  support compact FRI at `156,005` bytes before any two-domain table Merkle
+  overhead or new quotient-shape cost. This rules out paired lookup as the
+  primary route to the relaxed target.
 
 #### Remaining Work
 
@@ -113,12 +123,12 @@ The relations that still need to coexist in the final theorem are:
   relation-level smaller packed Tip5 binding. The current packed support compact
   FRI is `181,917` bytes in the fusion-floor run; after primitive R1CS and
   non-FRI NPO metadata, the final combined FRI budget is only about `80-83 KiB`.
-- First measurement target: implement or estimate the 16-bit paired lookup
-  support shape with explicit table/profile/root bindings. The measurement
-  must separate trace-domain opened values, trace-domain Merkle payload,
-  fixed-table/multiplicity-domain payload, accumulator payload, and quotient
-  payload so it is clear whether pairing bytes actually removes enough FRI leaf
-  payload.
+- Next measurement target: redesign the packed Tip5 support theorem so it does
+  not preserve the current support-FRI shape. A useful candidate must remove
+  substantially more than the paired lookup's estimated `29.9 KiB` combined
+  opened-value/zeta-opening savings, and must directly reduce the `40,788` byte
+  input-Merkle payload and `54,313` byte commit-round payload or avoid paying
+  those support-theorem costs separately.
 - Fold the resulting Tip5 binding into the merged value-bridge proof instead
   of appending another standalone packed proof body.
 - Reuse prepared terminal compile output, NPO columns, packed traces,
@@ -144,13 +154,13 @@ compression lever, but the current support theorem still cannot be added to the
 | Production recursive proof path | Native terminal certificate, not the batch-STARK recursive certificate |
 | Relaxed target | About `150 KiB` recursive proof artifact and about `30s` total release proving |
 | Soundness target | 60 pure FRI query bits with `log_blowup=4`, `num_queries=15`, `query_pow_bits=0` |
-| Most viable shape | Native terminal merged value bridge plus a leaner packed Tip5 binding that algebraically collapses the packed AIR, byte LogUp, and selected-value bridge constraints instead of serializing separate support-theorem quotient/accumulator domains |
+| Most viable shape | Native terminal merged value bridge plus a packed Tip5 binding that avoids the current support theorem's separate FRI input-batch/Merkle/commit-round shape; paired 16-bit lookup is measured useful but insufficient as the primary route |
 | Best measured complete base | Merged padding/value-bridge checkpoint at `151,448` bytes / `147.9 KiB`, post-prelude proof body `14.914s`; sound for its included relations, but missing internal Tip5 binding |
 | Best near-target standalone missing binding | Lane-selector-aware selected-to-packed NPO-IO bridge at `137,355` bytes / `134.1 KiB`, prove `28.526s`, verify `14.510s` |
 | Direct bridge diagnostic | Binding selected NPO values directly to compact packed trace lanes verifies at `205,950` bytes / `201.1 KiB`, prove `35.863s`; it removes the projection commitment/domain but is too large standalone because it still opens the full `436`-column packed trace |
 | Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; merged-value plus packed-support optimistic single-FRI floor is `252,753` bytes, `99,153` bytes over binary `150 KiB`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s`; packed byte-LogUp group size 15 was measured and rejected at `206,759` bytes, prove `38.515s` |
-| Main current blocker | All required packed Tip5/NPO subtheorems now verify, and PCS input-batch coalescing helps, but the current support FRI leaf payload is itself too large to fit even under an optimistic fusion floor |
-| Next implementation step | Design and measure the 16-bit paired Tip5 lookup/two-domain LogUp candidate, or another relation-level packed Tip5 binding with comparable payload reduction, and show it cuts support FRI opened leaf payload instead of only duplicate Merkle paths, profiles, commitments, or zeta openings |
+| Main current blocker | All required packed Tip5/NPO subtheorems now verify, and PCS input-batch coalescing helps, but the current support FRI input batches plus commit rounds are too large; paired lookup alone leaves an optimistic floor of `222,759` bytes |
+| Next implementation step | Design and measure a more invasive support-FRI redesign that removes support-theorem Merkle/commit-round payload or folds the packed Tip5 relations into a genuinely lean merged theorem; paired 16-bit lookup can be reused only as a component |
 
 ### Decision
 
@@ -170,9 +180,9 @@ single NPO theorem that contains:
 - merged residual-zero, recompose, padding, Merkle-direction-aware value bridge,
   and `mmcs_bit` constraints;
 - packed one-row-per-permutation Tip5 AIR algebra;
-- packed Tip5 lookup membership, currently expected to require a paired
-  16-bit lookup or equivalent relation-level reduction rather than the current
-  8-bit byte-pair LogUp;
+- packed Tip5 lookup membership, with paired 16-bit lookup available only as a
+  partial column/interactions reduction unless paired with a larger FRI-shape
+  redesign;
 - lane-selector-aware selected NPO-value to packed trace-lane binding, deriving
   the 16 input lanes and 10 final-output lanes from the same packed trace
   opening used by packed AIR/LogUp;
@@ -322,19 +332,33 @@ is a leaner algebraic packed Tip5 binding that reduces opened trace and
 accumulator payload before it is folded into the same transcript and opening
 set as the merged value bridge.
 
-The current leading implementation candidate is to pair adjacent split bytes
-inside the Tip5 lookup argument. Instead of 160 separate `(b,c)` byte lookups
-per packed trace row group across the five rounds, the prover would expose 80
-paired words `(x,y)` where `x = b0 + 256*b1` and
-`y = L(b0) + 256*L(b1)`. That should cut the packed split columns from 320 to
-about 160 and reduce lookup interactions by half. The fixed table grows from
-256 rows to 65,536 rows, so the viable form is a two-domain LogUp-style binding
-with the main packed trace kept at 8,192 rows and only a narrow fixed
-table/multiplicity side on the 65,536-row domain. This is not yet implemented
-or verified; it is the next candidate because it attacks the measured support
-FRI leaf payload directly. Any version of this must transcript-bind the paired
-table profile/root, multiplicities, accumulator final value, packed trace root,
-AIR quotient, selected bridge roots, and verifier-derived lane selectors.
+The paired 16-bit lookup candidate has now been measured as a payload estimate,
+and the result is negative as a standalone route. Instead of 160 separate
+`(b,c)` byte lookups per packed trace row group across the five rounds, the
+prover would expose 80 paired words `(x,y)` where `x = b0 + 256*b1` and
+`y = L(b0) + 256*L(b1)`. That cuts the packed split columns from 320 to 160 and
+the packed trace width floor from 436 to 276. It also cuts LogUp interactions
+from 161 to 81, reducing accumulator basis columns from 46 to 24 at the current
+group size 7. Against the actual packed-support proof, this estimates compact
+FRI opened-value savings of `25,912` bytes and non-FRI zeta-opening savings of
+`4,082` bytes. The packed support compact FRI would still be about `156,005`
+bytes, and the optimistic merged-value plus support floor would still be
+`222,759` bytes. The estimate deliberately excludes new two-domain table Merkle
+overhead and any new quotient-shape cost, so the implemented result would not
+be smaller than this estimate unless it also changes the support-FRI shape.
+Therefore paired lookup remains a possible component, not the primary
+production route.
+
+The per-input-batch breakdown explains why: the current packed-support compact
+FRI has `127,180` bytes of input batches and `54,313` bytes of commit rounds.
+The input batches split as selected lookup `21,459`, packed trace/table
+`72,133`, accumulators `21,934`, and quotients `11,653` bytes. The
+trace/table batch has `62,176` opened-value bytes and `9,957` Merkle bytes; the
+accumulator batch has `11,737` opened-value bytes and `10,197` Merkle bytes.
+Pairing bytes attacks only part of the opened-value payload and leaves the
+support theorem's Merkle and FRI commit-round structure largely intact. The
+next viable measurement must remove those costs or avoid paying them as a
+separate support theorem.
 
 The selected-to-packed bridge should compare only lanes that are semantically
 present. The selected value bridge masks final-output lanes by
@@ -401,9 +425,9 @@ masked projection commitment.
   `181,917` bytes.
 - The production soundness policy is explicit: 60 bits must come from FRI query
   soundness at `pow=0`, not from proof-system grinding.
-- The paired 16-bit lookup path is identified as the most promising current
-  measurement candidate, but it has not been implemented, proven sound, or
-  production-qualified.
+- The paired 16-bit lookup path is measured as useful but insufficient by
+  itself: estimated optimistic floor `222,759` bytes, still `69,159` bytes over
+  binary `150 KiB`, before two-domain table overhead.
 
 ### Remaining Work
 
@@ -419,12 +443,14 @@ masked projection commitment.
   packed support FRI payload. It also cannot be achieved by increasing packed
   byte-LogUp group size to trade accumulator width for a doubled quotient
   domain.
-- Measure the 16-bit paired lookup/two-domain LogUp candidate first. The
-  required evidence is a release/native byte split showing the effect on input
-  opened values, input Merkle paths, table/multiplicity payload, accumulator
-  columns, quotient rows, and prover time. If the 65,536-row table side
-  overwhelms the trace-width reduction, reject it in this document and move to
-  the next relation-level binding.
+- Do not spend the next implementation checkpoint on paired 16-bit lookup as a
+  standalone support theorem. Its measured estimate leaves the floor too large.
+  Use it only if a larger redesign also removes support-theorem Merkle paths,
+  commit rounds, or quotient/accumulator domains.
+- Measure the next relation-level support-FRI redesign against the same
+  per-input-batch ledger. The success condition is not "saves opened values";
+  it must bring the merged-value plus Tip5-support floor to approximately
+  `150 KiB` while preserving 60 pure-query FRI soundness.
 - Remove duplicated production prover setup by reusing terminal compile
   outputs, prepared NPO columns, packed traces, roots, and prelude material
   wherever verifier key and public inputs are unchanged.
@@ -444,9 +470,9 @@ masked projection commitment.
 - The standalone packed AIR, packed LogUp, packed NPO-IO projection, and
   selected-to-packed bridge proofs are sound checkpoints, but they are not
   production artifacts by themselves.
-- The 16-bit paired lookup/two-domain LogUp route is not yet a soundness claim;
-  it is the current best candidate to implement or measure because it targets
-  the measured payload blocker.
+- The 16-bit paired lookup/two-domain LogUp route is not yet a soundness claim
+  and is now measured insufficient as the primary size route. It remains a
+  possible component in a larger design.
 - The batch-STARK L2/final-layer route does not replace the native terminal
   production certificate path.
 - Any route that changes to proof-system PoW grinding, omits the selected
