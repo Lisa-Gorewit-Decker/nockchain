@@ -9,7 +9,7 @@ checkpoint envelope is too large for the production wire budget, and the
 native terminal certificate remains a fallback rather than the leading path.
 The full composite-verifier terminal path is wired as an opt-in diagnostic but
 has not met the production size/time gates. This is a route commitment, not a
-production-complete claim: final acceptance still requires bridge/miner/Hoon
+production-complete claim: final acceptance still requires Hoon verifier
 wiring, production-pinned digest selection, and a measured total proving-time
 reduction. The plain `MatmulProof` remains a
 miner diagnostic / pre-ZKP target-hit check; it is not the persisted block
@@ -76,8 +76,11 @@ artifact.
 > recursive run builders, and `ai-pow-miner`'s Pearl-compatible submission
 > builder now packages the compact certificate as canonical postcard bytes in
 > a bounded proof-node atom so the noun boundary does not structurally
-> re-inflate the proof. The Hoon verifier hook, production-pinned expected
-> digest selection, and final jammed noun-size measurement are still open.
+> re-inflate the proof. A release/native miner artifact measurement now gives
+> a full jammed Pearl-compatible `%ai-pow` artifact of `141,916` bytes with a
+> `141,103` byte compact certificate, and confirms the decoded proof node is
+> canonical compact postcard bytes. The Hoon verifier hook and
+> production-pinned expected digest selection are still open.
 > A prior deeper PCS profile showed cached L2 dominated by main/permutation
 > trace Merkle commitments (`13.3s` + `12.9s`), so the next production lever is
 > reducing committed recursive-verifier matrix volume, especially Tip5/MMCS
@@ -579,8 +582,10 @@ proof route is compact batch-STARK L2 over a fast statement-bound L1 proof.
 `ai-pow-miner` packages that compact certificate as canonical bytes inside the
 existing `%ai-pow` noun envelope for Pearl-compatible submissions. The large
 checkpoint noun path is retained for soundness regression and fallback
-validation. Hoon-side verification, production-pinned verifier-key/setup digest
-selection, and final wire-size measurement remain open.
+validation. The full jammed Pearl-compatible `%ai-pow` artifact now measures
+`141,916` bytes with the compact certificate preserved as canonical bytes.
+Hoon-side verification and production-pinned verifier-key/setup digest
+selection remain open.
 
 The `composite_prove` / `composite_verify` APIs are Layer-0 primitives. They
 are useful for circuit tests and for the recursive-certificate builder, but the

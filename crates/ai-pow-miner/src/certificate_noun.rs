@@ -5051,6 +5051,98 @@ mod tests {
         assert_eq!(precheck.work.commitments, attempt.commitments);
     }
 
+    /// Heavy opt-in integration: proves the selected compact recursive
+    /// certificate, packages it as the Pearl-compatible `%ai-pow` artifact,
+    /// jams/cues it, and confirms the compact proof remains canonical postcard
+    /// bytes at the noun boundary.
+    ///
+    /// Run with:
+    ///
+    /// ```text
+    /// RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-miner --release --features node \
+    ///   real_compact_pearl_merge_artifact_jam_size_for_selected_route -- --ignored --nocapture
+    /// ```
+    #[ignore = "real compact recursive proof generation is intentionally opt-in"]
+    #[test]
+    fn real_compact_pearl_merge_artifact_jam_size_for_selected_route() {
+        let params = pearl_test_params();
+        let (attempt, aux_inclusion, a, b) = pearl_merge_ticket_attempt_fixture();
+
+        let start = std::time::Instant::now();
+        eprintln!("real compact Pearl artifact: proving compact recursive certificate");
+        let run = ai_pow::zk_bridge::prove_pearl_merge_compact_recursive_certificate(
+            &attempt, &params, &a, &b, 16,
+        )
+        .expect("prove compact Pearl recursive certificate");
+        let prove_wall_ms = start.elapsed().as_millis();
+        let compact_bytes =
+            ai_pow_zk::recursion::encode_compact_batch_recursive_certificate(run.certificate())
+                .expect("encode compact recursive certificate");
+
+        eprintln!("real compact Pearl artifact: building compact noun artifact");
+        let artifact_slab =
+            build_ai_pow_pearl_merge_artifact_noun_from_ticket_compact_recursive_run(
+                &attempt, &aux_inclusion, &a, &b, 16, &run,
+            )
+            .expect("build compact artifact from real recursive run");
+        let jammed = artifact_slab.jam();
+
+        eprintln!("real compact Pearl artifact: bounded decoding jammed noun");
+        let decoded =
+            decode_ai_pow_pearl_merge_artifact_jam(&jammed, CertificateNounLimits::default())
+                .expect("decode compact artifact jam");
+        let precheck = precheck_ai_pow_pearl_merge_artifact_statement(
+            &decoded, &attempt.aux.nock_block_commitment, &a, &b, &attempt.nockchain_target, 16,
+        )
+        .expect("compact artifact statement precheck");
+        assert_eq!(precheck.work.ticket, attempt.ticket);
+        assert_eq!(precheck.work.commitments, attempt.commitments);
+        assert_eq!(decoded.certificate.version, AI_POW_CERT_VERSION);
+        assert_eq!(decoded.certificate.zk_params, run.zk_params());
+        assert_eq!(decoded.certificate.found_idx, run.found_idx());
+        assert_eq!(decoded.certificate.trace_height, run.trace_height());
+        assert_eq!(decoded.certificate.commitments, run.commitments());
+        assert_eq!(decoded.certificate.public_inputs, *run.public_inputs());
+
+        let AiProofNode::Bytes(decoded_compact_bytes) = &decoded.certificate.certificate else {
+            panic!("compact recursive certificate must stay encoded as a byte node");
+        };
+        assert_eq!(decoded_compact_bytes, &compact_bytes);
+        let decoded_compact =
+            ai_pow_compact_recursive_certificate_from_node(&decoded.certificate.certificate)
+                .expect("compact proof-node reconstructs typed certificate");
+        let recoded =
+            ai_pow_zk::recursion::encode_compact_batch_recursive_certificate(&decoded_compact)
+                .expect("re-encode compact recursive certificate");
+        assert_eq!(recoded, compact_bytes);
+
+        assert!(
+            compact_bytes.len() <= 150_000,
+            "compact recursive certificate exceeded relaxed 150,000 byte gate: {} bytes",
+            compact_bytes.len()
+        );
+        assert!(
+            jammed.len() <= 150_000,
+            "jammed compact `%ai-pow` artifact exceeded relaxed 150,000 byte gate: {} bytes",
+            jammed.len()
+        );
+
+        eprintln!(
+            "real compact Pearl artifact: jammed={} bytes ({:.2} KiB), compact_cert={} bytes ({:.2} KiB), prove_wall_ms={}, l1_build_ms={}, l1_outer_ms={}, l2_prep_ms={}, l2_prove_ms={}, l2_compact_ms={}, l2_compact_verify_ms={}",
+            jammed.len(),
+            jammed.len() as f64 / 1024.0,
+            compact_bytes.len(),
+            compact_bytes.len() as f64 / 1024.0,
+            prove_wall_ms,
+            run.l1_circuit_build_ms(),
+            run.l1_outer_cert_ms(),
+            run.l2_prep_ms(),
+            run.l2_prove_ms(),
+            run.l2_compact_ms(),
+            run.l2_compact_verify_ms(),
+        );
+    }
+
     #[test]
     fn pearl_merge_ticket_artifact_builder_rejects_tampered_aux_inclusion() {
         let (attempt, mut aux_inclusion, a, b) = pearl_merge_ticket_attempt_fixture();

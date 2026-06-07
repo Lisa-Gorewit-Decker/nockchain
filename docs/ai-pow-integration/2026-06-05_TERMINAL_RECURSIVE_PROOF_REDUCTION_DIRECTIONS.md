@@ -252,17 +252,22 @@ Done and verified:
   rejects, and stale context digest rejects. The Rust bridge now exposes
   compact recursive run builders, and the miner's selected Pearl-compatible
   recursive builder now packages the compact certificate as canonical postcard
-  bytes inside a bounded proof-node atom. Hoon verifier wiring,
-  production-pinned expected digest selection, and final jammed noun-size
-  measurement are still open.
+  bytes inside a bounded proof-node atom. A release/native miner artifact
+  measurement now confirms the final Pearl-compatible `%ai-pow` noun boundary
+  stays in range: jammed artifact `141,916` bytes (`138.59 KiB`), compact
+  certificate `141,103` bytes (`137.80 KiB`), with bounded decode, statement
+  precheck, and canonical compact byte-node re-encoding all passing. Hoon
+  verifier wiring and production-pinned expected digest selection are still
+  open.
 
 What remains:
 
-- Wire the promoted compact batch-STARK certificate through the bridge, miner
-  noun, and Hoon-facing artifact path. The crate-level certificate/context API
-  now exists; the remaining wire work is to derive/pin the verifier-key/setup
-  digest, derive public values from chain-owned statement metadata, and reject
-  any prover-supplied verifier metadata instead of accepting it as context.
+- Finish the Hoon-facing verifier path for the promoted compact batch-STARK
+  certificate. The crate-level certificate/context API now exists, and the
+  Rust bridge plus miner noun builder now package canonical compact bytes. The
+  remaining verifier work is to derive/pin the verifier-key/setup digest,
+  derive public values from chain-owned statement metadata, and reject any
+  prover-supplied verifier metadata instead of accepting it as context.
 - Reduce end-to-end proving time. The current selected size row is about
   `58.167s` serial L1+uncached-L2 proving in the focused baseline timing run
   (`20.077s + 38.090s`). With measured L1 and L2 prep caches, the comparable
@@ -274,7 +279,7 @@ What remains:
   production prover/verifier-key path. The test harness now proves that
   reusable setup is available and that compatible cached `ProverData` can be
   reused for the fixed selected shape, but production still needs canonical
-  cache construction, setup digest pinning, and bridge/miner/Hoon integration.
+  cache construction, setup digest pinning, and Hoon/verifier integration.
 - Reduce core batch-STARK proving time. After cached setup and cached
   `ProverData` reuse, `28.667s` remains in L2 STARK proving and `15.246s`
   remains in cached L1 STARK proving. Reaching `~30s` total requires a real L1/L2
@@ -523,7 +528,7 @@ does not replace the required packed Tip5 support-theorem redesign.
 | Soundness target | 60 pure FRI query bits per promoted layer; selected compact row uses L1 `lb=3,nq=20,pow=0` and L2 `lb=5,nq=12,pow=0` |
 | Most viable shape | Compact batch-STARK L2 with verifier-owned metadata/setup, canonical preprocessed-opening restoration, pruned paths, and explicit final public-value binding of the L1 statement digest |
 | Best measured compact batch-STARK candidate | Fast L1 `lb=3,nq=20,cap=4,pow=0` plus L2 `lb=5,nq=12,cap=4,pow=0`, with L1 `alu_lanes=4,horner_k=5`: actual compact wrapper `143,106` bytes, metadata-free body `142,225` bytes, cached L1 prove `15.029s`, cached L2 prove `28.555s`, cached serial L1+L2 `43.584s`. The baseline L1 `alu_lanes=8` row remains close at `143,762` bytes / `142,878` bytes body, cached L1 `15.305s`, cached L2 `28.726s`, cached serial `44.031s` in the focused rerun and `43.893s` in the L1-packing sweep |
-| Promoted `ai-pow-zk` API and Rust wire integration | `AiPowCompactBatchRecursiveCertificate` now carries a Tip5 verifier-key/setup digest plus the final L2 compact body, with `AiPowCompactBatchVerifierContext` held by the verifier. The Rust `ai-pow` bridge has compact recursive run builders for native and Pearl-compatible attempts, and `ai-pow-miner`'s selected Pearl-compatible recursive builder now serializes the compact certificate as canonical postcard bytes in a bounded proof-node atom. The release/native round-trip measures `142,274` encoded certificate bytes, L1 build `126ms`, L1 outer prove `19.223s`, L2 prep `9.440s`, L2 prove `29.743s`, compact verify `37ms`, and uncached proof wall `58.603s`; decoded verification passes, wrong public inputs reject, wrong certificate digest rejects, and stale context digest rejects. Hoon verifier wiring, final jammed noun-size measurement, and production-pinned expected digest remain open |
+| Promoted `ai-pow-zk` API and Rust wire integration | `AiPowCompactBatchRecursiveCertificate` now carries a Tip5 verifier-key/setup digest plus the final L2 compact body, with `AiPowCompactBatchVerifierContext` held by the verifier. The Rust `ai-pow` bridge has compact recursive run builders for native and Pearl-compatible attempts, and `ai-pow-miner`'s selected Pearl-compatible recursive builder now serializes the compact certificate as canonical postcard bytes in a bounded proof-node atom. The release/native round-trip measures `142,274` encoded certificate bytes, L1 build `126ms`, L1 outer prove `19.223s`, L2 prep `9.440s`, L2 prove `29.743s`, compact verify `37ms`, and uncached proof wall `58.603s`; decoded verification passes, wrong public inputs reject, wrong certificate digest rejects, and stale context digest rejects. The full Pearl-compatible `%ai-pow` artifact now measures `141,916` jammed bytes with a `141,103` byte compact certificate, and bounded decode plus canonical byte-node re-encoding pass. Hoon verifier wiring and production-pinned expected digest remain open |
 | Best measured compact-L2 size reserve | The selected L2 table-packing sweep verifies the same compact body with `alu_lanes=2,horner_k=5` at `126,862` bytes actual compact wrapper and `125,979` bytes metadata-free body, but cached L2 proving rises to `30.801s`, so this is useful size margin, not the current time route |
 | Best measured L1-packing size reserve | The selected compact L2 over L1-packing sweep verifies L1 `alu_lanes=2,horner_k=5` at `141,148` bytes compact wrapper and `140,260` bytes metadata-free body, with cached serial L1+L2 `44.391s`; useful for byte headroom, not a time fix |
 | Best measured complete base | Cap-height `3` full-context merged-only structural floor at `142,807` bytes; sound for its included relations, but missing internal Tip5 binding |
@@ -532,7 +537,7 @@ does not replace the required packed Tip5 support-theorem redesign.
 | Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; cap-height `3` merged-value plus packed-support optimistic single-FRI floor is `249,184` bytes, `95,584` bytes over binary `150 KiB`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s`; packed byte-LogUp group size 15 was measured and rejected at `206,759` bytes, prove `38.515s` |
 | Best measured outer task parallelism | Rayon-joining the current primitive R1CS, merged value-bridge, and packed-support subproofs gives `39.448s` post-prelude subproof wall time versus `53.355s` summed subproof timers, but leaves the same `249,184` byte optimistic single-FRI floor and `171.422s` full diagnostic wall |
 | Main current blocker | The compact batch-STARK L2 size row is in range and cached L2 proving is now under `30s`, but measured cached serial L1+L2 proving is still `43.584s` at the best measured L1-packing row (`15.029s` cached L1 + `28.555s` cached L2). The selected L2 verifier has `4,791` Tip5 rows padded to `8,192`, only `695` rows above the `4,096` halving boundary. L2 and L1 table-packing sweeps show ALU lane retuning can trade size for time but does not reduce total proving time enough: L2 `alu_lanes=2` shrinks compact L2 to `126,862` bytes but raises cached L2 proving to `30.801s`, while the best L1-packing row saves only about `0.4s` cached serial over baseline. |
-| Next implementation step | Finish the Hoon-facing verifier path, final jammed noun-size measurement, and production-pinned setup-digest policy for the compact byte-node artifact, then reduce or overlap L1 proving and reduce committed L2 verifier matrix volume without merely shifting the ALU size/time tradeoff. Hidden-L1 cap retuning is not enough as tested: cap `3 -> 4` saves only `176` rows, and cap `5/6` currently fail inside the recursive verifier despite native L1 verification passing. Add final artifact rejection tests as the production wire path is promoted |
+| Next implementation step | Finish the Hoon-facing verifier path and production-pinned setup-digest policy for the compact byte-node artifact, then reduce or overlap L1 proving and reduce committed L2 verifier matrix volume without merely shifting the ALU size/time tradeoff. Hidden-L1 cap retuning is not enough as tested: cap `3 -> 4` saves only `176` rows, and cap `5/6` currently fail inside the recursive verifier despite native L1 verification passing. Add final artifact rejection tests as the production wire path is promoted |
 
 ### Decision
 
@@ -1741,7 +1746,9 @@ metadata/setup pair.
 This checkpoint now wires that adapter as the compact recursive certificate API
 inside `ai-pow-zk` and through the Rust bridge/miner noun path as canonical
 compact bytes; it still does **not** wire it through the Hoon verifier path or
-production-pinned expected verifier-key/setup digest.
+production-pinned expected verifier-key/setup digest. The final
+Pearl-compatible `%ai-pow` wire-size measurement now passes the relaxed size
+gate: `141,916` jammed bytes with a `141,103` byte compact certificate.
 It removes the prior public-binding measurement blocker and shows that the
 compact batch-STARK route is closer to the relaxed target than the native
 terminal route. Omitting any additional value without transcript replay and
