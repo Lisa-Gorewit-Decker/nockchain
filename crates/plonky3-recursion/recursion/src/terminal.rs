@@ -1466,19 +1466,30 @@ pub struct TerminalNpoTip5PackedLookupAirAlgebraQuotientProof {
 /// one Merkle path batch per committed matrix.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TerminalNpoTip5PackedLookupAirLogupSelectedTraceBridgeProof {
+    #[serde(skip)]
     pub selected_profile: TerminalNpoPolynomialFriProfile,
+    #[serde(skip)]
     pub lookup_io_profile: TerminalNpoTip5LookupNpoRowsIoProfile,
+    #[serde(skip)]
     pub packed_trace_profile: TerminalNpoTip5PackedLookupTraceProfile,
+    #[serde(skip)]
     pub air_quotient_profile: TerminalNpoTip5PackedLookupAirAlgebraQuotientProfile,
+    #[serde(skip)]
     pub logup_table_profile: TerminalNpoTip5PackedLookupLogupTableProfile,
+    #[serde(skip)]
     pub logup_accumulator_profile: TerminalNpoTip5PackedLookupLogupAccumulatorProfile,
+    #[serde(skip)]
     pub logup_quotient_profile: TerminalNpoTip5PackedLookupLogupQuotientProfile,
+    #[serde(skip)]
     pub selected_bridge_accumulator_profile:
         TerminalNpoTip5LookupTraceDomainNpoIoLogupAccumulatorProfile,
+    #[serde(skip)]
     pub packed_bridge_accumulator_profile:
         TerminalNpoTip5LookupTraceDomainNpoIoLogupAccumulatorProfile,
+    #[serde(skip)]
     pub selected_bridge_quotient_profile:
         TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile,
+    #[serde(skip)]
     pub packed_bridge_quotient_profile: TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile,
     pub selected_lookup_commitment: TerminalFriCommitment,
     pub packed_trace_table_commitment: TerminalFriCommitment,
@@ -32941,7 +32952,9 @@ impl NativeTerminalCompiler {
                 expected_packed_trace_profile.padded_rows,
                 expected_packed_trace_profile.proximity,
             )?;
-        if proof.selected_profile != expected_selected_profile {
+        if proof.selected_profile != expected_selected_profile
+            && proof.selected_profile != TerminalNpoPolynomialFriProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_packed_air_logup_selected_trace_selected_profile".into(),
@@ -32950,7 +32963,9 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.lookup_io_profile != expected_lookup_io_profile {
+        if proof.lookup_io_profile != expected_lookup_io_profile
+            && proof.lookup_io_profile != TerminalNpoTip5LookupNpoRowsIoProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_packed_air_logup_selected_trace_lookup_io_profile".into(),
@@ -32959,7 +32974,9 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.packed_trace_profile != expected_packed_trace_profile {
+        if proof.packed_trace_profile != expected_packed_trace_profile
+            && proof.packed_trace_profile != TerminalNpoTip5PackedLookupTraceProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_packed_air_logup_selected_trace_trace_profile".into(),
@@ -32968,7 +32985,10 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.air_quotient_profile != expected_air_quotient_profile {
+        if proof.air_quotient_profile != expected_air_quotient_profile
+            && proof.air_quotient_profile
+                != TerminalNpoTip5PackedLookupAirAlgebraQuotientProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_packed_air_logup_selected_trace_air_quotient_profile".into(),
@@ -32977,7 +32997,9 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.logup_table_profile != expected_logup_table_profile {
+        if proof.logup_table_profile != expected_logup_table_profile
+            && proof.logup_table_profile != TerminalNpoTip5PackedLookupLogupTableProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_packed_air_logup_selected_trace_logup_table_profile".into(),
@@ -32986,7 +33008,10 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.logup_accumulator_profile != expected_logup_accumulator_profile {
+        if proof.logup_accumulator_profile != expected_logup_accumulator_profile
+            && proof.logup_accumulator_profile
+                != TerminalNpoTip5PackedLookupLogupAccumulatorProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_packed_air_logup_selected_trace_logup_accumulator_profile".into(),
@@ -32995,7 +33020,10 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.logup_quotient_profile != expected_logup_quotient_profile {
+        if proof.logup_quotient_profile != expected_logup_quotient_profile
+            && proof.logup_quotient_profile
+                != TerminalNpoTip5PackedLookupLogupQuotientProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_packed_air_logup_selected_trace_logup_quotient_profile".into(),
@@ -33006,6 +33034,8 @@ impl NativeTerminalCompiler {
         }
         if proof.selected_bridge_accumulator_profile
             != expected_selected_bridge_accumulator_profile
+            && proof.selected_bridge_accumulator_profile
+                != TerminalNpoTip5LookupTraceDomainNpoIoLogupAccumulatorProfile::default()
         {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
@@ -33016,7 +33046,10 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.packed_bridge_accumulator_profile != expected_packed_bridge_accumulator_profile {
+        if proof.packed_bridge_accumulator_profile != expected_packed_bridge_accumulator_profile
+            && proof.packed_bridge_accumulator_profile
+                != TerminalNpoTip5LookupTraceDomainNpoIoLogupAccumulatorProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_packed_air_logup_selected_trace_packed_accumulator_profile"
@@ -33026,7 +33059,10 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.selected_bridge_quotient_profile != expected_selected_bridge_quotient_profile {
+        if proof.selected_bridge_quotient_profile != expected_selected_bridge_quotient_profile
+            && proof.selected_bridge_quotient_profile
+                != TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_packed_air_logup_selected_trace_selected_quotient_profile".into(),
@@ -33035,7 +33071,10 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.packed_bridge_quotient_profile != expected_packed_bridge_quotient_profile {
+        if proof.packed_bridge_quotient_profile != expected_packed_bridge_quotient_profile
+            && proof.packed_bridge_quotient_profile
+                != TerminalNpoTip5LookupTraceDomainNpoIoLogupQuotientProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "tip5_packed_air_logup_selected_trace_packed_quotient_profile".into(),
@@ -33046,34 +33085,34 @@ impl NativeTerminalCompiler {
         }
 
         let selected_lookup_width =
-            proof.selected_profile.basis_columns + proof.lookup_io_profile.basis_columns;
+            expected_selected_profile.basis_columns + expected_lookup_io_profile.basis_columns;
         Self::validate_terminal_opening_basis_len(
             proof.opened_selected_lookup_basis.len(),
             selected_lookup_width,
         )?;
         Self::validate_terminal_opening_basis_len(
             proof.opened_packed_trace_basis.len(),
-            proof.packed_trace_profile.main_width,
+            expected_packed_trace_profile.main_width,
         )?;
         Self::validate_terminal_opening_basis_len(
             proof.opened_air_quotient_basis.len(),
-            proof.air_quotient_profile.basis_columns,
+            expected_air_quotient_profile.basis_columns,
         )?;
         Self::validate_terminal_opening_basis_len(
             proof.opened_logup_table_basis.len(),
-            proof.logup_table_profile.basis_columns,
+            expected_logup_table_profile.basis_columns,
         )?;
         Self::validate_terminal_opening_basis_len(
             proof.opened_logup_quotient_basis.len(),
-            proof.logup_quotient_profile.basis_columns,
+            expected_logup_quotient_profile.basis_columns,
         )?;
         Self::validate_terminal_opening_basis_len(
             proof.opened_selected_bridge_quotient_basis.len(),
-            proof.selected_bridge_quotient_profile.basis_columns,
+            expected_selected_bridge_quotient_profile.basis_columns,
         )?;
         Self::validate_terminal_opening_basis_len(
             proof.opened_packed_bridge_quotient_basis.len(),
-            proof.packed_bridge_quotient_profile.basis_columns,
+            expected_packed_bridge_quotient_profile.basis_columns,
         )?;
 
         let logup_group_count = Self::terminal_npo_tip5_packed_lookup_logup_groups();
@@ -33108,7 +33147,7 @@ impl NativeTerminalCompiler {
         >(&proof.opened_packed_trace_basis)?;
         let opened_packed_npo_io =
             Self::terminal_npo_tip5_packed_lookup_opened_trace_npo_io_values(
-                &proof.packed_trace_profile,
+                &expected_packed_trace_profile,
                 &opened_packed_trace,
             )?;
         let opened_air_quotient_flat = Self::terminal_field_values_from_basis_u64::<
@@ -33152,15 +33191,15 @@ impl NativeTerminalCompiler {
             };
         let opened_logup_accumulator_points = unpack_points(
             &proof.opened_logup_accumulator_points_basis,
-            proof.logup_accumulator_profile.basis_columns,
+            expected_logup_accumulator_profile.basis_columns,
         )?;
         let opened_selected_bridge_accumulator_points = unpack_points(
             &proof.opened_selected_bridge_accumulator_points_basis,
-            proof.selected_bridge_accumulator_profile.basis_columns,
+            expected_selected_bridge_accumulator_profile.basis_columns,
         )?;
         let opened_packed_bridge_accumulator_points = unpack_points(
             &proof.opened_packed_bridge_accumulator_points_basis,
-            proof.packed_bridge_accumulator_profile.basis_columns,
+            expected_packed_bridge_accumulator_profile.basis_columns,
         )?;
 
         let logup_final_cumulatives = Self::terminal_field_values_from_basis_u64::<
@@ -33205,7 +33244,7 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof.air_quotient_profile.field_basis_dimension,
+                    expected: expected_air_quotient_profile.field_basis_dimension,
                     got: opened_air_quotient_flat.len(),
                 },
             )?;
@@ -33215,7 +33254,7 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof.logup_quotient_profile.field_basis_dimension,
+                    expected: expected_logup_quotient_profile.field_basis_dimension,
                     got: opened_logup_quotient_flat.len(),
                 },
             )?;
@@ -33225,7 +33264,7 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof.selected_bridge_quotient_profile.field_basis_dimension,
+                    expected: expected_selected_bridge_quotient_profile.field_basis_dimension,
                     got: opened_selected_bridge_quotient_flat.len(),
                 },
             )?;
@@ -33235,47 +33274,49 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof.packed_bridge_quotient_profile.field_basis_dimension,
+                    expected: expected_packed_bridge_quotient_profile.field_basis_dimension,
                     got: opened_packed_bridge_quotient_flat.len(),
                 },
             )?;
 
         let (pcs, mut challenger) =
-            Self::terminal_fri_pcs_and_challenger(proof.packed_trace_profile.proximity)?;
+            Self::terminal_fri_pcs_and_challenger(expected_packed_trace_profile.proximity)?;
         Self::seed_terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_challenger(
             &mut challenger,
             prelude,
-            &proof.selected_profile,
-            &proof.lookup_io_profile,
-            &proof.packed_trace_profile,
-            &proof.air_quotient_profile,
-            &proof.logup_table_profile,
-            &proof.logup_accumulator_profile,
-            &proof.logup_quotient_profile,
-            &proof.selected_bridge_accumulator_profile,
-            &proof.packed_bridge_accumulator_profile,
-            &proof.selected_bridge_quotient_profile,
-            &proof.packed_bridge_quotient_profile,
+            &expected_selected_profile,
+            &expected_lookup_io_profile,
+            &expected_packed_trace_profile,
+            &expected_air_quotient_profile,
+            &expected_logup_table_profile,
+            &expected_logup_accumulator_profile,
+            &expected_logup_quotient_profile,
+            &expected_selected_bridge_accumulator_profile,
+            &expected_packed_bridge_accumulator_profile,
+            &expected_selected_bridge_quotient_profile,
+            &expected_packed_bridge_quotient_profile,
         );
         let selected_domain = <TerminalFriPcs as Pcs<
             TerminalFriChallenge,
             TerminalFriChallenger,
         >>::natural_domain_for_degree(
-            &pcs, proof.selected_profile.padded_rows
+            &pcs, expected_selected_profile.padded_rows
         );
         let packed_domain =
             <TerminalFriPcs as Pcs<TerminalFriChallenge, TerminalFriChallenger>>::natural_domain_for_degree(
                 &pcs,
-                proof.packed_trace_profile.padded_rows,
+                expected_packed_trace_profile.padded_rows,
             );
         let air_quotient_domain =
-            packed_domain.create_disjoint_domain(proof.air_quotient_profile.padded_rows);
+            packed_domain.create_disjoint_domain(expected_air_quotient_profile.padded_rows);
         let logup_quotient_domain =
-            packed_domain.create_disjoint_domain(proof.logup_quotient_profile.padded_rows);
+            packed_domain.create_disjoint_domain(expected_logup_quotient_profile.padded_rows);
         let selected_bridge_quotient_domain =
-            selected_domain.create_disjoint_domain(proof.selected_bridge_quotient_profile.padded_rows);
+            selected_domain
+                .create_disjoint_domain(expected_selected_bridge_quotient_profile.padded_rows);
         let packed_bridge_quotient_domain =
-            packed_domain.create_disjoint_domain(proof.packed_bridge_quotient_profile.padded_rows);
+            packed_domain
+                .create_disjoint_domain(expected_packed_bridge_quotient_profile.padded_rows);
         challenger.observe(proof.selected_lookup_commitment.clone());
         challenger.observe(proof.packed_trace_table_commitment.clone());
         let air_alpha: TerminalFriChallenge = challenger.sample_algebra_element();
@@ -33392,7 +33433,7 @@ impl NativeTerminalCompiler {
         })?;
 
         let air_folded = Self::terminal_npo_tip5_packed_lookup_air_algebra_folded_relation(
-            &proof.packed_trace_profile,
+            &expected_packed_trace_profile,
             &opened_packed_trace,
             air_alpha,
             &Self::terminal_npo_tip5_lookup_air_fold_constants(),
@@ -33413,7 +33454,7 @@ impl NativeTerminalCompiler {
         )?;
         let fixed_evals =
             Self::terminal_npo_tip5_packed_lookup_logup_table_fixed_evals(
-                &proof.packed_trace_profile,
+                &expected_packed_trace_profile,
             )?;
         let table_preprocessed = fixed_evals
             .iter()
@@ -33476,7 +33517,7 @@ impl NativeTerminalCompiler {
         let (packed_lane_selector_evals, packed_rank_evals) =
             Self::terminal_npo_tip5_packed_lookup_npo_io_lane_selector_rank_evals(
                 &verifier_columns,
-                &proof.packed_trace_profile,
+                &expected_packed_trace_profile,
             )?;
         let selected_lane_selectors =
             Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_lane_selectors_at_point(
@@ -33543,7 +33584,7 @@ impl NativeTerminalCompiler {
             selected_bridge_relation += bridge_coeff
                 * Self::terminal_npo_tip5_lookup_trace_domain_npo_io_logup_lane_group_constraint_at_point(
                     &opened_selected_lookup,
-                    proof.selected_profile.basis_columns,
+                    expected_selected_profile.basis_columns,
                     selected_accumulator,
                     selected_next_accumulator,
                     selected_bridge_final_cumulatives[group],
