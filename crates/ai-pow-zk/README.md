@@ -79,8 +79,11 @@ artifact.
 > re-inflate the proof. A release/native miner artifact measurement now gives
 > a full jammed Pearl-compatible `%ai-pow` artifact of `141,916` bytes with a
 > `141,103` byte compact certificate, and confirms the decoded proof node is
-> canonical compact postcard bytes. The Hoon verifier hook and
-> production-pinned expected digest selection are still open.
+> canonical compact postcard bytes. The Rust miner verifier boundary now has a
+> compact-artifact entry point that requires a caller-supplied expected
+> verifier-key/setup digest and rejects a mismatched context or certificate
+> digest. The Hoon verifier hook and production configuration for the expected
+> digest are still open.
 > A prior deeper PCS profile showed cached L2 dominated by main/permutation
 > trace Merkle commitments (`13.3s` + `12.9s`), so the next production lever is
 > reducing committed recursive-verifier matrix volume, especially Tip5/MMCS
@@ -584,8 +587,9 @@ existing `%ai-pow` noun envelope for Pearl-compatible submissions. The large
 checkpoint noun path is retained for soundness regression and fallback
 validation. The full jammed Pearl-compatible `%ai-pow` artifact now measures
 `141,916` bytes with the compact certificate preserved as canonical bytes.
-Hoon-side verification and production-pinned verifier-key/setup digest
-selection remain open.
+Rust-side compact artifact verification now requires a verifier-owned context
+and expected verifier-key/setup digest. Hoon-side verification and production
+configuration for that expected digest remain open.
 
 The `composite_prove` / `composite_verify` APIs are Layer-0 primitives. They
 are useful for circuit tests and for the recursive-certificate builder, but the

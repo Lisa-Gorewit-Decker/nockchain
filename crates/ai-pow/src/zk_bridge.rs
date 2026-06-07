@@ -377,9 +377,10 @@ impl AiPowRecursiveCertificateRun {
 /// This is the selected production-proof direction. It carries the same
 /// verifier-derived statement metadata as [`AiPowRecursiveCertificateRun`],
 /// but the proof artifact is the compact L2 certificate body plus its explicit
-/// verifier-key/setup digest. The verifier-owned compact context is
-/// intentionally not exposed here or serialized through the miner noun; a
-/// production verifier must derive or pin that context independently.
+/// verifier-key/setup digest. The verifier-owned compact context is retained
+/// for Rust verifier integration and tests, but is not serialized through the
+/// miner noun. A production verifier must derive or pin the expected digest and
+/// must not accept this context from a miner.
 pub struct AiPowCompactRecursiveCertificateRun {
     zk_params: ZkParams,
     found_idx: u32,
@@ -394,6 +395,7 @@ pub struct AiPowCompactRecursiveCertificateRun {
     l2_compact_ms: u128,
     l2_compact_verify_ms: u128,
     certificate: ai_pow_zk::recursion::AiPowCompactBatchRecursiveCertificate,
+    verifier_context: ai_pow_zk::recursion::AiPowCompactBatchVerifierContext,
 }
 
 impl AiPowCompactRecursiveCertificateRun {
@@ -434,6 +436,15 @@ impl AiPowCompactRecursiveCertificateRun {
 
     pub fn verifier_key_digest(&self) -> &ai_pow_zk::recursion::AiPowCompactBatchVerifierKeyDigest {
         self.certificate.verifier_key_digest()
+    }
+
+    /// Verifier-owned compact context built locally by the prover run.
+    ///
+    /// This is exposed for Rust verifier integration and regression tests. It
+    /// must not be accepted from a miner as verifier authority; production
+    /// acceptance must compare against a verifier-pinned expected digest.
+    pub fn verifier_context(&self) -> &ai_pow_zk::recursion::AiPowCompactBatchVerifierContext {
+        &self.verifier_context
     }
 
     pub fn l1_circuit_build_ms(&self) -> u128 {
@@ -1201,6 +1212,7 @@ pub fn prove_ai_pow_compact_recursive_certificate(
         l2_compact_ms: compact.l2_compact_ms,
         l2_compact_verify_ms: compact.l2_compact_verify_ms,
         certificate: compact.compact_cert,
+        verifier_context: compact.verifier_context,
     })
 }
 
@@ -1606,6 +1618,7 @@ pub fn prove_pearl_merge_compact_recursive_certificate(
         l2_compact_ms: compact.l2_compact_ms,
         l2_compact_verify_ms: compact.l2_compact_verify_ms,
         certificate: compact.compact_cert,
+        verifier_context: compact.verifier_context,
     })
 }
 
