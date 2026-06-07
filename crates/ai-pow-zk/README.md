@@ -22,9 +22,10 @@ the persisted block artifact.
 > theorem. A paired 16-bit Tip5 lookup / two-domain LogUp payload estimate is
 > now measured and is useful but insufficient by itself: the optimistic floor
 > would still be `222,759` bytes before new table-domain overhead. The next
-> viable route must remove more of the packed-support FRI input-batch,
-> Merkle-path, accumulator, or commit-round payload. The batch-STARK recursive
-> certificate remains a sound
+> viable route must account for the tighter structural floor: the already-sound
+> merged base is `146,032` bytes, leaving only `7,568` bytes under binary
+> `150 KiB` for all remaining Tip5 support binding unless the base also
+> shrinks. The batch-STARK recursive certificate remains a sound
 > checkpoint/fallback, not the production wire target, and the relaxed
 > production milestone is not yet claimed.
 

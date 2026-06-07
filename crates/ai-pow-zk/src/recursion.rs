@@ -4510,6 +4510,62 @@ mod tests {
         );
     }
 
+    fn log_terminal_packed_support_structural_floor(
+        label: &str,
+        prelude_bytes: usize,
+        primitive_bytes: usize,
+        merged_bytes: usize,
+        packed_support_non_fri_bytes: usize,
+        optimistic_duplicate_selected_binding_bytes: usize,
+        paired_lookup_estimate: &TerminalPackedTip5PairedLookupPayloadEstimate,
+    ) {
+        let target_binary_150k = 150usize * 1024;
+        let target_decimal_150k = 150_000usize;
+        let merged_only_body_floor = prelude_bytes + primitive_bytes + merged_bytes;
+        let support_metadata_after_selected_dedup = packed_support_non_fri_bytes
+            .saturating_sub(optimistic_duplicate_selected_binding_bytes);
+        let paired_support_metadata_after_selected_dedup = support_metadata_after_selected_dedup
+            .saturating_sub(paired_lookup_estimate.non_fri_opening_savings_bytes);
+        let zero_support_fri_floor = merged_only_body_floor + support_metadata_after_selected_dedup;
+        let paired_zero_support_fri_floor =
+            merged_only_body_floor + paired_support_metadata_after_selected_dedup;
+        let binary_support_payload_headroom =
+            target_binary_150k.saturating_sub(merged_only_body_floor);
+        let decimal_support_payload_headroom =
+            target_decimal_150k.saturating_sub(merged_only_body_floor);
+        let current_metadata_required_savings_binary =
+            support_metadata_after_selected_dedup.saturating_sub(binary_support_payload_headroom);
+        let paired_metadata_required_savings_binary = paired_support_metadata_after_selected_dedup
+            .saturating_sub(binary_support_payload_headroom);
+
+        eprintln!(
+            "native terminal packed support structural floor [{label}]: merged_only_body_floor={} merged_only_over_binary_150k={} merged_only_headroom_binary_150k={} merged_only_over_decimal_150k={} merged_only_headroom_decimal_150k={} support_metadata_after_selected_dedup={} paired_support_metadata_after_selected_dedup={} zero_support_fri_floor={} zero_support_fri_over_binary_150k={} zero_support_fri_over_decimal_150k={} paired_zero_support_fri_floor={} paired_zero_support_fri_over_binary_150k={} paired_zero_support_fri_over_decimal_150k={} binary_support_payload_headroom={} decimal_support_payload_headroom={} current_metadata_required_savings_binary={} paired_metadata_required_savings_binary={} support_fri_budget_after_current_metadata_binary={} support_fri_budget_after_paired_metadata_binary={}",
+            merged_only_body_floor,
+            merged_only_body_floor.saturating_sub(target_binary_150k),
+            target_binary_150k.saturating_sub(merged_only_body_floor),
+            merged_only_body_floor.saturating_sub(target_decimal_150k),
+            target_decimal_150k.saturating_sub(merged_only_body_floor),
+            support_metadata_after_selected_dedup,
+            paired_support_metadata_after_selected_dedup,
+            zero_support_fri_floor,
+            zero_support_fri_floor.saturating_sub(target_binary_150k),
+            zero_support_fri_floor.saturating_sub(target_decimal_150k),
+            paired_zero_support_fri_floor,
+            paired_zero_support_fri_floor.saturating_sub(target_binary_150k),
+            paired_zero_support_fri_floor.saturating_sub(target_decimal_150k),
+            binary_support_payload_headroom,
+            decimal_support_payload_headroom,
+            current_metadata_required_savings_binary,
+            paired_metadata_required_savings_binary,
+            target_binary_150k.saturating_sub(
+                merged_only_body_floor + support_metadata_after_selected_dedup
+            ),
+            target_binary_150k.saturating_sub(
+                merged_only_body_floor + paired_support_metadata_after_selected_dedup
+            ),
+        );
+    }
+
     fn compact_path_dictionary_stats(
         input_paths: &[p3_circuit_prover::GoldilocksTip5PrunedMerklePaths],
         commit_paths: &[p3_circuit_prover::GoldilocksTip5PrunedMerklePaths],
@@ -7368,6 +7424,10 @@ mod tests {
             &packed_support_proof, &packed_support_fri, optimistic_single_fri_floor_bytes,
         );
         log_terminal_packed_tip5_paired_lookup_payload_estimate(label, &paired_lookup_estimate);
+        log_terminal_packed_support_structural_floor(
+            label, prelude_bytes, primitive_bytes, merged_bytes, packed_support_non_fri_bytes,
+            optimistic_duplicate_selected_binding_bytes, &paired_lookup_estimate,
+        );
 
         eprintln!(
             "native terminal merged value-bridge + packed support fusion floor over ai-pow composite verifier [{label}]: current_appended_body={} prelude={} primitive_r1cs={} merged_value_bridge={} merged_value_bridge_fri={} merged_non_fri={} packed_support={} packed_support_fri={} packed_support_non_fri={} single_fri_floor={} duplicate_selected_profile={} duplicate_lookup_io_profile={} duplicate_selected_commitment={} merged_selected_lookup_opening={} packed_support_selected_lookup_opening={} optimistic_selected_opening_dedup={} optimistic_duplicate_selected_binding={} optimistic_single_fri_floor_before_selected_dedup={} optimistic_single_fri_floor={} over_binary_150k={} over_decimal_150k={} l1_verify_ms={} compile_ms={} prelude_ms={} primitive_prove_ms={} merged_value_bridge_prove_ms={} packed_support_prove_ms={} total_subproof_prove_ms={} primitive_verify_ms={} merged_value_bridge_verify_ms={} packed_support_verify_ms={} total_subproof_verify_ms={} total_wall_ms={}",

@@ -54,6 +54,21 @@ but the current most viable direction must also remove or radically change the
 packed-support theorem's separate FRI input-batch, Merkle, accumulator, and
 commit-round payload.
 
+The structural floor is now tighter than "save about 100 KiB from support FRI."
+In the latest fusion-floor run, the already-sound merged base
+`prelude + primitive R1CS + merged value bridge` is `146,032` bytes. That leaves
+only `7,568` bytes under a binary `150 KiB` target and `3,968` bytes under a
+decimal `150,000` byte target for every remaining Tip5 support binding. The
+current packed-support non-FRI metadata, after duplicate selected-binding
+deduplication, is `13,418` bytes; even if its FRI proof were free, that floor
+would be `159,450` bytes. The paired-lookup zeta-opening estimate lowers that
+metadata floor to `9,336` bytes, but the zero-support-FRI floor is still
+`155,368` bytes, `1,772` bytes over binary `150 KiB`, before paying any sound
+support FRI payload. Therefore the next route must either reduce the
+primitive/merged base, compress the support metadata below the paired-lookup
+floor, or prove the Tip5 support relations inside a genuinely merged theorem
+with almost no additional serialized metadata.
+
 The relations that still need to coexist in the final theorem are:
 
 - the merged terminal NPO value bridge;
@@ -116,6 +131,11 @@ The relations that still need to coexist in the final theorem are:
   support compact FRI at `156,005` bytes before any two-domain table Merkle
   overhead or new quotient-shape cost. This rules out paired lookup as the
   primary route to the relaxed target.
+- The structural lower-bound diagnostic now reports that the merged-only body
+  is `146,032` bytes. Current support metadata with no support FRI at all would
+  put the body at `159,450` bytes; paired-lookup metadata with no support FRI
+  would still put it at `155,368` bytes. The remaining solution cannot be
+  "make support FRI smaller" alone; there is not enough metadata headroom.
 
 #### Remaining Work
 
@@ -129,6 +149,10 @@ The relations that still need to coexist in the final theorem are:
   opened-value/zeta-opening savings, and must directly reduce the `40,788` byte
   input-Merkle payload and `54,313` byte commit-round payload or avoid paying
   those support-theorem costs separately.
+- Also measure any candidate against the `146,032` byte merged-base floor. To
+  meet binary `150 KiB` without reducing the base proof, all remaining support
+  binding metadata and proof payload together must fit in `7,568` bytes. That
+  is below the paired-lookup support metadata estimate before any FRI payload.
 - Fold the resulting Tip5 binding into the merged value-bridge proof instead
   of appending another standalone packed proof body.
 - Reuse prepared terminal compile output, NPO columns, packed traces,
@@ -159,8 +183,8 @@ compression lever, but the current support theorem still cannot be added to the
 | Best near-target standalone missing binding | Lane-selector-aware selected-to-packed NPO-IO bridge at `137,355` bytes / `134.1 KiB`, prove `28.526s`, verify `14.510s` |
 | Direct bridge diagnostic | Binding selected NPO values directly to compact packed trace lanes verifies at `205,950` bytes / `201.1 KiB`, prove `35.863s`; it removes the projection commitment/domain but is too large standalone because it still opens the full `436`-column packed trace |
 | Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; merged-value plus packed-support optimistic single-FRI floor is `252,753` bytes, `99,153` bytes over binary `150 KiB`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s`; packed byte-LogUp group size 15 was measured and rejected at `206,759` bytes, prove `38.515s` |
-| Main current blocker | All required packed Tip5/NPO subtheorems now verify, and PCS input-batch coalescing helps, but the current support FRI input batches plus commit rounds are too large; paired lookup alone leaves an optimistic floor of `222,759` bytes |
-| Next implementation step | Design and measure a more invasive support-FRI redesign that removes support-theorem Merkle/commit-round payload or folds the packed Tip5 relations into a genuinely lean merged theorem; paired 16-bit lookup can be reused only as a component |
+| Main current blocker | All required packed Tip5/NPO subtheorems now verify, and PCS input-batch coalescing helps, but the merged base is already `146,032` bytes; paired lookup alone leaves an optimistic floor of `222,759` bytes, and even a zero-support-FRI paired metadata floor is `155,368` bytes |
+| Next implementation step | Design and measure a genuinely merged Tip5-support theorem or base-proof reduction; a support-only redesign must fit all remaining metadata and proof payload into `7,568` binary-target bytes unless it also reduces primitive/merged bytes |
 
 ### Decision
 
@@ -349,6 +373,18 @@ be smaller than this estimate unless it also changes the support-FRI shape.
 Therefore paired lookup remains a possible component, not the primary
 production route.
 
+The tighter structural floor is now the primary design constraint. The
+already-verified merged base in the fusion-floor run is `146,032` bytes
+(`286` prelude + `54,927` primitive R1CS + `90,819` merged value bridge).
+Current packed-support metadata after selected-binding deduplication is
+`13,418` bytes, so a hypothetical zero-FRI support theorem would still be
+`159,450` bytes. Applying the paired-lookup non-FRI opening estimate reduces
+that metadata to `9,336` bytes and the zero-support-FRI floor to `155,368`
+bytes, still `1,772` bytes over binary `150 KiB`. This means the next useful
+implementation has to make the support binding almost metadata-free, reduce
+the primitive/merged base, or replace the current decomposition with a single
+theorem whose serialized metadata is not the sum of the current subproofs.
+
 The per-input-batch breakdown explains why: the current packed-support compact
 FRI has `127,180` bytes of input batches and `54,313` bytes of commit rounds.
 The input batches split as selected lookup `21,459`, packed trace/table
@@ -428,6 +464,10 @@ masked projection commitment.
 - The paired 16-bit lookup path is measured as useful but insufficient by
   itself: estimated optimistic floor `222,759` bytes, still `69,159` bytes over
   binary `150 KiB`, before two-domain table overhead.
+- The structural zero-support-FRI lower bound is now measured: `159,450` bytes
+  with current support metadata, or `155,368` bytes after paired-lookup
+  non-FRI opening savings. Even a free support FRI would not fit unless support
+  metadata or the merged base shrinks.
 
 ### Remaining Work
 
@@ -451,6 +491,9 @@ masked projection commitment.
   per-input-batch ledger. The success condition is not "saves opened values";
   it must bring the merged-value plus Tip5-support floor to approximately
   `150 KiB` while preserving 60 pure-query FRI soundness.
+- Track the `146,032` byte merged-base floor in every candidate. If the
+  candidate does not reduce that base, its complete sound support binding must
+  serialize under `7,568` additional bytes for binary `150 KiB`.
 - Remove duplicated production prover setup by reusing terminal compile
   outputs, prepared NPO columns, packed traces, roots, and prelude material
   wherever verifier key and public inputs are unchanged.
