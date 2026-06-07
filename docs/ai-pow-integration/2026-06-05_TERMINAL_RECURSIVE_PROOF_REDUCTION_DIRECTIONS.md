@@ -1,13 +1,14 @@
 # AI-PoW Recursive Proof Reduction Directions
 
 Date: 2026-06-05
-Status: decision checkpoint, revised after stack-level integration audit. The
-exhaustive-NPO terminal fixture passes the byte and time gates, but the full
-`ai-pow-zk` composite-verifier terminal path has not yet met either the
-production byte gate or the production time gate. The compact final-layer
-batch-STARK route is now the primary production candidate because the corrected
-fast-L1/L2 sweep hits the relaxed final-proof size target with explicit
-public-value binding. Native terminal remains the fallback route. The large
+Status: accepted decision checkpoint, revised after stack-level integration
+audit and 2026-06-07 route decision. The exhaustive-NPO terminal fixture passes
+the byte and time gates, but the full `ai-pow-zk` composite-verifier terminal
+path has not yet met either the production byte gate or the production time
+gate. The compact final-layer batch-STARK route is now the committed primary
+production route because the corrected fast-L1/L2 sweep hits the relaxed
+final-proof size target with explicit public-value binding. Native terminal
+remains the fallback route if this path cannot meet the time gate. The large
 batch-STARK checkpoint envelope remains too large.
 
 ## Goal
@@ -21,7 +22,7 @@ proving time. Every candidate, native terminal or compact batch-STARK, must
 preserve soundness without letting a miner skip the AI-PoW matrix-multiplication
 work and without relying on undocumented or unproven shortcuts.
 
-## Current Most Viable Path (2026-06-06)
+## Current Most Viable Path (2026-06-07)
 
 ### Important Current Production-Proof Summary
 
@@ -33,9 +34,9 @@ or packed Tip5/NPO bridge code must be checked against this summary first.
 The relaxed milestone is not yet fully claimed. The target is approximately
 `150 KiB` total recursive-proof size and approximately `30s` total release
 proving time, with 60 bits of soundness coming from FRI queries rather than
-proof-system grinding. Compact batch-STARK L2 is now the primary production
-candidate. Native terminal remains the fallback if compact batch-STARK proving
-time cannot be reduced without invasive changes.
+proof-system grinding. Compact batch-STARK L2 is now the committed primary
+production route. Native terminal remains the fallback if compact batch-STARK
+proving time cannot be reduced without invasive changes.
 
 #### Clean Checkpoint
 
@@ -59,7 +60,7 @@ or a further base-proof reduction.
 
 Done and verified:
 
-- Compact batch-STARK L2 is now the primary production candidate. The full
+- Compact batch-STARK L2 is now the committed primary production route. The full
   batch-STARK checkpoint remains a hardened checkpoint/fallback path, not the
   production wire artifact. Native terminal remains the fallback route.
 - The corrected fast-L1/L2 compact batch-STARK diagnostic verifies with L1
@@ -386,7 +387,7 @@ does not replace the required packed Tip5 support-theorem redesign.
 
 | Question | Current answer |
 |---|---|
-| Production recursive proof path | Compact batch-STARK L2 over a fast statement-bound L1 proof; native terminal reduction is fallback; not the large batch-STARK checkpoint envelope |
+| Production recursive proof path | Committed primary route is compact batch-STARK L2 over a fast statement-bound L1 proof; native terminal reduction is fallback; not the large batch-STARK checkpoint envelope |
 | Relaxed target | About `150 KiB` recursive proof artifact and about `30s` total release proving |
 | Soundness target | 60 pure FRI query bits per promoted layer; selected compact row uses L1 `lb=3,nq=20,pow=0` and L2 `lb=5,nq=12,pow=0` |
 | Most viable shape | Compact batch-STARK L2 with verifier-owned metadata/setup, canonical preprocessed-opening restoration, pruned paths, and explicit final public-value binding of the L1 statement digest |
@@ -401,8 +402,9 @@ does not replace the required packed Tip5 support-theorem redesign.
 
 ### Decision
 
-The current most viable route to the relaxed production target is compact
-batch-STARK L2 over a fast statement-bound L1 proof. The target remains
+The current committed route to the relaxed production target is compact
+batch-STARK L2 over a fast statement-bound L1 proof. This is a route decision,
+not a production-readiness claim. The target remains
 approximately `150 KiB` for the recursive proof artifact and approximately
 `30s` total release proving time, with no proof-system PoW bits counted toward
 soundness.

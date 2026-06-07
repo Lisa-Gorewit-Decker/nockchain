@@ -2,25 +2,26 @@
 
 EXPERIMENTAL — a Plonky3 STARK and recursive-certificate stack for the
 [`ai-pow`](../ai-pow/) tiling matmul puzzle. The production recursive proof
-target is not yet fully met. The current primary candidate is a compact
-final-layer batch-STARK route with verifier-owned metadata/setup binding and
-explicit final public-value binding of the L1 statement digest. The existing
-full batch-STARK checkpoint envelope is too large for the production wire
-budget, and the native terminal certificate remains a fallback rather than the
-leading path. The full composite-verifier terminal path is wired as an opt-in
-diagnostic but has not met the production size/time gates. The plain
-`MatmulProof` remains a miner diagnostic / pre-ZKP target-hit check; it is not
-the persisted block artifact.
+target is not yet fully met. The active route is now the compact final-layer
+batch-STARK path with verifier-owned metadata/setup binding and explicit final
+public-value binding of the L1 statement digest. The existing full batch-STARK
+checkpoint envelope is too large for the production wire budget, and the
+native terminal certificate remains a fallback rather than the leading path.
+The full composite-verifier terminal path is wired as an opt-in diagnostic but
+has not met the production size/time gates. The plain `MatmulProof` remains a
+miner diagnostic / pre-ZKP target-hit check; it is not the persisted block
+artifact.
 
 > **IMPORTANT - current production recursive-proof summary:** before changing
 > the recursive proof path, proof shape, FRI parameters, terminal commitment
 > shape, certificate wire format, or packed Tip5/NPO bridge code, read the live
 > checkpoint summary:
 > [Clean Checkpoint](../../docs/ai-pow-integration/2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md#clean-checkpoint).
-> The active production artifact is now expected to be compact batch-STARK L2
-> over a fast statement-bound L1 proof, with native terminal retained as the
-> fallback route. The large batch-STARK recursive checkpoint certificate
-> remains too large. Soundness-neutral terminal Merkle
+> The active production implementation work is now committed to compact
+> batch-STARK L2 over a fast statement-bound L1 proof, with native terminal
+> retained as the fallback route if this path cannot meet the time gate. The
+> large batch-STARK recursive checkpoint certificate remains too large.
+> Soundness-neutral terminal Merkle
 > cap-height/base reduction is now implemented and measured: the retained
 > production cap height is `3`, bound into terminal parameters/profile/transcript
 > before challenge sampling, and full FRI caps are digested into the prelude
