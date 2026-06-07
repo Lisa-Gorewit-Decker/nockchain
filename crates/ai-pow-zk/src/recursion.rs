@@ -1849,6 +1849,19 @@ mod tests {
         public_values
     }
 
+    fn l2_statement_public_values_for_l1(statement_digest_public_values: &[Val]) -> Vec<Val> {
+        let basis_dim = <Challenge as BasedVectorSpace<Val>>::DIMENSION;
+        let mut public_values =
+            Vec::with_capacity(statement_digest_public_values.len() * basis_dim);
+        for &value in statement_digest_public_values {
+            let lifted = Challenge::from(value);
+            public_values.extend_from_slice(
+                <Challenge as BasedVectorSpace<Val>>::as_basis_coefficients_slice(&lifted),
+            );
+        }
+        public_values
+    }
+
     fn pure_query_fri_verifier_params_for_l1(
         log_blowup: usize,
         log_final_poly_len: usize,
@@ -1883,6 +1896,9 @@ mod tests {
         const TRACE_D: usize = 2;
 
         let l1_public_values = l2_public_values_for_l1(l1, statement_digest_public_values);
+        let l2_statement_public_values =
+            l2_statement_public_values_for_l1(statement_digest_public_values);
+        let l2_statement_public_binding_lanes = statement_digest_public_values.len();
         let mut circuit_builder = CircuitBuilder::<Challenge>::new();
         circuit_builder.enable_tip5_perm::<Tip5Goldilocks, _>(
             generate_tip5_trace::<Challenge, Tip5Goldilocks>, LiftTip5,
@@ -1920,8 +1936,8 @@ mod tests {
         let (public_inputs, private_inputs) =
             verifier_inputs.pack_values(&l1_public_values, &l1.proof, &l1.stark_common);
 
-        let l2_table_packing = TablePacking::new(DIGEST_ELEMS, 8)
-            .with_public_binding_lanes(DIGEST_ELEMS)
+        let l2_table_packing = TablePacking::new(l2_statement_public_binding_lanes, 8)
+            .with_public_binding_lanes(l2_statement_public_binding_lanes)
             .with_fri_params(l2_log_final_poly_len, l2_log_blowup)
             .with_horner_pack_k(5);
         let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
@@ -1990,7 +2006,7 @@ mod tests {
             .prove_all_tables(&traces, &circuit_prover_data)
             .map_err(|e| format!("L2 prove_all_tables: {e:?}"))?;
         prover
-            .verify_all_tables_with_public_values(&proof, statement_digest_public_values)
+            .verify_all_tables_with_public_values(&proof, &l2_statement_public_values)
             .map_err(|e| format!("L2 verify_all_tables: {e:?}"))?;
         Ok(L2ProofForTestPearl {
             proof,
@@ -2986,10 +3002,13 @@ mod tests {
                         .mean_digest_savings_bytes
                         .round() as usize,
                 );
+            let l2_statement_public_values =
+                l2_statement_public_values_for_l1(&statement_digest_public_values);
+            let l2_statement_public_binding_lanes = statement_digest_public_values.len();
             let l2_public_binding_lanes = l2.public_binding_lanes;
             assert_eq!(
-                l2_public_binding_lanes, DIGEST_ELEMS,
-                "L2 compact candidate must expose the statement digest as final proof public values"
+                l2_public_binding_lanes, l2_statement_public_binding_lanes,
+                "L2 compact candidate must expose all L1 statement-digest base limbs as final proof public lanes"
             );
 
             let l2_fri_shape = pure_query_goldilocks_tip5_fri_shape(
@@ -2998,8 +3017,8 @@ mod tests {
             );
             let mut l2_compact_verifier = BatchStarkProver::new(l2_config.clone())
                 .with_table_packing(
-                    p3_circuit_prover::TablePacking::new(DIGEST_ELEMS, 8)
-                        .with_public_binding_lanes(DIGEST_ELEMS)
+                    p3_circuit_prover::TablePacking::new(l2_statement_public_binding_lanes, 8)
+                        .with_public_binding_lanes(l2_statement_public_binding_lanes)
                         .with_fri_params(l2_log_final_poly_len, l2_log_blowup)
                         .with_horner_pack_k(5),
                 );
@@ -3010,7 +3029,7 @@ mod tests {
             let l2_compact_start = Instant::now();
             let l2_compact = l2_compact_verifier
                 .compact_goldilocks_tip5_path_pruned_preprocessed_with_public_values(
-                    l2, &statement_digest_public_values, &l2_circuit_prover_data, l2_fri_shape,
+                    l2, &l2_statement_public_values, &l2_circuit_prover_data, l2_fri_shape,
                 )
                 .expect("compact L2 proof with path-pruned preprocessed adapter");
             let l2_compact_ms = l2_compact_start.elapsed().as_millis();
@@ -3056,7 +3075,7 @@ mod tests {
             let l2_compact_verify_start = Instant::now();
             l2_compact_verifier
                 .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_public_values(
-                    l2_compact_body, &statement_digest_public_values, &l2_metadata,
+                    l2_compact_body, &l2_statement_public_values, &l2_metadata,
                     &l2_circuit_prover_data,
                 )
                 .expect("actual compact L2 proof must verify");
@@ -3128,8 +3147,8 @@ mod tests {
             );
 
             assert_eq!(
-                l2_public_binding_lanes, 0,
-                "diagnostic L2 proof currently binds its L1 statement through the verifier public inputs"
+                l2_public_binding_lanes, l2_statement_public_binding_lanes,
+                "diagnostic L2 proof must bind its L1 statement digest as final public lanes"
             );
             assert!(
                 l2_outer_bytes >= l2_proof_body_bytes,

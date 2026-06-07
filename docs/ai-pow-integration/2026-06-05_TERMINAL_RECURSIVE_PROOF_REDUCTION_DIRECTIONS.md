@@ -1,13 +1,14 @@
-# Native Terminal Recursive Proof Reduction Directions
+# AI-PoW Recursive Proof Reduction Directions
 
 Date: 2026-06-05
 Status: decision checkpoint, revised after stack-level integration audit. The
 exhaustive-NPO terminal fixture passes the byte and time gates, but the full
 `ai-pow-zk` composite-verifier terminal path has not yet met either the
-production byte gate or the production time gate. A compact final-layer
-batch-STARK route is now allowed as a production candidate if it proves smaller
-or faster under the same soundness and explicit verifier-binding rules; the
-large batch-STARK checkpoint envelope remains too large.
+production byte gate or the production time gate. The compact final-layer
+batch-STARK route is now the primary production candidate because the corrected
+fast-L1/L2 sweep hits the relaxed final-proof size target with explicit
+public-value binding. Native terminal remains the fallback route. The large
+batch-STARK checkpoint envelope remains too large.
 
 ## Goal
 
@@ -29,37 +30,50 @@ direction. The `ai-pow-zk` README links here because changes to the recursive
 proof path, certificate wire format, FRI parameters, terminal commitment shape,
 or packed Tip5/NPO bridge code must be checked against this summary first.
 
-The relaxed milestone is not yet claimed. The target is approximately
+The relaxed milestone is not yet fully claimed. The target is approximately
 `150 KiB` total recursive-proof size and approximately `30s` total release
 proving time, with 60 bits of soundness coming from FRI queries rather than
-proof-system grinding. Native terminal remains the leading fallback; compact
-batch-STARK L2 is now an allowed production candidate if its final wire body is
-bound to verifier-owned metadata/setup and explicit public values.
+proof-system grinding. Compact batch-STARK L2 is now the primary production
+candidate. Native terminal remains the fallback if compact batch-STARK proving
+time cannot be reduced without invasive changes.
 
 #### Clean Checkpoint
 
-The most viable route is no longer limited to the native terminal certificate.
-The large batch-STARK recursive checkpoint certificate is still too large, but
-a compact final-layer batch-STARK body is acceptable if it beats the terminal
-route. The native terminal production profile remains pure-query FRI soundness
-at `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`, with terminal Merkle
-cap height `3` bound into proof parameters, proximity profile, transcript
-material, and the terminal prelude commitment digest.
+The most viable route is the Pearl-shaped two-layer STARK compression path:
+build a statement-bound L1 proof, then produce a compact final-layer L2
+batch-STARK proof whose verifier owns setup/metadata and whose final public
+lanes bind the L1 statement digest. The large batch-STARK recursive checkpoint
+certificate is still too large; the candidate is only the compact L2 body plus
+the explicitly required public values and verifier-key/setup binding. The
+native terminal production profile remains a fallback at pure-query FRI
+soundness with terminal Merkle cap height `3`.
 
-The verified base is close but incomplete: the cap-height `3` merged-only body
-is `142,807` bytes and is sound for its included primitive R1CS and merged
-NPO value-bridge relations. It does not yet bind the internal packed Tip5
-AIR/LogUp/selected-trace work. Because binary `150 KiB` leaves only `10,793`
-bytes above that base, the remaining support binding cannot be an appended
-standalone packed proof. It must be a genuinely merged packed Tip5 theorem, an
-almost metadata-free support binding, or a further base-proof reduction.
+The native-terminal fallback base is close but incomplete: the cap-height `3`
+merged-only body is `142,807` bytes and is sound for its included primitive
+R1CS and merged NPO value-bridge relations. It does not yet bind the internal
+packed Tip5 AIR/LogUp/selected-trace work. Because binary `150 KiB` leaves only
+`10,793` bytes above that base, the remaining terminal support binding cannot
+be an appended standalone packed proof. That terminal fallback would need a
+genuinely merged packed Tip5 theorem, an almost metadata-free support binding,
+or a further base-proof reduction.
 
 Done and verified:
 
-- Native terminal remains the leading fallback wire artifact. The full
-  batch-STARK checkpoint remains a hardened checkpoint/fallback path, while the
-  compact batch-STARK L2 body is an allowed production candidate if it meets
-  the same byte/time/soundness gates.
+- Compact batch-STARK L2 is now the primary production candidate. The full
+  batch-STARK checkpoint remains a hardened checkpoint/fallback path, not the
+  production wire artifact. Native terminal remains the fallback route.
+- The corrected fast-L1/L2 compact batch-STARK diagnostic verifies with L1
+  `lb=3,nq=20,cap=4,pow=0` and L2 `lb=5,nq=12,cap=4,pow=0`: actual compact
+  wrapper `149,743` bytes, metadata-free compact body `148,866` bytes, core
+  compact proof `91,402` bytes, restoration payload `57,464` bytes, L1 prove
+  `30.448s`, L2 prove `54.137s`. This is the first soundly bound row inside
+  the relaxed `150 KiB` size target, but it still misses the total `~30s`
+  proving-time target.
+- The smaller L2 `lb=6,nq=10` row verifies at `132,682` bytes actual compact
+  wrapper and `131,803` bytes metadata-free body, but L2 proving rises to
+  `107.617s`. The faster L2 `lb=4,nq=15` row proves in `27.342s` but measures
+  `178,272` bytes, so it needs additional proof-body compression before it can
+  satisfy the relaxed size gate.
 - Production terminal cap height `3` is implemented, transcript-bound, and
   release/native measured. The best measured merged-only structural floor is
   `142,807` bytes.
@@ -108,43 +122,50 @@ Done and verified:
   arguments is useful cleanup but is not enough for the `~30s` production goal.
 - The compact batch-STARK L2 candidate now treats verifier key/setup material
   the Pearl way: metadata is verifier-owned, preprocessed openings are restored
-  from canonical setup, and the final L2 proof exposes the statement digest via
-  `DIGEST_ELEMS` public-binding lanes. The diagnostic compacts and verifies the
+  from canonical setup, and the final L2 proof binds all L1 statement-digest
+  base limbs as final public lanes. For the D=2 candidate this is
+  `DIGEST_ELEMS * TRACE_D = 10` base-valued L2 public lanes; the verifier API
+  receives their D=2 basis expansion. The diagnostic compacts and verifies the
   body through the public-value-binding APIs, and a focused regression rejects
   wrong caller-supplied public values for the compact body.
 
 What remains:
 
-- Redesign the packed Tip5 support binding so it is not another additive
-  FRI/Merkle/metadata payload.
-- Keep every candidate measured against the `142,807` byte merged-base floor;
-  without base reduction, all remaining sound support payload must fit under
-  `10,793` bytes.
-- Reuse prepared terminal compile output, NPO columns, packed traces,
-  commitment roots, and prelude material in the final production pipeline.
+- Promote the compact batch-STARK body format into a canonical recursive
+  certificate: pinned verifier key/setup digest, pinned FRI shape, canonical
+  preprocessed commitment restoration, public-value derivation, and strict
+  rejection of prover-supplied verifier metadata.
+- Reduce end-to-end proving time. The current selected size row is about
+  `84.585s` serial L1+L2 proving (`30.448s + 54.137s`) before production
+  pipeline cleanup. The best time row is about `57.790s` but remains too large.
+- Count the final certificate bytes exactly, including any carried public-value
+  limbs, verifier-key/setup digest, and chain-owned statement metadata that is
+  not otherwise derivable by the verifier.
 - Extend negative tests from the verified subproof checkpoints to the final
-  fused artifact: stale packed trace roots, stale fixed table/profile data,
-  wrong selected-value bridge commitments, wrong `mmcs_bit` projection,
-  malformed compact FRI payloads, and transcript/prelude substitutions.
+  compact batch-STARK artifact: stale verifier-key/setup digest, stale
+  preprocessed caps/openings, wrong public values, noncanonical FRI shape,
+  malformed compact FRI payloads, tampered path dictionaries, and
+  transcript/prelude substitutions.
 - Remeasure the full production path in release with native CPU codegen.
 
-Non-claim: the relaxed `~150 KiB` / `~30s` production milestone has not been
-met yet. Any route that swaps production back to the large batch-STARK
-checkpoint envelope, counts proof-system PoW grinding toward soundness, omits
-the selected-value to packed Tip5 binding, accepts prover-supplied verifier
-metadata as trusted, or appends standalone packed proofs is not a viable
-production route.
+Non-claim: the relaxed size gate is now plausibly met for compact batch-STARK
+L2, but the relaxed `~30s` total proving-time gate has not been met yet. Any
+route that swaps production back to the large batch-STARK checkpoint envelope,
+counts proof-system PoW grinding toward soundness, omits explicit statement
+binding, accepts prover-supplied verifier metadata as trusted, or appends
+standalone packed proofs is not a viable production route.
 
 #### Most Viable Path
 
-The current most viable production routes are native terminal reduction and the
-compact batch-STARK L2 route. The target is the relaxed milestone of about
+The current most viable production route is compact batch-STARK L2 over a fast,
+statement-bound L1 proof. The target is the relaxed milestone of about
 `150 KiB` total recursive proof size and about `30s` total release proving
-time, while keeping soundness at 60 pure FRI query bits for the route being
-promoted. The current full batch-STARK checkpoint remains soundness-relevant
-but too large; only the compact final-layer body with verifier-owned metadata
-and explicit public-value binding is a plausible batch-STARK production
-candidate.
+time, while keeping soundness at 60 pure FRI query bits for both layers. The
+current full batch-STARK checkpoint remains soundness-relevant but too large;
+only the compact final-layer body with verifier-owned metadata and explicit
+public-value binding is a plausible batch-STARK production candidate. Native
+terminal reduction remains the fallback if this route cannot meet the time
+gate.
 
 The highest-signal immediate lever was to reduce the native-terminal base proof
 before redesigning more Tip5 algebra. The current code checkpoint sets the
@@ -344,31 +365,41 @@ does not replace the required packed Tip5 support-theorem redesign.
 
 | Question | Current answer |
 |---|---|
-| Production recursive proof path | Unsettled: native terminal reduction or compact batch-STARK L2; not the large batch-STARK checkpoint envelope |
+| Production recursive proof path | Compact batch-STARK L2 over a fast statement-bound L1 proof; native terminal reduction is fallback; not the large batch-STARK checkpoint envelope |
 | Relaxed target | About `150 KiB` recursive proof artifact and about `30s` total release proving |
-| Soundness target | 60 pure FRI query bits with `log_blowup=4`, `num_queries=15`, `query_pow_bits=0` |
-| Most viable shape | Either native terminal proof at production Merkle cap height `3` plus a genuinely merged packed Tip5 support theorem, or compact batch-STARK L2 with verifier-owned metadata/setup and explicit final public-value binding |
+| Soundness target | 60 pure FRI query bits per promoted layer; selected compact row uses L1 `lb=3,nq=20,pow=0` and L2 `lb=5,nq=12,pow=0` |
+| Most viable shape | Compact batch-STARK L2 with verifier-owned metadata/setup, canonical preprocessed-opening restoration, pruned paths, and explicit final public-value binding of the L1 statement digest |
+| Best measured compact batch-STARK candidate | Fast L1 `lb=3,nq=20,cap=4,pow=0` plus L2 `lb=5,nq=12,cap=4,pow=0`: actual compact wrapper `149,743` bytes, metadata-free body `148,866` bytes, L1 prove `30.448s`, L2 prove `54.137s` |
 | Best measured complete base | Cap-height `3` full-context merged-only structural floor at `142,807` bytes; sound for its included relations, but missing internal Tip5 binding |
 | Best near-target standalone missing binding | Lane-selector-aware selected-to-packed NPO-IO bridge at `137,355` bytes / `134.1 KiB`, prove `28.526s`, verify `14.510s` |
 | Direct bridge diagnostic | Binding selected NPO values directly to compact packed trace lanes verifies at `205,950` bytes / `201.1 KiB`, prove `35.863s`; it removes the projection commitment/domain but is too large standalone because it still opens the full `436`-column packed trace |
 | Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; cap-height `3` merged-value plus packed-support optimistic single-FRI floor is `249,184` bytes, `95,584` bytes over binary `150 KiB`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s`; packed byte-LogUp group size 15 was measured and rejected at `206,759` bytes, prove `38.515s` |
 | Best measured outer task parallelism | Rayon-joining the current primitive R1CS, merged value-bridge, and packed-support subproofs gives `39.448s` post-prelude subproof wall time versus `53.355s` summed subproof timers, but leaves the same `249,184` byte optimistic single-FRI floor and `171.422s` full diagnostic wall |
-| Main current blocker | All required packed Tip5/NPO subtheorems now verify, and PCS input-batch coalescing helps, but the cap-height `3` merged base is already `142,807` bytes; paired lookup alone leaves an optimistic floor of `219,138` bytes, and even a zero-support-FRI paired metadata floor is `152,612` bytes with only `988` bytes of binary headroom before real support payload |
-| Next implementation step | Remeasure the compact batch-STARK L2 candidate after final-layer public binding; in parallel, design and measure a genuinely merged Tip5-support theorem or additional terminal base-proof reduction |
+| Main current blocker | The compact batch-STARK L2 size row is in range, but total proving is still about `84.585s` before production cleanup; the time blocker is now L2 proving plus avoidable setup/serialization overhead, not final proof size |
+| Next implementation step | Promote compact batch-STARK L2 into the production certificate format, then reduce/prove-time-optimize the selected fast-L1/L2 path and add final artifact rejection tests |
 
 ### Decision
 
-The current most viable route to the relaxed production target remains a native
-terminal recursive certificate, but not the currently measured shared
-packed-trace support theorem. The target remains approximately `150 KiB` for
-the recursive proof artifact and approximately `30s` total release proving
-time, with no proof-system PoW bits counted toward soundness.
+The current most viable route to the relaxed production target is compact
+batch-STARK L2 over a fast statement-bound L1 proof. The target remains
+approximately `150 KiB` for the recursive proof artifact and approximately
+`30s` total release proving time, with no proof-system PoW bits counted toward
+soundness.
 
-This route keeps the production profile at pure-query 60-bit FRI soundness:
-`log_blowup=4`, `num_queries=15`, `query_pow_bits=0`, and production Merkle cap
-height `3`. The cap height is bound into terminal proof parameters, proximity
-profile, and transcript material before challenge sampling. It also keeps the
-primitive sparse-R1CS row-product proof, but it must reuse prepared
+The selected measurement row uses L1 `lb=3,nq=20,cap=4,pow=0` and L2
+`lb=5,nq=12,cap=4,pow=0`. It verifies with ten final L2 public-binding lanes
+for the L1 statement-digest base limbs and measures `149,743` bytes for the
+actual compact wrapper, `148,866` bytes for the metadata-free compact body, and
+`91,402` bytes for the core compact proof. That is inside the relaxed size
+gate. The current serial proving time is still too high: `30.448s` for L1 plus
+`54.137s` for L2 in the diagnostic.
+
+The terminal fallback keeps the production profile at pure-query 60-bit FRI
+soundness: `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`, and
+production Merkle cap height `3`. The cap height is bound into terminal proof
+parameters, proximity profile, and transcript material before challenge
+sampling. It also keeps the primitive sparse-R1CS row-product proof, but it
+must reuse prepared
 assignment/relation data and parallelize independent post-prelude work. The
 parallelism is now measured: it saves the current subproof stage from a
 `53.355s` serial sum to a `39.448s` wall, but the packed-support branch still
@@ -1088,13 +1119,15 @@ builds a real AI-PoW L1 proof with explicit statement digest public-binding
 lanes, then proves a second batch-STARK verifier circuit over that L1 proof.
 
 Current code correction: the L2 candidate now also exposes the statement digest
-as final-layer STARK public values by setting `public_binding_lanes =
-DIGEST_ELEMS` on the L2 table packing. The compact constructor and compact-body
-verifier now use the `*_with_public_values` APIs, so a verifier must supply the
-same statement digest when checking the metadata-free compact L2 body. A
-focused compact-body regression rejects wrong caller-supplied public values.
-The tables below remain useful directionally, but rows measured before this
-final-layer binding correction must be re-run before any production claim.
+as final-layer STARK public values. The L1 proof binds `DIGEST_ELEMS` D=2
+statement-digest elements, i.e. ten base limbs. The L2 proof must therefore
+bind all ten base limbs as base-valued final public lanes, not only
+`DIGEST_ELEMS` lanes. In verifier API terms, the compact body is checked with
+the D=2 basis expansion of those ten base-valued lanes. The compact constructor
+and compact-body verifier use the `*_with_public_values` APIs, so a verifier
+must supply the same statement digest when checking the metadata-free compact
+L2 body. A focused compact-body regression rejects wrong caller-supplied
+public values.
 
 This exercise found one soundness-critical wiring gap before measurement:
 `verify_p3_batch_proof_circuit` did not allocate or constrain primitive Public
@@ -1135,24 +1168,22 @@ verifier-key digest, circuit digest, FRI parameter tuple, public-input digest,
 or preprocessed commitment. Treating these values as prover hints would be
 unsound.
 
-The result is more nuanced than the Merkle-only check. Duplicate Merkle
-authentication paths are not the dominant size issue, but verifier-deterministic
-preprocessed openings are a real Pearl-style compactness lever: after the Tip5
-direction-binding fix, the `lb5,nq12` final L2 proof projects to `134,877`
-bytes with `24.516s` L2 proving, inside the relaxed size/time budget for the
-**final layer alone**. The end-to-end pipeline still fails production because it
-first materializes a roughly **194s** L1 batch-STARK witness proof. The
-Goldilocks/Tip5 compact wrapper now implements the preprocessed-opening
-reconstruction plus Merkle path-pruning portion of this projection with
-binding/tamper tests. The follow-up canonical-metadata body format also removes
-the `BatchStarkProof` metadata from the wire and verifies against
-verifier-owned metadata, but this saves only about `0.9 KiB` per L2 row. The
-suspected large overhead is therefore not generic proof metadata; it is the
-path dictionary plus remaining core opening material. The measured compact-body
-runs below close the final compact proof format gap for this batch-STARK route;
-the remaining Pearl-shaped route must avoid or replace the expensive L1
-batch-STARK witness proof and further shrink the final proof if the hard
-`~100 KiB` gate remains.
+The historical high-blowup-L1 result was more nuanced than the Merkle-only
+check. Duplicate Merkle authentication paths were not the dominant size issue,
+but verifier-deterministic preprocessed openings were a real Pearl-style
+compactness lever: after the Tip5 direction-binding fix, the `lb5,nq12` final
+L2 proof projected to `134,877` bytes with `24.516s` L2 proving, inside the
+relaxed size/time budget for the **final layer alone**. That row still failed
+production because it first materialized a roughly **194s** L1 batch-STARK
+witness proof. The fast-L1 row below supersedes that blocker: the selected path
+now hits the relaxed size gate, and the remaining metric gap is total proving
+time, especially L2 proving. The Goldilocks/Tip5 compact wrapper implements the
+preprocessed-opening reconstruction plus Merkle path-pruning portion of this
+projection with binding/tamper tests. The follow-up canonical-metadata body
+format also removes the `BatchStarkProof` metadata from the wire and verifies
+against verifier-owned metadata, but this saves only about `0.9 KiB` per L2
+row. The suspected large overhead is therefore not generic proof metadata; it
+is the path dictionary plus remaining core opening material.
 
 The natural follow-up was to pair the fast L1 profile (`lb=3,nq=20,cap=4`)
 with the compact final-layer projection. A pre-fix release/native diagnostic
@@ -1182,8 +1213,11 @@ The regression
 wrapper now accepts (`L1=185,821` bytes, `L2=188,541` bytes, full test
 `20.11s`).
 
-After that fix, the AI-PoW statement-bound L2 sweep completes again. A
-release/native rerun on 2026-06-06 now measures the actual
+After that fix, the AI-PoW statement-bound L2 sweep completed again on the
+older high-blowup L1 profile. This table is retained as historical evidence for
+the compact wrapper and cap-height tradeoff, but the fast-L1 table below is the
+current production-candidate measurement after the final D=2 public-binding
+correction. A release/native rerun on 2026-06-06 measured the actual
 `GoldilocksTip5PathPrunedCompactBatchStarkProof` wrapper as well as the older
 projection:
 
@@ -1198,13 +1232,11 @@ preprocessed-omitted projection, builds in about `3-4ms`, and the
 metadata-free body verifies in `34-41ms` in this diagnostic. The
 metadata-free body saves only `881-891` bytes over the wrapper. The much larger
 gap between the core compact `BatchProof` and the body, about `49-58 KiB`, is
-the pruned-path/Fri-shape restoration payload. The soundness blocker is gone,
-but the production metric blocker is unchanged: the current batch-STARK L1
-witness proof still takes about `193s`. The final-layer `lb=5,nq=12`
-metadata-free compact body is inside the relaxed `150 KiB` and `<30s`
-final-layer gates (`137,816` bytes, `24.318s`), but it is still above the hard
-`~100 KiB` target and the end-to-end pipeline is dominated by the L1 witness
-proof.
+the pruned-path/Fri-shape restoration payload. On this older high-blowup L1
+profile, the final-layer `lb=5,nq=12` metadata-free compact body is inside the
+relaxed `150 KiB` and `<30s` final-layer gates (`137,816` bytes, `24.318s`),
+but the L1 proof is far too slow. The fast-L1 measurement below supersedes this
+as the current production-candidate row.
 
 A cap-height sweep on the relaxed-final-layer row confirms that `cap=4` is the
 best measured point for this L2 shape. Raising the cap height does reduce the
@@ -1287,23 +1319,26 @@ therefore does not translate as "use rate 7" in this stack; the larger gap is
 the proof system and recursive-relation shape, plus Pearl's explicit use of
 proof-system PoW in its production parameters.
 
-The fast-L1 follow-up with L1 `lb=3,nq=20,cap=4,pow=0` also completes and
-verifies after the Tip5 MMCS direction-binding fix:
+The fast-L1 follow-up with L1 `lb=3,nq=20,cap=4,pow=0` completes and verifies
+after the Tip5 MMCS direction-binding fix and the final D=2 L2 public-binding
+correction:
 
 | Shape | Final L2 proof | Path-only projection | Preprocessed-omitted projection | Actual compact wrapper | Metadata-free compact body | Core compact `BatchProof` | L2 prove time | Shared fast L1 witness proof |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| L2 `lb=4,nq=15,cap=4,pow=0` over L1 `lb=3,nq=20,cap=4,pow=0` | `221,462` bytes | `214,545` bytes | `169,133` bytes | `175,597` bytes | `174,707` bytes | `103,259` bytes | `25.245s` | L1 `279,719` bytes, path-only `268,439`, preprocessed-omitted `210,823`, L1 prove `25.178s`, verify `32ms` |
-| L2 `lb=5,nq=12,cap=4,pow=0` over same L1 | `186,647` bytes | `182,371` bytes | `143,886` bytes | `146,577` bytes | `145,695` bytes | `88,143` bytes | `48.530s` | same |
-| L2 `lb=6,nq=10,cap=4,pow=0` over same L1 | `164,314` bytes | `161,202` bytes | `127,443` bytes | `130,688` bytes | `129,804` bytes | `78,072` bytes | `98.584s` | same |
+| L2 `lb=4,nq=15,lfp=2,mla=3,cap=4,pow=0` over L1 `lb=3,nq=20,cap=4,pow=0` | `226,891` bytes | `219,974` bytes | `172,738` bytes | `178,272` bytes | `177,394` bytes | `106,907` bytes | `27.342s` | L1 `279,719` bytes, path-only `268,439`, preprocessed-omitted `210,823`, L1 prove `30.448s`, verify `33ms` |
+| L2 `lb=5,nq=12,lfp=2,mla=3,cap=4,pow=0` over same L1 | `191,362` bytes | `187,086` bytes | `147,107` bytes | `149,743` bytes | `148,866` bytes | `91,402` bytes | `54.137s` | same |
+| L2 `lb=6,nq=10,lfp=2,mla=3,cap=4,pow=0` over same L1 | `168,604` bytes | `165,492` bytes | `130,299` bytes | `132,682` bytes | `131,803` bytes | `80,948` bytes | `107.617s` | same |
 
-This rules out the simple fast-L1/two-layer batch-STARK route too. The only
-fast-L1 row whose final-layer proving time is under `30s` is still `174,707`
-bytes as a metadata-free body, above even the relaxed `150 KiB` target. The
-first row below the relaxed size target (`145,695` bytes) takes `48.530s` for
-the L2 proof alone, and about `74s` including the L1 witness proof. The smaller
-`129,804` byte final layer takes `98.584s` before adding L1 time. Lowering L1
-blowup therefore trades the L1 proving bottleneck for a larger/slower L2
-verifier relation; it does not meet the production criteria.
+This no longer rules out the fast-L1/two-layer batch-STARK route. It is now the
+primary production candidate. The selected row is L2 `lb=5,nq=12`: it is inside
+the relaxed final-proof size gate with explicit public binding, but it still
+takes `54.137s` for the L2 proof alone and about `84.585s` with the L1 proof
+timer added. The L2 `lb=4,nq=15` row is much closer to the time gate at about
+`57.790s` total diagnostic proving, but it is `178,272` bytes as an actual
+compact wrapper. The L2 `lb=6,nq=10` row has ample size headroom, but its
+proving time is too high. The immediate engineering target is therefore not a
+new proof family; it is reducing the selected compact batch-STARK path's L2
+proving time and trimming the `lb4,nq15`/`lb5,nq12` size-time frontier.
 
 Compact verifier artifacts now exist for the verifier-deterministic
 preprocessed material in that projection.
@@ -1365,13 +1400,14 @@ body serialization/verification and rejection under a different canonical
 metadata/setup pair.
 
 This checkpoint still does **not** wire that adapter as the production
-recursive certificate path, and it does not solve the roughly **194s** L1
-batch-STARK witness proof in the high-blowup L1 row. Omitting any additional
+recursive certificate path. It does, however, remove the prior public-binding
+measurement blocker and shows that the compact batch-STARK route is closer to
+the relaxed target than the native terminal route. Omitting any additional
 value without transcript replay and reconstituting the same PCS openings would
-be an unsound prover hint. Promotion would require a fresh release/native
-measurement after the L2 public-binding correction and a verifier-key contract
-that pins or rebuilds the L1 and L2 metadata from canonical code/config rather
-than from prover-supplied bytes.
+be an unsound prover hint. Promotion now requires a verifier-key contract that
+pins or rebuilds the L1 and L2 metadata from canonical code/config rather than
+from prover-supplied bytes, plus release/native proof-time work on the selected
+fast-L1/L2 row.
 
 The polynomial NPO path remains useful diagnostic evidence, but it is not a
 drop-in production replacement for the exhaustive NPO proof. The recursion-crate
@@ -2320,20 +2356,19 @@ explicit public values, and verifier-owned metadata/setup fit the relaxed
 
 I would pursue five tracks in this order:
 
-1. **Promote the Pearl-shaped Plonky3 route as the main production candidate,
-   including compact batch-STARK if it wins.** The key idea is specialized
-   statement proof plus compact final recursion, not a specific backend label.
-   The compact batch-STARK L2 adapter now has the right verifier-key shape:
-   verifier-owned metadata/setup, reconstructed preprocessed openings, pruned
-   paths derived from Fiat-Shamir queries, and final statement-digest public
-   binding. The next checkpoint should remeasure that route under `pow_bits=0`
-   after the public-binding correction, then decide whether it beats continued
-   native-terminal reduction.
-2. **Keep exhaustive NPO as the leading native-terminal fallback, but do not
-   call it fully production-integrated yet.** It is the only current native
-   terminal fixture measured below 100 KiB and below 30s, but the actual
-   composite L1 verifier path still exceeds both the size and time gates.
-3. **Reduce the full composite L1 terminal relation only if we keep pursuing
+1. **Promote compact batch-STARK L2 as the main production candidate.** The key
+   idea is specialized statement proof plus compact final recursion, not a
+   specific backend label. The compact batch-STARK L2 adapter now has the right
+   verifier-key shape: verifier-owned metadata/setup, reconstructed
+   preprocessed openings, pruned paths derived from Fiat-Shamir queries, and
+   final statement-digest public binding. The corrected `lb5,nq12` row is
+   inside the relaxed size gate; the next checkpoint is proof-time reduction and
+   production certificate wiring.
+2. **Keep exhaustive NPO as the native-terminal fallback, but do not call it
+   fully production-integrated yet.** It is the only current native terminal
+   fixture measured below 100 KiB and below 30s, but the actual composite L1
+   verifier path still exceeds both the size and time gates.
+3. **Reduce the full composite L1 terminal relation only if we resume pursuing
    the generic-verifier terminal route.** The current blocker is relation size:
    `106,349` primitive operations and `14,049` supported NPO rows in the PROD
    baseline, not a large terminal public input vector. The primitive reduction
@@ -2347,12 +2382,12 @@ I would pursue five tracks in this order:
 5. **Keep the large batch-STARK checkpoint hardened, but separate it from the
    compact batch-STARK candidate.** The full checkpoint envelope is still too
    large; the compact L2 body can be considered for production only with
-   verifier-owned metadata/setup and explicit public-value binding.
+   verifier-owned metadata/setup, explicit public-value binding, and exact
+   production certificate byte accounting.
 
-I would not spend milestone effort on terminal query-PoW parameter changes
-unless the pure-query path is conclusively too large after the composite L1
-relation is reduced. The current fixture result meets the target without
-terminal query PoW, but the full stack does not yet.
+I would not spend milestone effort on terminal query-PoW parameter changes. The
+compact batch-STARK path already has rows at 60 pure FRI query bits that are
+closer to the relaxed target than the native terminal route.
 
 ## Minimum Promotion Checklist
 

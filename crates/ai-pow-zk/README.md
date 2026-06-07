@@ -2,44 +2,44 @@
 
 EXPERIMENTAL — a Plonky3 STARK and recursive-certificate stack for the
 [`ai-pow`](../ai-pow/) tiling matmul puzzle. The production recursive proof
-target is not yet met. The current candidates are the native terminal
-certificate and a compact final-layer batch-STARK route with verifier-owned
-metadata/setup binding. The existing full batch-STARK checkpoint envelope is
-too large for the production wire budget, but batch-STARK is no longer ruled
-out if the compact route proves better and meets the relaxed gates. The full
-composite-verifier terminal path is wired as an opt-in diagnostic but has not
-yet met the release-time gate. The plain `MatmulProof` remains a miner
-diagnostic / pre-ZKP target-hit check; it is not the persisted block artifact.
+target is not yet fully met. The current primary candidate is a compact
+final-layer batch-STARK route with verifier-owned metadata/setup binding and
+explicit final public-value binding of the L1 statement digest. The existing
+full batch-STARK checkpoint envelope is too large for the production wire
+budget, and the native terminal certificate remains a fallback rather than the
+leading path. The full composite-verifier terminal path is wired as an opt-in
+diagnostic but has not met the production size/time gates. The plain
+`MatmulProof` remains a miner diagnostic / pre-ZKP target-hit check; it is not
+the persisted block artifact.
 
 > **IMPORTANT - current production recursive-proof summary:** before changing
 > the recursive proof path, proof shape, FRI parameters, terminal commitment
 > shape, certificate wire format, or packed Tip5/NPO bridge code, read the live
 > checkpoint summary:
 > [Clean Checkpoint](../../docs/ai-pow-integration/2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md#clean-checkpoint).
-> The active production artifact is still unsettled: native terminal remains
-> the leading fallback, while compact batch-STARK L2 is now an allowed
-> production candidate if it beats the terminal route under the same soundness
-> and binding rules. The large batch-STARK recursive checkpoint certificate
+> The active production artifact is now expected to be compact batch-STARK L2
+> over a fast statement-bound L1 proof, with native terminal retained as the
+> fallback route. The large batch-STARK recursive checkpoint certificate
 > remains too large. Soundness-neutral terminal Merkle
 > cap-height/base reduction is now implemented and measured: the retained
 > production cap height is `3`, bound into terminal parameters/profile/transcript
 > before challenge sampling, and full FRI caps are digested into the prelude
 > commitment list while the FRI verifier still observes the full cap. This is
-> not enough by itself. The cap-height `3` structural floor is `142,807` bytes,
-> leaving only `10,793` bytes under binary `150 KiB` for all remaining Tip5
-> support binding unless the base also shrinks; even the paired zero-support-FRI
-> metadata floor is `152,612` bytes, leaving only `988` bytes before any sound
-> support FRI payload or excluded overhead. The next viable route is a
-> genuinely merged packed Tip5 binding with much less additive
-> FRI/Merkle/metadata payload. Outer task parallelism is measured but not
-> sufficient: Rayon-joining the current primitive R1CS, merged value-bridge, and
+> fallback evidence, not the primary path. The cap-height `3` terminal
+> structural floor is `142,807` bytes, but it still lacks internal Tip5 support
+> binding; even the paired zero-support-FRI metadata floor is `152,612` bytes
+> before any sound support FRI payload or excluded overhead. Outer task
+> parallelism on that terminal route is measured but not sufficient:
+> Rayon-joining the current primitive R1CS, merged value-bridge, and
 > packed-support subproofs gives `39.448s` post-prelude wall time, unchanged
 > proof language, and `171.422s` full diagnostic wall. The compact batch-STARK
-> L2 candidate now exposes the statement digest as final proof public values
-> and verifies compact bodies through caller-supplied public values plus
-> verifier-owned metadata/setup; it still needs release/native remeasurement
-> after that binding correction. The relaxed production milestone is not yet
-> claimed.
+> L2 candidate now binds all L1 statement-digest base limbs as final public
+> lanes and verifies compact bodies through caller-supplied public values plus
+> verifier-owned metadata/setup. The corrected fast-L1/L2 row at L1
+> `lb=3,nq=20` and L2 `lb=5,nq=12` measures `149,743` bytes for the actual
+> compact wrapper and `148,866` bytes for the metadata-free compact body, with
+> `30.448s` L1 proving and `54.137s` L2 proving. The relaxed size gate is now
+> plausibly in range; the relaxed total proving-time gate is not yet met.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 
@@ -508,12 +508,12 @@ anchor merge-mining compat.
 `ai-pow-zk` is downstream of `ai-pow`'s nonce-bound attempt context. The
 `ai-pow` bridge constructs a `CompositeTrace` and `CompositePublicInputs` from
 verifier-derived attempt data, proves the Layer-0 composite STARK, and can wrap
-that proof with the batch-STARK recursive checkpoint certificate. The
-production recursive proof target is currently unsettled between native
-terminal reduction and compact batch-STARK L2. The large batch-STARK checkpoint
-noun path is retained for soundness regression and fallback validation, while
-the compact batch-STARK candidate must use verifier-owned setup metadata and
-explicit public-value binding before it can be considered for production.
+that proof with the batch-STARK recursive checkpoint certificate. The current
+primary production recursive proof candidate is compact batch-STARK L2 over a
+fast statement-bound L1 proof. The large batch-STARK checkpoint noun path is
+retained for soundness regression and fallback validation, while the compact
+batch-STARK candidate must use verifier-owned setup metadata and explicit
+public-value binding before it can be wired as the production artifact.
 
 The `composite_prove` / `composite_verify` APIs are Layer-0 primitives. They
 are useful for circuit tests and for the recursive-certificate builder, but the
