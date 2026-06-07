@@ -19,7 +19,7 @@
 use p3_batch_stark::{BatchProof, CommonData};
 use p3_circuit::ops::{generate_recompose_trace, generate_tip5_trace, Tip5Config, Tip5Goldilocks};
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
-use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_recursion::pcs::fri::{
     FriProofTargets, FriVerifierParams, InputProofTargets, MerkleCapTargets, RecExtensionValMmcs,
@@ -210,6 +210,60 @@ impl AiPowCompactBatchVerifierContext {
 const DIGEST_ELEMS: usize = 5;
 const WIDTH: usize = 16;
 const RATE: usize = 10;
+const GOLDILOCKS_MODULUS: u64 = 0xffff_ffff_0000_0001;
+
+pub const AI_POW_COMPACT_BATCH_VERIFIER_KEY_DIGEST_BYTES: usize = DIGEST_ELEMS * 8;
+
+#[derive(Debug, Error)]
+pub enum CompactBatchVerifierKeyDigestEncodingError {
+    #[error("compact batch verifier-key digest has {actual} bytes, expected {expected}")]
+    InvalidLength { expected: usize, actual: usize },
+    #[error("compact batch verifier-key digest limb {index} is not canonical Goldilocks: {value}")]
+    NonCanonicalLimb { index: usize, value: u64 },
+}
+
+/// Canonical byte encoding for production verifier-key/setup digest config.
+///
+/// The digest is five Goldilocks elements, encoded as canonical little-endian
+/// `u64` limbs. This is deliberately separate from postcard certificate
+/// encoding so verifier configuration can pin a stable 40-byte value without
+/// depending on Rust field-element construction at call sites.
+pub fn compact_batch_verifier_key_digest_to_bytes(
+    digest: &AiPowCompactBatchVerifierKeyDigest,
+) -> [u8; AI_POW_COMPACT_BATCH_VERIFIER_KEY_DIGEST_BYTES] {
+    let mut out = [0u8; AI_POW_COMPACT_BATCH_VERIFIER_KEY_DIGEST_BYTES];
+    for (i, limb) in digest.iter().enumerate() {
+        out[i * 8..(i + 1) * 8].copy_from_slice(&limb.as_canonical_u64().to_le_bytes());
+    }
+    out
+}
+
+/// Decode the canonical byte form produced by
+/// [`compact_batch_verifier_key_digest_to_bytes`].
+pub fn compact_batch_verifier_key_digest_from_bytes(
+    bytes: &[u8],
+) -> Result<AiPowCompactBatchVerifierKeyDigest, CompactBatchVerifierKeyDigestEncodingError> {
+    if bytes.len() != AI_POW_COMPACT_BATCH_VERIFIER_KEY_DIGEST_BYTES {
+        return Err(CompactBatchVerifierKeyDigestEncodingError::InvalidLength {
+            expected: AI_POW_COMPACT_BATCH_VERIFIER_KEY_DIGEST_BYTES,
+            actual: bytes.len(),
+        });
+    }
+    let mut digest = [Val::ZERO; DIGEST_ELEMS];
+    for (i, chunk) in bytes.chunks_exact(8).enumerate() {
+        let limb = u64::from_le_bytes(chunk.try_into().expect("chunk width checked"));
+        if limb >= GOLDILOCKS_MODULUS {
+            return Err(
+                CompactBatchVerifierKeyDigestEncodingError::NonCanonicalLimb {
+                    index: i,
+                    value: limb,
+                },
+            );
+        }
+        digest[i] = Val::from_u64(limb);
+    }
+    Ok(digest)
+}
 
 pub const COMPACT_BATCH_L1_LOG_BLOWUP: usize = 3;
 pub const COMPACT_BATCH_L1_NUM_QUERIES: usize = 20;
@@ -4837,6 +4891,44 @@ mod tests {
                 "metadata-free compact L2 over L1 packing variant should be smaller than the compact wrapper"
             );
         }
+    }
+
+    #[test]
+    fn compact_batch_verifier_key_digest_bytes_are_canonical() {
+        let digest = [
+            Val::from_u64(1),
+            Val::from_u64(2),
+            Val::from_u64(3),
+            Val::from_u64(4),
+            Val::from_u64(5),
+        ];
+        let bytes = compact_batch_verifier_key_digest_to_bytes(&digest);
+        assert_eq!(bytes.len(), AI_POW_COMPACT_BATCH_VERIFIER_KEY_DIGEST_BYTES);
+        let decoded = compact_batch_verifier_key_digest_from_bytes(&bytes)
+            .expect("canonical digest bytes decode");
+        assert_eq!(decoded, digest);
+
+        let err = compact_batch_verifier_key_digest_from_bytes(&bytes[..39])
+            .expect_err("short verifier-key digest bytes must reject");
+        assert!(matches!(
+            err,
+            CompactBatchVerifierKeyDigestEncodingError::InvalidLength {
+                expected: AI_POW_COMPACT_BATCH_VERIFIER_KEY_DIGEST_BYTES,
+                actual: 39
+            }
+        ));
+
+        let mut noncanonical = bytes;
+        noncanonical[0..8].copy_from_slice(&GOLDILOCKS_MODULUS.to_le_bytes());
+        let err = compact_batch_verifier_key_digest_from_bytes(&noncanonical)
+            .expect_err("noncanonical Goldilocks limb must reject");
+        assert!(matches!(
+            err,
+            CompactBatchVerifierKeyDigestEncodingError::NonCanonicalLimb {
+                index: 0,
+                value: GOLDILOCKS_MODULUS
+            }
+        ));
     }
 
     #[test]

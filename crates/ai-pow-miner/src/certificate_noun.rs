@@ -97,6 +97,8 @@ pub enum CertificateNounError {
     RecursiveCertificate(String),
     #[error("compact recursive certificate verifier-key digest mismatch: {0}")]
     CompactVerifierKeyDigestMismatch(&'static str),
+    #[error("compact recursive certificate verifier-key digest encoding: {0}")]
+    CompactVerifierKeyDigestEncoding(String),
     #[error("jammed AI-PoW artifact is {actual} bytes, exceeding {limit} byte limit")]
     JammedLengthExceeded { limit: usize, actual: usize },
     #[error("jammed AI-PoW artifact cue failed: {0}")]
@@ -1880,6 +1882,29 @@ pub fn verify_decoded_ai_pow_pearl_merge_compact_artifact_with_context_and_limit
     Ok(precheck)
 }
 
+/// Byte-digest form of
+/// [`verify_decoded_ai_pow_pearl_merge_compact_artifact_with_context_and_limits`].
+///
+/// This is the production-configuration friendly entry point: the expected
+/// compact verifier-key/setup digest is a canonical 40-byte value instead of
+/// caller-constructed field elements.
+pub fn verify_decoded_ai_pow_pearl_merge_compact_artifact_with_digest_bytes_and_limits(
+    artifact: &PearlMergeAiPowArtifactShape,
+    context: PearlMergeAiPowVerifierContext<'_>,
+    compact_context: &ai_pow_zk::recursion::AiPowCompactBatchVerifierContext,
+    expected_verifier_key_digest_bytes: &[u8],
+    limits: CertificateNounLimits,
+) -> Result<PearlMergeMiningPrecheck, CertificateNounError> {
+    let expected_verifier_key_digest =
+        ai_pow_zk::recursion::compact_batch_verifier_key_digest_from_bytes(
+            expected_verifier_key_digest_bytes,
+        )
+        .map_err(|e| CertificateNounError::CompactVerifierKeyDigestEncoding(e.to_string()))?;
+    verify_decoded_ai_pow_pearl_merge_compact_artifact_with_context_and_limits(
+        artifact, context, compact_context, &expected_verifier_key_digest, limits,
+    )
+}
+
 /// Verify a Hoon `%ai-pow` artifact slab against trusted Nockchain-side
 /// verifier context.
 ///
@@ -2314,6 +2339,25 @@ pub fn verify_ai_pow_pearl_merge_compact_artifact_jam_with_context(
         &certificate_shape, compact_context, expected_verifier_key_digest, limits,
     )?;
     Ok(precheck)
+}
+
+/// Byte-digest form of
+/// [`verify_ai_pow_pearl_merge_compact_artifact_jam_with_context`].
+pub fn verify_ai_pow_pearl_merge_compact_artifact_jam_with_digest_bytes_and_context(
+    jammed: &[u8],
+    limits: CertificateNounLimits,
+    context: PearlMergeAiPowVerifierContext<'_>,
+    compact_context: &ai_pow_zk::recursion::AiPowCompactBatchVerifierContext,
+    expected_verifier_key_digest_bytes: &[u8],
+) -> Result<PearlMergeMiningPrecheck, CertificateNounError> {
+    let expected_verifier_key_digest =
+        ai_pow_zk::recursion::compact_batch_verifier_key_digest_from_bytes(
+            expected_verifier_key_digest_bytes,
+        )
+        .map_err(|e| CertificateNounError::CompactVerifierKeyDigestEncoding(e.to_string()))?;
+    verify_ai_pow_pearl_merge_compact_artifact_jam_with_context(
+        jammed, limits, context, compact_context, &expected_verifier_key_digest,
+    )
 }
 
 #[derive(Debug)]
@@ -5220,46 +5264,67 @@ mod tests {
             nockchain_target: &attempt.nockchain_target,
             max_pattern_len: 16,
         };
+        let expected_digest_bytes =
+            ai_pow_zk::recursion::compact_batch_verifier_key_digest_to_bytes(
+                run.verifier_key_digest(),
+            );
         let compact_verified =
-            verify_decoded_ai_pow_pearl_merge_compact_artifact_with_context_and_limits(
+            verify_decoded_ai_pow_pearl_merge_compact_artifact_with_digest_bytes_and_limits(
                 &decoded,
                 verifier_context,
                 run.verifier_context(),
-                run.verifier_key_digest(),
+                &expected_digest_bytes,
                 CertificateNounLimits::default(),
             )
-            .expect("decoded compact artifact verifies with pinned digest");
+            .expect("decoded compact artifact verifies with pinned digest bytes");
         assert_eq!(compact_verified.work.ticket, attempt.ticket);
         assert_eq!(compact_verified.work.commitments, attempt.commitments);
 
-        let compact_jam_verified = verify_ai_pow_pearl_merge_compact_artifact_jam_with_context(
-            &jammed,
-            CertificateNounLimits::default(),
-            verifier_context,
-            run.verifier_context(),
-            run.verifier_key_digest(),
-        )
-        .expect("jammed compact artifact verifies with pinned digest");
+        let compact_jam_verified =
+            verify_ai_pow_pearl_merge_compact_artifact_jam_with_digest_bytes_and_context(
+                &jammed,
+                CertificateNounLimits::default(),
+                verifier_context,
+                run.verifier_context(),
+                &expected_digest_bytes,
+            )
+            .expect("jammed compact artifact verifies with pinned digest bytes");
         assert_eq!(compact_jam_verified.work.ticket, attempt.ticket);
         assert_eq!(compact_jam_verified.work.commitments, attempt.commitments);
 
-        let wrong_digest = [ai_pow_zk::Val::default(); 5];
+        let wrong_digest =
+            [0u8; ai_pow_zk::recursion::AI_POW_COMPACT_BATCH_VERIFIER_KEY_DIGEST_BYTES];
         assert_ne!(
-            &wrong_digest,
-            run.verifier_key_digest(),
+            &wrong_digest[..],
+            &expected_digest_bytes[..],
             "test fixture verifier-key digest should not be the all-zero digest"
         );
-        let err = verify_decoded_ai_pow_pearl_merge_compact_artifact_with_context_and_limits(
+        let err = verify_decoded_ai_pow_pearl_merge_compact_artifact_with_digest_bytes_and_limits(
             &decoded,
             verifier_context,
             run.verifier_context(),
             &wrong_digest,
             CertificateNounLimits::default(),
         )
-        .expect_err("wrong pinned verifier-key digest must reject");
+        .expect_err("wrong pinned verifier-key digest bytes must reject");
         assert!(matches!(
             err,
             CertificateNounError::CompactVerifierKeyDigestMismatch("verifier-context")
+        ));
+
+        let mut noncanonical_digest = expected_digest_bytes;
+        noncanonical_digest[0..8].copy_from_slice(&GOLDILOCKS_MODULUS.to_le_bytes());
+        let err = verify_decoded_ai_pow_pearl_merge_compact_artifact_with_digest_bytes_and_limits(
+            &decoded,
+            verifier_context,
+            run.verifier_context(),
+            &noncanonical_digest,
+            CertificateNounLimits::default(),
+        )
+        .expect_err("noncanonical verifier-key digest bytes must reject");
+        assert!(matches!(
+            err,
+            CertificateNounError::CompactVerifierKeyDigestEncoding(_)
         ));
 
         assert!(
@@ -5274,11 +5339,12 @@ mod tests {
         );
 
         eprintln!(
-            "real compact Pearl artifact: jammed={} bytes ({:.2} KiB), compact_cert={} bytes ({:.2} KiB), prove_wall_ms={}, l1_build_ms={}, l1_outer_ms={}, l2_prep_ms={}, l2_prove_ms={}, l2_compact_ms={}, l2_compact_verify_ms={}",
+            "real compact Pearl artifact: jammed={} bytes ({:.2} KiB), compact_cert={} bytes ({:.2} KiB), verifier_digest_hex={}, prove_wall_ms={}, l1_build_ms={}, l1_outer_ms={}, l2_prep_ms={}, l2_prove_ms={}, l2_compact_ms={}, l2_compact_verify_ms={}",
             jammed.len(),
             jammed.len() as f64 / 1024.0,
             compact_bytes.len(),
             compact_bytes.len() as f64 / 1024.0,
+            hex::encode(expected_digest_bytes),
             prove_wall_ms,
             run.l1_circuit_build_ms(),
             run.l1_outer_cert_ms(),
