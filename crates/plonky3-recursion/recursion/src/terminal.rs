@@ -2502,12 +2502,19 @@ pub struct TerminalNpoPolynomialFriResidualZeroRecomposeProof {
 /// instead of committing the witness-value columns as a second FRI table.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TerminalNpoPolynomialFriResidualZeroRecomposeValueBridgeProof {
+    #[serde(skip)]
     pub selected_profile: TerminalNpoPolynomialFriProfile,
+    #[serde(skip)]
     pub value_profile: TerminalNpoPolynomialFriProfile,
+    #[serde(skip)]
     pub lookup_io_profile: TerminalNpoTip5LookupNpoRowsIoProfile,
+    #[serde(skip)]
     pub composition_profile: TerminalCompactCompositionFriProfile,
+    #[serde(skip)]
     pub recompose_quotient_profile: TerminalNpoPolynomialFriProfile,
+    #[serde(skip)]
     pub padding_quotient_profile: TerminalNpoPolynomialFriProfile,
+    #[serde(skip)]
     pub value_bridge_quotient_profile: TerminalNpoTip5LookupNpoRowsValueBridgeQuotientProfile,
     pub selected_lookup_commitment: TerminalFriCommitment,
     pub composition_commitment: TerminalFriCommitment,
@@ -15783,7 +15790,9 @@ impl NativeTerminalCompiler {
             Self::terminal_npo_tip5_lookup_npo_rows_value_bridge_quotient_profile(
                 &expected_lookup_io_profile,
             )?;
-        if proof.selected_profile != expected_selected_profile {
+        if proof.selected_profile != expected_selected_profile
+            && proof.selected_profile != TerminalNpoPolynomialFriProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "npo_fri_residual_zero_recompose_value_bridge_selected_profile".into(),
@@ -15792,7 +15801,9 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.value_profile != expected_value_profile {
+        if proof.value_profile != expected_value_profile
+            && proof.value_profile != TerminalNpoPolynomialFriProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "npo_fri_residual_zero_recompose_value_bridge_value_profile".into(),
@@ -15801,7 +15812,9 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.lookup_io_profile != expected_lookup_io_profile {
+        if proof.lookup_io_profile != expected_lookup_io_profile
+            && proof.lookup_io_profile != TerminalNpoTip5LookupNpoRowsIoProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "npo_fri_residual_zero_recompose_value_bridge_lookup_profile".into(),
@@ -15810,7 +15823,9 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.composition_profile != expected_composition_profile {
+        if proof.composition_profile != expected_composition_profile
+            && proof.composition_profile != TerminalCompactCompositionFriProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "npo_fri_residual_zero_recompose_value_bridge_composition_profile"
@@ -15820,7 +15835,9 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.recompose_quotient_profile != expected_recompose_quotient_profile {
+        if proof.recompose_quotient_profile != expected_recompose_quotient_profile
+            && proof.recompose_quotient_profile != TerminalNpoPolynomialFriProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "npo_fri_residual_zero_recompose_value_bridge_recompose_profile".into(),
@@ -15829,7 +15846,9 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.padding_quotient_profile != expected_padding_quotient_profile {
+        if proof.padding_quotient_profile != expected_padding_quotient_profile
+            && proof.padding_quotient_profile != TerminalNpoPolynomialFriProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "npo_fri_residual_zero_recompose_value_bridge_padding_profile".into(),
@@ -15838,7 +15857,10 @@ impl NativeTerminalCompiler {
                 },
             );
         }
-        if proof.value_bridge_quotient_profile != expected_value_bridge_quotient_profile {
+        if proof.value_bridge_quotient_profile != expected_value_bridge_quotient_profile
+            && proof.value_bridge_quotient_profile
+                != TerminalNpoTip5LookupNpoRowsValueBridgeQuotientProfile::default()
+        {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "npo_fri_residual_zero_recompose_value_bridge_quotient_profile".into(),
@@ -15848,13 +15870,13 @@ impl NativeTerminalCompiler {
             );
         }
         for profile in [
-            proof.selected_profile.proximity,
-            proof.value_profile.proximity,
-            proof.lookup_io_profile.proximity,
-            proof.composition_profile.proximity,
-            proof.recompose_quotient_profile.proximity,
-            proof.padding_quotient_profile.proximity,
-            proof.value_bridge_quotient_profile.proximity,
+            expected_selected_profile.proximity,
+            expected_value_profile.proximity,
+            expected_lookup_io_profile.proximity,
+            expected_composition_profile.proximity,
+            expected_recompose_quotient_profile.proximity,
+            expected_padding_quotient_profile.proximity,
+            expected_value_bridge_quotient_profile.proximity,
         ] {
             if profile != prelude.relation_profile.proximity {
                 return Err(
@@ -15868,27 +15890,27 @@ impl NativeTerminalCompiler {
 
         Self::validate_terminal_opening_basis_len(
             proof.opened_selected_basis.len(),
-            proof.selected_profile.basis_columns,
+            expected_selected_profile.basis_columns,
         )?;
         Self::validate_terminal_opening_basis_len(
             proof.opened_lookup_io_basis.len(),
-            proof.lookup_io_profile.basis_columns,
+            expected_lookup_io_profile.basis_columns,
         )?;
         Self::validate_terminal_opening_basis_len(
             proof.opened_composition_basis.len(),
-            proof.composition_profile.basis_columns,
+            expected_composition_profile.basis_columns,
         )?;
         Self::validate_terminal_opening_basis_len(
             proof.opened_recompose_quotient_basis.len(),
-            proof.recompose_quotient_profile.basis_columns,
+            expected_recompose_quotient_profile.basis_columns,
         )?;
         Self::validate_terminal_opening_basis_len(
             proof.opened_padding_quotient_basis.len(),
-            proof.padding_quotient_profile.basis_columns,
+            expected_padding_quotient_profile.basis_columns,
         )?;
         Self::validate_terminal_opening_basis_len(
             proof.opened_value_bridge_quotient_basis.len(),
-            proof.value_bridge_quotient_profile.basis_columns,
+            expected_value_bridge_quotient_profile.basis_columns,
         )?;
 
         let opened_selected_flat =
@@ -15905,44 +15927,45 @@ impl NativeTerminalCompiler {
             Self::terminal_field_values_from_basis_u64(&proof.opened_value_bridge_quotient_basis)?;
 
         let (pcs, mut challenger) =
-            Self::terminal_fri_pcs_and_challenger(proof.selected_profile.proximity)?;
+            Self::terminal_fri_pcs_and_challenger(expected_selected_profile.proximity)?;
         Self::seed_terminal_npo_fri_residual_zero_recompose_value_bridge_challenger(
             &mut challenger,
             prelude,
-            &proof.selected_profile,
-            &proof.value_profile,
-            &proof.lookup_io_profile,
-            &proof.composition_profile,
-            &proof.recompose_quotient_profile,
-            &proof.padding_quotient_profile,
-            &proof.value_bridge_quotient_profile,
+            &expected_selected_profile,
+            &expected_value_profile,
+            &expected_lookup_io_profile,
+            &expected_composition_profile,
+            &expected_recompose_quotient_profile,
+            &expected_padding_quotient_profile,
+            &expected_value_bridge_quotient_profile,
         );
         let selected_domain = <TerminalFriPcs as Pcs<
             TerminalFriChallenge,
             TerminalFriChallenger,
         >>::natural_domain_for_degree(
-            &pcs, proof.selected_profile.padded_rows
+            &pcs, expected_selected_profile.padded_rows
         );
         let composition_domain = <TerminalFriPcs as Pcs<
             TerminalFriChallenge,
             TerminalFriChallenger,
         >>::natural_domain_for_degree(
-            &pcs, proof.composition_profile.padded_rows
+            &pcs, expected_composition_profile.padded_rows
         );
         let recompose_quotient_domain =
-            selected_domain.create_disjoint_domain(proof.recompose_quotient_profile.padded_rows);
+            selected_domain.create_disjoint_domain(expected_recompose_quotient_profile.padded_rows);
         let padding_quotient_domain =
-            selected_domain.create_disjoint_domain(proof.padding_quotient_profile.padded_rows);
+            selected_domain.create_disjoint_domain(expected_padding_quotient_profile.padded_rows);
         let value_bridge_quotient_domain =
-            selected_domain.create_disjoint_domain(proof.value_bridge_quotient_profile.padded_rows);
+            selected_domain
+                .create_disjoint_domain(expected_value_bridge_quotient_profile.padded_rows);
         if value_bridge_quotient_domain.size() != padding_quotient_domain.size()
             || value_bridge_quotient_domain.first_point() != padding_quotient_domain.first_point()
         {
             return Err(
                 NativeTerminalVerifyError::TerminalNpoPolynomialColumnLengthMismatch {
                     label: "npo_fri_padding_value_bridge_quotient_domain".into(),
-                    expected: proof.padding_quotient_profile.padded_rows,
-                    got: proof.value_bridge_quotient_profile.padded_rows,
+                    expected: expected_padding_quotient_profile.padded_rows,
+                    got: expected_value_bridge_quotient_profile.padded_rows,
                 },
             );
         }
@@ -16008,15 +16031,16 @@ impl NativeTerminalCompiler {
             }
         })?;
 
-        let mut opened_selected_values = Vec::with_capacity(proof.selected_profile.field_columns);
+        let mut opened_selected_values =
+            Vec::with_capacity(expected_selected_profile.field_columns);
         let mut offset = 0usize;
-        for _ in 0..proof.selected_profile.field_columns {
-            let next_offset = offset + proof.selected_profile.field_basis_dimension;
+        for _ in 0..expected_selected_profile.field_columns {
+            let next_offset = offset + expected_selected_profile.field_basis_dimension;
             opened_selected_values.push(opened_selected_flat[offset..next_offset].to_vec());
             offset = next_offset;
         }
         let opened = TerminalNpoPolynomialFriOpenedColumns {
-            profile: proof.selected_profile.clone(),
+            profile: expected_selected_profile.clone(),
             zeta,
             labels: selected_labels,
             values: opened_selected_values,
@@ -16032,7 +16056,7 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof.recompose_quotient_profile.field_basis_dimension,
+                    expected: expected_recompose_quotient_profile.field_basis_dimension,
                     got: opened_recompose_quotient_flat.len(),
                 },
             )?;
@@ -16042,7 +16066,7 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof.padding_quotient_profile.field_basis_dimension,
+                    expected: expected_padding_quotient_profile.field_basis_dimension,
                     got: opened_padding_quotient_flat.len(),
                 },
             )?;
@@ -16052,7 +16076,7 @@ impl NativeTerminalCompiler {
             )
             .ok_or(
                 NativeTerminalVerifyError::TerminalOracleOpeningValueDimensionMismatch {
-                    expected: proof.value_bridge_quotient_profile.field_basis_dimension,
+                    expected: expected_value_bridge_quotient_profile.field_basis_dimension,
                     got: opened_value_bridge_quotient_flat.len(),
                 },
             )?;
@@ -16060,7 +16084,7 @@ impl NativeTerminalCompiler {
             self.terminal_npo_polynomial_verifier_derived_columns_goldilocks(verifying_key)?;
         let opened_values = Self::terminal_npo_polynomial_value_opened_columns_from_selected(
             &opened,
-            proof.value_profile.clone(),
+            expected_value_profile.clone(),
         )?;
         self.verify_terminal_npo_recompose_residual_quotient_identity_goldilocks(
             &verifier_columns,
@@ -16079,7 +16103,7 @@ impl NativeTerminalCompiler {
         self.verify_terminal_npo_tip5_lookup_npo_rows_value_bridge_identity_goldilocks(
             &verifier_columns,
             selected_domain,
-            &proof.value_profile,
+            &expected_value_profile,
             value_bridge_alpha,
             value_bridge_quotient,
             &opened_lookup_io,

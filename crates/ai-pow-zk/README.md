@@ -20,16 +20,15 @@ the persisted block artifact.
 > production cap height is `3`, bound into terminal parameters/profile/transcript
 > before challenge sampling, and full FRI caps are digested into the prelude
 > commitment list while the FRI verifier still observes the full cap. This is
-> not enough by itself. The cap-height `3` structural floor is `143,679` bytes,
-> leaving only `9,921` bytes under binary `150 KiB` for all remaining Tip5
+> not enough by itself. The cap-height `3` structural floor is `143,491` bytes,
+> leaving only `10,109` bytes under binary `150 KiB` for all remaining Tip5
 > support binding unless the base also shrinks; even the paired zero-support-FRI
-> metadata floor is `153,663` bytes, still only `63` bytes over binary
-> `150 KiB` before any sound support FRI payload. The next viable route is a
+> metadata floor is `153,475` bytes, leaving only `125` bytes before any sound
+> support FRI payload or excluded overhead. The next viable route is a
 > genuinely merged packed Tip5 binding with much less additive
-> FRI/Merkle/metadata payload. The
-> batch-STARK recursive certificate remains a sound checkpoint/fallback, not the
-> production wire target, and the relaxed production milestone is not yet
-> claimed.
+> FRI/Merkle/metadata payload. The batch-STARK recursive certificate remains a
+> sound checkpoint/fallback, not the production wire target, and the relaxed
+> production milestone is not yet claimed.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 
