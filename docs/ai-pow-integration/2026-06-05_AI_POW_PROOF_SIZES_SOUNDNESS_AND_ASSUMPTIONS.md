@@ -17,11 +17,17 @@ batch-STARK produced by `composite_prove_pinned_logup`. It does not mean the
 legacy/plain `MatmulProof`, which is a miner diagnostic and pre-ZKP target-hit
 object, not the production block artifact.
 
-The production recursive-certificate target is the native terminal backend
-from `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md`. The older L1
-batch-STARK recursive certificate remains an important hardened verifier path
-and regression target, but it is too large for the production wire budget and
-must not be treated as the production block/wire artifact.
+The active production recursive-certificate candidate is now the compact
+final-layer batch-STARK L2 route summarized in
+`2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md`. This is a route
+decision: using a batch-STARK final layer is acceptable if it is the most viable
+way to hit the relaxed `~150 KiB` / `~30s` target without weakening the
+soundness story. The native terminal backend from
+`2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md` remains the fallback route.
+The older full L1 batch-STARK recursive certificate remains an important
+hardened verifier path and regression target, but it is too large for the
+production wire budget and must not be treated as the production block/wire
+artifact.
 
 ## Current Sizes
 
@@ -39,6 +45,7 @@ must not be treated as the production block/wire artifact.
 | Pure-query L2 actual-vs-frontier Merkle path diagnostic | Diagnostic for whether a true Merkle multiproof frontier can remove the remaining compact-body restoration payload; verifies the compact body and counts actual query-set siblings | L2 `lb=5,nq=12,cap=4` body `137,816` bytes / restoration `50,609` bytes; current prefix-pruned siblings `1,056`; ideal frontier siblings `1,024`; digest-only maximum savings `1,280` bytes before any frontier-position metadata or verifier changes; L2 prove `24.608s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_l1_l2_multiproof_frontier_estimate_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
 | Pure-query L2 Pearl-rate high-blowup diagnostic | Diagnostic for a no-PoW analogue of Pearl's final `rate_bits=7` shape; verifies the compact body, but the smaller proof is still above hard size and far above time | L2 `lb=7,nq=9,cap=4` carries `63` pure-query Johnson bits; body `120,722` bytes / core `72,415` bytes / restoration `48,307` bytes; L2 prove `97.358s`; shared slow L1 prove `196.064s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_l1_l2_pearl_rate7_final_shape_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
 | Fast-L1 pure-query L2-over-L1 batch-STARK sweep | Diagnostic for pairing the only sub-30s L1 profile with the actual compact final-layer body; verifies after the Tip5 MMCS direction-binding fix, but still misses size/time jointly | Shared fast L1 `lb=3,nq=20,cap=4`: `279,719` bytes, L1 prove `25.178s`; compact-body L2 `lb=4,nq=15,cap=4`: `174,707` bytes, L2 prove `25.245s`; compact-body L2 `lb=5,nq=12,cap=4`: `145,695` bytes, L2 prove `48.530s`; compact-body L2 `lb=6,nq=10,cap=4`: `129,804` bytes, L2 prove `98.584s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_fast_l1_statement_bound_candidate_size_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-06 |
+| Cached selected fast-L1 compact batch-STARK L2 route | Committed primary production candidate; verifies compact bodies through verifier-owned setup/metadata context and explicitly binds all L1 statement-digest limbs as final public values, but still misses the relaxed total proving-time gate | L1 `lb=3,nq=20,cap=4`: prove `22.085s`; selected L2 `lb=5,nq=12,cap=4`: actual compact wrapper `149,743` bytes, metadata-free body `148,866` bytes, reusable L2 prep `10.373s`, cached L2 prove `32.186s`, uncached L2 total `42.559s`; cached serial L1+L2 per-attempt time `54.271s` | `RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion pure_query_l2_over_fast_l1_selected_candidate_timing_breakdown_for_test_pearl -- --ignored --nocapture`, 2026-06-07 |
 | Native terminal certificate fixture | Recursion-crate terminal proof over the real Tip5 verifier-circuit fixture; proves the terminal backend can be small, but is not yet the full `ai-pow-zk` composite verifier path | `85,948` bytes / `83.9 KiB`; release prove `1.492s`, verify `1.181s` | `RUSTFLAGS="-C target-cpu=native" cargo test --manifest-path crates/plonky3-recursion/recursion/Cargo.toml --release --test test_l1_outer_cert_tip5_unified terminal_production_certificate_measures_real_tip5_l0_verifier_circuit -- --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier native terminal path | Opt-in diagnostic path for the actual composite L1 verifier circuit; not yet production-qualified because it misses both size and time gates | `lb=6,nq=10,pow=0` reduced-profile run after compact known-index proof encoding: terminal certificate `766,069` bytes / `748.1 KiB`; terminal public inputs `5,180` bytes; postcard wire certificate `771,249` bytes / `753.2 KiB`; release prove `80.829s`, verify `58.825s` | `NOCK_TERMINAL_PROFILE_PROVER=1 RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_recursive_certificate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-05 |
 | Full `ai-pow-zk` composite-verifier integrated-LogUp polynomial NPO candidate | Diagnostic only; attempts to replace exhaustive NPO openings with the integrated polynomial NPO backend while keeping the native terminal recursive-certificate shape | No completed full-composite size measurement. Prepared selected+lookup and trace-bundle PCS data reuse, batched-LDE quotient construction, and folded-AIR evaluator cleanup keep the recursion-crate synthetic production-candidate checkpoint at `96,017` bytes / `93.8 KiB` with `9.918s` total prove. In the latest full-composite diagnostic, selected+lookup reuse reduced merged value-bridge prove to `2.340s`; phase timings before the integrated proof were L0 `29.834s`, terminal compile `7.543s`, assignment commit `5.793s`, selected+lookup root `11.075s` with selected commit `3.85s`, trace-bundle root `6.261s` with trace commit `5.84s`, prelude `7.600s`, and primitive prove `14.435s`. The integrated proof still stayed inside `terminal_npo_integrated_logup.air_quotient_matrix` for more than 90 seconds after `integrated_logup_prove_start` and was stopped. The active PROD layout has `8,081` terminal Tip5 calls, which makes the current full-main lookup AIR a `65,536`-row trace and `524,288`-point quotient. | `NOCK_TERMINAL_PROFILE_PROVER=1 RUST_LOG=p3_recursion::terminal=info RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --release --features recursion terminal_integrated_logup_candidate_for_pure_query_lb6_nq10_measures -- --ignored --nocapture`, 2026-06-06 |
@@ -61,13 +68,20 @@ must not be treated as the production block/wire artifact.
 The active production target is therefore:
 
 - regular Layer-0 proof: **296.9 KiB** if materialized;
+- compact batch-STARK L2 over fast statement-bound L1: the current committed
+  production candidate. The latest selected row measures **149,743 bytes** for
+  the actual compact wrapper and **148,866 bytes** for the metadata-free compact
+  body, so the relaxed size gate is plausibly in range. The same run still
+  measures **54.271s** cached serial L1+L2 per-attempt proving, so the route is
+  not yet production-complete.
 - hardened batch-STARK L1 checkpoint: the submitted L1 proof body is
   **149.1 KiB**, and the full checkpoint certificate is **1.1 MiB+** before
   optional compression; soundness-relevant but too large for production wire
   use;
 - native terminal recursive fixture: **85,948 bytes / 83.9 KiB**, satisfying
   the about-100 KiB and `<30s` release-proving gates for the recursion-crate
-  Tip5 verifier fixture;
+  Tip5 verifier fixture, but now fallback evidence rather than the primary
+  production route;
 - full `ai-pow-zk` composite-verifier terminal integration: now has an opt-in
   API and measurement test, and decoded verification passes after canonical
   verifier-key rebuild. The best measured reduced-profile wire object is still
@@ -126,12 +140,12 @@ The active production target is therefore:
   support binding if the base is unchanged. Current support metadata alone is
   **13,418 bytes** after selected-binding dedup, and paired-lookup metadata is
   still **9,336 bytes**, so even a free support FRI would not fit without more
-  metadata or base reduction. The production route therefore has to remove the
-  packed-support theorem's FRI input-batch, Merkle, accumulator, and/or
-  commit-round shape itself and avoid serializing current support metadata, or
-  reduce the primitive/merged base. Additional prelude commitment caching,
-  transcript sharing, paired lookup alone, and low-level quotient-loop cleanup
-  will not make this candidate meet **150 KiB** or **30s total**.
+  metadata or base reduction. The native-terminal fallback route therefore has
+  to remove the packed-support theorem's FRI input-batch, Merkle, accumulator,
+  and/or commit-round shape itself and avoid serializing current support
+  metadata, or reduce the primitive/merged base. Additional prelude commitment
+  caching, transcript sharing, paired lookup alone, and low-level quotient-loop
+  cleanup will not make this candidate meet **150 KiB** or **30s total**.
 - full `ai-pow-zk` composite-verifier FRI-native NPO residual-zero floor: the
   actual composite relation has a plausible byte floor, with a **55,344 byte**
   residual-zero proof body and **54,023 byte** compact FRI payload over
@@ -185,8 +199,11 @@ that is reconstructed from pinned code/config and must have negative tests for
 stale verifier polynomials, swapped caps/roots, wrong circuit digests, wrong
 preprocessed commitments, wrong public inputs, and malformed compact openings.
 The current `lb=6,nq=10,pow=0` result is a lower-bound diagnostic for the
-generic terminal relation, not a production profile recommendation; `lb=4,nq=15`
-remains the current pure-query baseline until the proof shape changes.
+generic terminal relation, not a production profile recommendation. That
+parameter discussion now applies only to the native-terminal fallback. The
+active compact batch-STARK route uses fast L1 `lb=3,nq=20` and selected L2
+`lb=5,nq=12` because it is the best measured route inside the relaxed size
+envelope.
 
 If the production size budget relaxes to about `150 KiB`, the existing
 batch-STARK L1 proof body becomes a plausible size target because the
@@ -362,6 +379,21 @@ the only sub-30s L2 row is too large, and the first row under the relaxed
 `150 KiB` size gate takes about **74s** end-to-end when the L1 witness proof is
 included.
 
+The selected-row rerun after verifier-context binding and cached prover-data
+reuse changes the route decision. The committed primary candidate is now the
+same fast-L1 plus compact L2 shape at L2 `lb=5,nq=12`: the actual compact
+wrapper is **149,743 bytes**, the metadata-free compact body is **148,866
+bytes**, and the compact proof body is **91,402 bytes**. The verifier owns the
+metadata/setup context, restores preprocessed openings from canonical setup,
+checks the expected FRI shape, and receives the L1 statement-digest limbs as
+explicit final public values. The latest release/native run measures **22.085s**
+L1 proving, **10.373s** reusable L2 prep, **32.186s** cached L2 proving, and
+**42.559s** uncached L2 total. That makes this path materially closer to the
+relaxed production target than the previous native-terminal direction, while
+also making the remaining blocker crisp: the in-size route is still about
+**54.271s** for cached serial L1+L2 proving, dominated by upstream
+batch-STARK/PCS proving rather than recursive witness execution or setup.
+
 Verifier status after the 2026-06-05 hardening pass: the batch-STARK
 `AiPowRecursiveCertificate` verifier now calls
 `BatchStarkProver::verify_all_tables` for the submitted L1 outer proof. That
@@ -375,16 +407,21 @@ added.
 
 ## Recursive Pipeline Bottleneck Audit
 
-There are currently two recursive proof pipelines in the tree, and they must
+There are currently four recursive proof paths in the tree, and they must
 not be conflated:
 
 1. `crates/ai-pow-zk/src/recursion.rs::AiPowRecursiveCertificate` is the
    hardened batch-STARK checkpoint certificate. It is the object still encoded
    by `crates/ai-pow-miner/src/certificate_noun.rs`.
-2. `crates/plonky3-recursion/recursion/src/terminal.rs::TerminalCertificate`
+2. The compact final-layer batch-STARK L2 diagnostic path is the committed
+   primary production candidate. It proves over a fast statement-bound L1 proof,
+   verifies through verifier-owned setup/metadata context, restores canonical
+   preprocessed openings, and binds the L1 statement digest through final L2
+   public lanes. It is not yet promoted to the production certificate wire/API.
+3. `crates/plonky3-recursion/recursion/src/terminal.rs::TerminalCertificate`
    is the native terminal certificate target that currently meets the size and
    release-time gates for the recursion-crate Tip5 verifier fixture.
-3. `crates/ai-pow-zk/src/recursion.rs::AiPowTerminalRecursiveCertificate`
+4. `crates/ai-pow-zk/src/recursion.rs::AiPowTerminalRecursiveCertificate`
    now wires that terminal backend to the actual composite L1 verifier circuit
    as an opt-in diagnostic path. It verifies after postcard decode and
    canonical verifier-key rebuild, but it has not met the production size or
@@ -427,6 +464,16 @@ or serde framing. It is FRI opening material in the L1 outer proof:
 | L1 opened values | `24.0 KiB` |
 | L1 opening proof | `117.3 KiB` |
 | L1 global lookup data | `3.4 KiB` |
+
+The committed compact L2 route is different from that oversized checkpoint. It
+does not submit the full `AiPowRecursiveCertificate` envelope, and it does not
+trust prover-supplied verifier metadata as the certificate context. The final
+artifact candidate is the compact L2 proof body plus the explicitly required
+public values and verifier-key/setup binding. The current selected row is
+already inside the relaxed size envelope at **149,743 bytes** for the actual
+wrapper, but release/native cached serial L1+L2 proving is still **54.271s**.
+That is why the route is committed for implementation while the milestone is
+not yet claimed.
 
 The opening proof dominates because the outer proof is a conventional
 multi-table batch-STARK over the executed verifier circuit. The active
@@ -711,9 +758,9 @@ out as the main lever. Compiling the same PROD relation with
 replacement binding, and it saves only **390** terminal operations/NPO rows,
 with **0** primitive-operation reduction. Most of the removed
 `recompose/coeff` rows become ordinary `recompose` rows (`225` to `5,578`).
-The production path must keep the coefficient binding unless a replacement is
-proven, and even a perfect replacement would not close the size/time gap by
-itself.
+The native-terminal fallback path must keep the coefficient binding unless a
+replacement is proven, and even a perfect replacement would not close the
+size/time gap by itself.
 
 ## Current Native Terminal Size And Runtime Breakdown
 
@@ -781,18 +828,20 @@ circuit and supported-NPO callsite count.
 | Layer | Parameters | Soundness claim | PoW counted? |
 |---|---|---:|---|
 | Layer-0 composite STARK | `log_blowup=4`, `num_queries=15`, `pow_bits=0` in `CircuitConfig::PROD` | 60 pure FRI-query bits under the code's Johnson accounting | No |
-| Hardened L1 batch-STARK checkpoint | `log_blowup=4`, `num_queries=9`, `query_pow_bits=24`, `cap_height=5` | 60 bits under mixed query/PoW Johnson accounting | Yes; acceptable for the checkpoint, not for the terminal production target |
+| Hardened L1 batch-STARK checkpoint | `log_blowup=4`, `num_queries=9`, `query_pow_bits=24`, `cap_height=5` | 60 bits under mixed query/PoW Johnson accounting | Yes; acceptable for the checkpoint, not for the pure-query production target |
 | Relaxed L1-only batch-STARK pure-query diagnostics | `lb=4,nq=15,pow=0`, `lb=5,nq=12,pow=0`, `lb=6,nq=10,pow=0` | 60 pure FRI-query bits under the code's Johnson accounting | No; all measured variants miss size/time |
-| Production native terminal backend | `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`, `max_log_arity=3`, `log_final_poly_len=0` | Intended 60 pure FRI-query bits for the terminal backend, conditionally on the selected Plonky3 FRI theorem/assumption and terminal theorem; fixture proof-size gate passes, but the full `ai-pow-zk` composite-verifier path has not met the release-time gate | No |
-| End-to-end production recursive certificate target | L0 proof accepted by the native terminal recursive-verifier certificate | At most the minimum of the L0 and terminal layers: **60 bits** | No terminal query PoW counted |
+| Compact batch-STARK L2 production candidate | L1 `lb=3,nq=20,pow=0,cap=4`; L2 `lb=5,nq=12,pow=0,cap=4`; verifier-owned setup/metadata context; explicit L1 statement-digest public lanes | 60 pure FRI-query bits for each promoted batch-STARK layer under the code's Johnson accounting, plus explicit public-value/setup binding regressions | No |
+| Native terminal fallback backend | `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`, `max_log_arity=3`, `log_final_poly_len=0` | Intended 60 pure FRI-query bits for the terminal backend, conditionally on the selected Plonky3 FRI theorem/assumption and terminal theorem; fixture proof-size gate passes, but the full `ai-pow-zk` composite-verifier path has not met the size/time gates | No |
+| End-to-end production recursive certificate target | L0 proof accepted by compact batch-STARK L2 over a statement-bound L1 proof; native terminal remains fallback | At most the minimum of the L0, L1, and L2 layers: **60 bits** | No proof-system PoW counted |
 
 The recursive certificate does not make the underlying Layer-0 statement more
 sound. It replaces the large Layer-0 proof object with a smaller proof that the
 recursive verifier accepted that Layer-0 proof. A successful production forgery
-must either forge the Layer-0 STARK statement, forge the native terminal proof
-that the verifier accepted it, or break one of the transcript/commitment
-assumptions that bind the two. The hardened L1 batch-STARK path has its own
-60-bit checkpoint claim but is not the production size/time target.
+must either forge the Layer-0 STARK statement, forge the statement-bound L1
+proof, forge the compact L2 proof that verifies that L1 statement, or break one
+of the transcript/commitment/setup assumptions that bind the layers. The native
+terminal backend keeps its own pure-query fallback claim, but it is no longer
+the primary production route.
 
 ## Logic Flow
 
@@ -815,26 +864,26 @@ Layer-0 composite STARK
   |
   | recursive verifier circuit runs the Layer-0 verifier
   v
-Production native terminal certificate target
+Committed compact batch-STARK L2 certificate candidate
   proves:
-    - the verifier circuit was executed with the committed Layer-0 proof,
-      public inputs, relation profile, and production parameters;
-    - terminal proof parameters are the canonical pure-query 60-bit tuple;
-    - the terminal header, public-values digest, relation digest, proximity
-      schedule, fixed terminal tables, and commitments are bound before
-      terminal challenges;
-    - primitive recursive-circuit rows and supported Tip5/recompose NPO rows
-      are covered by the terminal primitive sparse-R1CS row-product proof and
-      exhaustive supported-NPO row openings against the assignment oracle.
+    - the Layer-0 proof was accepted by the statement-bound L1 recursive
+      verifier circuit;
+    - the L1 statement digest is carried into the L2 final public lanes;
+    - the verifier owns the L2 setup/metadata context and expected FRI shape;
+    - preprocessed openings are restored from canonical setup rather than
+      trusted as prover-supplied metadata;
+    - compact FRI paths and public values verify under the canonical context.
   |
   v
-Nockchain block/wire artifact target: structured native terminal certificate
+Nockchain block/wire artifact target: compact batch-STARK L2 certificate
 ```
 
-The hardened L1 batch-STARK checkpoint follows the same Layer-0 verifier-circuit
-handoff, but proves the executed verifier circuit with `BatchStarkProver`
-instead of the native terminal backend. It is useful for regression and
-fallback validation, not for the production wire budget.
+The native terminal path follows the same Layer-0 verifier-circuit handoff, but
+proves the executed verifier circuit with the terminal backend instead of the
+compact batch-STARK L2 adapter. It remains fallback evidence. The large
+batch-STARK checkpoint path still proves the executed verifier circuit with
+`BatchStarkProver` and remains useful for regression and fallback validation,
+but not for the production wire budget.
 
 ## Assumptions By Step
 
@@ -1034,27 +1083,38 @@ does not satisfy the production wire budget.
 - No trusted setup.
 - No KZG, pairing-friendly curve, Groth16, or Plonkish SNARK wrapper.
 - No Plonky2 proof system in production. Pearl/Plonky2 code was read only as a
-  design reference for safe FRI path compression, and the native terminal
-  backend is implemented in the vendored Plonky3-recursion stack.
+  design reference for safe FRI path compression. The committed compact L2
+  route uses the in-tree Plonky3 batch-STARK stack; the native terminal fallback
+  is implemented in the vendored Plonky3-recursion stack.
 - No claim that the multi-hundred-KiB-to-MiB L1 batch-STARK checkpoint is the production
   block/wire artifact.
-- No zero-knowledge claim for the production native terminal certificate.
-  Exhaustive NPO openings reveal selected recursive-verifier witness material,
-  including hidden Tip5 input lanes needed to recompute hidden-input rows.
+- No zero-knowledge claim for the recursive certificate candidates. The native
+  terminal fallback's exhaustive NPO openings reveal selected
+  recursive-verifier witness material, including hidden Tip5 input lanes needed
+  to recompute hidden-input rows.
 
 ## Clear End-To-End Claim
 
 For the intended production path, the block-facing recursive proof target is
-still the native terminal certificate, not the batch-STARK checkpoint. However,
-the full end-to-end production claim is not yet proven. The recursion-crate
-Tip5 verifier fixture satisfies the hard constraint at **85,948 bytes /
-83.9 KiB** with release prove **1.492 s** and verify **1.181 s**, but the
-newly wired full `ai-pow-zk` composite-verifier terminal path measures
-**771,249 bytes / 753.2 KiB** on the postcard wire with release prove
+now compact batch-STARK L2 over a fast statement-bound L1 proof, not the large
+batch-STARK checkpoint envelope and not the native terminal fallback. However,
+the full end-to-end production claim is not yet proven. The current selected
+route is inside the relaxed size envelope at **149,743 bytes** for the actual
+compact wrapper and **148,866 bytes** for the metadata-free body, with the L1
+statement digest carried as explicit final public lanes and verifier-owned
+metadata/setup context. It still misses the relaxed time gate: the latest
+release/native run measures **22.085 s** L1 proving plus **32.186 s** cached L2
+proving, or **54.271 s** cached serial L1+L2 per attempt. The materialized
+Layer-0 proof is **304,048 bytes / 296.9 KiB**, but it is an intermediate
+diagnostic artifact rather than the target consensus wire object.
+
+The native terminal fallback remains relevant but is no longer the leading
+route. The recursion-crate Tip5 verifier fixture satisfies the hard constraint
+at **85,948 bytes / 83.9 KiB** with release prove **1.492 s** and verify
+**1.181 s**, but the wired full `ai-pow-zk` composite-verifier terminal path
+measures **771,249 bytes / 753.2 KiB** on the postcard wire with release prove
 **80.829 s** and verify **58.825 s** even under the reduced
-`lb=6,nq=10,pow=0` profile. The materialized Layer-0 proof is **304,048 bytes /
-296.9 KiB**, but it is an intermediate diagnostic artifact rather than the
-target consensus wire object.
+`lb=6,nq=10,pow=0` profile.
 
 The hardened batch-STARK L1 proof body is **149.1 KiB**, and the full checkpoint
 certificate is **1,135.5 KiB** as legacy postcard, **5,794.7 KiB** as fixed-int
@@ -1067,20 +1127,21 @@ The end-to-end soundness floor is **60 bits**, with the following reduction:
 1. If the AI-PoW computation/public statement is false, a valid Layer-0 proof
    requires breaking the Layer-0 STARK/FRI/LogUp/Tip5/BLAKE3 assumptions or
    exploiting a bug in the AIR/public-input binding.
-2. If the Layer-0 verifier would reject, a valid production terminal
-   certificate requires breaking the terminal primitive sparse-R1CS,
-   exhaustive supported-NPO assignment-oracle openings, FRI/PCS, Tip5
-   commitment, or transcript-binding assumptions, or exploiting a bug in the
-   recursive-verifier relation.
-3. The certificate binds public values, relation/profile metadata, commitments,
-   and production parameters before challenge derivation, so there is no
-   intended grinding surface over public values, profiles, roots, or query
-   indices.
+2. If the Layer-0 verifier would reject, or if the statement digest/public
+   values are substituted, a valid compact route requires breaking the
+   statement-bound L1 proof, the compact L2 verifier relation, FRI/PCS, Tip5
+   commitments, verifier-owned setup binding, or transcript binding, or
+   exploiting a bug in the recursive-verifier relation.
+3. The certificate must bind public values, verifier-key/setup digest,
+   metadata/profile shape, commitments, preprocessed openings, and production
+   parameters before challenge derivation, so there is no intended grinding
+   surface over public values, profiles, roots, setup, or query indices.
 
-The intended weakest production soundness term remains the 60-bit floor shared
-by the Layer-0 proof and native terminal certificate. The open engineering
-work is to make the actual composite-verifier terminal proof meet the
-production size/time gates and to wire that artifact above `ai-pow-zk` without
-falling back to the too-large batch-STARK checkpoint. The hardened batch-STARK
-path is also required to stay cryptographically sound, but it is not the
+The intended weakest production soundness term remains the 60-bit pure-query
+floor shared by the Layer-0, L1, and L2 proof layers. The open engineering work
+is to promote the compact L2 candidate into the production certificate wire/API,
+pin the verifier-key/setup digest and statement metadata, add final-artifact
+rejection tests, and reduce cached serial L1+L2 proving from **54.271 s** to
+about **30 s**. The hardened batch-STARK checkpoint and native terminal fallback
+are also required to stay cryptographically sound, but neither is the current
 production size/time path.

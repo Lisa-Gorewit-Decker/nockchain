@@ -1847,10 +1847,10 @@ If that prototype still lands above `100 KiB`, the next lever is AIR
 specialization/narrowing, not higher `log_blowup` alone. The current
 `lb=6,nq=10,pow=0` row was useful only as a lower-bound diagnostic for the
 generic terminal relation. It should not be treated as the production
-inflection point: `lb=4,nq=15,pow=0` remains the current pure-query baseline,
-while `lb=3,nq=20` and `lb=4,nq=15` are the more plausible L0 proving-time
-profiles once recursion and compact serialization remove the raw opening proof
-from the wire.
+inflection point for the terminal fallback. The active compact batch-STARK route
+uses fast L1 `lb=3,nq=20` and selected L2 `lb=5,nq=12`; the older
+`lb=4,nq=15,pow=0` baseline language applies only to terminal lower-bound
+comparisons, not to the committed compact L2 candidate.
 
 ### Relaxed 150 KiB Size Gate
 
