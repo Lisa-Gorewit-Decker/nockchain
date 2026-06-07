@@ -50,6 +50,10 @@ use crate::{AiPowStarkConfig, CompositeFullAirWithLookupsPinned, Val};
 type AiPowL1OuterProof =
     p3_circuit_prover::BatchStarkProof<p3_circuit_prover::config::GoldilocksTipsConfig>;
 
+/// Native final-layer L2 proof over the L1 verifier circuit.
+type AiPowL2FinalProof =
+    p3_circuit_prover::BatchStarkProof<p3_circuit_prover::config::GoldilocksBlake3Config>;
+
 /// Tip5 digest identifying the verifier-owned compact batch recursive setup.
 ///
 /// This is carried by the compact certificate only as a route/setup selector.
@@ -163,13 +167,13 @@ impl AiPowRecursiveCertificate {
 #[derive(Serialize, Deserialize)]
 pub struct AiPowCompactBatchRecursiveCertificate {
     verifier_key_digest: AiPowCompactBatchVerifierKeyDigest,
-    l2_compact_body: p3_circuit_prover::GoldilocksTip5PathPrunedCompactBatchStarkProofBody,
+    l2_compact_body: p3_circuit_prover::GoldilocksBlake3PathPrunedCompactBatchStarkProofBody,
 }
 
 impl AiPowCompactBatchRecursiveCertificate {
     fn new(
         verifier_key_digest: AiPowCompactBatchVerifierKeyDigest,
-        l2_compact_body: p3_circuit_prover::GoldilocksTip5PathPrunedCompactBatchStarkProofBody,
+        l2_compact_body: p3_circuit_prover::GoldilocksBlake3PathPrunedCompactBatchStarkProofBody,
     ) -> Self {
         Self {
             verifier_key_digest,
@@ -183,7 +187,7 @@ impl AiPowCompactBatchRecursiveCertificate {
 
     pub fn l2_compact_body(
         &self,
-    ) -> &p3_circuit_prover::GoldilocksTip5PathPrunedCompactBatchStarkProofBody {
+    ) -> &p3_circuit_prover::GoldilocksBlake3PathPrunedCompactBatchStarkProofBody {
         &self.l2_compact_body
     }
 }
@@ -196,11 +200,11 @@ impl AiPowCompactBatchRecursiveCertificate {
 /// and binds statement-specific public values separately.
 pub struct AiPowCompactBatchVerifierContext {
     verifier_key_digest: AiPowCompactBatchVerifierKeyDigest,
-    metadata: p3_circuit_prover::GoldilocksTip5BatchStarkProofMetadata,
+    metadata: p3_circuit_prover::GoldilocksBlake3BatchStarkProofMetadata,
     circuit_prover_data: std::sync::Arc<
-        p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksTipsConfig>,
+        p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksBlake3Config>,
     >,
-    fri_shape: p3_circuit_prover::GoldilocksTip5FriShape,
+    fri_shape: p3_circuit_prover::GoldilocksBlake3FriShape,
 }
 
 impl AiPowCompactBatchVerifierContext {
@@ -320,8 +324,8 @@ fn compact_batch_l1_stark_config() -> p3_circuit_prover::config::GoldilocksTipsC
     )
 }
 
-fn compact_batch_l2_stark_config() -> p3_circuit_prover::config::GoldilocksTipsConfig {
-    p3_circuit_prover::config::goldilocks_tip5_pure_query_60bit_with_fri_shape(
+fn compact_batch_l2_stark_config() -> p3_circuit_prover::config::GoldilocksBlake3Config {
+    p3_circuit_prover::config::goldilocks_blake3_with_fri_shape(
         COMPACT_BATCH_L2_LOG_BLOWUP, COMPACT_BATCH_L2_NUM_QUERIES,
         COMPACT_BATCH_L2_LOG_FINAL_POLY_LEN, COMPACT_BATCH_L2_MAX_LOG_ARITY,
         COMPACT_BATCH_L2_CAP_HEIGHT,
@@ -338,8 +342,8 @@ fn compact_batch_l1_fri_verifier_params() -> FriVerifierParams {
     )
 }
 
-fn compact_batch_l2_fri_shape() -> p3_circuit_prover::GoldilocksTip5FriShape {
-    p3_circuit_prover::GoldilocksTip5FriShape {
+fn compact_batch_l2_fri_shape() -> p3_circuit_prover::GoldilocksBlake3FriShape {
+    p3_circuit_prover::GoldilocksBlake3FriShape {
         log_blowup: COMPACT_BATCH_L2_LOG_BLOWUP,
         log_final_poly_len: COMPACT_BATCH_L2_LOG_FINAL_POLY_LEN,
         max_log_arity: COMPACT_BATCH_L2_MAX_LOG_ARITY,
@@ -364,8 +368,8 @@ fn append_len_prefixed_bytes_as_fields(out: &mut Vec<Val>, bytes: &[u8]) {
 }
 
 fn compact_batch_verifier_key_digest_from_parts(
-    metadata: &p3_circuit_prover::GoldilocksTip5BatchStarkProofMetadata,
-    fri_shape: p3_circuit_prover::GoldilocksTip5FriShape,
+    metadata: &p3_circuit_prover::GoldilocksBlake3BatchStarkProofMetadata,
+    fri_shape: p3_circuit_prover::GoldilocksBlake3FriShape,
 ) -> Result<AiPowCompactBatchVerifierKeyDigest, postcard::Error> {
     let route_params = (
         COMPACT_BATCH_L1_LOG_BLOWUP, COMPACT_BATCH_L1_NUM_QUERIES, COMPACT_BATCH_L1_CAP_HEIGHT,
@@ -379,7 +383,7 @@ fn compact_batch_verifier_key_digest_from_parts(
     let fri_shape = postcard::to_allocvec(&fri_shape)?;
 
     let mut inputs = Vec::new();
-    append_len_prefixed_bytes_as_fields(&mut inputs, b"ai-pow-compact-batch-vk-v1");
+    append_len_prefixed_bytes_as_fields(&mut inputs, b"ai-pow-compact-batch-blake3-v1");
     append_len_prefixed_bytes_as_fields(&mut inputs, &route_params);
     append_len_prefixed_bytes_as_fields(&mut inputs, &metadata);
     append_len_prefixed_bytes_as_fields(&mut inputs, &fri_shape);
@@ -1556,9 +1560,9 @@ struct CompactBatchL2Prep {
     >,
     mmcs_op_ids: Vec<NonPrimitiveOpId>,
     circuit_prover_data: std::sync::Arc<
-        p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksTipsConfig>,
+        p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksBlake3Config>,
     >,
-    prover: p3_circuit_prover::BatchStarkProver<p3_circuit_prover::config::GoldilocksTipsConfig>,
+    prover: p3_circuit_prover::BatchStarkProver<p3_circuit_prover::config::GoldilocksBlake3Config>,
     l2_statement_public_binding_lanes: usize,
 }
 
@@ -1700,15 +1704,15 @@ fn build_compact_batch_l2_over_l1_prep(
     let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
         vec![Box::new(Tip5Preprocessor), Box::new(RecomposePreprocessor::new(true))];
     let mut air_builders =
-        tip5_air_builders::<p3_circuit_prover::config::GoldilocksTipsConfig, 2>();
+        tip5_air_builders::<p3_circuit_prover::config::GoldilocksBlake3Config, 2>();
     air_builders.extend(recompose_air_builders::<
-        p3_circuit_prover::config::GoldilocksTipsConfig,
+        p3_circuit_prover::config::GoldilocksBlake3Config,
         2,
     >(COMPACT_BATCH_L2_RECOMPOSE_LANES, true));
 
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<
-            p3_circuit_prover::config::GoldilocksTipsConfig,
+            p3_circuit_prover::config::GoldilocksBlake3Config,
             Challenge,
             2,
         >(
@@ -1814,7 +1818,7 @@ fn prove_compact_batch_l2_with_prep(
     prep: &CompactBatchL2Prep,
     l1: &AiPowL1OuterProof,
     statement_digest_public_values: &[Val],
-) -> Result<AiPowL1OuterProof, VerificationError> {
+) -> Result<AiPowL2FinalProof, VerificationError> {
     ensure_compact_batch_l2_prep_matches_l1(prep, l1)?;
     let l1_public_values =
         compact_batch_l2_public_values_for_l1(l1, statement_digest_public_values)?;
@@ -1959,7 +1963,7 @@ fn prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof
     let l2_statement_public_values =
         compact_batch_l2_statement_public_values_for_l1(&statement_digest_public_values);
     let l2_metadata =
-        p3_circuit_prover::GoldilocksTip5BatchStarkProofMetadata::from_proof(&l2_proof);
+        p3_circuit_prover::GoldilocksBlake3BatchStarkProofMetadata::from_proof(&l2_proof);
     let l2_fri_shape = compact_batch_l2_fri_shape();
     let verifier_key_digest =
         compact_batch_verifier_key_digest_from_parts(&l2_metadata, l2_fri_shape).map_err(|e| {
@@ -1970,7 +1974,7 @@ fn prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof
     let t = Instant::now();
     let l2_compact = l2_prep
         .prover
-        .compact_goldilocks_tip5_path_pruned_preprocessed_with_public_values(
+        .compact_goldilocks_blake3_path_pruned_preprocessed_with_public_values(
             l2_proof,
             &l2_statement_public_values,
             l2_prep.circuit_prover_data.as_ref(),
@@ -2074,7 +2078,7 @@ pub fn verify_compact_batch_recursive_certificate_with_context(
         compact_batch_l1_public_values_for_statement(&public_inputs.to_vec());
     let l2_statement_public_values =
         compact_batch_l2_statement_public_values_for_l1(&l1_statement_public_values);
-    let compact_context = p3_circuit_prover::GoldilocksTip5PathPrunedCompactVerifierContext::new(
+    let compact_context = p3_circuit_prover::GoldilocksBlake3PathPrunedCompactVerifierContext::new(
         &context.metadata, &context.circuit_prover_data, context.fri_shape,
         &l2_statement_public_values,
     );
@@ -2083,7 +2087,7 @@ pub fn verify_compact_batch_recursive_certificate_with_context(
     verifier.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
     verifier.register_recompose_table::<2>(true);
     verifier
-        .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_context(
+        .verify_goldilocks_blake3_path_pruned_preprocessed_compact_body_with_context(
             cert.l2_compact_body, compact_context,
         )
         .map_err(|e| {
@@ -2837,6 +2841,12 @@ mod tests {
         timings: L2ProofTimingsForTestPearl,
     }
 
+    struct L2Blake3ProofForTestPearl {
+        proof:
+            p3_circuit_prover::BatchStarkProof<p3_circuit_prover::config::GoldilocksBlake3Config>,
+        timings: L2ProofTimingsForTestPearl,
+    }
+
     #[derive(Clone, Debug, Default)]
     struct L2Tip5ProfileForTestPearl {
         circuit_ops: usize,
@@ -2875,6 +2885,23 @@ mod tests {
         >,
         prover:
             p3_circuit_prover::BatchStarkProver<p3_circuit_prover::config::GoldilocksTipsConfig>,
+        l2_statement_public_binding_lanes: usize,
+        timings: L2PrepTimingsForTestPearl,
+    }
+
+    struct L2Blake3VerifierPrepForTestPearl {
+        verification_circuit: p3_circuit::Circuit<Challenge>,
+        verifier_inputs: BatchStarkVerifierInputsBuilder<
+            p3_circuit_prover::config::GoldilocksTipsConfig,
+            L2Comm,
+            L2InnerFri,
+        >,
+        mmcs_op_ids: Vec<NonPrimitiveOpId>,
+        circuit_prover_data: std::rc::Rc<
+            p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksBlake3Config>,
+        >,
+        prover:
+            p3_circuit_prover::BatchStarkProver<p3_circuit_prover::config::GoldilocksBlake3Config>,
         l2_statement_public_binding_lanes: usize,
         timings: L2PrepTimingsForTestPearl,
     }
@@ -3309,6 +3336,206 @@ mod tests {
         Ok(L2ProofForTestPearl {
             proof,
             circuit_prover_data: std::rc::Rc::clone(&prep.circuit_prover_data),
+            timings: L2ProofTimingsForTestPearl {
+                input_pack_ms,
+                witness_run_ms,
+                stark_prove_ms,
+                stark_verify_ms,
+            },
+        })
+    }
+
+    fn build_l2_blake3_over_l1_outer_prep_for_test_pearl(
+        l1: &AiPowL1OuterProof,
+        l1_config: p3_circuit_prover::config::GoldilocksTipsConfig,
+        l1_fri_verifier_params: &FriVerifierParams,
+        l2_config: p3_circuit_prover::config::GoldilocksBlake3Config,
+        l2_log_blowup: usize,
+        l2_log_final_poly_len: usize,
+        l2_alu_lanes: usize,
+        l2_horner_pack_k: usize,
+        l2_recompose_lanes: usize,
+    ) -> Result<L2Blake3VerifierPrepForTestPearl, String> {
+        use p3_batch_stark::ProverData;
+        use p3_circuit::ops::NpoTypeId;
+        use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
+        use p3_circuit_prover::{
+            recompose_air_builders, strip_public_binding_for_lookup_metadata, tip5_air_builders,
+            BatchStarkProver, CircuitProverData, ConstraintProfile, RecomposePreprocessor,
+            TablePacking, Tip5Preprocessor,
+        };
+
+        const TRACE_D: usize = 2;
+
+        let l2_statement_public_binding_lanes = l1.public_binding_lanes * l1.ext_degree;
+        if l2_statement_public_binding_lanes == 0 {
+            return Err("BLAKE3 L2 prep requires non-empty L1 public binding lanes".to_string());
+        }
+        let circuit_define_start = std::time::Instant::now();
+        let mut circuit_builder = CircuitBuilder::<Challenge>::new();
+        circuit_builder.enable_tip5_perm::<Tip5Goldilocks, _>(
+            generate_tip5_trace::<Challenge, Tip5Goldilocks>, LiftTip5,
+        );
+        circuit_builder.enable_recompose::<Val>(generate_recompose_trace::<Val, Challenge>);
+        circuit_builder.set_recompose_coeff_ctl_for_decompose_links(true);
+
+        let lookup_gadget = LogUpGadget::new();
+        let l1_table_provers = tip5_recompose_table_provers_for_l2();
+        let (verifier_inputs, mmcs_op_ids) =
+            p3_recursion::verifier::verify_p3_batch_proof_circuit::<
+                p3_circuit_prover::config::GoldilocksTipsConfig,
+                L2Comm,
+                L2InputProof,
+                L2InnerFri,
+                LogUpGadget,
+                Tip5Config,
+                WIDTH,
+                RATE,
+                TRACE_D,
+            >(
+                &l1_config,
+                &mut circuit_builder,
+                l1,
+                l1_fri_verifier_params,
+                &l1.stark_common,
+                &lookup_gadget,
+                Tip5Config::GOLDILOCKS_W16,
+                &l1_table_provers,
+            )
+            .map_err(|e| format!("build BLAKE3 L2 verifier circuit over L1 proof: {e:?}"))?;
+        let circuit_define_ms = circuit_define_start.elapsed().as_millis();
+
+        let circuit_build_start = std::time::Instant::now();
+        let verification_circuit = circuit_builder
+            .build()
+            .map_err(|e| format!("build BLAKE3 L2 circuit: {e:?}"))?;
+        let circuit_build_ms = circuit_build_start.elapsed().as_millis();
+
+        let air_setup_start = std::time::Instant::now();
+        let l2_table_packing = TablePacking::new(l2_statement_public_binding_lanes, l2_alu_lanes)
+            .with_public_binding_lanes(l2_statement_public_binding_lanes)
+            .with_fri_params(l2_log_final_poly_len, l2_log_blowup)
+            .with_horner_pack_k(l2_horner_pack_k)
+            .with_npo_lanes(NpoTypeId::recompose(), l2_recompose_lanes)
+            .with_npo_lanes(
+                NpoTypeId::recompose_with_coeff_lookups(),
+                l2_recompose_lanes,
+            );
+        let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
+            vec![Box::new(Tip5Preprocessor), Box::new(RecomposePreprocessor::new(true))];
+        let mut air_builders =
+            tip5_air_builders::<p3_circuit_prover::config::GoldilocksBlake3Config, 2>();
+        air_builders.extend(recompose_air_builders::<
+            p3_circuit_prover::config::GoldilocksBlake3Config,
+            2,
+        >(l2_recompose_lanes, true));
+
+        let (airs_degrees, primitive_columns, non_primitive_columns) =
+            get_airs_and_degrees_with_prep::<
+                p3_circuit_prover::config::GoldilocksBlake3Config,
+                Challenge,
+                2,
+            >(
+                &verification_circuit,
+                &l2_table_packing,
+                &npo_prep,
+                &air_builders,
+                ConstraintProfile::Standard,
+            )
+            .map_err(|e| format!("BLAKE3 L2 get_airs_and_degrees: {e:?}"))?;
+        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let lookup_metadata_airs = airs
+            .iter()
+            .map(strip_public_binding_for_lookup_metadata)
+            .collect::<Vec<_>>();
+        let prover_data =
+            ProverData::from_airs_and_degrees(&l2_config, &lookup_metadata_airs, &degrees);
+        let circuit_prover_data = std::rc::Rc::new(CircuitProverData::new(
+            prover_data, primitive_columns, non_primitive_columns,
+        ));
+        let air_setup_ms = air_setup_start.elapsed().as_millis();
+
+        let mut prover = BatchStarkProver::new(l2_config).with_table_packing(l2_table_packing);
+        prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+        prover.register_recompose_table::<2>(true);
+
+        Ok(L2Blake3VerifierPrepForTestPearl {
+            verification_circuit,
+            verifier_inputs,
+            mmcs_op_ids,
+            circuit_prover_data,
+            prover,
+            l2_statement_public_binding_lanes,
+            timings: L2PrepTimingsForTestPearl {
+                circuit_define_ms,
+                circuit_build_ms,
+                air_setup_ms,
+            },
+        })
+    }
+
+    fn prove_l2_blake3_over_l1_outer_with_prep_for_test_pearl(
+        prep: &L2Blake3VerifierPrepForTestPearl,
+        l1: &AiPowL1OuterProof,
+        statement_digest_public_values: &[Val],
+    ) -> Result<L2Blake3ProofForTestPearl, String> {
+        let l1_public_values = l2_public_values_for_l1(l1, statement_digest_public_values);
+        let l2_statement_public_values =
+            l2_statement_public_values_for_l1(statement_digest_public_values);
+        if statement_digest_public_values.len() != prep.l2_statement_public_binding_lanes {
+            return Err(format!(
+                "BLAKE3 L2 prep public binding lane mismatch: prep has {}, proof statement has {}",
+                prep.l2_statement_public_binding_lanes,
+                statement_digest_public_values.len()
+            ));
+        }
+        let input_pack_start = std::time::Instant::now();
+        let (public_inputs, private_inputs) = prep
+            .verifier_inputs
+            .pack_values(&l1_public_values, &l1.proof, &l1.stark_common);
+        let input_pack_ms = input_pack_start.elapsed().as_millis();
+
+        let witness_run_start = std::time::Instant::now();
+        let mut runner = prep.verification_circuit.runner();
+        runner
+            .set_public_inputs(&public_inputs)
+            .map_err(|e| format!("BLAKE3 L2 set public inputs: {e:?}"))?;
+        runner
+            .set_private_inputs(&private_inputs)
+            .map_err(|e| format!("BLAKE3 L2 set private inputs: {e:?}"))?;
+        set_fri_mmcs_private_data::<
+            Val,
+            Challenge,
+            L2ChallengeMmcs,
+            L2ValMmcs,
+            L2Hash,
+            L2Compress,
+            DIGEST_ELEMS,
+        >(
+            &mut runner,
+            &prep.mmcs_op_ids,
+            &l1.proof.opening_proof,
+            Tip5Config::GOLDILOCKS_W16,
+        )
+        .map_err(|e| format!("BLAKE3 L2 set FRI MMCS private data: {e}"))?;
+        let traces = runner
+            .run()
+            .map_err(|e| format!("BLAKE3 L2 verifier circuit rejected L1 proof: {e:?}"))?;
+        let witness_run_ms = witness_run_start.elapsed().as_millis();
+
+        let stark_prove_start = std::time::Instant::now();
+        let proof = prep
+            .prover
+            .prove_all_tables(&traces, prep.circuit_prover_data.as_ref())
+            .map_err(|e| format!("BLAKE3 L2 prove_all_tables: {e:?}"))?;
+        let stark_prove_ms = stark_prove_start.elapsed().as_millis();
+        let stark_verify_start = std::time::Instant::now();
+        prep.prover
+            .verify_all_tables_with_public_values(&proof, &l2_statement_public_values)
+            .map_err(|e| format!("BLAKE3 L2 verify_all_tables: {e:?}"))?;
+        let stark_verify_ms = stark_verify_start.elapsed().as_millis();
+        Ok(L2Blake3ProofForTestPearl {
+            proof,
             timings: L2ProofTimingsForTestPearl {
                 input_pack_ms,
                 witness_run_ms,
@@ -4743,6 +4970,232 @@ mod tests {
             4,
             2,
             &[("lb5_nq12_lfp2_mla3_cap4", 5, 12, 2, 3, 4)],
+        );
+    }
+
+    #[test]
+    #[ignore = "native BLAKE3 final-layer L2 timing/size diagnostic is opt-in"]
+    fn native_blake3_final_layer_l2_selected_candidate_for_test_pearl() {
+        use std::time::Instant;
+
+        init_batch_stark_profile_tracing_for_test_pearl();
+
+        const L1_LOG_BLOWUP: usize = 3;
+        const L1_NUM_QUERIES: usize = 20;
+        const L1_CAP_HEIGHT: usize = 4;
+        const L1_LOG_FINAL_POLY_LEN: usize = 2;
+        const L2_LOG_BLOWUP: usize = 5;
+        const L2_NUM_QUERIES: usize = 12;
+        const L2_LOG_FINAL_POLY_LEN: usize = 2;
+        const L2_MAX_LOG_ARITY: usize = 3;
+        const L2_CAP_HEIGHT: usize = 4;
+
+        assert_eq!(L1_LOG_BLOWUP * L1_NUM_QUERIES, 60);
+        assert_eq!(L2_LOG_BLOWUP * L2_NUM_QUERIES, 60);
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+            0
+        );
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+            0
+        );
+
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+
+        let statement_digest_public_values = statement_digest_public_values_for_l1(&built);
+        let l1_config = pure_query_l1_stark_config_with_shape_and_cap(
+            L1_LOG_BLOWUP, L1_NUM_QUERIES, L1_CAP_HEIGHT,
+        );
+        let l1_fri_verifier_params =
+            pure_query_fri_verifier_params_for_l1(L1_LOG_BLOWUP, L1_LOG_FINAL_POLY_LEN);
+        let l1_prep_wall_start = Instant::now();
+        let l1_prep = build_l1_outer_prep_for_test_pearl(&built, l1_config.clone(), DIGEST_ELEMS)
+            .expect("BLAKE3 diagnostic selected L1 prep");
+        let l1_prep_wall_ms = l1_prep_wall_start.elapsed().as_millis();
+        let l1_cached_prove_start = Instant::now();
+        let l1_artifact = prove_l1_outer_with_prep_for_test_pearl(&l1_prep, &built, &proof)
+            .expect("BLAKE3 diagnostic selected L1 proof with cached prep");
+        let l1_cached_prove_ms = l1_cached_prove_start.elapsed().as_millis();
+        let L1ProofForTestPearl {
+            proof: l1,
+            timings: l1_timings,
+        } = l1_artifact;
+
+        assert_eq!(
+            l1.public_binding_lanes, DIGEST_ELEMS,
+            "BLAKE3 diagnostic L1 proof must expose the statement digest"
+        );
+
+        let l2_config = p3_circuit_prover::config::goldilocks_blake3_with_fri_shape(
+            L2_LOG_BLOWUP, L2_NUM_QUERIES, L2_LOG_FINAL_POLY_LEN, L2_MAX_LOG_ARITY, L2_CAP_HEIGHT,
+        );
+        let l2_statement_public_binding_lanes = statement_digest_public_values.len();
+        let l2_prep_wall_start = Instant::now();
+        let l2_prep = build_l2_blake3_over_l1_outer_prep_for_test_pearl(
+            &l1,
+            l1_config.clone(),
+            &l1_fri_verifier_params,
+            l2_config.clone(),
+            L2_LOG_BLOWUP,
+            L2_LOG_FINAL_POLY_LEN,
+            COMPACT_BATCH_L2_ALU_LANES,
+            COMPACT_BATCH_L2_HORNER_PACK_K,
+            COMPACT_BATCH_L2_RECOMPOSE_LANES,
+        )
+        .expect("BLAKE3 final-layer L2 prep over selected L1");
+        let l2_prep_wall_ms = l2_prep_wall_start.elapsed().as_millis();
+        let l2_prep_timings = l2_prep.timings;
+        let l2_cached_prove_start = Instant::now();
+        let l2_artifact = prove_l2_blake3_over_l1_outer_with_prep_for_test_pearl(
+            &l2_prep, &l1, &statement_digest_public_values,
+        )
+        .expect("BLAKE3 final-layer L2 proof over selected L1");
+        let l2_cached_prove_ms = l2_cached_prove_start.elapsed().as_millis();
+        let L2Blake3ProofForTestPearl {
+            proof: l2,
+            timings: l2_timings,
+        } = l2_artifact;
+
+        assert_eq!(
+            l2.public_binding_lanes, l2_statement_public_binding_lanes,
+            "BLAKE3 final-layer L2 must bind all L1 statement-digest base limbs"
+        );
+        let l2_outer_bytes = postcard_len(&l2, "BLAKE3 final-layer diagnostic L2 outer proof");
+        let l2_proof_body_bytes =
+            postcard_len(&l2.proof, "BLAKE3 final-layer diagnostic L2 proof body");
+        let l2_commitments_bytes = postcard_len(
+            &l2.proof.commitments, "BLAKE3 final-layer diagnostic commitments",
+        );
+        let l2_opened_values_bytes = postcard_len(
+            &l2.proof.opened_values, "BLAKE3 final-layer diagnostic opened values",
+        );
+        let l2_opening_proof_bytes = postcard_len(
+            &l2.proof.opening_proof, "BLAKE3 final-layer diagnostic opening proof",
+        );
+        let l2_global_lookup_data_bytes = postcard_len(
+            &l2.proof.global_lookup_data, "BLAKE3 final-layer diagnostic global lookup data",
+        );
+        let l2_metadata =
+            p3_circuit_prover::GoldilocksBlake3BatchStarkProofMetadata::from_proof(&l2);
+        let l2_fri_shape = p3_circuit_prover::GoldilocksBlake3FriShape {
+            log_blowup: L2_LOG_BLOWUP,
+            log_final_poly_len: L2_LOG_FINAL_POLY_LEN,
+            max_log_arity: L2_MAX_LOG_ARITY,
+            num_queries: L2_NUM_QUERIES,
+            commit_pow_bits:
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+            query_pow_bits:
+                p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+            cap_height: L2_CAP_HEIGHT,
+        };
+        let l2_statement_public_values =
+            l2_statement_public_values_for_l1(&statement_digest_public_values);
+        let l2_compact_build_start = Instant::now();
+        let l2_compact_body = l2_prep
+            .prover
+            .compact_goldilocks_blake3_path_pruned_preprocessed_body_with_public_values(
+                l2,
+                &l2_statement_public_values,
+                l2_prep.circuit_prover_data.as_ref(),
+                l2_fri_shape,
+            )
+            .expect("compact BLAKE3 final-layer L2 body");
+        let l2_compact_build_ms = l2_compact_build_start.elapsed().as_millis();
+        let l2_actual_compact_body_bytes = postcard_len(
+            &l2_compact_body, "BLAKE3 final-layer diagnostic compact body",
+        );
+        let l2_actual_compact_proof_body_bytes = postcard_len(
+            &l2_compact_body.proof, "BLAKE3 final-layer diagnostic compact proof body",
+        );
+        let l2_actual_compact_input_paths_bytes = postcard_len(
+            &l2_compact_body.input_batch_paths, "BLAKE3 final-layer diagnostic compact input paths",
+        );
+        let l2_actual_compact_commit_paths_bytes = postcard_len(
+            &l2_compact_body.commit_phase_paths,
+            "BLAKE3 final-layer diagnostic compact commit paths",
+        );
+        let l2_actual_compact_restoration_bytes = postcard_len(
+            &(
+                &l2_compact_body.input_batch_paths, &l2_compact_body.commit_phase_paths,
+            ),
+            "BLAKE3 final-layer diagnostic compact restoration data",
+        );
+        let l2_actual_compact_certificate_bytes = postcard_len(
+            &([Val::ZERO; DIGEST_ELEMS], &l2_compact_body),
+            "BLAKE3 final-layer diagnostic compact certificate projection",
+        );
+        let l2_compact_verify_start = Instant::now();
+        let compact_context =
+            p3_circuit_prover::GoldilocksBlake3PathPrunedCompactVerifierContext::new(
+                &l2_metadata,
+                l2_prep.circuit_prover_data.as_ref(),
+                l2_fri_shape,
+                &l2_statement_public_values,
+            );
+        l2_prep
+            .prover
+            .verify_goldilocks_blake3_path_pruned_preprocessed_compact_body_with_context(
+                l2_compact_body, compact_context,
+            )
+            .expect("verify compact BLAKE3 final-layer L2 body");
+        let l2_actual_compact_body_verify_ms = l2_compact_verify_start.elapsed().as_millis();
+
+        eprintln!(
+            "native BLAKE3 final-layer L2 candidate [TEST_PEARL L1 lb3_nq20_cap4 -> L2 lb5_nq12_lfp2_mla3_cap4]: l1_cached_prove_ms={} l1_prep_wall_ms={} l1_air_setup_ms={} l1_witness_run_ms={} l1_stark_prove_ms={} l2_outer={} l2_proof_body={} l2_commitments={} l2_opened_values={} l2_opening_proof={} l2_global_lookup_data={} l2_actual_compact={} l2_actual_compact_body={} l2_actual_compact_proof_body={} l2_actual_compact_restoration={} l2_actual_compact_input_paths={} l2_actual_compact_commit_paths={} l2_actual_compact_build_ms={} l2_actual_compact_body_verify_ms={} l2_public_binding_lanes={} l2_log_blowup={} l2_num_queries={} l2_log_final_poly_len={} l2_max_log_arity={} l2_cap_height={} l2_johnson_bits={} l2_prep_wall_ms={} l2_cached_prove_ms={} l2_circuit_define_ms={} l2_circuit_build_ms={} l2_air_setup_ms={} l2_input_pack_ms={} l2_witness_run_ms={} l2_stark_prove_ms={} l2_stark_verify_ms={} cached_serial_l1_l2_ms={}",
+            l1_cached_prove_ms,
+            l1_prep_wall_ms,
+            l1_prep.timings.air_setup_ms,
+            l1_timings.witness_run_ms,
+            l1_timings.stark_prove_ms,
+            l2_outer_bytes,
+            l2_proof_body_bytes,
+            l2_commitments_bytes,
+            l2_opened_values_bytes,
+            l2_opening_proof_bytes,
+            l2_global_lookup_data_bytes,
+            l2_actual_compact_certificate_bytes,
+            l2_actual_compact_body_bytes,
+            l2_actual_compact_proof_body_bytes,
+            l2_actual_compact_restoration_bytes,
+            l2_actual_compact_input_paths_bytes,
+            l2_actual_compact_commit_paths_bytes,
+            l2_compact_build_ms,
+            l2_actual_compact_body_verify_ms,
+            l2_statement_public_binding_lanes,
+            L2_LOG_BLOWUP,
+            L2_NUM_QUERIES,
+            L2_LOG_FINAL_POLY_LEN,
+            L2_MAX_LOG_ARITY,
+            L2_CAP_HEIGHT,
+            L2_LOG_BLOWUP * L2_NUM_QUERIES,
+            l2_prep_wall_ms,
+            l2_cached_prove_ms,
+            l2_prep_timings.circuit_define_ms,
+            l2_prep_timings.circuit_build_ms,
+            l2_prep_timings.air_setup_ms,
+            l2_timings.input_pack_ms,
+            l2_timings.witness_run_ms,
+            l2_timings.stark_prove_ms,
+            l2_timings.stark_verify_ms,
+            l1_cached_prove_ms + l2_cached_prove_ms,
         );
     }
 

@@ -1,141 +1,54 @@
 # `ai-pow-zk`
 
 EXPERIMENTAL — a Plonky3 STARK and recursive-certificate stack for the
-[`ai-pow`](../ai-pow/) tiling matmul puzzle. The production recursive proof
-target is not yet fully met. The active route is now the compact final-layer
-batch-STARK path with verifier-owned metadata/setup binding and explicit final
-public-value binding of the L1 statement digest. The existing full batch-STARK
-checkpoint envelope is too large for the production wire budget, and the
-native terminal certificate remains a fallback rather than the leading path.
-The full composite-verifier terminal path is wired as an opt-in diagnostic but
-has not met the production size/time gates. This is a route commitment, not a
-production-complete claim: final acceptance still requires Hoon verifier
-wiring, production-pinned digest selection, and a measured total proving-time
-reduction. The plain `MatmulProof` remains a
-miner diagnostic / pre-ZKP target-hit check; it is not the persisted block
-artifact.
+[`ai-pow`](../ai-pow/) tiling matmul puzzle. The selected route is now the
+compact final-layer batch-STARK path with a native BLAKE3 final layer,
+verifier-owned metadata/setup binding, and explicit final public-value binding
+of the L1 statement digest. The in-circuit L1 verifier remains Tip5 because it
+verifies a Tip5 L1 proof; BLAKE3 is used only by the native final L2 STARK
+commitments and Fiat-Shamir transcript. The existing full batch-STARK
+checkpoint envelope is too large for production wire use, and the native
+terminal certificate remains a fallback/diagnostic route. The plain
+`MatmulProof` remains a miner diagnostic / pre-ZKP target-hit check; it is not
+the persisted block artifact.
 
 > **IMPORTANT - current production recursive-proof summary:** before changing
 > the recursive proof path, proof shape, FRI parameters, terminal commitment
 > shape, certificate wire format, or packed Tip5/NPO bridge code, read the live
 > checkpoint summary:
 > [Clean Checkpoint](../../docs/ai-pow-integration/2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md#clean-checkpoint).
-> The active production implementation work is now committed to compact
-> batch-STARK L2 over a fast statement-bound L1 proof, with native terminal
-> retained as the fallback route if this path cannot meet the time gate. The
-> route decision is deliberately backend-neutral about "native terminal vs
-> batch STARK": batch STARK is acceptable for production if the compact L2 path
-> is the smaller, faster, soundly-bound route. The large batch-STARK recursive
-> checkpoint certificate remains too large.
-> Soundness-neutral terminal Merkle
-> cap-height/base reduction is now implemented and measured: the retained
-> production cap height is `3`, bound into terminal parameters/profile/transcript
-> before challenge sampling, and full FRI caps are digested into the prelude
-> commitment list while the FRI verifier still observes the full cap. This is
-> fallback evidence, not the primary path. The cap-height `3` terminal
-> structural floor is `142,807` bytes, but it still lacks internal Tip5 support
-> binding; even the paired zero-support-FRI metadata floor is `152,612` bytes
-> before any sound support FRI payload or excluded overhead. Outer task
-> parallelism on that terminal route is measured but not sufficient:
-> Rayon-joining the current primitive R1CS, merged value-bridge, and
-> packed-support subproofs gives `39.448s` post-prelude wall time, unchanged
-> proof language, and `171.422s` full diagnostic wall. The compact batch-STARK
-> L2 candidate now binds all L1 statement-digest base limbs as final public
-> lanes and verifies compact bodies through a verifier-owned context containing
-> metadata/setup, expected FRI shape, and caller-supplied public values. The
-> corrected fast-L1/L2 row at L1
-> `lb=3,nq=20` and L2 `lb=5,nq=12` now measures `143,762` bytes for the actual
-> compact wrapper and `142,878` bytes for the metadata-free compact body after
-> forwarding AIR next-row declarations through the batch-STARK wrappers. Tip5
-> main next-row openings remain explicit because the inner lookup AIR links
-> rounds across rows. The earlier release/native cached-setup baseline rerun
-> before L2 recompose-lane promotion measures
-> `4.772s` reusable L1 prep, `15.305s` cached L1 proving, `9.364s` reusable
-> L2 prep, and `28.726s` cached L2 proving. The cached L2 proof is now under
-> `30s`, but cached serial L1+L2 proving is still about `44.031s` with both
-> prep stages cached (`58.167s` if setup is included), so the total
-> proving-time gate is not met.
-> A follow-up L1 table-packing sweep on the same selected compact-L2 route
-> finds the best measured complete row at L1 `alu_lanes=4,horner_k=5`: actual
-> compact wrapper `143,106` bytes, metadata-free compact body `142,225` bytes,
-> cached L1 proving `15.029s`, cached L2 proving `28.555s`, and cached serial
-> L1+L2 proving `43.584s`. L1 `alu_lanes=2,horner_k=5` gives the smallest
-> measured compact wrapper, `141,148` bytes, but serial proving is `44.391s`.
-> A follow-up selected-L2 recompose-lane sweep shows a small verifier-table
-> packing win: `recompose_lanes=2` keeps the compact wrapper inside the relaxed
-> size gate at `145,318` bytes and improves cached serial L1+L2 from `44.309s`
-> to `43.856s` in that L2-only sweep. `recompose_lanes=4` is slightly faster
-> (`43.735s`) but grows past the decimal and binary `150 KiB` gates at
-> `154,197` bytes, while `recompose_lanes=8` is worse. The promoted compact L2
-> route therefore uses `recompose_lanes=2`; this is a small nudge, not the
-> missing total-time reduction.
-> The route is therefore clearly closer to the relaxed size target than the
-> native-terminal fallback and the large batch-STARK checkpoint, but it still
-> needs a real proving-time reduction before production-readiness can be
-> claimed.
-> This route is now promoted inside `ai-pow-zk` as a typed
-> `AiPowCompactBatchRecursiveCertificate` plus verifier-owned
-> `AiPowCompactBatchVerifierContext`. The current encoded certificate carries
-> a Tip5 verifier-key/setup digest plus the final L2 compact body. A
-> release/native round trip after promoting L2 `recompose_lanes=2` measured
-> `143,250` bytes, `19.123s` L1 outer proving, `9.452s` L2 prep, `28.617s`
-> L2 proving, `38ms` compact verification, and `57.406s` uncached proof wall;
-> decoded verification passes,
-> wrong public inputs reject, wrong certificate digest rejects, and stale
-> context digest rejects. The Rust `ai-pow` bridge now exposes compact
-> recursive run builders, and `ai-pow-miner`'s Pearl-compatible submission
-> builder now packages the compact certificate as canonical postcard bytes in
-> a bounded proof-node atom so the noun boundary does not structurally
-> re-inflate the proof. A release/native miner artifact measurement now gives
-> a full jammed Pearl-compatible `%ai-pow` artifact of `143,661` bytes with a
-> `142,849` byte compact certificate, and confirms the decoded proof node is
-> canonical compact postcard bytes. The Rust miner verifier boundary now has a
-> compact-artifact entry point that requires a caller-supplied expected
-> verifier-key/setup digest and rejects a mismatched context or certificate
-> digest. That expected digest now has an explicit canonical production config
-> encoding: five Goldilocks limbs as 40 little-endian bytes, with wrong-length
-> and noncanonical-limb encodings rejected before proof verification. The
-> compact prover cache is now a Rust API (`AiPowCompactBatchProverCache`,
-> wrapped by `ai-pow` as `AiPowCompactRecursiveProverCache`) with guarded L1
-> circuit-shape reuse and stale L1 metadata/setup rejection before reuse. A
-> cache returned from a full compact run owns both L1 prover setup and L2
-> verifier/AIR setup, so the production miner lazily shares it after the first
-> compact certificate in a process and later solved tickets can skip repeat L1
-> setup plus repeat L2 setup when the shapes still match. Stale cache reuse is
-> rejected before the affected proof stage; the bridge then rebuilds uncached
-> and returns fresh setup for the miner to store. This removes the measured
-> `~4.8s` reusable L1 prep from warmed full-cache runs, but the remaining
-> proof work is still roughly `15s` L1 plus `28s` L2 before any unmeasured
-> overhead. The Hoon verifier hook, production source for the pinned digest,
-> and proactive/operator cache warm-up policy are still open.
-> A prior deeper PCS profile showed cached L2 dominated by main/permutation
-> trace Merkle commitments (`13.3s` + `12.9s`), so the next production lever is
-> reducing committed recursive-verifier matrix volume, especially Tip5/MMCS
-> verifier-table traces, and reducing or overlapping the L1 stage. The selected
-> L2 verifier profile now counts `4,791` Tip5 rows, padded to `8,192`, only
-> `695` rows above the `4,096` halving boundary; simple hidden-L1 cap retuning
-> does not cross it, and cap `5/6` currently exposes a recursive-verifier
-> support gap despite native L1 verification passing. New diagnostics show that
-> deterministic preprocessed transcript omission saves only `70` Tip5 rows
-> (`4,791 -> 4,721`) and does not cross the halving boundary; full phase tags
-> account for every Tip5 row as MMCS leaf/path hashing plus `371` challenger
-> rows. L1 `lb=4,nq=15` crosses the Tip5 boundary (`3,851` rows, padded to
-> `4,096`) but leaves cached L2 proving essentially flat at `28.743s` and raises
-> cached L1 proving to `29.584s`, so query-count retuning is not the total-time
-> lever. A focused
-> `lb4,nq15`
-> frontier sweep rules out cheap FRI/cap retuning: the fastest-size frontier is
-> still `174,676` bytes. A selected L2 table-packing sweep also rules out simple
-> ALU lane retuning as the time lever: `alu_lanes=2` verifies a much smaller
-> compact wrapper (`126,862` bytes; metadata-free body `125,979` bytes) but
-> raises cached L2 proving to `30.801s`, while the baseline `alu_lanes=8`
-> remains the best time row at `143,762` bytes and `28.530s` cached L2 proving
-> in that run. L2 recompose packing at lanes `2` is now promoted because it
-> saves about half a second while staying inside the relaxed byte gate, but L1,
-> ALU, and recompose packing together still do not close the total-time gap by
-> themselves. The relaxed
-> size gate is now plausibly in range; the relaxed total proving-time gate is
-> not yet met.
+> The committed route is compact batch-STARK L2 over a fast statement-bound L1
+> proof, using Tip5 for the in-circuit L1 verifier and BLAKE3 for the native
+> final-layer L2 STARK commitments/transcript. A release/native production
+> round trip now measures `122,597` bytes for the encoded compact recursive
+> certificate and `22.006s` proof wall
+> (`19.235s` L1 outer proving, `509ms` L2 prep, `2.117s` L2 proving, `1ms`
+> compact construction, `15ms` compact verification). The BLAKE3 diagnostic
+> measured `125,361` bytes for the projected compact certificate,
+> `125,356` bytes for the metadata-free compact body, `90,217` bytes for the
+> compact proof body, and `18.035s` cached L1+L2 proving. Both measurements use
+> L1 `lb=3,nq=20,cap=4,pow=0` and L2
+> `lb=5,nq=12,lfp=2,mla=3,cap=4,pow=0`, giving 60 Johnson bits from FRI queries
+> rather than proof-system PoW grinding.
+>
+> Soundness-critical bindings are explicit: the compact certificate carries a
+> verifier-key/setup digest plus the final L2 compact body; verification
+> requires verifier-owned metadata, canonical setup/prover data, expected FRI
+> shape, and public values derived from the trusted Layer-0 statement. The
+> compact verifier restores verifier-deterministic preprocessed OOD openings and
+> preprocessed FRI input batches from canonical setup before replaying the
+> ordinary Plonky3 verifier. BLAKE3-specific restoration uses the native
+> final-layer BLAKE3 MMCS and bit-reversed LDE reconstruction; accepting any of
+> that metadata or setup from the prover would be unsound.
+>
+> This meets the relaxed crate-level `~150 KiB` / `~30s` production-proof target
+> and supersedes the earlier Tip5-final-layer compact L2 measurements
+> (`143,250` bytes / `57.406s` wall). Remaining production integration work is
+> Hoon verifier wiring, a production-pinned source for the verifier-key/setup
+> digest, miner artifact remeasurement after the BLAKE3 wire-format change, and
+> proactive/operator cache policy. The large batch-STARK checkpoint remains a
+> hardened regression/fallback path but is too large for production wire use;
+> native terminal remains fallback evidence rather than the leading route.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 
@@ -145,33 +58,35 @@ artifact.
 > outside this list (e.g., Poseidon2, BLAKE3 inside the SNARK
 > circuit at the wrong layer, KZG, pairing-based curves), stop and
 > consult the maintainer — it is either a bug or a milestone
-> in-flight that hasn't updated this README. Last updated 2026-05-20
-> (M-S5b S1.B Poseidon2-removal P5+P6 landing).
+> in-flight that hasn't updated this README. Last updated 2026-06-07
+> for the native BLAKE3 final-layer route.
 
 ### Hash functions
 
-The recursive certificate/proving stack uses Tip5, split by role:
+The recursive certificate/proving stack uses Tip5 inside the recursive
+verifier circuit and BLAKE3 only at the native final STARK layer:
 
 - **Recursive proving Tip5** — the 5-round, paper-spec variant
   (`nockchain_math::tip5::permute_5round`, also exposed through
-  `p3-tip5-circuit-air::Tip5Perm`). This is the only Tip5 variant
-  used by ai-pow-zk's recursive certificate stack: the recursively
-  wrapped inner STARK MMCS / Fiat-Shamir path and the outer recursive
-  verifier circuit via `config::goldilocks_tip5_60bit()`.
+  `p3-tip5-circuit-air::Tip5Perm`). This is the only Tip5 variant used inside
+  ai-pow-zk's recursive verifier circuit and the recursively wrapped L1 STARK
+  MMCS / Fiat-Shamir path.
 - **Canonical Nockchain Tip5** — the separate 7-round variant
   (`nockchain_math::tip5::permute`). This remains Nockchain's
   non-recursive hash path and is not selected by the recursive
   certificate stack.
-
-- **BLAKE3** (outside the SNARK; in the ai-pow puzzle's plain
-  data path). Used by `ai-pow` for the matrix commitment
-  (`HASH_A`, `HASH_B`), the strip-opening Merkle paths, and the
-  Jackpot hash on the mineable unit. **BLAKE3 is NOT in the SNARK
-  arithmetic circuit** — it appears as an AIR (`Blake3Chip` in
-  `crates/ai-pow-zk/src/chips/blake3/`) that proves the BLAKE3
-  computation matched the public input commitment. The
-  out-of-circuit BLAKE3 is used by the plain miner; the in-circuit
-  Blake3Chip is the prover-side AIR for it.
+- **Native final-layer BLAKE3** — used by
+  `config::goldilocks_blake3_with_fri_shape()` for the final L2 batch-STARK
+  Merkle commitments and Fiat-Shamir transcript. It is not arithmetized inside
+  the recursive verifier circuit; native verification relies on BLAKE3
+  collision resistance and Fiat-Shamir random-oracle-style behavior for this
+  outermost proof layer.
+- **AI-PoW data-path BLAKE3** — used by `ai-pow` for the matrix commitment
+  (`HASH_A`, `HASH_B`), strip-opening Merkle paths, and jackpot hash on the
+  mineable unit. In the proof system it appears as an AIR (`Blake3Chip` in
+  `crates/ai-pow-zk/src/chips/blake3/`) proving the BLAKE3 computation matched
+  public input commitments. This is separate from the native final-layer
+  BLAKE3 transcript/MMCS.
 
 #### Tip5 soundness
 
@@ -606,23 +521,24 @@ anchor merge-mining compat.
 verifier-derived attempt data, proves the Layer-0 composite STARK, and now has
 typed builders for both the large batch-STARK checkpoint and the selected
 compact batch-STARK L2 certificate. The current primary production recursive
-proof route is compact batch-STARK L2 over a fast statement-bound L1 proof.
+proof route is compact batch-STARK L2 over a fast statement-bound L1 proof with
+a native BLAKE3 final layer.
 `ai-pow-miner` packages that compact certificate as canonical bytes inside the
 existing `%ai-pow` noun envelope for Pearl-compatible submissions. The large
 checkpoint noun path is retained for soundness regression and fallback
-validation. The full jammed Pearl-compatible `%ai-pow` artifact now measures
-`143,661` bytes with the compact certificate preserved as canonical bytes.
+validation. The crate-level BLAKE3 final-layer compact certificate now measures
+`122,597` canonical postcard bytes; the full jammed Pearl-compatible `%ai-pow`
+artifact needs to be remeasured after this BLAKE3 wire-format change.
 Rust-side compact artifact verification now requires a verifier-owned context
 and expected verifier-key/setup digest. The verifier-key/setup digest is
 encoded for production configuration as canonical 40-byte Goldilocks limbs;
 wrong-length or noncanonical bytes reject before compact proof verification.
-Hoon-side verification and the production source for that pinned digest remain
-open. Rust now also exposes a reusable compact prover cache for the fixed L1
-proof shape; full compact runs return guarded L1 prover setup plus L2 setup, and
-the production miner lazily warms and reuses that cache after the first compact
-certificate. Proactive/operator warm-up remains open. Warmed full-cache runs now
-skip repeat L1 setup as well as L2 setup, but the cached L1+L2 proof work still
-remains above the `~30s` target.
+Hoon-side verification, the production source for that pinned digest, and
+miner-artifact remeasurement remain open. Rust now also exposes a reusable
+compact prover cache for the fixed L1 proof shape; full compact runs return
+guarded L1 prover setup plus L2 setup, and the production miner lazily warms and
+reuses that cache after the first compact certificate. Proactive/operator
+warm-up remains open.
 
 The `composite_prove` / `composite_verify` APIs are Layer-0 primitives. They
 are useful for circuit tests and for the recursive-certificate builder, but the

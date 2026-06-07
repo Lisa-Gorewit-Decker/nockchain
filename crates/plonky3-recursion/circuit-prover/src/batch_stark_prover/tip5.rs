@@ -378,14 +378,15 @@ where
             .next_power_of_two()
             .max(min_height.next_power_of_two());
         let prep = Val::<SC>::zero_vec(prep_height * TIP5_CIRCUIT_PREP_WIDTH);
-        tip5_air_entry_for_witness_dim::<SC>(prep, min_height, circuit_extension_degree)
-            .ok_or_else(|| {
+        tip5_air_entry_for_witness_dim::<SC>(prep, min_height, circuit_extension_degree).ok_or_else(
+            || {
                 format!(
                     "unsupported witness bus dimension {circuit_extension_degree} for Tip5 \
                      config {:?}",
                     self.config
                 )
-            })
+            },
+        )
     }
 
     fn air_with_committed_preprocessed(

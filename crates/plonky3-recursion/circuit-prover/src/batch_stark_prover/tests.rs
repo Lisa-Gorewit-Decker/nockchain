@@ -8,8 +8,8 @@ use p3_circuit::ops::{
     KoalaBearD1Width16, Poseidon1Config, Poseidon2Config, generate_poseidon1_trace,
     generate_poseidon2_trace, generate_recompose_trace,
 };
-use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_field::extension::QuinticTrinomialExtensionField;
+use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon1_16, default_koalabear_poseidon2_16};
 use p3_symmetric::{CryptographicHasher, PaddingFreeSponge, Permutation};
@@ -25,46 +25,51 @@ use crate::batch_stark_prover::{
     poseidon2_air_builders_d5, poseidon2_table_provers_d5, recompose_air_builders,
 };
 use crate::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
-use crate::config::{self, BabyBearConfig, GoldilocksConfig, GoldilocksTipsConfig, KoalaBearConfig};
+use crate::config::{
+    self, BabyBearConfig, GoldilocksConfig, GoldilocksTipsConfig, KoalaBearConfig,
+};
 
 #[test]
 fn circuit_table_air_forwards_next_row_declarations() {
     type SC = GoldilocksTipsConfig;
     type F = Goldilocks;
 
-    let const_air = CircuitTableAir::<SC, 2>::Const(
-        ConstAir::<F, 2>::new_with_preprocessed(1, vec![F::ZERO; 2]),
-    );
+    let const_air = CircuitTableAir::<SC, 2>::Const(ConstAir::<F, 2>::new_with_preprocessed(
+        1,
+        vec![F::ZERO; 2],
+    ));
     assert!(const_air.main_next_row_columns().is_empty());
     assert!(const_air.preprocessed_next_row_columns().is_empty());
 
-    let public_air = CircuitTableAir::<SC, 2>::Public(
-        PublicAir::<F, 2>::new_with_preprocessed(1, 1, vec![F::ZERO; 2]),
-    );
+    let public_air = CircuitTableAir::<SC, 2>::Public(PublicAir::<F, 2>::new_with_preprocessed(
+        1,
+        1,
+        vec![F::ZERO; 2],
+    ));
     assert!(public_air.main_next_row_columns().is_empty());
     assert!(public_air.preprocessed_next_row_columns().is_empty());
 
     let recompose_air = RecomposeAir::<F, 2>::new_with_preprocessed(1, vec![F::ZERO; 2], 1, false);
-    let recompose_dynamic =
-        DynamicAirEntry::<SC>::new(Box::new(recompose_air.clone()));
+    let recompose_dynamic = DynamicAirEntry::<SC>::new(Box::new(recompose_air.clone()));
     assert!(recompose_dynamic.main_next_row_columns().is_empty());
     assert!(recompose_dynamic.preprocessed_next_row_columns().is_empty());
     let recompose_wrapped = CircuitTableAir::<SC, 2>::Dynamic(recompose_dynamic);
     assert!(recompose_wrapped.main_next_row_columns().is_empty());
     assert!(recompose_wrapped.preprocessed_next_row_columns().is_empty());
 
-    let tip5_dynamic =
-        DynamicAirEntry::<SC>::new(Box::new(Tip5CircuitAir::<F, 2>::new_with_preprocessed(
-            Vec::new(),
-            1,
-        )));
+    let tip5_dynamic = DynamicAirEntry::<SC>::new(Box::new(
+        Tip5CircuitAir::<F, 2>::new_with_preprocessed(Vec::new(), 1),
+    ));
     assert_eq!(
         tip5_dynamic.main_next_row_columns().len(),
         tip5_dynamic.width()
     );
     assert!(tip5_dynamic.preprocessed_next_row_columns().is_empty());
     let tip5_wrapped = CircuitTableAir::<SC, 2>::Dynamic(tip5_dynamic);
-    assert_eq!(tip5_wrapped.main_next_row_columns().len(), tip5_wrapped.width());
+    assert_eq!(
+        tip5_wrapped.main_next_row_columns().len(),
+        tip5_wrapped.width()
+    );
     assert!(tip5_wrapped.preprocessed_next_row_columns().is_empty());
 }
 
@@ -108,10 +113,7 @@ fn prove_babybear_public_plus_const(
 
     let mut runner = circuit.runner();
     runner
-        .set_public_inputs(&[
-            BabyBear::from_u64(7),
-            BabyBear::from_u64(expected_output),
-        ])
+        .set_public_inputs(&[BabyBear::from_u64(7), BabyBear::from_u64(expected_output)])
         .unwrap();
     let traces = runner.run().unwrap();
 
@@ -164,11 +166,9 @@ fn prove_goldilocks_tip5_ext2_public_plus_const_with_public_binding(
     let mut builder = CircuitBuilder::<Ext2>::new();
     let x = builder.public_input();
     let expected = builder.public_input();
-    let c = Ext2::from_basis_coefficients_slice(&[
-        Goldilocks::from_u64(10),
-        Goldilocks::from_u64(3),
-    ])
-    .unwrap();
+    let c =
+        Ext2::from_basis_coefficients_slice(&[Goldilocks::from_u64(10), Goldilocks::from_u64(3)])
+            .unwrap();
     let c_const = builder.define_const(c);
     let mut sum = builder.add(x, c_const);
     let mut expected_value =
@@ -1249,8 +1249,7 @@ fn test_goldilocks_tip5_compact_preprocessed_fri_round_trip_uses_canonical_setup
     let full_input_batches =
         goldilocks_tip5_full_fri_input_batch_count(&proof.proof, &proof.stark_common);
     assert!(
-        full_input_batches
-            > goldilocks_tip5_preprocessed_trace_idx(),
+        full_input_batches > goldilocks_tip5_preprocessed_trace_idx(),
         "full proof must include a preprocessed FRI input batch"
     );
     let preprocessed_idx = goldilocks_tip5_preprocessed_trace_idx();
@@ -1268,11 +1267,8 @@ fn test_goldilocks_tip5_compact_preprocessed_fri_round_trip_uses_canonical_setup
         postcard::to_allocvec(&proof.proof.opened_values).expect("serialize opened values");
 
     let full_bytes = postcard::to_allocvec(&proof).expect("serialize full proof");
-    let compact = GoldilocksTip5PreprocessedCompactBatchStarkProof::try_from_full(
-        proof,
-        fri_shape,
-    )
-    .expect("compact Goldilocks/Tip5 proof");
+    let compact = GoldilocksTip5PreprocessedCompactBatchStarkProof::try_from_full(proof, fri_shape)
+        .expect("compact Goldilocks/Tip5 proof");
     for (query, query_proof) in compact
         .proof
         .proof
@@ -1345,8 +1341,7 @@ fn test_goldilocks_tip5_compact_preprocessed_fri_round_trip_uses_canonical_setup
         .zip(original_preprocessed_input_batches.iter())
         .enumerate()
     {
-        let reduced_index =
-            query_index >> (log_global_max_height - preprocessed_log_max_height);
+        let reduced_index = query_index >> (log_global_max_height - preprocessed_log_max_height);
         let regenerated = val_mmcs.open_batch(reduced_index, preprocessed_prover_data);
         let regenerated_bytes =
             postcard::to_allocvec(&regenerated).expect("serialize regenerated input batch");
@@ -1381,11 +1376,8 @@ fn test_goldilocks_tip5_compact_preprocessed_fri_round_trip_uses_canonical_setup
 fn test_goldilocks_tip5_compact_preprocessed_fri_rejects_wrong_setup_binding() {
     let (prover, proof, _, fri_shape) = prove_goldilocks_tip5_ext2_public_plus_const(None);
     let (_, _, wrong_setup, _) = prove_goldilocks_tip5_ext2_public_plus_const(Some(1));
-    let compact = GoldilocksTip5PreprocessedCompactBatchStarkProof::try_from_full(
-        proof,
-        fri_shape,
-    )
-    .expect("compact Goldilocks/Tip5 proof");
+    let compact = GoldilocksTip5PreprocessedCompactBatchStarkProof::try_from_full(proof, fri_shape)
+        .expect("compact Goldilocks/Tip5 proof");
 
     let err = prover
         .verify_goldilocks_tip5_preprocessed_compact(compact, &wrong_setup)
@@ -1403,11 +1395,7 @@ fn test_goldilocks_tip5_path_pruned_compact_round_trip_restores_full_proof() {
     let full_bytes = postcard::to_allocvec(&proof).expect("serialize full proof");
 
     let compact = prover
-        .compact_goldilocks_tip5_path_pruned_preprocessed(
-            proof,
-            &circuit_prover_data,
-            fri_shape,
-        )
+        .compact_goldilocks_tip5_path_pruned_preprocessed(proof, &circuit_prover_data, fri_shape)
         .expect("path-prune compact Goldilocks/Tip5 proof");
     for (query, query_proof) in compact
         .proof
@@ -1435,7 +1423,11 @@ fn test_goldilocks_tip5_path_pruned_compact_round_trip_restores_full_proof() {
             .input_batch_paths
             .iter()
             .chain(compact.commit_phase_paths.iter())
-            .any(|path_set| path_set.paths.paths.iter().any(|path| !path.siblings.is_empty())),
+            .any(|path_set| path_set
+                .paths
+                .paths
+                .iter()
+                .any(|path| !path.siblings.is_empty())),
         "fixture should include at least one pruned Merkle sibling"
     );
 
@@ -1508,10 +1500,7 @@ fn test_goldilocks_tip5_path_pruned_compact_round_trip_restores_full_proof() {
     let compact: GoldilocksTip5PathPrunedCompactBatchStarkProof =
         postcard::from_bytes(&compact_bytes).expect("deserialize compact proof");
     prover
-        .verify_goldilocks_tip5_path_pruned_preprocessed_compact(
-            compact,
-            &circuit_prover_data,
-        )
+        .verify_goldilocks_tip5_path_pruned_preprocessed_compact(compact, &circuit_prover_data)
         .expect("path-pruned compact verifier restores full proof before upstream verification");
 }
 
@@ -1686,11 +1675,7 @@ fn test_goldilocks_tip5_path_pruned_compact_rejects_tampered_merkle_path() {
     let (prover, proof, circuit_prover_data, fri_shape) =
         prove_goldilocks_tip5_ext2_public_plus_const(None);
     let compact = prover
-        .compact_goldilocks_tip5_path_pruned_preprocessed(
-            proof,
-            &circuit_prover_data,
-            fri_shape,
-        )
+        .compact_goldilocks_tip5_path_pruned_preprocessed(proof, &circuit_prover_data, fri_shape)
         .expect("path-prune compact Goldilocks/Tip5 proof");
     let compact_bytes = postcard::to_allocvec(&compact).expect("serialize compact proof");
 
@@ -1710,10 +1695,7 @@ fn test_goldilocks_tip5_path_pruned_compact_rejects_tampered_merkle_path() {
     }
     assert!(leaf_tampered, "fixture should include a pruned path");
     let err = prover
-        .verify_goldilocks_tip5_path_pruned_preprocessed_compact(
-            leaf_bad,
-            &circuit_prover_data,
-        )
+        .verify_goldilocks_tip5_path_pruned_preprocessed_compact(leaf_bad, &circuit_prover_data)
         .expect_err("tampered pruned Merkle leaf index must fail compact verification");
     assert!(
         format!("{err:?}").contains("leaf") || format!("{err:?}").contains("increasing"),
@@ -1749,13 +1731,13 @@ fn test_goldilocks_tip5_path_pruned_compact_rejects_tampered_merkle_path() {
             }
         }
     }
-    assert!(tampered, "fixture should include a serialized pruned sibling");
+    assert!(
+        tampered,
+        "fixture should include a serialized pruned sibling"
+    );
 
     prover
-        .verify_goldilocks_tip5_path_pruned_preprocessed_compact(
-            compact,
-            &circuit_prover_data,
-        )
+        .verify_goldilocks_tip5_path_pruned_preprocessed_compact(compact, &circuit_prover_data)
         .expect_err("tampered pruned Merkle path must fail upstream verification");
 }
 

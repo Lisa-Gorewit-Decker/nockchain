@@ -1389,11 +1389,7 @@ where
         _table_entry: &NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String> {
         self.0
-            .wrapper_from_config_with_preprocessed(
-                Vec::new(),
-                min_height,
-                circuit_extension_degree,
-            )
+            .wrapper_from_config_with_preprocessed(Vec::new(), min_height, circuit_extension_degree)
             .ok_or_else(|| {
                 format!(
                     "unsupported witness bus dimension {} for Poseidon1 config {:?}",

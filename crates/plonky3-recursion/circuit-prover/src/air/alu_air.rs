@@ -404,8 +404,7 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
                             break;
                         }
                     }
-                    if contiguous
-                        && Self::horner_ops_can_pack(preprocessed, plw, &chain[i..i + k])
+                    if contiguous && Self::horner_ops_can_pack(preprocessed, plw, &chain[i..i + k])
                     {
                         best_k = k;
                         break;
@@ -1167,14 +1166,7 @@ mod tests {
     fn packed_horner_sums_b_multiplicities() {
         let neg_one = Val::ZERO - Val::ONE;
         let mut prep = Vec::new();
-        prep.extend(horner_prep_row(
-            2,
-            4,
-            6,
-            8,
-            Val::from_u64(2),
-            Val::ZERO,
-        ));
+        prep.extend(horner_prep_row(2, 4, 6, 8, Val::from_u64(2), Val::ZERO));
         prep.extend(horner_prep_row(10, 4, 12, 14, neg_one, Val::ZERO));
 
         let air = AluAir::<Val, 2>::new_binomial_with_preprocessed(2, 1, Val::from_u64(7), prep, 2);

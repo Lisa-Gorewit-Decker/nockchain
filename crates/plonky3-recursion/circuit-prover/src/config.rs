@@ -11,17 +11,21 @@
 //! let config = config::baby_bear();
 //! ```
 
-use p3_baby_bear::{default_babybear_poseidon2_16, BabyBear, Poseidon2BabyBear};
-use p3_challenger::DuplexChallenger;
+use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
+use p3_blake3::Blake3;
+use p3_challenger::{DuplexChallenger, HashChallenger, SerializingChallenger64};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
 use p3_fri::{FriParameters, TwoAdicFriPcs};
 use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
-use p3_koala_bear::{default_koalabear_poseidon2_16, KoalaBear, Poseidon2KoalaBear};
+use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_16};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_symmetric::{CryptographicPermutation, PaddingFreeSponge, TruncatedPermutation};
+use p3_symmetric::{
+    CompressionFunctionFromHasher, CryptographicPermutation, PaddingFreeSponge, SerializingHasher,
+    TruncatedPermutation,
+};
 use p3_tip5_circuit_air::Tip5Perm;
 use p3_uni_stark::StarkConfig;
 
@@ -516,6 +520,69 @@ pub type KoalaBearConfig =
 /// Type alias for Goldilocks STARK configuration.
 pub type GoldilocksConfig =
     Config<Goldilocks, Poseidon2Goldilocks<8>, Poseidon2Goldilocks<8>, 8, 8, 4, 4, 4, 2>;
+
+pub type GoldilocksBlake3Challenge = BinomialExtensionField<Goldilocks, 2>;
+type GoldilocksBlake3Hash = SerializingHasher<Blake3>;
+type GoldilocksBlake3Compress = CompressionFunctionFromHasher<Blake3, 2, 32>;
+pub type GoldilocksBlake3ValMmcs =
+    MerkleTreeMmcs<Goldilocks, u8, GoldilocksBlake3Hash, GoldilocksBlake3Compress, 2, 32>;
+type GoldilocksBlake3ChallengeMmcs =
+    ExtensionMmcs<Goldilocks, GoldilocksBlake3Challenge, GoldilocksBlake3ValMmcs>;
+type GoldilocksBlake3Challenger =
+    SerializingChallenger64<Goldilocks, HashChallenger<u8, Blake3, 32>>;
+
+/// Goldilocks final-layer STARK config with BLAKE3 MMCS commitments and a
+/// BLAKE3 byte-serializing Fiat-Shamir transcript.
+///
+/// This config is intended for native-only final recursive layers. It is not
+/// recursion friendly: verifier circuits that must verify this proof would need
+/// BLAKE3 transcript and MMCS gadgets. Native verification remains a standard
+/// Plonky3 FRI STARK over Goldilocks with caller-supplied FRI parameters.
+pub type GoldilocksBlake3Config = StarkConfig<
+    TwoAdicFriPcs<
+        Goldilocks,
+        Radix2DitParallel<Goldilocks>,
+        GoldilocksBlake3ValMmcs,
+        GoldilocksBlake3ChallengeMmcs,
+    >,
+    GoldilocksBlake3Challenge,
+    GoldilocksBlake3Challenger,
+>;
+
+#[inline]
+pub fn goldilocks_blake3_val_mmcs(cap_height: usize) -> GoldilocksBlake3ValMmcs {
+    let hash = SerializingHasher::new(Blake3);
+    let compress = CompressionFunctionFromHasher::<Blake3, 2, 32>::new(Blake3);
+    MerkleTreeMmcs::new(hash, compress, cap_height)
+}
+
+#[inline]
+pub fn goldilocks_blake3_with_fri_shape(
+    log_blowup: usize,
+    num_queries: usize,
+    log_final_poly_len: usize,
+    max_log_arity: usize,
+    cap_height: usize,
+) -> GoldilocksBlake3Config {
+    let val_mmcs = goldilocks_blake3_val_mmcs(cap_height);
+    let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
+    let dft = Radix2DitParallel::default();
+    let fri_params = FriParameters {
+        log_blowup,
+        log_final_poly_len,
+        max_log_arity,
+        num_queries,
+        commit_proof_of_work_bits: GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+        query_proof_of_work_bits: GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+        mmcs: challenge_mmcs,
+    };
+    let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
+    let challenger = SerializingChallenger64::from_hasher(
+        b"p3-goldilocks-blake3-final-layer-v1".to_vec(),
+        Blake3,
+    );
+    StarkConfig::new(pcs, challenger)
+}
 
 /// **ADDITIVE (M-S5b S1.B Poseidon2-removal P1).** Tip5-unified
 /// Goldilocks STARK configuration: recursive Tip5Perm (5-round, width 16, rate
