@@ -49516,6 +49516,63 @@ mod tests {
     }
 
     #[test]
+    fn goldilocks_npo_tip5_packed_lookup_trace_columns_are_all_live() {
+        let width = NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_main_width();
+        let mut live = vec![false; width];
+        let mut mark = |index: usize| {
+            assert!(
+                index < width,
+                "packed trace column index {index} exceeds width {width}"
+            );
+            live[index] = true;
+        };
+
+        for round in 0..TIP5_PERM_ROUNDS {
+            for lane in 0..NativeTerminalCompiler::TIP5_LOOKUP_NS {
+                for byte in 0..NativeTerminalCompiler::TIP5_LOOKUP_NBYTES {
+                    mark(
+                        NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_b_col(
+                            round, lane, byte,
+                        ),
+                    );
+                    mark(
+                        NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_c_col(
+                            round, lane, byte,
+                        ),
+                    );
+                }
+                mark(
+                    NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_inv_col(round, lane),
+                );
+            }
+
+            for lane in 0..16 {
+                mark(
+                    NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_round_input_col(
+                        round, lane,
+                    ),
+                );
+                mark(
+                    NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_round_output_col(
+                        round, lane,
+                    ),
+                );
+            }
+        }
+
+        let missing = live
+            .iter()
+            .enumerate()
+            .filter_map(|(index, used)| (!*used).then_some(index))
+            .collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "current packed Tip5 AIR/LogUp/bridge quotient language leaves columns unused: {missing:?}"
+        );
+        assert_eq!(width, 436);
+    }
+
+    #[test]
     fn goldilocks_npo_tip5_packed_lookup_air_algebra_quotient_rejects_bad_trace_internals() {
         let (circuit, public_inputs, private_data) = build_many_merkle_tip5_test_circuit(2);
         let compiler = NativeTerminalCompiler::new("nock-terminal-v0", 60);

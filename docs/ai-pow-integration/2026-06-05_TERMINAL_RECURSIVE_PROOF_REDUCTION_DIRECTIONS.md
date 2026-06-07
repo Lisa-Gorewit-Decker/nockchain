@@ -291,6 +291,13 @@ NPO-value to packed trace-lane binding.
   `3` support theorem's `36,664` byte input-Merkle payload and `41,842` byte
   commit-round Merkle payload or avoid paying those support-theorem costs
   separately.
+- Do not expect a free partial-column opening win from the retained packed
+  trace. A focused liveness test now marks every one of the current `436`
+  packed trace columns as consumed by the AIR algebra, byte LogUp, or
+  selected-trace bridge quotient language. Any large packed-trace opening
+  reduction therefore needs a new trace/quotient/commitment shape, such as a
+  paired lookup or another relation that stops committing the current split-byte
+  rows, rather than simply omitting unused columns from the existing proof.
 - Also measure any candidate against the `142,807` byte merged-base floor. To
   meet binary `150 KiB` without reducing the base proof, all remaining support
   binding metadata and proof payload together must fit in `10,793` bytes. That
@@ -648,7 +655,11 @@ masked projection commitment.
   coalesced theorem, and the `198,287` byte compact-trace coalesced theorem
   show this must reduce opened trace/accumulator payload, not merely remove
   duplicate Merkle paths, duplicate round-input columns, or unused final
-  capacity output lanes. The cap-height `3` `249,184` byte optimistic
+  capacity output lanes. The retained `436`-column packed trace is now covered
+  by a liveness test showing every column is consumed by the current
+  AIR/LogUp/bridge quotient language, so reducing the packed-trace opening
+  requires a new trace or commitment shape. The cap-height `3` `249,184` byte
+  optimistic
   single-FRI floor further rules out merely sharing one transcript/FRI proof
   while keeping the current packed support FRI payload. It also cannot be
   achieved by increasing packed byte-LogUp group size to trade accumulator
