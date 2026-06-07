@@ -1799,9 +1799,23 @@ where
         new_start: bool,
         inputs: [Option<ExprId>; 16],
     ) -> Result<[ExprId; 16], CircuitBuilderError> {
+        Ok(self
+            .add_tip5_perm_for_challenger_base_with_op_id(config, new_start, inputs)?
+            .1)
+    }
+
+    /// Same as [`Self::add_tip5_perm_for_challenger_base`], but returns the
+    /// non-primitive operation id so diagnostic callers can tag challenger
+    /// transcript phases without changing circuit semantics.
+    pub fn add_tip5_perm_for_challenger_base_with_op_id(
+        &mut self,
+        config: crate::ops::Tip5Config,
+        new_start: bool,
+        inputs: [Option<ExprId>; 16],
+    ) -> Result<(NonPrimitiveOpId, [ExprId; 16]), CircuitBuilderError> {
         self.push_scope("tip5_perm_for_challenger_base");
 
-        let (_op_id, outputs) = self.add_tip5_perm(&crate::ops::Tip5PermCall {
+        let (op_id, outputs) = self.add_tip5_perm(&crate::ops::Tip5PermCall {
             config,
             new_start,
             inputs,
@@ -1813,7 +1827,7 @@ where
             core::array::from_fn(|i| outputs[i].expect("output should exist"));
 
         self.pop_scope();
-        Ok(output_exprs)
+        Ok((op_id, output_exprs))
     }
 }
 

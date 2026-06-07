@@ -1874,6 +1874,13 @@ mod tests {
         timings: L2PrepTimingsForTestPearl,
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum L2VerifierProfileModeForTestPearl {
+        FullNative,
+        FullNativeWithChallengerPhaseTags,
+        SkipPreprocessedTranscript,
+    }
+
     #[derive(Clone, Copy, Debug, Default)]
     struct L2PrepTimingsForTestPearl {
         circuit_define_ms: u128,
@@ -2020,6 +2027,26 @@ mod tests {
         l2_log_blowup: usize,
         l2_log_final_poly_len: usize,
     ) -> Result<L2VerifierPrepForTestPearl, String> {
+        build_l2_over_l1_outer_prep_for_test_pearl_with_preprocessed_transcript_profile_mode(
+            l1,
+            l1_config,
+            l1_fri_verifier_params,
+            l2_config,
+            l2_log_blowup,
+            l2_log_final_poly_len,
+            L2VerifierProfileModeForTestPearl::FullNative,
+        )
+    }
+
+    fn build_l2_over_l1_outer_prep_for_test_pearl_with_preprocessed_transcript_profile_mode(
+        l1: &AiPowL1OuterProof,
+        l1_config: p3_circuit_prover::config::GoldilocksTipsConfig,
+        l1_fri_verifier_params: &FriVerifierParams,
+        l2_config: p3_circuit_prover::config::GoldilocksTipsConfig,
+        l2_log_blowup: usize,
+        l2_log_final_poly_len: usize,
+        verifier_profile_mode: L2VerifierProfileModeForTestPearl,
+    ) -> Result<L2VerifierPrepForTestPearl, String> {
         use p3_batch_stark::ProverData;
         use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
         use p3_circuit_prover::{
@@ -2027,7 +2054,6 @@ mod tests {
             BatchStarkProver, CircuitProverData, ConstraintProfile, RecomposePreprocessor,
             TablePacking, Tip5Preprocessor,
         };
-        use p3_recursion::verifier::verify_p3_batch_proof_circuit;
 
         const TRACE_D: usize = 2;
 
@@ -2045,26 +2071,74 @@ mod tests {
 
         let lookup_gadget = LogUpGadget::new();
         let l1_table_provers = tip5_recompose_table_provers_for_l2();
-        let (verifier_inputs, mmcs_op_ids) = verify_p3_batch_proof_circuit::<
-            p3_circuit_prover::config::GoldilocksTipsConfig,
-            L2Comm,
-            L2InputProof,
-            L2InnerFri,
-            LogUpGadget,
-            Tip5Config,
-            WIDTH,
-            RATE,
-            TRACE_D,
-        >(
-            &l1_config,
-            &mut circuit_builder,
-            l1,
-            l1_fri_verifier_params,
-            &l1.stark_common,
-            &lookup_gadget,
-            Tip5Config::GOLDILOCKS_W16,
-            &l1_table_provers,
-        )
+        let (verifier_inputs, mmcs_op_ids) = match verifier_profile_mode {
+            L2VerifierProfileModeForTestPearl::FullNative => {
+                p3_recursion::verifier::verify_p3_batch_proof_circuit::<
+                    p3_circuit_prover::config::GoldilocksTipsConfig,
+                    L2Comm,
+                    L2InputProof,
+                    L2InnerFri,
+                    LogUpGadget,
+                    Tip5Config,
+                    WIDTH,
+                    RATE,
+                    TRACE_D,
+                >(
+                    &l1_config,
+                    &mut circuit_builder,
+                    l1,
+                    l1_fri_verifier_params,
+                    &l1.stark_common,
+                    &lookup_gadget,
+                    Tip5Config::GOLDILOCKS_W16,
+                    &l1_table_provers,
+                )
+            }
+            L2VerifierProfileModeForTestPearl::FullNativeWithChallengerPhaseTags => {
+                p3_recursion::verifier::verify_p3_batch_proof_circuit_profile_tag_challenger_phases_for_test_only::<
+                    p3_circuit_prover::config::GoldilocksTipsConfig,
+                    L2Comm,
+                    L2InputProof,
+                    L2InnerFri,
+                    LogUpGadget,
+                    Tip5Config,
+                    WIDTH,
+                    RATE,
+                    TRACE_D,
+                >(
+                    &l1_config,
+                    &mut circuit_builder,
+                    l1,
+                    l1_fri_verifier_params,
+                    &l1.stark_common,
+                    &lookup_gadget,
+                    Tip5Config::GOLDILOCKS_W16,
+                    &l1_table_provers,
+                )
+            }
+            L2VerifierProfileModeForTestPearl::SkipPreprocessedTranscript => {
+                p3_recursion::verifier::verify_p3_batch_proof_circuit_profile_skip_preprocessed_transcript_for_test_only::<
+                    p3_circuit_prover::config::GoldilocksTipsConfig,
+                    L2Comm,
+                    L2InputProof,
+                    L2InnerFri,
+                    LogUpGadget,
+                    Tip5Config,
+                    WIDTH,
+                    RATE,
+                    TRACE_D,
+                >(
+                    &l1_config,
+                    &mut circuit_builder,
+                    l1,
+                    l1_fri_verifier_params,
+                    &l1.stark_common,
+                    &lookup_gadget,
+                    Tip5Config::GOLDILOCKS_W16,
+                    &l1_table_provers,
+                )
+            }
+        }
         .map_err(|e| format!("build L2 verifier circuit over L1 proof: {e:?}"))?;
         let circuit_define_ms = circuit_define_start.elapsed().as_millis();
 
@@ -2204,24 +2278,25 @@ mod tests {
         })
     }
 
-    fn l2_tip5_tag_category_for_test_pearl(tag: &str) -> &'static str {
-        if tag.contains("mmcs") || tag.contains("merkle") || tag.contains("fri") {
-            "fri_mmcs"
+    fn l2_tip5_tag_category_for_test_pearl(tag: &str) -> String {
+        if let Some(rest) = tag.strip_prefix("challenger_phase/") {
+            let phase = rest.split('/').next().unwrap_or("unknown");
+            format!("challenger:{phase}")
+        } else if tag.contains("mmcs") || tag.contains("merkle") || tag.contains("fri") {
+            "fri_mmcs".to_string()
         } else if tag.contains("challenger") || tag.contains("transcript") {
-            "challenger"
+            "challenger".to_string()
         } else if tag.contains("public") {
-            "public"
+            "public".to_string()
         } else {
-            "other"
+            "other".to_string()
         }
     }
 
-    fn profile_l2_tip5_verifier_for_test_pearl(
+    fn profile_l2_tip5_circuit_ops_for_test_pearl(
         prep: &L2VerifierPrepForTestPearl,
-        l1: &AiPowL1OuterProof,
-        statement_digest_public_values: &[Val],
-    ) -> Result<L2Tip5ProfileForTestPearl, String> {
-        use p3_circuit::ops::{NpoTypeId, Op, Tip5Trace};
+    ) -> L2Tip5ProfileForTestPearl {
+        use p3_circuit::ops::{NpoTypeId, Op};
 
         let tip5_op_type = NpoTypeId::tip5_perm(Tip5Config::GOLDILOCKS_W16);
         let mut profile = L2Tip5ProfileForTestPearl {
@@ -2271,11 +2346,24 @@ mod tests {
                 tagged_tip5_ids.insert(*op_id);
                 *profile
                     .tag_categories
-                    .entry(l2_tip5_tag_category_for_test_pearl(tag).to_string())
+                    .entry(l2_tip5_tag_category_for_test_pearl(tag))
                     .or_default() += 1;
             }
         }
         profile.tagged_tip5_ops = tagged_tip5_ids.len();
+
+        profile
+    }
+
+    fn profile_l2_tip5_verifier_for_test_pearl(
+        prep: &L2VerifierPrepForTestPearl,
+        l1: &AiPowL1OuterProof,
+        statement_digest_public_values: &[Val],
+    ) -> Result<L2Tip5ProfileForTestPearl, String> {
+        use p3_circuit::ops::{NpoTypeId, Tip5Trace};
+
+        let tip5_op_type = NpoTypeId::tip5_perm(Tip5Config::GOLDILOCKS_W16);
+        let mut profile = profile_l2_tip5_circuit_ops_for_test_pearl(prep);
 
         let l1_public_values = l2_public_values_for_l1(l1, statement_digest_public_values);
         let input_pack_start = std::time::Instant::now();
@@ -3695,6 +3783,234 @@ mod tests {
         assert!(
             profile.tip5_trace_pow2_height >= profile.tip5_trace_rows,
             "reported Tip5 power-of-two height must cover the trace"
+        );
+    }
+
+    #[test]
+    #[ignore = "selected compact L2 verifier challenger phase profile is opt-in"]
+    fn selected_fast_l1_compact_l2_tip5_challenger_phase_profile_for_test_pearl() {
+        const L1_LOG_BLOWUP: usize = 3;
+        const L1_NUM_QUERIES: usize = 20;
+        const L1_CAP_HEIGHT: usize = 4;
+        const L1_LOG_FINAL_POLY_LEN: usize = 2;
+        const L2_LOG_BLOWUP: usize = 5;
+        const L2_NUM_QUERIES: usize = 12;
+        const L2_LOG_FINAL_POLY_LEN: usize = 2;
+        const L2_MAX_LOG_ARITY: usize = 3;
+        const L2_CAP_HEIGHT: usize = 4;
+
+        assert_eq!(L1_LOG_BLOWUP * L1_NUM_QUERIES, 60);
+        assert_eq!(L2_LOG_BLOWUP * L2_NUM_QUERIES, 60);
+
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+
+        let statement_digest_public_values = statement_digest_public_values_for_l1(&built);
+        let l1_config = pure_query_l1_stark_config_with_shape_and_cap(
+            L1_LOG_BLOWUP, L1_NUM_QUERIES, L1_CAP_HEIGHT,
+        );
+        let l1_prep = build_l1_outer_prep_for_test_pearl(&built, l1_config.clone(), DIGEST_ELEMS)
+            .expect("selected L1 prep");
+        let l1 = prove_l1_outer_with_prep_for_test_pearl(&l1_prep, &built, &proof)
+            .expect("selected L1 proof with cached prep")
+            .proof;
+        assert_eq!(
+            l1.public_binding_lanes, DIGEST_ELEMS,
+            "selected L1 proof must expose the statement digest"
+        );
+
+        let l2_config = pure_query_l1_stark_config_with_fri_shape(
+            L2_LOG_BLOWUP, L2_NUM_QUERIES, L2_LOG_FINAL_POLY_LEN, L2_MAX_LOG_ARITY, L2_CAP_HEIGHT,
+        );
+        let l2_prep =
+            build_l2_over_l1_outer_prep_for_test_pearl_with_preprocessed_transcript_profile_mode(
+                &l1,
+                l1_config,
+                &pure_query_fri_verifier_params_for_l1(L1_LOG_BLOWUP, L1_LOG_FINAL_POLY_LEN),
+                l2_config,
+                L2_LOG_BLOWUP,
+                L2_LOG_FINAL_POLY_LEN,
+                L2VerifierProfileModeForTestPearl::FullNativeWithChallengerPhaseTags,
+            )
+            .expect("selected phase-tagged L2 prep over statement-bound L1");
+        let phase_profile =
+            profile_l2_tip5_verifier_for_test_pearl(&l2_prep, &l1, &statement_digest_public_values)
+                .expect("profile selected L2 verifier challenger phases");
+
+        eprintln!(
+            "selected fast-L1 compact L2 Tip5 challenger phase summary [TEST_PEARL]: tagged_tip5_ops={} tip5_non_mmcs_ops={} untagged_non_mmcs_tip5_ops={} phase_counts={:?}",
+            phase_profile.tagged_tip5_ops,
+            phase_profile.tip5_non_mmcs_ops,
+            phase_profile
+                .tip5_non_mmcs_ops
+                .saturating_sub(phase_profile.tagged_tip5_ops),
+            phase_profile.tag_categories,
+        );
+
+        assert_eq!(
+            phase_profile.mmcs_ids_not_tip5, 0,
+            "MMCS private-data op ids should all identify Tip5 rows"
+        );
+        assert_eq!(
+            phase_profile.tip5_mmcs_ops + phase_profile.tip5_non_mmcs_ops,
+            phase_profile.tip5_ops,
+            "MMCS plus non-MMCS Tip5 counts should cover every Tip5 row"
+        );
+        assert!(
+            phase_profile.tagged_tip5_ops > 0,
+            "phase tags should account for challenger Tip5 rows"
+        );
+        assert!(
+            phase_profile.tagged_tip5_ops < phase_profile.tip5_non_mmcs_ops,
+            "the selected circuit should still expose non-MMCS, non-challenger Tip5 rows"
+        );
+        assert!(
+            phase_profile
+                .tag_categories
+                .contains_key("challenger:batch_pcs_verify"),
+            "FRI/PCS verification should be present in the challenger phase profile"
+        );
+    }
+
+    #[test]
+    #[ignore = "profile-only lower bound for verifier-key digest transcript work is opt-in"]
+    fn selected_fast_l1_compact_l2_preprocessed_transcript_lower_bound_for_test_pearl() {
+        const L1_LOG_BLOWUP: usize = 3;
+        const L1_NUM_QUERIES: usize = 20;
+        const L1_CAP_HEIGHT: usize = 4;
+        const L1_LOG_FINAL_POLY_LEN: usize = 2;
+        const L2_LOG_BLOWUP: usize = 5;
+        const L2_NUM_QUERIES: usize = 12;
+        const L2_LOG_FINAL_POLY_LEN: usize = 2;
+        const L2_MAX_LOG_ARITY: usize = 3;
+        const L2_CAP_HEIGHT: usize = 4;
+
+        assert_eq!(L1_LOG_BLOWUP * L1_NUM_QUERIES, 60);
+        assert_eq!(L2_LOG_BLOWUP * L2_NUM_QUERIES, 60);
+
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+
+        let l1_config = pure_query_l1_stark_config_with_shape_and_cap(
+            L1_LOG_BLOWUP, L1_NUM_QUERIES, L1_CAP_HEIGHT,
+        );
+        let l1_prep = build_l1_outer_prep_for_test_pearl(&built, l1_config.clone(), DIGEST_ELEMS)
+            .expect("selected L1 prep");
+        let l1 = prove_l1_outer_with_prep_for_test_pearl(&l1_prep, &built, &proof)
+            .expect("selected L1 proof with cached prep")
+            .proof;
+        assert_eq!(
+            l1.public_binding_lanes, DIGEST_ELEMS,
+            "selected L1 proof must expose the statement digest"
+        );
+
+        let l2_config = pure_query_l1_stark_config_with_fri_shape(
+            L2_LOG_BLOWUP, L2_NUM_QUERIES, L2_LOG_FINAL_POLY_LEN, L2_MAX_LOG_ARITY, L2_CAP_HEIGHT,
+        );
+        let l2_fri_params =
+            pure_query_fri_verifier_params_for_l1(L1_LOG_BLOWUP, L1_LOG_FINAL_POLY_LEN);
+        let full_prep = build_l2_over_l1_outer_prep_for_test_pearl(
+            &l1,
+            l1_config.clone(),
+            &l2_fri_params,
+            l2_config.clone(),
+            L2_LOG_BLOWUP,
+            L2_LOG_FINAL_POLY_LEN,
+        )
+        .expect("selected full-transcript L2 prep over statement-bound L1");
+        let skip_preprocessed_prep =
+            build_l2_over_l1_outer_prep_for_test_pearl_with_preprocessed_transcript_profile_mode(
+                &l1,
+                l1_config,
+                &l2_fri_params,
+                l2_config,
+                L2_LOG_BLOWUP,
+                L2_LOG_FINAL_POLY_LEN,
+                L2VerifierProfileModeForTestPearl::SkipPreprocessedTranscript,
+            )
+            .expect("selected skip-preprocessed-transcript L2 prep over statement-bound L1");
+
+        let full_profile = profile_l2_tip5_circuit_ops_for_test_pearl(&full_prep);
+        let skip_profile = profile_l2_tip5_circuit_ops_for_test_pearl(&skip_preprocessed_prep);
+        let saved_tip5 = full_profile.tip5_ops.saturating_sub(skip_profile.tip5_ops);
+        let saved_non_mmcs = full_profile
+            .tip5_non_mmcs_ops
+            .saturating_sub(skip_profile.tip5_non_mmcs_ops);
+        let full_pow2 = full_profile.tip5_ops.next_power_of_two();
+        let skip_pow2 = skip_profile.tip5_ops.next_power_of_two();
+        let full_over_previous = full_profile.tip5_ops.saturating_sub(full_pow2 / 2);
+        let skip_over_previous = skip_profile.tip5_ops.saturating_sub(skip_pow2 / 2);
+
+        eprintln!(
+            "selected fast-L1 compact L2 preprocessed-transcript lower-bound profile [TEST_PEARL]: full_tip5_ops={} skip_preprocessed_tip5_ops={} saved_tip5={} full_tip5_mmcs_ops={} skip_preprocessed_tip5_mmcs_ops={} full_tip5_non_mmcs_ops={} skip_preprocessed_tip5_non_mmcs_ops={} saved_non_mmcs={} full_mmcs_ids_not_tip5={} skip_preprocessed_mmcs_ids_not_tip5={} full_tip5_pow2_height={} skip_preprocessed_tip5_pow2_height={} full_rows_over_previous_pow2={} skip_preprocessed_rows_over_previous_pow2={} crosses_halving_boundary={} full_circuit_ops={} skip_preprocessed_circuit_ops={} full_non_primitive_by_type={:?} skip_preprocessed_non_primitive_by_type={:?}",
+            full_profile.tip5_ops,
+            skip_profile.tip5_ops,
+            saved_tip5,
+            full_profile.tip5_mmcs_ops,
+            skip_profile.tip5_mmcs_ops,
+            full_profile.tip5_non_mmcs_ops,
+            skip_profile.tip5_non_mmcs_ops,
+            saved_non_mmcs,
+            full_profile.mmcs_ids_not_tip5,
+            skip_profile.mmcs_ids_not_tip5,
+            full_pow2,
+            skip_pow2,
+            full_over_previous,
+            skip_over_previous,
+            skip_pow2 < full_pow2,
+            full_profile.circuit_ops,
+            skip_profile.circuit_ops,
+            full_profile.non_primitive_by_type,
+            skip_profile.non_primitive_by_type,
+        );
+
+        assert_eq!(
+            full_profile.mmcs_ids_not_tip5, 0,
+            "full transcript MMCS private-data op ids should all identify Tip5 rows"
+        );
+        assert_eq!(
+            skip_profile.mmcs_ids_not_tip5, 0,
+            "skip-preprocessed profile MMCS private-data op ids should all identify Tip5 rows"
+        );
+        assert!(
+            skip_profile.tip5_ops < full_profile.tip5_ops,
+            "skipping preprocessed transcript observations should reduce challenger Tip5 rows"
+        );
+        assert!(
+            saved_non_mmcs > 0,
+            "preprocessed transcript observations should only affect non-MMCS challenger rows"
         );
     }
 

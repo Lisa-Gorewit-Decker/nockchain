@@ -10,11 +10,12 @@
 //! (in `p3_circuit`) delegate to the standard Poseidon2 non-primitive op with full input and rate-output CTL exposure,
 //! and the executor runs the real permutation so the lookup argument enforces correctness.
 
+use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_circuit::ops::{Poseidon1Config, Poseidon2Config, Tip5Config};
-use p3_circuit::{CircuitBuilder, CircuitBuilderError};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_field::{ExtensionField, PrimeField64};
 
 use crate::Target;
@@ -53,6 +54,12 @@ pub struct CircuitChallenger<const WIDTH: usize, const RATE: usize, C: Challenge
     /// capacity `None` (zeros enforced by the compact D=1 AIR). Later permutations use
     /// `new_start=false` with the same capacity pattern and chaining.
     duplexed_once: bool,
+
+    /// Optional diagnostic phase name attached to challenger Tip5 operation ids.
+    profile_phase: Option<&'static str>,
+
+    /// Monotone counter used to make diagnostic phase tags unique.
+    profile_phase_counter: usize,
 }
 
 impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
@@ -72,7 +79,33 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             output_buffer: Vec::new(),
             initialized: false,
             duplexed_once: false,
+            profile_phase: None,
+            profile_phase_counter: 0,
         }
+    }
+
+    /// Set an optional diagnostic phase label for future challenger Tip5 rows.
+    ///
+    /// The label is recorded only in circuit metadata via `CircuitBuilder::tag_op`.
+    /// It does not affect the transcript state, proof constraints, or witness data.
+    pub fn set_profile_phase(&mut self, phase: Option<&'static str>) {
+        self.profile_phase = phase;
+    }
+
+    fn tag_profile_phase<EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        op_id: NonPrimitiveOpId,
+    ) where
+        EF: p3_field::Field,
+    {
+        if let Some(phase) = self.profile_phase {
+            let tag = format!("challenger_phase/{phase}/{}", self.profile_phase_counter);
+            circuit
+                .tag_op(op_id, tag)
+                .expect("challenger phase profile tags must be unique");
+        }
+        self.profile_phase_counter += 1;
     }
 
     /// Initialize the challenger state with zeros.
@@ -242,9 +275,10 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             core::array::from_fn(|i| if i < RATE { Some(self.state[i]) } else { None });
         self.duplexed_once = true;
 
-        let outputs = circuit
-            .add_tip5_perm_for_challenger_base(tip5_config, new_start, inputs)
+        let (op_id, outputs) = circuit
+            .add_tip5_perm_for_challenger_base_with_op_id(tip5_config, new_start, inputs)
             .expect("tip5 base permutation should succeed");
+        self.tag_profile_phase(circuit, op_id);
 
         self.state = outputs.to_vec();
     }

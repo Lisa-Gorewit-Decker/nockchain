@@ -51,6 +51,36 @@ pub type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
 /// Type-erased recursive AIR entry for non-primitive tables.
 pub type DynRecursionAirEntry<SC> = DynamicAirEntry<SC>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpenedValuesTranscriptMode {
+    FullNative,
+    FullNativeWithChallengerPhaseTagsForProfileOnly,
+    SkipPreprocessedForProfileOnly,
+}
+
+impl OpenedValuesTranscriptMode {
+    const fn tag_challenger_phases_for_profile_only(self) -> bool {
+        matches!(
+            self,
+            Self::FullNativeWithChallengerPhaseTagsForProfileOnly
+        )
+    }
+
+    const fn observe_preprocessed_opened_values(self) -> bool {
+        !matches!(self, Self::SkipPreprocessedForProfileOnly)
+    }
+}
+
+fn set_challenger_phase<const WIDTH: usize, const RATE: usize, CP: ChallengerPermConfig>(
+    challenger: &mut CircuitChallenger<WIDTH, RATE, CP>,
+    mode: OpenedValuesTranscriptMode,
+    phase: &'static str,
+) {
+    if mode.tag_challenger_phases_for_profile_only() {
+        challenger.set_profile_phase(Some(phase));
+    }
+}
+
 /// Wrapper enum for heterogeneous circuit table AIRs used by circuit-prover tables.
 pub enum CircuitTablesAir<SC: StarkGenericConfig, const D: usize> {
     Const(ConstAir<Val<SC>, D>),
@@ -270,6 +300,229 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    verify_p3_batch_proof_circuit_with_opened_values_transcript_mode::<
+        SC,
+        Comm,
+        InputProof,
+        OpeningProof,
+        LG,
+        CP,
+        WIDTH,
+        RATE,
+        TRACE_D,
+    >(
+        config,
+        circuit,
+        proof,
+        pcs_params,
+        common_data,
+        lookup_gadget,
+        challenger_perm_config,
+        non_primitive_provers,
+        OpenedValuesTranscriptMode::FullNative,
+    )
+}
+
+/// Build the circuit-prover batch-STARK verifier while deliberately omitting
+/// preprocessed opened-value observations from the in-circuit Fiat-Shamir
+/// transcript.
+///
+/// This is **not a verifier** and must not be wired into production. It exists
+/// only to profile the circuit-size lower bound of a future transcript format
+/// that would replace those deterministic observations with a sound
+/// verifier-key/setup digest. The resulting circuit will generally reject
+/// proofs produced under the native transcript.
+#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
+pub fn verify_p3_batch_proof_circuit_profile_skip_preprocessed_transcript_for_test_only<
+    SC: StarkGenericConfig + 'static,
+    Comm: Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        > + Clone
+        + ObservableCommitment,
+    InputProof: Recursive<SC::Challenge>,
+    OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+    LG: RecursiveLookupGadget<SC::Challenge>,
+    CP: ChallengerPermConfig,
+    const WIDTH: usize,
+    const RATE: usize,
+    const TRACE_D: usize,
+>(
+    config: &SC,
+    circuit: &mut CircuitBuilder<SC::Challenge>,
+    proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<SC>,
+    pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
+    common_data: &CommonData<SC>,
+    lookup_gadget: &LG,
+    challenger_perm_config: CP,
+    non_primitive_provers: &[Box<dyn TableProver<SC>>],
+) -> Result<
+    (
+        BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>,
+        Vec<NonPrimitiveOpId>,
+    ),
+    VerificationError,
+>
+where
+    <SC as StarkGenericConfig>::Pcs: RecursivePcs<
+            SC,
+            InputProof,
+            OpeningProof,
+            Comm,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+        >,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing + ExtractBinomialW<Val<SC>>,
+    <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    verify_p3_batch_proof_circuit_with_opened_values_transcript_mode::<
+        SC,
+        Comm,
+        InputProof,
+        OpeningProof,
+        LG,
+        CP,
+        WIDTH,
+        RATE,
+        TRACE_D,
+    >(
+        config,
+        circuit,
+        proof,
+        pcs_params,
+        common_data,
+        lookup_gadget,
+        challenger_perm_config,
+        non_primitive_provers,
+        OpenedValuesTranscriptMode::SkipPreprocessedForProfileOnly,
+    )
+}
+
+/// Build the circuit-prover batch-STARK verifier with the native transcript
+/// and diagnostic challenger phase tags.
+///
+/// This is not a separate proof system. It only annotates challenger Tip5
+/// operation ids in the built circuit metadata so profiling can attribute
+/// non-MMCS transcript rows to verifier phases.
+#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
+pub fn verify_p3_batch_proof_circuit_profile_tag_challenger_phases_for_test_only<
+    SC: StarkGenericConfig + 'static,
+    Comm: Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        > + Clone
+        + ObservableCommitment,
+    InputProof: Recursive<SC::Challenge>,
+    OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+    LG: RecursiveLookupGadget<SC::Challenge>,
+    CP: ChallengerPermConfig,
+    const WIDTH: usize,
+    const RATE: usize,
+    const TRACE_D: usize,
+>(
+    config: &SC,
+    circuit: &mut CircuitBuilder<SC::Challenge>,
+    proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<SC>,
+    pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
+    common_data: &CommonData<SC>,
+    lookup_gadget: &LG,
+    challenger_perm_config: CP,
+    non_primitive_provers: &[Box<dyn TableProver<SC>>],
+) -> Result<
+    (
+        BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>,
+        Vec<NonPrimitiveOpId>,
+    ),
+    VerificationError,
+>
+where
+    <SC as StarkGenericConfig>::Pcs: RecursivePcs<
+            SC,
+            InputProof,
+            OpeningProof,
+            Comm,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+        >,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing + ExtractBinomialW<Val<SC>>,
+    <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    verify_p3_batch_proof_circuit_with_opened_values_transcript_mode::<
+        SC,
+        Comm,
+        InputProof,
+        OpeningProof,
+        LG,
+        CP,
+        WIDTH,
+        RATE,
+        TRACE_D,
+    >(
+        config,
+        circuit,
+        proof,
+        pcs_params,
+        common_data,
+        lookup_gadget,
+        challenger_perm_config,
+        non_primitive_provers,
+        OpenedValuesTranscriptMode::FullNativeWithChallengerPhaseTagsForProfileOnly,
+    )
+}
+
+#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
+fn verify_p3_batch_proof_circuit_with_opened_values_transcript_mode<
+    SC: StarkGenericConfig + 'static,
+    Comm: Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        > + Clone
+        + ObservableCommitment,
+    InputProof: Recursive<SC::Challenge>,
+    OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+    LG: RecursiveLookupGadget<SC::Challenge>,
+    CP: ChallengerPermConfig,
+    const WIDTH: usize,
+    const RATE: usize,
+    const TRACE_D: usize,
+>(
+    config: &SC,
+    circuit: &mut CircuitBuilder<SC::Challenge>,
+    proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<SC>,
+    pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
+    common_data: &CommonData<SC>,
+    lookup_gadget: &LG,
+    challenger_perm_config: CP,
+    non_primitive_provers: &[Box<dyn TableProver<SC>>],
+    opened_values_transcript_mode: OpenedValuesTranscriptMode,
+) -> Result<
+    (
+        BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>,
+        Vec<NonPrimitiveOpId>,
+    ),
+    VerificationError,
+>
+where
+    <SC as StarkGenericConfig>::Pcs: RecursivePcs<
+            SC,
+            InputProof,
+            OpeningProof,
+            Comm,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+        >,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing + ExtractBinomialW<Val<SC>>,
+    <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
     proof
         .validate()
         .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
@@ -343,7 +596,7 @@ where
 
     let common = &verifier_inputs.common_data;
 
-    let mmcs_op_ids = verify_batch_circuit::<
+    let mmcs_op_ids = verify_batch_circuit_with_opened_values_transcript_mode::<
         CircuitTablesAir<SC, TRACE_D>,
         SC,
         Comm,
@@ -363,6 +616,7 @@ where
         common,
         lookup_gadget,
         challenger_perm_config,
+        opened_values_transcript_mode,
     )?;
 
     Ok((verifier_inputs, mmcs_op_ids))
@@ -400,6 +654,70 @@ pub fn verify_batch_circuit<
     common: &CommonDataTargets<SC, Comm>,
     lookup_gadget: &LG,
     challenger_perm_config: CP,
+) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
+where
+    A: RecursiveAir<Val<SC>, SC::Challenge, LG> + P3BaseAir<Val<SC>>,
+    <SC as StarkGenericConfig>::Pcs: RecursivePcs<
+            SC,
+            InputProof,
+            OpeningProof,
+            Comm,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+        >,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
+    <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
+{
+    verify_batch_circuit_with_opened_values_transcript_mode::<
+        A,
+        SC,
+        Comm,
+        InputProof,
+        OpeningProof,
+        LG,
+        CP,
+        WIDTH,
+        RATE,
+    >(
+        config,
+        airs,
+        circuit,
+        proof_targets,
+        public_values,
+        pcs_params,
+        common,
+        lookup_gadget,
+        challenger_perm_config,
+        OpenedValuesTranscriptMode::FullNative,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_batch_circuit_with_opened_values_transcript_mode<
+    A,
+    SC: StarkGenericConfig,
+    Comm: Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        > + Clone
+        + ObservableCommitment,
+    InputProof: Recursive<SC::Challenge>,
+    OpeningProof: Recursive<SC::Challenge>,
+    LG: RecursiveLookupGadget<SC::Challenge>,
+    CP: ChallengerPermConfig,
+    const WIDTH: usize,
+    const RATE: usize,
+>(
+    config: &SC,
+    airs: &[A],
+    circuit: &mut CircuitBuilder<SC::Challenge>,
+    proof_targets: &BatchProofTargets<SC, Comm, OpeningProof>,
+    public_values: &[Vec<Target>],
+    pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
+    common: &CommonDataTargets<SC, Comm>,
+    lookup_gadget: &LG,
+    challenger_perm_config: CP,
+    opened_values_transcript_mode: OpenedValuesTranscriptMode,
 ) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
 where
     A: RecursiveAir<Val<SC>, SC::Challenge, LG> + P3BaseAir<Val<SC>>,
@@ -629,6 +947,11 @@ where
     // Native uses observe_base_as_algebra_element which decomposes to D coefficients,
     // so we use observe_ext to match.
     let mut challenger = CircuitChallenger::<WIDTH, RATE, CP>::new(challenger_perm_config);
+    set_challenger_phase(
+        &mut challenger,
+        opened_values_transcript_mode,
+        "batch_instance_shape",
+    );
     let inst_count_target = circuit.alloc_const(
         SC::Challenge::from_usize(n_instances),
         "number of instances",
@@ -666,6 +989,11 @@ where
         challenger.observe_ext(circuit, quotient_chunks_target);
     }
 
+    set_challenger_phase(
+        &mut challenger,
+        opened_values_transcript_mode,
+        "batch_trace_commitments_public_values",
+    );
     challenger.observe_slice(
         circuit,
         &commitments_targets.trace_targets.to_observation_targets(),
@@ -677,6 +1005,11 @@ where
     // Observe preprocessed widths for each instance. If a global
     // preprocessed commitment exists, observe it once.
     // Native uses observe_base_as_algebra_element, so we use observe_ext.
+    set_challenger_phase(
+        &mut challenger,
+        opened_values_transcript_mode,
+        "batch_preprocessed_commitment",
+    );
     for &pre_w in preprocessed_widths.iter() {
         let pre_w_target =
             circuit.alloc_const(SC::Challenge::from_usize(pre_w), "preprocessed width");
@@ -698,6 +1031,11 @@ where
     }
 
     // Fetch lookups and sample their challenges.
+    set_challenger_phase(
+        &mut challenger,
+        opened_values_transcript_mode,
+        "batch_lookup_challenges",
+    );
     let challenges_per_instance = get_perm_challenges::<SC, CP, WIDTH, RATE, LG>(
         circuit,
         &mut challenger,
@@ -707,6 +1045,11 @@ where
 
     // Then, observe the permutation tables, if any.
     if is_lookup {
+        set_challenger_phase(
+            &mut challenger,
+            opened_values_transcript_mode,
+            "batch_permutation_commitment_cumulatives",
+        );
         challenger.observe_slice(
             circuit,
             &commitments_targets
@@ -723,8 +1066,18 @@ where
     }
 
     // Sample alpha challenge (extension field element)
+    set_challenger_phase(
+        &mut challenger,
+        opened_values_transcript_mode,
+        "batch_sample_alpha",
+    );
     let alpha = challenger.sample_ext(circuit);
 
+    set_challenger_phase(
+        &mut challenger,
+        opened_values_transcript_mode,
+        "batch_quotient_commitment",
+    );
     challenger.observe_slice(
         circuit,
         &commitments_targets
@@ -735,6 +1088,11 @@ where
         challenger.observe_slice(circuit, &random_commit.to_observation_targets());
     }
     // Sample zeta challenge (extension field element)
+    set_challenger_phase(
+        &mut challenger,
+        opened_values_transcript_mode,
+        "batch_sample_zeta",
+    );
     let zeta = challenger.sample_ext(circuit);
 
     // Build per-instance domains.
@@ -983,8 +1341,14 @@ where
         fri_random_rounds,
         common.preprocessed.is_some(),
         is_lookup,
+        opened_values_transcript_mode,
     );
 
+    set_challenger_phase(
+        &mut challenger,
+        opened_values_transcript_mode,
+        "batch_pcs_challenges",
+    );
     let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE, CP>(
         circuit,
         &mut challenger,
@@ -993,6 +1357,11 @@ where
         pcs_params,
     )?;
 
+    set_challenger_phase(
+        &mut challenger,
+        opened_values_transcript_mode,
+        "batch_pcs_verify",
+    );
     let mmcs_op_ids = pcs.verify_circuit::<WIDTH, RATE, CP>(
         circuit,
         &pcs_challenges,
@@ -1235,6 +1604,7 @@ fn observe_opened_values_circuit<
     fri_random_rounds: &[Vec<Vec<Vec<Target>>>],
     has_preprocessed: bool,
     is_lookup: bool,
+    opened_values_transcript_mode: OpenedValuesTranscriptMode,
 ) where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField64,
@@ -1259,6 +1629,11 @@ fn observe_opened_values_circuit<
         .first()
         .is_some_and(|i| i.opened_values_no_lookups.random_targets.is_some());
     if has_random_round {
+        set_challenger_phase(
+            challenger,
+            opened_values_transcript_mode,
+            "opened_values_random",
+        );
         let rand_round = fri_random_rounds.get(round_idx);
         for (mat_idx, inst) in instances.iter().enumerate() {
             if let Some(random_vals) = &inst.opened_values_no_lookups.random_targets {
@@ -1274,6 +1649,11 @@ fn observe_opened_values_circuit<
     // 2. Trace round: for each instance (= mat), one or two points depending
     // on whether that AIR opened a next row.
     {
+        set_challenger_phase(
+            challenger,
+            opened_values_transcript_mode,
+            "opened_values_trace",
+        );
         let rand_round = fri_random_rounds.get(round_idx);
         for (mat_idx, inst) in instances.iter().enumerate() {
             let fri_rand_local = rand_round
@@ -1302,6 +1682,11 @@ fn observe_opened_values_circuit<
 
     // 3. Quotient round: mats are flattened chunks across all instances, one point each.
     {
+        set_challenger_phase(
+            challenger,
+            opened_values_transcript_mode,
+            "opened_values_quotient",
+        );
         let rand_round = fri_random_rounds.get(round_idx);
         let mut flat_mat_idx: usize = 0;
         for (inst, &qd) in instances.iter().zip(quotient_degrees.iter()) {
@@ -1322,22 +1707,35 @@ fn observe_opened_values_circuit<
     }
 
     // 4. Preprocessed round (if present): mats are indexed by matrix_to_instance order.
+    // The profile-only mode intentionally skips only the Fiat-Shamir
+    // observations for these deterministic values. It still advances the FRI
+    // round cursor because the underlying proof/opening layout is unchanged.
     if has_preprocessed {
+        set_challenger_phase(
+            challenger,
+            opened_values_transcript_mode,
+            "opened_values_preprocessed",
+        );
         let rand_round = fri_random_rounds.get(round_idx);
         let mut mat_idx: usize = 0;
-        for inst in instances {
-            if let Some(prep_local) = &inst.opened_values_no_lookups.preprocessed_local_targets {
-                let fri_rand_local = rand_round
-                    .and_then(|r| r.get(mat_idx))
-                    .and_then(|m| m.first());
-                let fri_rand_next = rand_round
-                    .and_then(|r| r.get(mat_idx))
-                    .and_then(|m| m.get(1));
-                observe_point(circuit, challenger, prep_local, fri_rand_local);
-                if let Some(prep_next) = &inst.opened_values_no_lookups.preprocessed_next_targets {
-                    observe_point(circuit, challenger, prep_next, fri_rand_next);
+        if opened_values_transcript_mode.observe_preprocessed_opened_values() {
+            for inst in instances {
+                if let Some(prep_local) = &inst.opened_values_no_lookups.preprocessed_local_targets
+                {
+                    let fri_rand_local = rand_round
+                        .and_then(|r| r.get(mat_idx))
+                        .and_then(|m| m.first());
+                    let fri_rand_next = rand_round
+                        .and_then(|r| r.get(mat_idx))
+                        .and_then(|m| m.get(1));
+                    observe_point(circuit, challenger, prep_local, fri_rand_local);
+                    if let Some(prep_next) =
+                        &inst.opened_values_no_lookups.preprocessed_next_targets
+                    {
+                        observe_point(circuit, challenger, prep_next, fri_rand_next);
+                    }
+                    mat_idx += 1;
                 }
-                mat_idx += 1;
             }
         }
         round_idx += 1;
@@ -1345,6 +1743,11 @@ fn observe_opened_values_circuit<
 
     // 5. Permutation round (if present): for each instance with non-empty permutation.
     if is_lookup {
+        set_challenger_phase(
+            challenger,
+            opened_values_transcript_mode,
+            "opened_values_permutation",
+        );
         let rand_round = fri_random_rounds.get(round_idx);
         let mut mat_idx: usize = 0;
         for inst in instances {

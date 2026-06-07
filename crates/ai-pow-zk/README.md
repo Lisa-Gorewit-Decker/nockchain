@@ -58,7 +58,11 @@ artifact.
 > L2 verifier profile now counts `4,791` Tip5 rows, padded to `8,192`, only
 > `695` rows above the `4,096` halving boundary; simple hidden-L1 cap retuning
 > does not cross it, and cap `5/6` currently exposes a recursive-verifier
-> support gap despite native L1 verification passing. A focused
+> support gap despite native L1 verification passing. New diagnostics show that
+> deterministic preprocessed transcript omission saves only `70` Tip5 rows
+> (`4,791 -> 4,721`) and does not cross the halving boundary; challenger
+> Fiat-Shamir phase tags account for only `371` non-MMCS rows, leaving `2,200`
+> non-MMCS/non-challenger Tip5 rows as the next row-reduction target. A focused
 > `lb4,nq15`
 > frontier sweep rules out cheap FRI/cap retuning: the fastest-size frontier is
 > still `174,676` bytes. The relaxed size gate is now plausibly in range; the

@@ -116,15 +116,23 @@ Done and verified:
   `2,001` `recompose/coeff` rows, and `54` regular recompose rows. The Tip5
   table is padded to `8,192` rows, so the selected route needs to remove only
   `695` Tip5 rows to halve the dominant Tip5 table height to `4,096`. The
-  compiled Tip5 calls split into `2,220` MMCS op IDs and `2,571` non-MMCS
-  challenger/transcript rows; the generated trace has `2,620` rows carrying
-  explicit `mmcs_bit` bindings. A hidden-L1 cap-height profile does not provide
-  a cheap crossing: cap `3` has `4,967` Tip5 rows, cap `4` has `4,791`, and
-  cap `5/6` L1 proofs verify natively but the current L2 recursive verifier
-  rejects them with witness conflicts. Cap retuning is therefore not a
-  production lever until the higher-cap recursive-verifier support gap is
-  fixed, and even then the cap `3 -> 4` slope suggests it will not remove
-  `695` rows without other changes.
+  compiled Tip5 calls split into `2,220` MMCS private-data op IDs and `2,571`
+  non-MMCS rows; the generated trace has `2,620` rows carrying explicit
+  `mmcs_bit` bindings. A new challenger phase-tag profile accounts for only
+  `371` of the non-MMCS rows as Fiat-Shamir challenger work; the largest
+  tagged challenger phases are opened permutation values (`88`), opened trace
+  values (`84`), opened preprocessed values (`69`), and PCS challenge derivation
+  (`58`). The remaining `2,200` non-MMCS/non-challenger Tip5 rows are now the
+  main unresolved row bucket after MMCS. A profile-only circuit that skips
+  deterministic preprocessed opened-value transcript observations saves only
+  `70` Tip5 rows (`4,791 -> 4,721`) and still pads to `8,192`, so a
+  verifier-key/setup-digest transcript by itself does not cross the `4,096`
+  boundary. A hidden-L1 cap-height profile does not provide a cheap crossing:
+  cap `3` has `4,967` Tip5 rows, cap `4` has `4,791`, and cap `5/6` L1 proofs
+  verify natively but the current L2 recursive verifier rejects them with
+  witness conflicts. Cap retuning is therefore not a production lever until the
+  higher-cap recursive-verifier support gap is fixed, and even then the cap
+  `3 -> 4` slope suggests it will not remove `695` rows without other changes.
 - The smaller L2 `lb=6,nq=10` row verifies at `132,682` bytes actual compact
   wrapper and `131,803` bytes metadata-free body, but L2 proving rises to
   `107.617s`. The faster L2 `lb=4,nq=15` row proves in `27.342s` but measures
@@ -221,6 +229,14 @@ What remains:
   remains in cached L1 STARK proving. Reaching `~30s` total requires a real L1/L2
   batch-STARK/PCS reduction rather than only setup caching, quotient
   optimization, or recursive-witness optimization.
+- Investigate the `2,200` selected-L2 Tip5 rows that are neither MMCS
+  private-data rows nor challenger transcript rows. The current evidence rules
+  out deterministic preprocessed opened-value transcript omission as a primary
+  lever: it saves `70` rows and leaves the Tip5 table at `8,192` padded rows.
+  The next viable row-reduction work must either remove/merge those
+  non-MMCS/non-challenger Tip5 rows, reduce MMCS rows directly, or change the
+  recursive verifier proof shape so those tables are not committed at the
+  current L2 LDE volume.
 - Count the final certificate bytes exactly, including any carried public-value
   limbs, verifier-key/setup digest, and chain-owned statement metadata that is
   not otherwise derivable by the verifier.
@@ -1452,8 +1468,35 @@ padded to `8,192` rows, so reducing the selected verifier by `695` Tip5 rows
 would cross the `4,096` boundary and should materially reduce the dominant
 main/permutation trace Merkle commitments. The split is not purely MMCS:
 `2,220` compiled Tip5 op IDs are MMCS private-data ops, while `2,571` are
-non-MMCS challenger/transcript rows; the generated trace has `2,620` rows with
-explicit `mmcs_bit` bindings.
+non-MMCS rows; the generated trace has `2,620` rows with explicit `mmcs_bit`
+bindings.
+
+A phase-tagged full-transcript diagnostic then split the non-MMCS row bucket:
+only `371` rows are challenger Fiat-Shamir duplexes. The tagged challenger
+phases are:
+
+| Challenger phase | Tip5 rows |
+|---|---:|
+| Opened permutation values | `88` |
+| Opened trace values | `84` |
+| Opened preprocessed values | `69` |
+| PCS challenge derivation | `58` |
+| Permutation commitment + global cumulatives | `30` |
+| Preprocessed commitment/widths | `9` |
+| Trace commitments + public values | `9` |
+| Quotient commitment | `8` |
+| Quotient opened values | `8` |
+| Instance shape binding | `5` |
+| PCS verify transcript | `2` |
+| Lookup challenge sampling | `1` |
+
+This means `2,200` selected-L2 Tip5 rows are non-MMCS but also not challenger
+transcript rows. A profile-only lower bound that skips deterministic
+preprocessed opened-value transcript observations removes only `70` Tip5 rows:
+`4,791 -> 4,721`. The table still pads to `8,192` rows, with `625` rows over
+the previous power-of-two boundary. A verifier-key/setup-digest transcript may
+still be useful for wire-size cleanliness, but it is not the primary time lever
+unless paired with a larger reduction of the non-challenger or MMCS Tip5 rows.
 
 A hidden-L1 cap-height profile checked the cheapest possible way to reduce
 MMCS path hashing before redesigning the verifier relation. It is not enough.
