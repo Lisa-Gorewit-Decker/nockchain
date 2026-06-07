@@ -932,6 +932,146 @@ fn l1_circuit_prover_data_with_config_and_table_packing(
     ))
 }
 
+#[derive(Clone, PartialEq)]
+struct CompactBatchL1CircuitShape {
+    witness_count: u32,
+    ops: Vec<p3_circuit::ops::Op<Challenge>>,
+    public_rows: Vec<p3_circuit::WitnessId>,
+    public_flat_len: usize,
+    private_input_rows: Vec<p3_circuit::WitnessId>,
+    private_flat_len: usize,
+    enabled_op_types: Vec<NpoTypeId>,
+    expr_to_widx: Vec<(p3_circuit::ExprId, p3_circuit::WitnessId)>,
+    trace_generator_order: Vec<NpoTypeId>,
+    trace_generator_types: Vec<NpoTypeId>,
+    tag_to_witness: Vec<(String, p3_circuit::WitnessId)>,
+    tag_to_op_id: Vec<(String, NonPrimitiveOpId)>,
+    witness_rewrite: Option<Vec<(p3_circuit::WitnessId, p3_circuit::WitnessId)>>,
+}
+
+fn compact_batch_l1_circuit_shape(
+    circuit: &p3_circuit::Circuit<Challenge>,
+) -> CompactBatchL1CircuitShape {
+    let mut enabled_op_types = circuit.enabled_ops.keys().cloned().collect::<Vec<_>>();
+    enabled_op_types.sort();
+    let mut trace_generator_types = circuit
+        .non_primitive_trace_generators
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    trace_generator_types.sort();
+    let mut expr_to_widx = circuit
+        .expr_to_widx
+        .iter()
+        .map(|(&expr, &witness)| (expr, witness))
+        .collect::<Vec<_>>();
+    expr_to_widx.sort_by_key(|(expr, _)| *expr);
+    let mut tag_to_witness = circuit
+        .tag_to_witness
+        .iter()
+        .map(|(tag, &witness)| (tag.clone(), witness))
+        .collect::<Vec<_>>();
+    tag_to_witness.sort_by(|(left, _), (right, _)| left.cmp(right));
+    let mut tag_to_op_id = circuit
+        .tag_to_op_id
+        .iter()
+        .map(|(tag, &op_id)| (tag.clone(), op_id))
+        .collect::<Vec<_>>();
+    tag_to_op_id.sort_by(|(left, _), (right, _)| left.cmp(right));
+    let witness_rewrite = circuit.witness_rewrite.as_ref().map(|rewrite| {
+        let mut entries = rewrite
+            .iter()
+            .map(|(&from, &to)| (from, to))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(from, _)| *from);
+        entries
+    });
+
+    CompactBatchL1CircuitShape {
+        witness_count: circuit.witness_count,
+        ops: circuit.ops.clone(),
+        public_rows: circuit.public_rows.clone(),
+        public_flat_len: circuit.public_flat_len,
+        private_input_rows: circuit.private_input_rows.clone(),
+        private_flat_len: circuit.private_flat_len,
+        enabled_op_types,
+        expr_to_widx,
+        trace_generator_order: circuit.non_primitive_trace_generator_order.clone(),
+        trace_generator_types,
+        tag_to_witness,
+        tag_to_op_id,
+        witness_rewrite,
+    }
+}
+
+struct CompactBatchL1Prep {
+    circuit_shape: CompactBatchL1CircuitShape,
+    table_packing: p3_circuit_prover::TablePacking,
+    circuit_prover_data: std::sync::Arc<
+        p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksTipsConfig>,
+    >,
+    prover: p3_circuit_prover::BatchStarkProver<p3_circuit_prover::config::GoldilocksTipsConfig>,
+}
+
+fn build_compact_batch_l1_prep(
+    built: &BuiltCompositeL1,
+) -> Result<CompactBatchL1Prep, VerificationError> {
+    use p3_circuit_prover::BatchStarkProver;
+
+    let table_packing = compact_batch_l1_table_packing(DIGEST_ELEMS);
+    let (table_packing, circuit_prover_data) =
+        l1_circuit_prover_data_with_config_and_table_packing(
+            built,
+            &compact_batch_l1_stark_config(),
+            table_packing,
+        )?;
+    let mut prover = BatchStarkProver::new(compact_batch_l1_stark_config())
+        .with_table_packing(table_packing.clone());
+    prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+    prover.register_recompose_table::<2>(true);
+
+    Ok(CompactBatchL1Prep {
+        circuit_shape: compact_batch_l1_circuit_shape(&built.circuit),
+        table_packing,
+        circuit_prover_data: std::sync::Arc::new(circuit_prover_data),
+        prover,
+    })
+}
+
+fn ensure_compact_batch_l1_prep_matches_built(
+    prep: &CompactBatchL1Prep,
+    built: &BuiltCompositeL1,
+) -> Result<(), VerificationError> {
+    if prep.table_packing != compact_batch_l1_table_packing(DIGEST_ELEMS) {
+        return Err(VerificationError::InvalidProofShape(
+            "compact batch L1 prep table-packing mismatch".to_string(),
+        ));
+    }
+    if prep.circuit_shape != compact_batch_l1_circuit_shape(&built.circuit) {
+        return Err(VerificationError::InvalidProofShape(
+            "compact batch L1 prep was built for a different verifier circuit/setup shape"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn prove_compact_batch_l1_with_prep(
+    built: &BuiltCompositeL1,
+    proof: &BatchProof<AiPowStarkConfig>,
+    prep: &CompactBatchL1Prep,
+) -> Result<AiPowL1OuterProof, VerificationError> {
+    ensure_compact_batch_l1_prep_matches_built(prep, built)?;
+    let traces = run_composite_l1_verifier_traces(built, proof)?;
+    prep.prover
+        .prove_all_tables(&traces, prep.circuit_prover_data.as_ref())
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "compact batch L1 outer cert — prove_all_tables: {e:?}"
+            ))
+        })
+}
+
 /// S5 — produce the **L1 outer certificate** for a composite proof:
 /// prove the composite-L1 verifier circuit itself as a D=2 batch-STARK
 /// (`prove_all_tables`). This is the outer recursive proof object for the
@@ -1424,12 +1564,14 @@ struct CompactBatchL2Prep {
 
 /// Reusable prover-side setup for the compact final-layer batch-STARK route.
 ///
-/// This cache owns verifier-circuit targets, AIR setup, preprocessed prover
-/// data, and table-prover registration for a fixed L1 proof shape. It is not a
-/// wire artifact and is not accepted from miners. The compact certificate still
+/// This cache owns L1 prover setup when it was built by a full compact run, plus
+/// L2 verifier-circuit targets, AIR setup, preprocessed prover data, and
+/// table-prover registration for a fixed L1 proof shape. It is not a wire
+/// artifact and is not accepted from miners. The compact certificate still
 /// carries only a verifier-key/setup digest, and verification still requires
 /// verifier-owned context.
 pub struct AiPowCompactBatchProverCache {
+    l1_prep: Option<CompactBatchL1Prep>,
     l2_prep: CompactBatchL2Prep,
 }
 
@@ -1449,6 +1591,7 @@ pub fn build_compact_batch_prover_cache_from_l1_certificate(
     l1_cert: &AiPowRecursiveCertificate,
 ) -> Result<AiPowCompactBatchProverCache, VerificationError> {
     Ok(AiPowCompactBatchProverCache {
+        l1_prep: None,
         l2_prep: build_compact_batch_l2_over_l1_prep(l1_cert.l1_outer_proof())?,
     })
 }
@@ -1657,7 +1800,11 @@ pub fn is_compact_batch_prover_cache_mismatch(error: &VerificationError) -> bool
     let VerificationError::InvalidProofShape(message) = error else {
         return false;
     };
-    message.contains("compact batch L2 prep public binding lane mismatch")
+    message.contains("compact batch L1 prep table-packing mismatch")
+        || message.contains(
+            "compact batch L1 prep was built for a different verifier circuit/setup shape",
+        )
+        || message.contains("compact batch L2 prep public binding lane mismatch")
         || message.contains(
             "compact batch L2 prep was built for a different L1 proof metadata/setup shape",
         )
@@ -1734,10 +1881,11 @@ pub fn prove_compact_batch_recursive_certificate_from_chain_verified_composite_p
 /// Cached-setup variant of
 /// [`prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof`].
 ///
-/// This skips compact-L2 verifier/AIR setup when the supplied cache matches the
-/// freshly produced L1 proof shape. The cache is verifier/prover setup only; it
-/// does not weaken the certificate binding because the final compact body is
-/// still checked against a verifier-key/setup digest and verifier-owned context.
+/// This skips compact-L1 prover setup when present and matching, and skips
+/// compact-L2 verifier/AIR setup when the supplied cache matches the freshly
+/// produced L1 proof shape. The cache is verifier/prover setup only; it does
+/// not weaken the certificate binding because the final compact body is still
+/// checked against a verifier-key/setup digest and verifier-owned context.
 pub fn prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof_with_prover_cache(
     zk_params: &crate::params::ZkParams,
     profile: &crate::circuit::CircuitConfig,
@@ -1748,7 +1896,7 @@ pub fn prove_compact_batch_recursive_certificate_from_chain_verified_composite_p
         zk_params,
         profile,
         verified,
-        Some(&cache.l2_prep),
+        Some(cache),
     )
 }
 
@@ -1756,7 +1904,7 @@ fn prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof
     zk_params: &crate::params::ZkParams,
     profile: &crate::circuit::CircuitConfig,
     verified: &ChainVerifiedCompositeProof<'_>,
-    l2_prep_cache: Option<&CompactBatchL2Prep>,
+    prover_cache: Option<&AiPowCompactBatchProverCache>,
 ) -> Result<CompactBatchCertificateRun, VerificationError> {
     use std::time::Instant;
 
@@ -1776,19 +1924,24 @@ fn prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof
     let statement_digest_public_values = compact_batch_l1_public_values_from_built(&built);
 
     let t = Instant::now();
-    let l1_outer_proof = prove_composite_l1_outer_cert_with_config_and_table_packing(
-        &built,
-        &verified.proof,
-        compact_batch_l1_stark_config(),
-        compact_batch_l1_table_packing(DIGEST_ELEMS),
-    )?;
+    let mut owned_l1_prep = None;
+    let l1_prep = if let Some(cached) = prover_cache.and_then(|cache| cache.l1_prep.as_ref()) {
+        ensure_compact_batch_l1_prep_matches_built(cached, &built)?;
+        cached
+    } else {
+        owned_l1_prep = Some(build_compact_batch_l1_prep(&built)?);
+        owned_l1_prep
+            .as_ref()
+            .expect("owned L1 prep was just initialized")
+    };
+    let l1_outer_proof = prove_compact_batch_l1_with_prep(&built, &verified.proof, l1_prep)?;
     let l1_outer_cert_ms = t.elapsed().as_millis();
 
     let t = Instant::now();
     let mut owned_l2_prep = None;
-    let l2_prep = if let Some(cached) = l2_prep_cache {
-        ensure_compact_batch_l2_prep_matches_l1(cached, &l1_outer_proof)?;
-        cached
+    let l2_prep = if let Some(cached) = prover_cache {
+        ensure_compact_batch_l2_prep_matches_l1(&cached.l2_prep, &l1_outer_proof)?;
+        &cached.l2_prep
     } else {
         owned_l2_prep = Some(build_compact_batch_l2_over_l1_prep(&l1_outer_proof)?);
         owned_l2_prep
@@ -1864,7 +2017,10 @@ fn prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof
         l2_compact_verify_ms,
         compact_cert,
         verifier_context,
-        prover_cache: owned_l2_prep.map(|l2_prep| AiPowCompactBatchProverCache { l2_prep }),
+        prover_cache: owned_l2_prep.map(|l2_prep| AiPowCompactBatchProverCache {
+            l1_prep: owned_l1_prep,
+            l2_prep,
+        }),
     })
 }
 

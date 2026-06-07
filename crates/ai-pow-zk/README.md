@@ -95,15 +95,19 @@ artifact.
 > digest. That expected digest now has an explicit canonical production config
 > encoding: five Goldilocks limbs as 40 little-endian bytes, with wrong-length
 > and noncanonical-limb encodings rejected before proof verification. The
-> compact L2 prep/cache is now a Rust API (`AiPowCompactBatchProverCache`,
-> wrapped by `ai-pow` as `AiPowCompactRecursiveProverCache`) with stale L1
-> metadata/setup rejection before reuse. The production miner now lazily warms
-> and shares this cache after the first compact certificate on a process, so
-> later solved tickets can skip repeat L2 setup when the L1 shape still
-> matches. Stale cache reuse is rejected before L2 proving; the bridge then
-> rebuilds uncached and returns fresh setup for the miner to store. The Hoon
-> verifier hook, production source for the pinned digest, and proactive/operator
-> cache warm-up policy are still open.
+> compact prover cache is now a Rust API (`AiPowCompactBatchProverCache`,
+> wrapped by `ai-pow` as `AiPowCompactRecursiveProverCache`) with guarded L1
+> circuit-shape reuse and stale L1 metadata/setup rejection before reuse. A
+> cache returned from a full compact run owns both L1 prover setup and L2
+> verifier/AIR setup, so the production miner lazily shares it after the first
+> compact certificate in a process and later solved tickets can skip repeat L1
+> setup plus repeat L2 setup when the shapes still match. Stale cache reuse is
+> rejected before the affected proof stage; the bridge then rebuilds uncached
+> and returns fresh setup for the miner to store. This removes the measured
+> `~4.8s` reusable L1 prep from warmed full-cache runs, but the remaining
+> proof work is still roughly `15s` L1 plus `28s` L2 before any unmeasured
+> overhead. The Hoon verifier hook, production source for the pinned digest,
+> and proactive/operator cache warm-up policy are still open.
 > A prior deeper PCS profile showed cached L2 dominated by main/permutation
 > trace Merkle commitments (`13.3s` + `12.9s`), so the next production lever is
 > reducing committed recursive-verifier matrix volume, especially Tip5/MMCS
@@ -614,9 +618,11 @@ encoded for production configuration as canonical 40-byte Goldilocks limbs;
 wrong-length or noncanonical bytes reject before compact proof verification.
 Hoon-side verification and the production source for that pinned digest remain
 open. Rust now also exposes a reusable compact prover cache for the fixed L1
-proof shape; the production miner lazily warms and reuses it after the first
-compact certificate, while proactive/operator warm-up remains open. The cached
-L1+L2 proving time remains above the `~30s` target.
+proof shape; full compact runs return guarded L1 prover setup plus L2 setup, and
+the production miner lazily warms and reuses that cache after the first compact
+certificate. Proactive/operator warm-up remains open. Warmed full-cache runs now
+skip repeat L1 setup as well as L2 setup, but the cached L1+L2 proof work still
+remains above the `~30s` target.
 
 The `composite_prove` / `composite_verify` APIs are Layer-0 primitives. They
 are useful for circuit tests and for the recursive-certificate builder, but the
