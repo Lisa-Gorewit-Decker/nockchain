@@ -31,6 +31,14 @@ direction. The `ai-pow-zk` README links here because changes to the recursive
 proof path, certificate wire format, FRI parameters, terminal commitment shape,
 or packed Tip5/NPO bridge code must be checked against this summary first.
 
+Route decision, 2026-06-07: accept compact final-layer batch-STARK L2 over a
+fast statement-bound L1 proof as the primary production direction. The goal is
+not to force the native terminal backend if the batch-STARK route is smaller,
+faster, and has the cleaner soundness/binding story. Native terminal remains a
+fallback only if compact batch-STARK cannot be brought under the proving-time
+gate without weakening the proof. The large full-checkpoint batch-STARK
+envelope remains rejected for production wire use because it is too large.
+
 The relaxed milestone is not yet fully claimed. The target is approximately
 `150 KiB` total recursive-proof size and approximately `30s` total release
 proving time, with 60 bits of soundness coming from FRI queries rather than

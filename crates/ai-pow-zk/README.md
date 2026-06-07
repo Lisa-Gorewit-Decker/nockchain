@@ -20,7 +20,10 @@ artifact.
 > The active production implementation work is now committed to compact
 > batch-STARK L2 over a fast statement-bound L1 proof, with native terminal
 > retained as the fallback route if this path cannot meet the time gate. The
-> large batch-STARK recursive checkpoint certificate remains too large.
+> route decision is deliberately backend-neutral about "native terminal vs
+> batch STARK": batch STARK is acceptable for production if the compact L2 path
+> is the smaller, faster, soundly-bound route. The large batch-STARK recursive
+> checkpoint certificate remains too large.
 > Soundness-neutral terminal Merkle
 > cap-height/base reduction is now implemented and measured: the retained
 > production cap height is `3`, bound into terminal parameters/profile/transcript
