@@ -19,7 +19,10 @@ the persisted block artifact.
 > merged-value plus packed-support optimistic single-FRI floor is still
 > `252,753` bytes, so the next step is a relation-level leaner packed Tip5
 > binding with much less FRI leaf payload folded into the merged value-bridge
-> theorem. The batch-STARK recursive certificate remains a sound
+> theorem. The current leading candidate to measure is the paired 16-bit Tip5
+> lookup / two-domain LogUp path described in that summary; it is not yet
+> implemented or production-qualified. The batch-STARK recursive certificate
+> remains a sound
 > checkpoint/fallback, not the production wire target, and the relaxed
 > production milestone is not yet claimed.
 
