@@ -1876,7 +1876,9 @@ impl<BF: PrimeField64> ExtDecompositionHint<BF> {
     }
 }
 
-impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for ExtDecompositionHint<BF> {
+impl<BF: PrimeField64 + Send + Sync, EF: ExtensionField<BF>> HintExecutor<EF>
+    for ExtDecompositionHint<BF>
+{
     fn execute(
         &self,
         inputs: &[crate::WitnessId],
@@ -1967,7 +1969,9 @@ impl<BF: PrimeField64> BinaryDecompositionHint<BF> {
     }
 }
 
-impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for BinaryDecompositionHint<BF> {
+impl<BF: PrimeField64 + Send + Sync, EF: ExtensionField<BF>> HintExecutor<EF>
+    for BinaryDecompositionHint<BF>
+{
     fn execute(
         &self,
         inputs: &[crate::WitnessId],
@@ -2080,7 +2084,9 @@ impl<BF: PrimeField64> LowBitsPlusHighHint<BF> {
     }
 }
 
-impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for LowBitsPlusHighHint<BF> {
+impl<BF: PrimeField64 + Send + Sync, EF: ExtensionField<BF>> HintExecutor<EF>
+    for LowBitsPlusHighHint<BF>
+{
     fn execute(
         &self,
         inputs: &[crate::WitnessId],

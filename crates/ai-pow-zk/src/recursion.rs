@@ -1195,6 +1195,9 @@ pub struct CompactBatchCertificateRun {
     pub l2_compact_verify_ms: u128,
     pub compact_cert: AiPowCompactBatchRecursiveCertificate,
     pub verifier_context: AiPowCompactBatchVerifierContext,
+    /// Newly-built reusable L2 setup, present only when this run did not use
+    /// a caller-supplied cache.
+    pub prover_cache: Option<AiPowCompactBatchProverCache>,
 }
 
 /// Timings and certificate for recursively certifying an already-built Layer-0
@@ -1644,6 +1647,22 @@ fn ensure_compact_batch_l2_prep_matches_l1(
     Ok(())
 }
 
+/// Return whether a compact-recursion error came from trying to reuse L2
+/// prover setup against a different L1 proof shape.
+///
+/// Callers may use this to discard a stale prover cache and rebuild setup. This
+/// must not be treated as proof acceptance: the stale cache was rejected before
+/// L2 proving.
+pub fn is_compact_batch_prover_cache_mismatch(error: &VerificationError) -> bool {
+    let VerificationError::InvalidProofShape(message) = error else {
+        return false;
+    };
+    message.contains("compact batch L2 prep public binding lane mismatch")
+        || message.contains(
+            "compact batch L2 prep was built for a different L1 proof metadata/setup shape",
+        )
+}
+
 fn prove_compact_batch_l2_with_prep(
     prep: &CompactBatchL2Prep,
     l1: &AiPowL1OuterProof,
@@ -1766,13 +1785,15 @@ fn prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof
     let l1_outer_cert_ms = t.elapsed().as_millis();
 
     let t = Instant::now();
-    let owned_l2_prep;
+    let mut owned_l2_prep = None;
     let l2_prep = if let Some(cached) = l2_prep_cache {
         ensure_compact_batch_l2_prep_matches_l1(cached, &l1_outer_proof)?;
         cached
     } else {
-        owned_l2_prep = build_compact_batch_l2_over_l1_prep(&l1_outer_proof)?;
-        &owned_l2_prep
+        owned_l2_prep = Some(build_compact_batch_l2_over_l1_prep(&l1_outer_proof)?);
+        owned_l2_prep
+            .as_ref()
+            .expect("owned L2 prep was just initialized")
     };
     let l2_prep_ms = t.elapsed().as_millis();
 
@@ -1843,6 +1864,7 @@ fn prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof
         l2_compact_verify_ms,
         compact_cert,
         verifier_context,
+        prover_cache: owned_l2_prep.map(|l2_prep| AiPowCompactBatchProverCache { l2_prep }),
     })
 }
 

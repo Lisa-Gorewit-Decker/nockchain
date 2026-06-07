@@ -41,7 +41,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ai_pow::params::MatmulParams;
@@ -53,7 +53,8 @@ use ai_pow::pearl_compat::{
     PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG,
 };
 use ai_pow::zk_bridge::{
-    AiPowCompactRecursiveCertificateRun, AiPowRecursiveCertificateRun, ZkPublicCommitments,
+    AiPowCompactRecursiveCertificateRun, AiPowCompactRecursiveProverCache,
+    AiPowRecursiveCertificateRun, ZkPublicCommitments,
 };
 use ai_pow_zk::{CompositePublicInputs, ZkParams};
 use futures::StreamExt;
@@ -161,20 +162,54 @@ impl PearlMergeSubmissionConfig {
         a: Arc<Vec<i8>>,
         b: Arc<Vec<i8>>,
     ) -> Self {
+        let compact_prover_cache: Arc<Mutex<Option<Arc<AiPowCompactRecursiveProverCache>>>> =
+            Arc::new(Mutex::new(None));
         let certificate_builder = Arc::new(move |attempt: &PearlMergeTicketAttempt| {
-            let run = ai_pow::zk_bridge::prove_pearl_merge_compact_recursive_certificate(
-                attempt,
-                &params,
-                a.as_slice(),
-                b.as_slice(),
-                max_pattern_len,
-            )
+            let cached = compact_prover_cache
+                .lock()
+                .map_err(|_| {
+                    AiPowCertificateBuildError(
+                        "compact recursive prover cache lock poisoned".to_string(),
+                    )
+                })?
+                .clone();
+            if cached.is_some() {
+                debug!("using warmed compact recursive prover cache");
+            }
+            let run = if let Some(cache) = cached.as_deref() {
+                ai_pow::zk_bridge::prove_pearl_merge_compact_recursive_certificate_with_prover_cache(
+                    attempt,
+                    &params,
+                    a.as_slice(),
+                    b.as_slice(),
+                    max_pattern_len,
+                    cache,
+                )
+            } else {
+                ai_pow::zk_bridge::prove_pearl_merge_compact_recursive_certificate(
+                    attempt,
+                    &params,
+                    a.as_slice(),
+                    b.as_slice(),
+                    max_pattern_len,
+                )
+            }
             .map_err(|e| {
                 AiPowCertificateBuildError(format!(
                     "refusing to build Pearl-compatible recursive certificate before successful Nockchain target check: {e}"
                 ))
             })?;
-            PearlMergeCertificateProof::from_compact_recursive_run(&run)
+            let proof = PearlMergeCertificateProof::from_compact_recursive_run(&run)?;
+            if let Some(new_cache) = run.into_prover_cache() {
+                let mut guard = compact_prover_cache.lock().map_err(|_| {
+                    AiPowCertificateBuildError(
+                        "compact recursive prover cache lock poisoned".to_string(),
+                    )
+                })?;
+                debug!("stored compact recursive prover cache from certificate run");
+                *guard = Some(Arc::new(new_cache));
+            }
+            Ok(proof)
         });
 
         Self {
