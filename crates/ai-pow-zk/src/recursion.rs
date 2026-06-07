@@ -1711,10 +1711,10 @@ fn _composite_conforms_to_recursive_air() {
 #[cfg(test)]
 mod tests {
     use p3_recursion::terminal::{
-        NativeTerminalConstraint, NativeTerminalVerifyingKey, TerminalNpoPolynomialFriColumnSet,
-        TerminalNpoPolynomialTable, TerminalNpoPolynomialTableRow, TerminalNpoRowKind,
-        TerminalProductionNpoPolynomialProof, TerminalProductionProof,
-        TerminalR1csRowProductSumcheckProof, TerminalSparseR1csRelation,
+        NativeTerminalConstraint, NativeTerminalVerifyingKey, TerminalCompressedFriProof,
+        TerminalNpoPolynomialFriColumnSet, TerminalNpoPolynomialTable,
+        TerminalNpoPolynomialTableRow, TerminalNpoRowKind, TerminalProductionNpoPolynomialProof,
+        TerminalProductionProof, TerminalR1csRowProductSumcheckProof, TerminalSparseR1csRelation,
     };
 
     use super::*;
@@ -4066,6 +4066,127 @@ mod tests {
         postcard::to_allocvec(value)
             .unwrap_or_else(|err| panic!("{label} must serialize for size accounting: {err:?}"))
             .len()
+    }
+
+    #[derive(Clone, Debug)]
+    struct TerminalCompactFriByteBreakdown {
+        total_bytes: usize,
+        commit_phase_commits_bytes: usize,
+        commit_pow_witnesses_bytes: usize,
+        input_batches_bytes: usize,
+        input_opened_values_bytes: usize,
+        input_merkle_bytes: usize,
+        commit_rounds_bytes: usize,
+        commit_round_sibling_values_bytes: usize,
+        commit_round_merkle_bytes: usize,
+        final_poly_bytes: usize,
+        query_pow_witness_bytes: usize,
+        input_batches: usize,
+        commit_rounds: usize,
+        query_count: usize,
+    }
+
+    fn terminal_compact_fri_byte_breakdown(
+        proof: &TerminalCompressedFriProof,
+        label: &str,
+    ) -> TerminalCompactFriByteBreakdown {
+        let total_bytes = postcard_len(proof, label);
+        let commit_phase_commits_bytes = postcard_len(
+            &proof.commit_phase_commits, "terminal compact FRI commit-phase commitments",
+        );
+        let commit_pow_witnesses_bytes = postcard_len(
+            &proof.commit_pow_witnesses, "terminal compact FRI commit POW witnesses",
+        );
+        let input_batches_bytes =
+            postcard_len(&proof.input_batches, "terminal compact FRI input batches");
+        let input_opened_values_bytes = proof
+            .input_batches
+            .iter()
+            .map(|batch| {
+                postcard_len(
+                    &batch.opened_values, "terminal compact FRI input opened values",
+                )
+            })
+            .sum();
+        let input_merkle_bytes = proof
+            .input_batches
+            .iter()
+            .map(|batch| {
+                postcard_len(
+                    &batch.pruned_opening_proof, "terminal compact FRI input Merkle paths",
+                )
+            })
+            .sum();
+        let commit_rounds_bytes =
+            postcard_len(&proof.commit_rounds, "terminal compact FRI commit rounds");
+        let commit_round_sibling_values_bytes = proof
+            .commit_rounds
+            .iter()
+            .map(|round| {
+                postcard_len(
+                    &round.sibling_values, "terminal compact FRI commit-round sibling values",
+                )
+            })
+            .sum();
+        let commit_round_merkle_bytes = proof
+            .commit_rounds
+            .iter()
+            .map(|round| {
+                postcard_len(
+                    &round.pruned_opening_proof, "terminal compact FRI commit-round Merkle paths",
+                )
+            })
+            .sum();
+        let final_poly_bytes =
+            postcard_len(&proof.final_poly, "terminal compact FRI final polynomial");
+        let query_pow_witness_bytes = postcard_len(
+            &proof.query_pow_witness, "terminal compact FRI query POW witness",
+        );
+        let query_count = proof
+            .input_batches
+            .first()
+            .map(|batch| batch.pruned_opening_proof.original_order.len())
+            .unwrap_or(0);
+
+        TerminalCompactFriByteBreakdown {
+            total_bytes,
+            commit_phase_commits_bytes,
+            commit_pow_witnesses_bytes,
+            input_batches_bytes,
+            input_opened_values_bytes,
+            input_merkle_bytes,
+            commit_rounds_bytes,
+            commit_round_sibling_values_bytes,
+            commit_round_merkle_bytes,
+            final_poly_bytes,
+            query_pow_witness_bytes,
+            input_batches: proof.input_batches.len(),
+            commit_rounds: proof.commit_rounds.len(),
+            query_count,
+        }
+    }
+
+    fn log_terminal_compact_fri_byte_breakdown(
+        label: &str,
+        breakdown: &TerminalCompactFriByteBreakdown,
+    ) {
+        eprintln!(
+            "native terminal compact FRI components [{label}]: total={} commit_phase_commits={} commit_pow_witnesses={} input_batches={} input_opened_values={} input_merkle={} commit_rounds={} commit_round_sibling_values={} commit_round_merkle={} final_poly={} query_pow_witness={} input_batch_count={} commit_round_count={} query_count={}",
+            breakdown.total_bytes,
+            breakdown.commit_phase_commits_bytes,
+            breakdown.commit_pow_witnesses_bytes,
+            breakdown.input_batches_bytes,
+            breakdown.input_opened_values_bytes,
+            breakdown.input_merkle_bytes,
+            breakdown.commit_rounds_bytes,
+            breakdown.commit_round_sibling_values_bytes,
+            breakdown.commit_round_merkle_bytes,
+            breakdown.final_poly_bytes,
+            breakdown.query_pow_witness_bytes,
+            breakdown.input_batches,
+            breakdown.commit_rounds,
+            breakdown.query_count,
+        );
     }
 
     fn compact_path_dictionary_stats(
@@ -6626,6 +6747,347 @@ mod tests {
     #[ignore = "full composite packed Tip5 AIR+LogUp selected trace bridge measurement is opt-in"]
     fn terminal_packed_tip5_air_logup_selected_trace_bridge_candidate_for_prod_baseline_measures() {
         measure_terminal_packed_tip5_air_logup_selected_trace_bridge_candidate_for_profile(
+            "PROD",
+            CircuitConfig::PROD,
+        );
+    }
+
+    fn measure_terminal_merged_value_bridge_packed_support_fusion_floor_for_profile(
+        label: &str,
+        profile: CircuitConfig,
+    ) {
+        init_terminal_prover_profile_tracing();
+        assert_eq!(profile.johnson_fri_bits(), 60);
+
+        let total_start = std::time::Instant::now();
+        let zk = test_zk_params();
+        let cfg = build_config(&zk, &profile);
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let l0_prove_start = std::time::Instant::now();
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        eprintln!(
+            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: l0_prove_ms={}",
+            l0_prove_start.elapsed().as_millis()
+        );
+        let verified = unsafe {
+            ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+                program.clone(),
+                proof,
+                &pis,
+            )
+        };
+
+        let l1_build_start = std::time::Instant::now();
+        let air = CompositeFullAirWithLookupsPinned::new_with(program, true);
+        let pd = logup_common_for(&cfg, &verified.program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &verified.proof,
+            &pd.common,
+            &verified.public_inputs.to_vec(),
+            &profile,
+        )
+        .expect("fusion floor diagnostic must build L1 verifier circuit");
+        eprintln!(
+            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: l1_circuit_build_ms={}",
+            l1_build_start.elapsed().as_millis()
+        );
+
+        let l1_verify_start = std::time::Instant::now();
+        let traces = run_composite_l1_verifier_traces(&built, &verified.proof)
+            .expect("fusion floor diagnostic must run L1 verifier traces");
+        let l1_verify_elapsed = l1_verify_start.elapsed();
+        eprintln!(
+            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: l1_trace_verify_ms={}",
+            l1_verify_elapsed.as_millis()
+        );
+
+        let compiler = terminal_compiler();
+        let compile_start = std::time::Instant::now();
+        let (_pk, vk) = compiler
+            .compile_goldilocks_terminal(&built.circuit)
+            .expect("fusion floor diagnostic must compile terminal circuit");
+        compiler
+            .validate_goldilocks_production_query_domains(
+                &vk,
+                TerminalProofParameters::production_60bit(),
+            )
+            .expect("fusion floor diagnostic must use production query domains");
+        let compile_elapsed = compile_start.elapsed();
+        eprintln!(
+            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: terminal_compile_ms={}",
+            compile_elapsed.as_millis()
+        );
+
+        let witness = TerminalWitness {
+            fingerprint: TerminalCircuitFingerprint::from_circuit(&built.circuit),
+            public_inputs: built.public_inputs.clone(),
+            private_inputs: built.private_inputs.clone(),
+            traces,
+        };
+
+        let assignment_commit_start = std::time::Instant::now();
+        let assignment_oracle = compiler
+            .commit_terminal_assignment_goldilocks(&vk, &witness.public_inputs, &witness)
+            .expect("fusion floor diagnostic must commit terminal assignment");
+        let assignment_commitment = assignment_oracle.commitment();
+        eprintln!(
+            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: assignment_commit_ms={}",
+            assignment_commit_start.elapsed().as_millis()
+        );
+
+        let merged_root_start = std::time::Instant::now();
+        let merged_value_bridge_prepared = compiler
+            .prepare_terminal_npo_fri_residual_zero_recompose_value_bridge_goldilocks(&vk, &witness)
+            .expect("fusion floor diagnostic must prepare merged NPO value bridge");
+        let merged_roots = merged_value_bridge_prepared.prelude_commitments().to_vec();
+        eprintln!(
+            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: merged_npo_root_ms={}",
+            merged_root_start.elapsed().as_millis()
+        );
+
+        let packed_trace_start = std::time::Instant::now();
+        let (_, packed_profile, packed_trace) = compiler
+            .terminal_npo_tip5_packed_lookup_trace_goldilocks(&vk, &witness)
+            .expect("fusion floor diagnostic must build packed Tip5 trace");
+        eprintln!(
+            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: packed_trace_ms={} packed_rows={} packed_padded_rows={} packed_width={} logup_tuples={}",
+            packed_trace_start.elapsed().as_millis(),
+            packed_profile.rows,
+            packed_profile.padded_rows,
+            packed_profile.main_width,
+            packed_profile.logup_query_tuples,
+        );
+
+        let packed_support_root_start = std::time::Instant::now();
+        let packed_support_roots =
+            NativeTerminalCompiler::terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_prelude_commitments_goldilocks(
+                &vk,
+                &merged_value_bridge_prepared.columns,
+                &packed_profile,
+                &packed_trace,
+            )
+            .expect("fusion floor diagnostic must commit packed support endpoints");
+        eprintln!(
+            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: packed_support_root_ms={}",
+            packed_support_root_start.elapsed().as_millis()
+        );
+        assert_eq!(
+            merged_roots.first(),
+            packed_support_roots.first(),
+            "merged value bridge and packed support theorem must share the selected lookup root"
+        );
+
+        let mut prelude_roots = vec![assignment_commitment.root];
+        prelude_roots.extend(merged_roots);
+        for root in packed_support_roots {
+            if !prelude_roots.contains(&root) {
+                prelude_roots.push(root);
+            }
+        }
+
+        let prelude_start = std::time::Instant::now();
+        let prelude = compiler
+            .build_proof_prelude_goldilocks(
+                &vk,
+                &witness.public_inputs,
+                TerminalProofParameters::production_60bit(),
+                prelude_roots,
+            )
+            .expect("fusion floor diagnostic must build shared terminal prelude");
+        let prelude_elapsed = prelude_start.elapsed();
+        eprintln!(
+            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: prelude_ms={}",
+            prelude_elapsed.as_millis()
+        );
+
+        let primitive_prove_start = std::time::Instant::now();
+        let primitive_r1cs_proof = compiler
+            .prove_terminal_r1cs_row_product_sumcheck_prelude_checked_goldilocks(
+                &vk, &witness.public_inputs, &prelude, &assignment_oracle, &witness,
+            )
+            .expect("fusion floor diagnostic must prove primitive R1CS");
+        let primitive_prove_elapsed = primitive_prove_start.elapsed();
+        eprintln!(
+            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: primitive_prove_ms={}",
+            primitive_prove_elapsed.as_millis()
+        );
+
+        let merged_prove_start = std::time::Instant::now();
+        let merged_value_bridge_proof = compiler
+            .prove_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_prepared_prelude_checked_goldilocks(
+                &prelude,
+                &merged_value_bridge_prepared,
+            )
+            .expect("fusion floor diagnostic must prove merged value bridge");
+        let merged_prove_elapsed = merged_prove_start.elapsed();
+        eprintln!(
+            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: merged_value_bridge_prove_ms={}",
+            merged_prove_elapsed.as_millis()
+        );
+
+        let packed_support_prove_start = std::time::Instant::now();
+        let packed_support_proof = compiler
+            .prove_terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_goldilocks(
+                &vk, &witness.public_inputs, &witness, &prelude,
+            )
+            .expect("fusion floor diagnostic must prove packed support theorem");
+        let packed_support_prove_elapsed = packed_support_prove_start.elapsed();
+        eprintln!(
+            "native terminal merged value-bridge + packed support fusion floor phase [{label}]: packed_support_prove_ms={}",
+            packed_support_prove_elapsed.as_millis()
+        );
+
+        let primitive_verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_r1cs_row_product_sumcheck_goldilocks(
+                &vk, &witness.public_inputs, &prelude, &assignment_commitment,
+                &primitive_r1cs_proof,
+            )
+            .expect("fusion floor diagnostic primitive proof must verify");
+        let primitive_verify_elapsed = primitive_verify_start.elapsed();
+
+        let merged_verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_polynomial_fri_residual_zero_recompose_value_bridge_goldilocks(
+                &vk, &witness.public_inputs, &prelude, &merged_value_bridge_proof,
+            )
+            .expect("fusion floor diagnostic merged value bridge must verify");
+        let merged_verify_elapsed = merged_verify_start.elapsed();
+
+        let packed_support_verify_start = std::time::Instant::now();
+        compiler
+            .verify_terminal_npo_tip5_packed_lookup_air_logup_selected_trace_bridge_goldilocks::<
+                Challenge,
+            >(&vk, &witness.public_inputs, &prelude, &packed_support_proof)
+            .expect("fusion floor diagnostic packed support theorem must verify");
+        let packed_support_verify_elapsed = packed_support_verify_start.elapsed();
+
+        let current_append_body_bytes = postcard_len(
+            &(
+                &prelude, &primitive_r1cs_proof, &merged_value_bridge_proof, &packed_support_proof,
+            ),
+            "merged value-bridge + packed support appended body",
+        );
+        let prelude_bytes = postcard_len(&prelude, "fusion floor prelude");
+        let primitive_bytes = postcard_len(&primitive_r1cs_proof, "fusion floor primitive R1CS");
+        let merged_bytes = postcard_len(
+            &merged_value_bridge_proof, "fusion floor merged value bridge proof",
+        );
+        let packed_support_bytes =
+            postcard_len(&packed_support_proof, "fusion floor packed support proof");
+        let merged_fri = terminal_compact_fri_byte_breakdown(
+            &merged_value_bridge_proof.proof, "fusion floor merged value bridge compact FRI",
+        );
+        let packed_support_fri = terminal_compact_fri_byte_breakdown(
+            &packed_support_proof.proof, "fusion floor packed support compact FRI",
+        );
+        log_terminal_compact_fri_byte_breakdown("merged_value_bridge", &merged_fri);
+        log_terminal_compact_fri_byte_breakdown("packed_support", &packed_support_fri);
+
+        assert_eq!(
+            merged_value_bridge_proof.selected_profile, packed_support_proof.selected_profile,
+            "merged and packed support proofs should describe the same selected NPO matrix"
+        );
+        assert_eq!(
+            merged_value_bridge_proof.lookup_io_profile, packed_support_proof.lookup_io_profile,
+            "merged and packed support proofs should describe the same selected lookup-IO suffix"
+        );
+        assert_eq!(
+            merged_value_bridge_proof.selected_lookup_commitment,
+            packed_support_proof.selected_lookup_commitment,
+            "merged and packed support proofs should bind the same selected lookup commitment"
+        );
+
+        let duplicate_selected_profile_bytes = postcard_len(
+            &merged_value_bridge_proof.selected_profile, "fusion floor duplicate selected profile",
+        );
+        let duplicate_lookup_io_profile_bytes = postcard_len(
+            &merged_value_bridge_proof.lookup_io_profile,
+            "fusion floor duplicate lookup-IO profile",
+        );
+        let duplicate_selected_commitment_bytes = postcard_len(
+            &merged_value_bridge_proof.selected_lookup_commitment,
+            "fusion floor duplicate selected lookup commitment",
+        );
+        let merged_selected_lookup_opening_bytes = postcard_len(
+            &(
+                &merged_value_bridge_proof.opened_selected_basis,
+                &merged_value_bridge_proof.opened_lookup_io_basis,
+            ),
+            "fusion floor merged selected lookup opening",
+        );
+        let packed_support_selected_lookup_opening_bytes = postcard_len(
+            &packed_support_proof.opened_selected_lookup_basis,
+            "fusion floor packed support selected lookup opening",
+        );
+        let optimistic_selected_opening_dedup_bytes =
+            merged_selected_lookup_opening_bytes.min(packed_support_selected_lookup_opening_bytes);
+        let optimistic_duplicate_selected_binding_bytes = duplicate_selected_profile_bytes
+            + duplicate_lookup_io_profile_bytes
+            + duplicate_selected_commitment_bytes
+            + optimistic_selected_opening_dedup_bytes;
+
+        let merged_non_fri_bytes = merged_bytes.saturating_sub(merged_fri.total_bytes);
+        let packed_support_non_fri_bytes =
+            packed_support_bytes.saturating_sub(packed_support_fri.total_bytes);
+        let single_fri_floor_bytes = merged_fri.total_bytes.max(packed_support_fri.total_bytes);
+        let optimistic_single_fri_floor_before_selected_dedup = prelude_bytes
+            + primitive_bytes
+            + merged_non_fri_bytes
+            + packed_support_non_fri_bytes
+            + single_fri_floor_bytes;
+        let optimistic_single_fri_floor_bytes = optimistic_single_fri_floor_before_selected_dedup
+            .saturating_sub(optimistic_duplicate_selected_binding_bytes);
+        let target_binary_150k = 150usize * 1024;
+        let target_decimal_150k = 150_000usize;
+
+        eprintln!(
+            "native terminal merged value-bridge + packed support fusion floor over ai-pow composite verifier [{label}]: current_appended_body={} prelude={} primitive_r1cs={} merged_value_bridge={} merged_value_bridge_fri={} merged_non_fri={} packed_support={} packed_support_fri={} packed_support_non_fri={} single_fri_floor={} duplicate_selected_profile={} duplicate_lookup_io_profile={} duplicate_selected_commitment={} merged_selected_lookup_opening={} packed_support_selected_lookup_opening={} optimistic_selected_opening_dedup={} optimistic_duplicate_selected_binding={} optimistic_single_fri_floor_before_selected_dedup={} optimistic_single_fri_floor={} over_binary_150k={} over_decimal_150k={} l1_verify_ms={} compile_ms={} prelude_ms={} primitive_prove_ms={} merged_value_bridge_prove_ms={} packed_support_prove_ms={} total_subproof_prove_ms={} primitive_verify_ms={} merged_value_bridge_verify_ms={} packed_support_verify_ms={} total_subproof_verify_ms={} total_wall_ms={}",
+            current_append_body_bytes,
+            prelude_bytes,
+            primitive_bytes,
+            merged_bytes,
+            merged_fri.total_bytes,
+            merged_non_fri_bytes,
+            packed_support_bytes,
+            packed_support_fri.total_bytes,
+            packed_support_non_fri_bytes,
+            single_fri_floor_bytes,
+            duplicate_selected_profile_bytes,
+            duplicate_lookup_io_profile_bytes,
+            duplicate_selected_commitment_bytes,
+            merged_selected_lookup_opening_bytes,
+            packed_support_selected_lookup_opening_bytes,
+            optimistic_selected_opening_dedup_bytes,
+            optimistic_duplicate_selected_binding_bytes,
+            optimistic_single_fri_floor_before_selected_dedup,
+            optimistic_single_fri_floor_bytes,
+            optimistic_single_fri_floor_bytes.saturating_sub(target_binary_150k),
+            optimistic_single_fri_floor_bytes.saturating_sub(target_decimal_150k),
+            l1_verify_elapsed.as_millis(),
+            compile_elapsed.as_millis(),
+            prelude_elapsed.as_millis(),
+            primitive_prove_elapsed.as_millis(),
+            merged_prove_elapsed.as_millis(),
+            packed_support_prove_elapsed.as_millis(),
+            (primitive_prove_elapsed + merged_prove_elapsed + packed_support_prove_elapsed)
+                .as_millis(),
+            primitive_verify_elapsed.as_millis(),
+            merged_verify_elapsed.as_millis(),
+            packed_support_verify_elapsed.as_millis(),
+            (primitive_verify_elapsed + merged_verify_elapsed + packed_support_verify_elapsed)
+                .as_millis(),
+            total_start.elapsed().as_millis(),
+        );
+    }
+
+    #[test]
+    #[ignore = "full composite merged value-bridge + packed support fusion floor measurement is opt-in"]
+    fn terminal_merged_value_bridge_packed_support_fusion_floor_for_prod_baseline_measures() {
+        measure_terminal_merged_value_bridge_packed_support_fusion_floor_for_profile(
             "PROD",
             CircuitConfig::PROD,
         );

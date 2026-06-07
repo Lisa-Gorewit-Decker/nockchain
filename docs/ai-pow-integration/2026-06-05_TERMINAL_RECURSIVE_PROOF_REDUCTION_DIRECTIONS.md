@@ -35,11 +35,11 @@ proving time, while keeping soundness at 60 pure FRI query bits
 (`log_blowup=4`, `num_queries=15`, `query_pow_bits=0`).
 
 The proof shape that still looks viable is a native-terminal theorem that keeps
-the merged value bridge base, but the latest shared packed-trace support
-diagnostics show that even the coalesced support theorem is not enough. The
-next viable step must reduce the opened packed-trace / accumulator payload or
-fold the packed Tip5 constraints into the merged value-bridge theorem with
-fewer opened columns, rather than carrying the current full support theorem.
+the merged value bridge base, but the latest shared packed-trace support and
+fusion-floor diagnostics show that ordinary single-FRI fusion is not enough.
+The next viable step must redesign the packed Tip5 binding so the support FRI
+leaf payload is materially smaller before it is folded into the merged
+value-bridge theorem.
 
 The relations that still need to coexist in the final theorem are:
 
@@ -79,12 +79,20 @@ The relations that still need to coexist in the final theorem are:
   bytes / `193.6 KiB`, with compact FRI down from `256,261` to `183,018`
   bytes. It still proves in `33.277s`, so it remains too large and slightly
   too slow as a standalone support theorem.
+- The merged-value plus packed-support fusion-floor diagnostic verifies against
+  one terminal circuit and one shared prelude. The current appended body is
+  `343,209` bytes. Even the deliberately optimistic floor that keeps only the
+  larger compact FRI body and subtracts duplicate selected-lookup profile,
+  commitment, and opening payload is `252,753` bytes. That is still `99,153`
+  bytes over a binary `150 KiB` gate, so simple transcript/FRI sharing is ruled
+  out as the relaxed-target route.
 
 #### Remaining Work
 
-- Replace or further collapse the measured coalesced shared packed-trace
-  support theorem so it does not open the full `436`-column packed trace plus
-  wide LogUp/bridge accumulator payload as a standalone support proof.
+- Replace the measured coalesced shared packed-trace support theorem with a
+  relation-level smaller packed Tip5 binding. The current packed support compact
+  FRI is `181,917` bytes in the fusion-floor run; after primitive R1CS and
+  non-FRI NPO metadata, the final combined FRI budget is only about `80-83 KiB`.
 - Fold the resulting Tip5 binding into the merged value-bridge proof instead
   of appending another standalone packed proof body.
 - Reuse prepared terminal compile output, NPO columns, packed traces,
@@ -114,9 +122,9 @@ compression lever, but the current support theorem still cannot be added to the
 | Best measured complete base | Merged padding/value-bridge checkpoint at `151,448` bytes / `147.9 KiB`, post-prelude proof body `14.914s`; sound for its included relations, but missing internal Tip5 binding |
 | Best near-target standalone missing binding | Lane-selector-aware selected-to-packed NPO-IO bridge at `137,355` bytes / `134.1 KiB`, prove `28.526s`, verify `14.510s` |
 | Direct bridge diagnostic | Binding selected NPO values directly to compact packed trace lanes verifies at `205,950` bytes / `201.1 KiB`, prove `35.863s`; it removes the projection commitment/domain but is too large standalone because it still opens the full `436`-column packed trace |
-| Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s`; packed byte-LogUp group size 15 was measured and rejected at `206,759` bytes, prove `38.515s` |
-| Main current blocker | All required packed Tip5/NPO subtheorems now verify, and PCS input-batch coalescing helps, but the current support proof still opens too much packed trace/accumulator material |
-| Next implementation step | Design and measure a packed Tip5 binding that reduces opened trace/accumulator payload before folding it into the merged value-bridge theorem |
+| Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; merged-value plus packed-support optimistic single-FRI floor is `252,753` bytes, `99,153` bytes over binary `150 KiB`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s`; packed byte-LogUp group size 15 was measured and rejected at `206,759` bytes, prove `38.515s` |
+| Main current blocker | All required packed Tip5/NPO subtheorems now verify, and PCS input-batch coalescing helps, but the current support FRI leaf payload is itself too large to fit even under an optimistic fusion floor |
+| Next implementation step | Design and measure a relation-level packed Tip5 binding that cuts support FRI opened leaf payload, not just duplicate Merkle paths, profiles, commitments, or zeta openings |
 
 ### Decision
 
@@ -242,6 +250,21 @@ duplication and duplicate round-input columns were meaningful payload, but the
 remaining full-trace and accumulator leaf payload is still too large for the
 relaxed target.
 
+The merged-value plus packed-support fusion-floor diagnostic makes the negative
+result stronger. It builds the merged value bridge and compact packed support
+theorem against one terminal circuit and one shared prelude. The current
+appended body is `343,209` bytes. The merged compact FRI is `88,614` bytes and
+the packed support compact FRI is `181,917` bytes. Even an intentionally
+optimistic single-FRI floor that keeps only the larger FRI body, keeps the
+primitive R1CS proof (`54,927` bytes), keeps both non-FRI NPO payloads
+(`2,205 + 15,260` bytes), and subtracts duplicate selected-lookup profile,
+commitment, and opening payload is `252,753` bytes. This is still `99,153`
+bytes over a binary `150 KiB` gate and `102,753` bytes over a decimal `150,000`
+byte gate. The packed support FRI alone therefore consumes more than the final
+combined FRI budget, which is only about `80-83 KiB` after primitive and
+non-FRI metadata are accounted for. Ordinary transcript/FRI sharing is now
+ruled out as the route to the relaxed milestone.
+
 A narrower final-round capacity-lane elision was also measured and rejected.
 That transient layout kept the 10 final output lanes selected by the NPO
 bridge, omitted unused final output lanes 10-15, and reduced packed trace width
@@ -330,6 +353,10 @@ masked projection commitment.
   commitments/openings, tampered LogUp table openings, and tampered bridge
   final cumulatives. The full PROD coalesced measurement is still negative at
   `198,287` bytes and `33.277s` proving.
+- The merged-value plus packed-support fusion-floor diagnostic verifies and
+  shows ordinary fusion is not enough: current appended body `343,209` bytes,
+  optimistic single-FRI floor `252,753` bytes, and packed support compact FRI
+  `181,917` bytes.
 - The production soundness policy is explicit: 60 bits must come from FRI query
   soundness at `pow=0`, not from proof-system grinding.
 
@@ -342,7 +369,9 @@ masked projection commitment.
   coalesced theorem, and the `198,287` byte compact-trace coalesced theorem
   show this must reduce opened trace/accumulator payload, not merely remove
   duplicate Merkle paths, duplicate round-input columns, or unused final
-  capacity output lanes. It also cannot be achieved by increasing packed
+  capacity output lanes. The `252,753` byte optimistic single-FRI floor further
+  rules out merely sharing one transcript/FRI proof while keeping the current
+  packed support FRI payload. It also cannot be achieved by increasing packed
   byte-LogUp group size to trade accumulator width for a doubled quotient
   domain.
 - Remove duplicated production prover setup by reusing terminal compile
