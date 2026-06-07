@@ -98,8 +98,8 @@ pub fn verify(
 /// callers that need those extra checks must use [`verify_prod_at_target`].
 /// Nockchain block acceptance must verify a recursive certificate artifact
 /// instead of a plain proof. The current production candidate is the compact
-/// final-layer batch-STARK certificate; the large batch-STARK checkpoint and
-/// native terminal certificate are fallback/regression paths.
+/// final-layer batch-STARK certificate. The large batch-STARK checkpoint is
+/// retained only for regression; native terminal compression was removed.
 pub fn verify_at_target(
     block_commitment: &[u8],
     nonce: &[u8],

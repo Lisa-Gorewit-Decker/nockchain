@@ -15,15 +15,15 @@ categories = ["cryptography::cryptocurrencies"]
 parallel = ["p3-maybe-rayon/parallel"]
 
 [dependencies]
-p3-air = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-commit = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-field = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-lookup = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-matrix = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-maybe-rayon = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-util = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-air = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-commit = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-field = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-lookup = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-matrix = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-maybe-rayon = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-util = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
 
 hashbrown = "0.17.0"
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }

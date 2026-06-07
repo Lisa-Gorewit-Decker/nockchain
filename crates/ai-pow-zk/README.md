@@ -14,6 +14,9 @@ certificate:
 > [`2026-06-07_COMPACT_RECURSIVE_PRODUCTION_PIPELINE.md`](docs/2026-06-07_COMPACT_RECURSIVE_PRODUCTION_PIPELINE.md).
 > Read it before changing recursive proof shape, FRI parameters, certificate
 > serialization, verifier-key digest binding, or miner artifact wiring.
+>
+> Open proof-path test work is tracked in
+> [`2026-06-07_OPEN_TEST_ISSUES.md`](docs/2026-06-07_OPEN_TEST_ISSUES.md).
 
 ## Current Status
 
@@ -92,3 +95,7 @@ RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-miner --release --features
 ```
 
 Always run `cargo fmt --check` and `git diff --check` before committing.
+
+See also
+[`docs/2026-06-07_OPEN_TEST_ISSUES.md`](docs/2026-06-07_OPEN_TEST_ISSUES.md)
+for release/prover regressions that are not yet automated.

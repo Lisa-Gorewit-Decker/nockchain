@@ -27,9 +27,11 @@ serde = { workspace = true, features = ["derive"] }
 # that the composite AIR proves the keyed-hash relation directly.
 blake3 = { workspace = true }
 
-# Plonky3. The upstream publishes irregularly to crates.io; pin to a
-# git revision here and bump `rev` when the circuit needs newer field /
-# AIR features. See https://github.com/Plonky3/Plonky3 for releases.
+# Plonky3. Pin all direct crates to the same upstream commit so the vendored
+# recursion workspace and the local p3-batch-stark patch share one exact
+# dependency graph. This is newer than the previous pin but intentionally stops
+# before upstream commit 895572b7, which requires a newer Rust std
+# `MaybeUninit` slice API than this workspace toolchain currently exposes.
 #
 # Stack choice (see 2026-05-13_DESIGN.md for rationale):
 #   * Goldilocks base field (2^64 − 2^32 + 1) — Plonky3-native, matches
@@ -42,20 +44,20 @@ blake3 = { workspace = true }
 #     matrix commits, jackpot hash); the sub-AIR proves the keyed-hash
 #     transitions inside the circuit so we don't have to re-prove BLAKE3
 #     by hand.
-p3-air = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-blake3-air = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-commit = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-dft = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-field = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-fri = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-lookup = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-matrix = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-symmetric = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
-p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-air = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-blake3-air = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-commit = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-dft = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-field = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-fri = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-lookup = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-matrix = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
+p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3.git", rev = "83ec3062e42a0b556798d22fa0ed0ee09c81c5e1" }
 
 # Tip5 sponge — Plonky3 upstream does NOT ship a `p3-tip5` crate.
 # Nockchain has its own in-repo Tip5 implementation in

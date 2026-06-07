@@ -222,27 +222,6 @@ impl PearlMergeSubmissionConfig {
         }
     }
 
-    /// Compatibility alias for [`Self::new_compact_recursive`].
-    ///
-    /// New callers should use the explicit compact name so it is clear that the
-    /// production miner is not selecting the older oversized recursive
-    /// checkpoint path.
-    #[deprecated(note = "use PearlMergeSubmissionConfig::new_compact_recursive")]
-    pub fn new_recursive(
-        gateway: PearlGatewayMinerRpcConfig,
-        mining_config: PearlMiningConfig,
-        aux_template: PearlNockchainAux,
-        max_pattern_len: usize,
-        mine_opts: PearlMergeMineOptions,
-        params: MatmulParams,
-        a: Arc<Vec<i8>>,
-        b: Arc<Vec<i8>>,
-    ) -> Self {
-        Self::new_compact_recursive(
-            gateway, mining_config, aux_template, max_pattern_len, mine_opts, params, a, b,
-        )
-    }
-
     pub(crate) fn build_certificate_for_attempt(
         &self,
         attempt: &PearlMergeTicketAttempt,
