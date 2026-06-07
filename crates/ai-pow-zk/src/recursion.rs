@@ -516,6 +516,21 @@ fn l1_circuit_prover_data_with_config_and_public_binding_lanes(
     ),
     VerificationError,
 > {
+    let table_packing = production_l1_table_packing(public_binding_lanes);
+    l1_circuit_prover_data_with_config_and_table_packing(built, outer_config, table_packing)
+}
+
+fn l1_circuit_prover_data_with_config_and_table_packing(
+    built: &BuiltCompositeL1,
+    outer_config: &p3_circuit_prover::config::GoldilocksTipsConfig,
+    table_packing: p3_circuit_prover::TablePacking,
+) -> Result<
+    (
+        p3_circuit_prover::TablePacking,
+        p3_circuit_prover::CircuitProverData<p3_circuit_prover::config::GoldilocksTipsConfig>,
+    ),
+    VerificationError,
+> {
     use p3_batch_stark::ProverData;
     use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
     use p3_circuit_prover::{
@@ -526,7 +541,6 @@ fn l1_circuit_prover_data_with_config_and_public_binding_lanes(
 
     type OuterConfig = config::GoldilocksTipsConfig;
 
-    let table_packing = production_l1_table_packing(public_binding_lanes);
     let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
         vec![Box::new(Tip5Preprocessor), Box::new(RecomposePreprocessor::new(true))];
     let mut air_builders = tip5_air_builders::<OuterConfig, 2>();
@@ -1971,15 +1985,25 @@ mod tests {
         l1_config: p3_circuit_prover::config::GoldilocksTipsConfig,
         public_binding_lanes: usize,
     ) -> Result<L1OuterPrepForTestPearl, String> {
+        build_l1_outer_prep_for_test_pearl_with_table_packing(
+            built,
+            l1_config,
+            production_l1_table_packing(public_binding_lanes),
+        )
+    }
+
+    fn build_l1_outer_prep_for_test_pearl_with_table_packing(
+        built: &BuiltCompositeL1,
+        l1_config: p3_circuit_prover::config::GoldilocksTipsConfig,
+        table_packing: p3_circuit_prover::TablePacking,
+    ) -> Result<L1OuterPrepForTestPearl, String> {
         use p3_circuit::ops::Tip5Config;
         use p3_circuit_prover::BatchStarkProver;
 
         let air_setup_start = std::time::Instant::now();
         let (table_packing, circuit_prover_data) =
-            l1_circuit_prover_data_with_config_and_public_binding_lanes(
-                built, &l1_config, public_binding_lanes,
-            )
-            .map_err(|e| format!("L1 prep: {e:?}"))?;
+            l1_circuit_prover_data_with_config_and_table_packing(built, &l1_config, table_packing)
+                .map_err(|e| format!("L1 prep: {e:?}"))?;
         let air_setup_ms = air_setup_start.elapsed().as_millis();
 
         let mut prover = BatchStarkProver::new(l1_config).with_table_packing(table_packing);
@@ -3941,6 +3965,241 @@ mod tests {
             assert!(
                 l2_compact_body_bytes < l2_compact_bytes,
                 "metadata-free compact L2 packing variant should be smaller than the compact wrapper"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "selected compact L2 over L1 table-packing sweep is opt-in"]
+    fn selected_fast_l1_compact_l2_l1_table_packing_sweep_for_test_pearl() {
+        use std::time::Instant;
+
+        init_batch_stark_profile_tracing_for_test_pearl();
+
+        const L1_LOG_BLOWUP: usize = 3;
+        const L1_NUM_QUERIES: usize = 20;
+        const L1_CAP_HEIGHT: usize = 4;
+        const L1_LOG_FINAL_POLY_LEN: usize = 2;
+        const L2_LOG_BLOWUP: usize = 5;
+        const L2_NUM_QUERIES: usize = 12;
+        const L2_LOG_FINAL_POLY_LEN: usize = 2;
+        const L2_MAX_LOG_ARITY: usize = 3;
+        const L2_CAP_HEIGHT: usize = 4;
+
+        assert_eq!(L1_LOG_BLOWUP * L1_NUM_QUERIES, 60);
+        assert_eq!(L2_LOG_BLOWUP * L2_NUM_QUERIES, 60);
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS,
+            0
+        );
+        assert_eq!(
+            p3_circuit_prover::config::GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS,
+            0
+        );
+
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+
+        let statement_digest_public_values = statement_digest_public_values_for_l1(&built);
+        let l1_config = pure_query_l1_stark_config_with_shape_and_cap(
+            L1_LOG_BLOWUP, L1_NUM_QUERIES, L1_CAP_HEIGHT,
+        );
+        let l1_fri_verifier_params =
+            pure_query_fri_verifier_params_for_l1(L1_LOG_BLOWUP, L1_LOG_FINAL_POLY_LEN);
+        let l2_config = pure_query_l1_stark_config_with_fri_shape(
+            L2_LOG_BLOWUP, L2_NUM_QUERIES, L2_LOG_FINAL_POLY_LEN, L2_MAX_LOG_ARITY, L2_CAP_HEIGHT,
+        );
+        let l2_fri_shape = pure_query_goldilocks_tip5_fri_shape(
+            L2_LOG_BLOWUP, L2_NUM_QUERIES, L2_LOG_FINAL_POLY_LEN, L2_MAX_LOG_ARITY, L2_CAP_HEIGHT,
+        );
+        let l2_statement_public_binding_lanes = statement_digest_public_values.len();
+        let l2_statement_public_values =
+            l2_statement_public_values_for_l1(&statement_digest_public_values);
+
+        for (label, l1_alu_lanes, l1_horner_pack_k) in [
+            ("l1_alu2_horner5", 2usize, 5usize),
+            ("l1_alu4_horner5", 4usize, 5usize),
+            ("baseline_l1_alu8_horner5", 8usize, 5usize),
+            ("l1_alu16_horner5", 16usize, 5usize),
+        ] {
+            let l1_table_packing = p3_circuit_prover::TablePacking::new(DIGEST_ELEMS, l1_alu_lanes)
+                .with_public_binding_lanes(DIGEST_ELEMS)
+                .with_horner_pack_k(l1_horner_pack_k);
+            let l1_prep_wall_start = Instant::now();
+            let l1_prep = build_l1_outer_prep_for_test_pearl_with_table_packing(
+                &built,
+                l1_config.clone(),
+                l1_table_packing,
+            )
+            .expect("selected L1 prep with packing variant");
+            let l1_prep_wall_ms = l1_prep_wall_start.elapsed().as_millis();
+            let l1_cached_prove_start = Instant::now();
+            let l1_artifact = prove_l1_outer_with_prep_for_test_pearl(&l1_prep, &built, &proof)
+                .expect("selected L1 proof with packing variant");
+            let l1_cached_prove_ms = l1_cached_prove_start.elapsed().as_millis();
+            let L1ProofForTestPearl {
+                proof: l1,
+                timings: l1_timings,
+            } = l1_artifact;
+
+            assert_eq!(
+                l1.public_binding_lanes, DIGEST_ELEMS,
+                "selected L1 packing variant must expose the statement digest"
+            );
+            let mut l1_verifier = p3_circuit_prover::BatchStarkProver::new(l1_config.clone())
+                .with_table_packing(l1.table_packing.clone());
+            l1_verifier.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+            l1_verifier.register_recompose_table::<2>(true);
+            let l1_verify_start = Instant::now();
+            l1_verifier
+                .verify_all_tables_with_public_values(&l1, &statement_digest_public_values)
+                .expect("selected L1 packing variant must verify before L2 wrapping");
+            let l1_verify_ms = l1_verify_start.elapsed().as_millis();
+
+            let l1_outer_bytes = postcard_len(&l1, "selected L1-packing diagnostic L1 outer proof");
+            let l1_proof_body_bytes =
+                postcard_len(&l1.proof, "selected L1-packing diagnostic L1 proof body");
+
+            let l2_prep_wall_start = Instant::now();
+            let l2_prep = build_l2_over_l1_outer_prep_for_test_pearl(
+                &l1,
+                l1_config.clone(),
+                &l1_fri_verifier_params,
+                l2_config.clone(),
+                L2_LOG_BLOWUP,
+                L2_LOG_FINAL_POLY_LEN,
+            )
+            .expect("selected L2 prep over L1 packing variant");
+            let l2_prep_wall_ms = l2_prep_wall_start.elapsed().as_millis();
+            let l2_prep_timings = l2_prep.timings;
+            let l2_cached_prove_start = Instant::now();
+            let l2_artifact = prove_l2_over_l1_outer_with_prep_for_test_pearl(
+                &l2_prep, &l1, &statement_digest_public_values,
+            )
+            .expect("selected L2 proof over L1 packing variant");
+            let l2_cached_prove_ms = l2_cached_prove_start.elapsed().as_millis();
+            let L2ProofForTestPearl {
+                proof: l2,
+                circuit_prover_data: l2_circuit_prover_data,
+                timings: l2_timings,
+            } = l2_artifact;
+
+            assert_eq!(
+                l2.public_binding_lanes, l2_statement_public_binding_lanes,
+                "selected L2 over L1 packing variant must bind the L1 statement digest"
+            );
+            let l2_outer_bytes = postcard_len(&l2, "selected L1-packing diagnostic L2 outer proof");
+            let l2_proof_body_bytes =
+                postcard_len(&l2.proof, "selected L1-packing diagnostic L2 proof body");
+
+            let mut l2_compact_verifier =
+                p3_circuit_prover::BatchStarkProver::new(l2_config.clone()).with_table_packing(
+                    p3_circuit_prover::TablePacking::new(l2_statement_public_binding_lanes, 8)
+                        .with_public_binding_lanes(l2_statement_public_binding_lanes)
+                        .with_fri_params(L2_LOG_FINAL_POLY_LEN, L2_LOG_BLOWUP)
+                        .with_horner_pack_k(5),
+                );
+            l2_compact_verifier.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+            l2_compact_verifier.register_recompose_table::<2>(true);
+            let l2_metadata =
+                p3_circuit_prover::GoldilocksTip5BatchStarkProofMetadata::from_proof(&l2);
+            let l2_compact_start = Instant::now();
+            let l2_compact = l2_compact_verifier
+                .compact_goldilocks_tip5_path_pruned_preprocessed_with_public_values(
+                    l2,
+                    &l2_statement_public_values,
+                    l2_circuit_prover_data.as_ref(),
+                    l2_fri_shape,
+                )
+                .expect("compact selected L2 proof over L1 packing variant");
+            let l2_compact_ms = l2_compact_start.elapsed().as_millis();
+            let l2_compact_bytes = postcard_len(
+                &l2_compact, "selected L1-packing diagnostic compact L2 proof",
+            );
+            let l2_compact_body = l2_compact.into_body();
+            let l2_compact_body_bytes = postcard_len(
+                &l2_compact_body, "selected L1-packing diagnostic compact L2 proof body",
+            );
+            let l2_compact_proof_body_bytes = postcard_len(
+                &l2_compact_body.proof, "selected L1-packing diagnostic compact L2 core proof body",
+            );
+            let l2_compact_restoration_bytes = postcard_len(
+                &(
+                    l2_compact_body.fri_shape, &l2_compact_body.input_batch_paths,
+                    &l2_compact_body.commit_phase_paths,
+                ),
+                "selected L1-packing diagnostic compact L2 restoration payload",
+            );
+            let l2_compact_verify_start = Instant::now();
+            let l2_compact_context =
+                p3_circuit_prover::GoldilocksTip5PathPrunedCompactVerifierContext::new(
+                    &l2_metadata,
+                    l2_circuit_prover_data.as_ref(),
+                    l2_fri_shape,
+                    &l2_statement_public_values,
+                );
+            l2_compact_verifier
+                .verify_goldilocks_tip5_path_pruned_preprocessed_compact_body_with_context(
+                    l2_compact_body, l2_compact_context,
+                )
+                .expect("compact selected L2 proof over L1 packing variant must verify");
+            let l2_compact_verify_ms = l2_compact_verify_start.elapsed().as_millis();
+
+            eprintln!(
+                "selected compact L2 over L1 table-packing candidate [{label}]: l1_alu_lanes={} l1_horner_pack_k={} l1_outer={} l1_proof_body={} l1_prep_wall_ms={} l1_cached_prove_ms={} l1_air_setup_ms={} l1_witness_run_ms={} l1_stark_prove_ms={} l1_verify_ms={} l2_outer={} l2_proof_body={} l2_actual_compact={} l2_actual_compact_body={} l2_actual_compact_proof_body={} l2_actual_compact_restoration={} l2_actual_compact_build_ms={} l2_actual_compact_body_verify_ms={} l2_prep_wall_ms={} l2_cached_prove_ms={} l2_circuit_define_ms={} l2_circuit_build_ms={} l2_air_setup_ms={} l2_input_pack_ms={} l2_witness_run_ms={} l2_stark_prove_ms={} l2_stark_verify_ms={} cached_serial_l1_l2_ms={}",
+                l1_alu_lanes,
+                l1_horner_pack_k,
+                l1_outer_bytes,
+                l1_proof_body_bytes,
+                l1_prep_wall_ms,
+                l1_cached_prove_ms,
+                l1_prep.timings.air_setup_ms,
+                l1_timings.witness_run_ms,
+                l1_timings.stark_prove_ms,
+                l1_verify_ms,
+                l2_outer_bytes,
+                l2_proof_body_bytes,
+                l2_compact_bytes,
+                l2_compact_body_bytes,
+                l2_compact_proof_body_bytes,
+                l2_compact_restoration_bytes,
+                l2_compact_ms,
+                l2_compact_verify_ms,
+                l2_prep_wall_ms,
+                l2_cached_prove_ms,
+                l2_prep_timings.circuit_define_ms,
+                l2_prep_timings.circuit_build_ms,
+                l2_prep_timings.air_setup_ms,
+                l2_timings.input_pack_ms,
+                l2_timings.witness_run_ms,
+                l2_timings.stark_prove_ms,
+                l2_timings.stark_verify_ms,
+                l1_cached_prove_ms + l2_cached_prove_ms,
+            );
+
+            assert!(
+                l2_compact_bytes < l2_outer_bytes,
+                "compact L2 over L1 packing variant should be smaller than the full L2 proof"
+            );
+            assert!(
+                l2_compact_body_bytes < l2_compact_bytes,
+                "metadata-free compact L2 over L1 packing variant should be smaller than the compact wrapper"
             );
         }
     }

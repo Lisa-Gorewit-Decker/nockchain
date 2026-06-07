@@ -51,6 +51,16 @@ artifact.
 > `30s`, but cached serial L1+L2 proving is still about `44.031s` with both
 > prep stages cached (`58.167s` if setup is included), so the total
 > proving-time gate is not met.
+> A follow-up L1 table-packing sweep on the same selected compact-L2 route
+> finds the best measured complete row at L1 `alu_lanes=4,horner_k=5`: actual
+> compact wrapper `143,106` bytes, metadata-free compact body `142,225` bytes,
+> cached L1 proving `15.029s`, cached L2 proving `28.555s`, and cached serial
+> L1+L2 proving `43.584s`. L1 `alu_lanes=2,horner_k=5` gives the smallest
+> measured compact wrapper, `141,148` bytes, but serial proving is `44.391s`.
+> The route is therefore clearly closer to the relaxed size target than the
+> native-terminal fallback and the large batch-STARK checkpoint, but it still
+> needs a real proving-time reduction before production-readiness can be
+> claimed.
 > A prior deeper PCS profile showed cached L2 dominated by main/permutation
 > trace Merkle commitments (`13.3s` + `12.9s`), so the next production lever is
 > reducing committed recursive-verifier matrix volume, especially Tip5/MMCS
@@ -73,8 +83,11 @@ artifact.
 > compact wrapper (`126,862` bytes; metadata-free body `125,979` bytes) but
 > raises cached L2 proving to `30.801s`, while the baseline `alu_lanes=8`
 > remains the best time row at `143,762` bytes and `28.530s` cached L2 proving
-> in that run. The relaxed size gate is now plausibly in range; the relaxed
-> total proving-time gate is not yet met.
+> in that run. L1 table packing gives a smaller size/time nudge but the same
+> conclusion: compact batch-STARK is the committed candidate route, simple
+> packing retunes do not close the total-time gap by themselves. The relaxed
+> size gate is now plausibly in range; the relaxed total proving-time gate is
+> not yet met.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 

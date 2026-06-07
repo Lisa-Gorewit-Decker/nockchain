@@ -125,6 +125,20 @@ Done and verified:
   `38` main columns) but increase ALU rows (`23,136`), while high lanes keep
   rows flat at `5,960` and widen columns (`150` or `278` main columns). This is
   a useful emergency size knob, not a route to the `~30s` total target.
+- The selected compact L2 over L1 table-packing sweep now verifies that the
+  inner L1 proof's table-packing choice is also bound through the same
+  verifier-owned L2 context and explicit final public values. This is the
+  closest measured complete compact batch-STARK route so far. L1
+  `alu_lanes=4,horner_k=5` gives compact wrapper `143,106` bytes,
+  metadata-free body `142,225` bytes, cached L1 prove `15.029s`, cached L2
+  prove `28.555s`, and cached serial L1+L2 `43.584s`. L1
+  `alu_lanes=2,horner_k=5` is the smallest measured row at `141,148` bytes
+  compact / `140,260` bytes body, but cached serial L1+L2 is `44.391s`.
+  Baseline L1 `alu_lanes=8,horner_k=5` remains close at `143,762` bytes and
+  `43.893s` cached serial in the same run. L1 `alu_lanes=16` is worse on both
+  size and time for the relaxed route (`149,688` bytes, `45.773s`). This
+  supports committing to compact batch-STARK as the primary production route,
+  while also showing that packing alone is not the remaining time lever.
 - A selected L2 verifier trace profile now quantifies the Tip5 boundary. The
   L2 verifier circuit has `75,391` ops: `66,564` primitive ops, `1,981` hints,
   and `6,846` non-primitive ops. Non-primitives split into `4,791` Tip5 rows,
@@ -233,10 +247,12 @@ What remains:
   chain-owned statement metadata, and reject any prover-supplied verifier
   metadata instead of accepting it as context.
 - Reduce end-to-end proving time. The current selected size row is about
-  `58.167s` serial L1+uncached-L2 proving in the latest focused timing run
+  `58.167s` serial L1+uncached-L2 proving in the focused baseline timing run
   (`20.077s + 38.090s`). With measured L1 and L2 prep caches, the comparable
-  per-attempt time is still about `44.031s` (`15.305s + 28.726s`). This is the
-  best measured in-size route so far, but it still misses the `~30s` target.
+  baseline per-attempt time is about `44.031s` (`15.305s + 28.726s`), and the
+  best measured L1-packing row improves that only to `43.584s` (`15.029s +
+  28.555s`). This is the best measured in-size route so far, but it still
+  misses the `~30s` target.
 - Promote the diagnostic L2 prep cache into the production prover/verifier-key
   path. The test harness now proves that reusable setup is available and that
   compatible cached `ProverData` can be reused for the fixed selected shape,
@@ -489,14 +505,15 @@ does not replace the required packed Tip5 support-theorem redesign.
 | Relaxed target | About `150 KiB` recursive proof artifact and about `30s` total release proving |
 | Soundness target | 60 pure FRI query bits per promoted layer; selected compact row uses L1 `lb=3,nq=20,pow=0` and L2 `lb=5,nq=12,pow=0` |
 | Most viable shape | Compact batch-STARK L2 with verifier-owned metadata/setup, canonical preprocessed-opening restoration, pruned paths, and explicit final public-value binding of the L1 statement digest |
-| Best measured compact batch-STARK candidate | Fast L1 `lb=3,nq=20,cap=4,pow=0` plus L2 `lb=5,nq=12,cap=4,pow=0`: actual compact wrapper `143,762` bytes, metadata-free body `142,878` bytes; latest cached-prep rerun L1 prep `4.772s`, cached L1 prove `15.305s`, total L1 prove `20.077s`, reusable L2 prep `9.364s`, cached L2 prove `28.726s`, uncached L2 total `38.090s` |
+| Best measured compact batch-STARK candidate | Fast L1 `lb=3,nq=20,cap=4,pow=0` plus L2 `lb=5,nq=12,cap=4,pow=0`, with L1 `alu_lanes=4,horner_k=5`: actual compact wrapper `143,106` bytes, metadata-free body `142,225` bytes, cached L1 prove `15.029s`, cached L2 prove `28.555s`, cached serial L1+L2 `43.584s`. The baseline L1 `alu_lanes=8` row remains close at `143,762` bytes / `142,878` bytes body, cached L1 `15.305s`, cached L2 `28.726s`, cached serial `44.031s` in the focused rerun and `43.893s` in the L1-packing sweep |
 | Best measured compact-L2 size reserve | The selected L2 table-packing sweep verifies the same compact body with `alu_lanes=2,horner_k=5` at `126,862` bytes actual compact wrapper and `125,979` bytes metadata-free body, but cached L2 proving rises to `30.801s`, so this is useful size margin, not the current time route |
+| Best measured L1-packing size reserve | The selected compact L2 over L1-packing sweep verifies L1 `alu_lanes=2,horner_k=5` at `141,148` bytes compact wrapper and `140,260` bytes metadata-free body, with cached serial L1+L2 `44.391s`; useful for byte headroom, not a time fix |
 | Best measured complete base | Cap-height `3` full-context merged-only structural floor at `142,807` bytes; sound for its included relations, but missing internal Tip5 binding |
 | Best near-target standalone missing binding | Lane-selector-aware selected-to-packed NPO-IO bridge at `137,355` bytes / `134.1 KiB`, prove `28.526s`, verify `14.510s` |
 | Direct bridge diagnostic | Binding selected NPO values directly to compact packed trace lanes verifies at `205,950` bytes / `201.1 KiB`, prove `35.863s`; it removes the projection commitment/domain but is too large standalone because it still opens the full `436`-column packed trace |
 | Negative fusion results | Naive projection+selected fusion verifies at `243,516` bytes / `237.8 KiB`, prove `35.423s` on the older width-500 trace; uncoalesced shared packed-trace support theorem verifies at `273,113` bytes / `266.7 KiB`, prove `36.590s`; compact-trace coalesced shared support theorem verifies at `198,287` bytes / `193.6 KiB`, prove `33.277s`; cap-height `3` merged-value plus packed-support optimistic single-FRI floor is `249,184` bytes, `95,584` bytes over binary `150 KiB`; final-capacity-lane elision was measured and rejected at `197,259` bytes, prove `35.362s`; packed byte-LogUp group size 15 was measured and rejected at `206,759` bytes, prove `38.515s` |
 | Best measured outer task parallelism | Rayon-joining the current primitive R1CS, merged value-bridge, and packed-support subproofs gives `39.448s` post-prelude subproof wall time versus `53.355s` summed subproof timers, but leaves the same `249,184` byte optimistic single-FRI floor and `171.422s` full diagnostic wall |
-| Main current blocker | The compact batch-STARK L2 size row is in range and cached L2 proving is now under `30s`, but measured cached serial L1+L2 proving is still about `44.0s` (`15.305s` cached L1 + `28.726s` cached L2). The selected L2 verifier has `4,791` Tip5 rows padded to `8,192`, only `695` rows above the `4,096` halving boundary. A table-packing sweep shows ALU lane retuning can trade size for time but does not reduce total proving time: `alu_lanes=2` shrinks compact L2 to `126,862` bytes but raises cached L2 proving to `30.801s`, while `alu_lanes=16/32` widens ALU columns and is worse on both size and time. |
+| Main current blocker | The compact batch-STARK L2 size row is in range and cached L2 proving is now under `30s`, but measured cached serial L1+L2 proving is still `43.584s` at the best measured L1-packing row (`15.029s` cached L1 + `28.555s` cached L2). The selected L2 verifier has `4,791` Tip5 rows padded to `8,192`, only `695` rows above the `4,096` halving boundary. L2 and L1 table-packing sweeps show ALU lane retuning can trade size for time but does not reduce total proving time enough: L2 `alu_lanes=2` shrinks compact L2 to `126,862` bytes but raises cached L2 proving to `30.801s`, while the best L1-packing row saves only about `0.4s` cached serial over baseline. |
 | Next implementation step | Promote compact batch-STARK L2 into the production certificate format by deriving/pinning the setup digest and public values from verifier-owned state, then reduce or overlap L1 proving and reduce committed L2 verifier matrix volume without merely shifting the ALU size/time tradeoff. Hidden-L1 cap retuning is not enough as tested: cap `3 -> 4` saves only `176` rows, and cap `5/6` currently fail inside the recursive verifier despite native L1 verification passing. Add final artifact rejection tests as the production wire path is promoted |
 
 ### Decision
@@ -510,14 +527,20 @@ soundness.
 
 The selected measurement row uses L1 `lb=3,nq=20,cap=4,pow=0` and L2
 `lb=5,nq=12,cap=4,pow=0`. It verifies with ten final L2 public-binding lanes
-for the L1 statement-digest base limbs and measures `143,762` bytes for the
-actual compact wrapper, `142,878` bytes for the metadata-free compact body, and
-`90,307` bytes for the core compact proof. That is inside the relaxed size
-gate. The earlier focused serial proving time was still too high: `24.865s`
-for L1 plus `48.281s` for L2 in the pre-cache diagnostic. The latest
-cached-prep rerun is still too high for the total route, but materially closer:
-`15.305s` cached L1 proving plus `28.726s` cached L2 proving, with `4.772s` of
-reusable L1 prep and `9.364s` of reusable L2 prep outside the per-attempt path.
+for the L1 statement-digest base limbs. The baseline L1 `alu_lanes=8` row
+measures `143,762` bytes for the actual compact wrapper, `142,878` bytes for
+the metadata-free compact body, and `90,307` bytes for the core compact proof.
+That is inside the relaxed size gate. The latest L1-packing sweep finds a
+slightly better complete row at L1 `alu_lanes=4,horner_k=5`: `143,106` bytes
+actual compact wrapper, `142,225` bytes metadata-free compact body,
+`15.029s` cached L1 proving, `28.555s` cached L2 proving, and `43.584s`
+cached serial L1+L2 proving. L1 `alu_lanes=2` gives more byte headroom
+(`141,148` bytes compact) but is slower overall (`44.391s`). The earlier
+focused serial proving time was still too high: `24.865s` for L1 plus
+`48.281s` for L2 in the pre-cache diagnostic. The cached-prep route is
+materially closer but still too high for the total route: the best current row
+is `43.584s` cached serial, with reusable L1/L2 prep outside the per-attempt
+path.
 
 The terminal fallback keeps the production profile at pure-query 60-bit FRI
 soundness: `log_blowup=4`, `num_queries=15`, `query_pow_bits=0`, and
@@ -1473,6 +1496,25 @@ timings and bytes differ from the older full three-row sweep:
 | Selected fast-L1/L2 row | Actual compact wrapper | Metadata-free compact body | Reusable L1 prep | Cached L1 prove | Total L1 prove | Reusable L2 prep | Cached L2 prove | Uncached L2 total | L2 witness run | L2 STARK prove |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | L1 `lb=3,nq=20,cap=4,pow=0`; L2 `lb=5,nq=12,lfp=2,mla=3,cap=4,pow=0` | `143,762` bytes | `142,878` bytes | `4.772s` | `15.305s` | `20.077s` | `9.364s` | `28.726s` | `38.090s` | `38ms` | `28.667s` |
+
+The follow-up L1 table-packing sweep keeps the same FRI shapes and compact L2
+serialization, but varies the inner L1 table packing before recursively proving
+the L1 proof. This is the latest best measured complete compact batch-STARK
+route:
+
+| L1 table packing | L1 outer proof | L1 cached prove | L2 compact wrapper | Metadata-free L2 body | L2 cached prove | Cached serial L1+L2 |
+|---|---:|---:|---:|---:|---:|---:|
+| `alu_lanes=2,horner_k=5` | `240,303` bytes | `15.956s` | `141,148` bytes | `140,260` bytes | `28.435s` | `44.391s` |
+| `alu_lanes=4,horner_k=5` | `251,897` bytes | `15.029s` | `143,106` bytes | `142,225` bytes | `28.555s` | `43.584s` |
+| `alu_lanes=8,horner_k=5` baseline | `278,037` bytes | `15.472s` | `143,762` bytes | `142,878` bytes | `28.421s` | `43.893s` |
+| `alu_lanes=16,horner_k=5` | `330,420` bytes | `16.792s` | `149,688` bytes | `148,803` bytes | `28.981s` | `45.773s` |
+
+This reinforces the route decision. Compact batch-STARK is now the closest
+soundly-bound route to the relaxed target, and batch STARK is acceptable if it
+is the smaller, faster, explicitly-bound proof path. The remaining work is not
+to switch back to the native terminal backend or the large checkpoint envelope;
+it is to cut or overlap the `~15s` L1 proving stage and the `~28.5s` L2 STARK
+stage.
 
 The recursive verifier circuit and witness execution are not the bottleneck:
 definition/build/input packing sum to under `100ms`, L1 witness execution is
