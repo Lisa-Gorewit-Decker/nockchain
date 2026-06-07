@@ -9,8 +9,9 @@ production compact recursive proof path.
 The current dependency pin is Plonky3 commit
 `83ec3062e42a0b556798d22fa0ed0ee09c81c5e1`. This is newer than the previous
 `9fc13fa223665268f3bec16ddd43d4b592cd57a1` pin and keeps the LogUp/batch-STARK
-API shape used by the local `p3-batch-stark` patch and vendored recursion
-workspace.
+API shape used by the vendored recursion workspace. The former local
+`p3-batch-stark` patch was removed; Layer 0 now uses upstream
+`p3-batch-stark` at this same pin.
 
 Validated so far:
 
@@ -18,12 +19,19 @@ Validated so far:
 - `RUSTFLAGS="-C target-cpu=native" cargo check -p ai-pow --features zk`
 - `RUSTFLAGS="-C target-cpu=native" cargo check -p ai-pow-miner --features node`
 
+After removing the local `p3-batch-stark` patch, the full
+`RUSTFLAGS="-C target-cpu=native" cargo test -p ai-pow-zk --features recursion`
+suite was started and reached the final recursive-certificate tests with the
+Route-A/LogUp negative tests passing, but was interrupted before completion.
+Rerun it to completion before treating the upstream batch-STARK cleanup as fully
+regression-tested.
+
 The published Plonky3 `v0.5.3` tag was checked during the bump. It is not a
 drop-in target for this branch: its lookup and `BaseAir` APIs do not match the
-patched batch-STARK and vendored recursion code. Current Plonky3 `main` was also
-checked, but it uses `MaybeUninit::assume_init_ref`, which this workspace
-toolchain does not currently expose as stable. Move past `83ec3062` only with a
-toolchain bump or an upstream-compatible patch.
+vendored recursion code. Current Plonky3 `main` was also checked, but it uses
+`MaybeUninit::assume_init_ref`, which this workspace toolchain does not
+currently expose as stable. Move past `83ec3062` only with a toolchain bump or
+an upstream-compatible patch.
 
 ## Tests Still Needed
 

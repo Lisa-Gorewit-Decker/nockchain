@@ -2469,6 +2469,7 @@ where
         SC::Challenge: Send + Sync,
         Domain<SC>: Send + Sync,
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
         CircuitTableAir<SC, 1>: Sync,
         CircuitTableAir<SC, 2>: Sync,
         CircuitTableAir<SC, 4>: Sync,
@@ -2587,6 +2588,7 @@ where
         SC::Challenge: Send + Sync,
         Domain<SC>: Send + Sync,
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
         CircuitTableAir<SC, D>: Sync,
     {
         let primitive = &circuit_prover_data.primitive_columns;

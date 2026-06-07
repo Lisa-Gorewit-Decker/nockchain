@@ -28,10 +28,10 @@ serde = { workspace = true, features = ["derive"] }
 blake3 = { workspace = true }
 
 # Plonky3. Pin all direct crates to the same upstream commit so the vendored
-# recursion workspace and the local p3-batch-stark patch share one exact
-# dependency graph. This is newer than the previous pin but intentionally stops
-# before upstream commit 895572b7, which requires a newer Rust std
-# `MaybeUninit` slice API than this workspace toolchain currently exposes.
+# recursion workspace and the production Layer-0 LogUp prover share one exact
+# dependency graph. This intentionally stops before upstream commit 895572b7,
+# which requires a newer Rust std `MaybeUninit` slice API than this workspace
+# toolchain currently exposes.
 #
 # Stack choice (see 2026-05-13_DESIGN.md for rationale):
 #   * Goldilocks base field (2^64 − 2^32 + 1) — Plonky3-native, matches

@@ -275,11 +275,6 @@ path = "crates/noun-serde-derive"
 [workspace.dependencies.zkvm-jetpack]
 path = "crates/zkvm-jetpack"
 
-[patch]
-
-[patch."https://github.com/Plonky3/Plonky3.git"]
-p3-batch-stark = { path = "crates/plonky3-patches/p3-batch-stark" }
-
 [patch.crates-io]
 op-alloy-consensus = { git = "https://github.com/ethereum-optimism/optimism", rev = "0c6a03eac768122819c05b71f233bba1e90cf426", package = "op-alloy-consensus" }
 op-alloy-network = { git = "https://github.com/ethereum-optimism/optimism", rev = "0c6a03eac768122819c05b71f233bba1e90cf426", package = "op-alloy-network" }
