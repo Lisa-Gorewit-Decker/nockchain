@@ -1,16 +1,15 @@
-//! Structured noun encoder for the batch-STARK recursive AI-PoW checkpoint
-//! certificate.
+//! Structured noun encoder for recursive AI-PoW certificates.
 //!
 //! This module intentionally accepts the recursive certificate object, not
 //! `MatmulProof` and not a standalone raw Layer-0 `AiPowBatchProof`. The
 //! recursive certificate embeds Layer-0 proof/program context so verification
 //! can rebuild the L1 circuit binding. Its verifier boundary also runs the
 //! full-matmul statement precheck before recursive proof reconstruction or
-//! verification. This noun path still encodes the large soundness-hardened
-//! batch-STARK checkpoint, not the compact final-layer batch-STARK production
-//! candidate. Those recursive verifier helpers are Rust boundaries only; Hoon
-//! consensus remains fail-closed and does not call them in the current
-//! milestone.
+//! verification. The selected compact final-layer batch-STARK path is encoded
+//! as canonical postcard bytes inside a bounded proof-node atom so the noun
+//! boundary does not re-inflate the compact certificate. Recursive verifier
+//! helpers are still Rust boundaries only; Hoon consensus remains fail-closed
+//! and does not call them in the current milestone.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -28,7 +27,8 @@ use ai_pow::pearl_compat::{
 use ai_pow::pearl_compat::{PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX, PEARL_NOCKCHAIN_AUX_EXTRA_MAX};
 use ai_pow::zk_bridge::{
     expected_layer0_rows_for_strip_schedule, verify_ai_pow_full_matmul_production_statement,
-    zk_params_from_matmul, AiPowRecursiveCertificateRun, BridgeError, ZkPublicCommitments,
+    zk_params_from_matmul, AiPowCompactRecursiveCertificateRun, AiPowRecursiveCertificateRun,
+    BridgeError, ZkPublicCommitments,
 };
 use ai_pow_zk::canonical::StripIndexSchedule;
 use ai_pow_zk::{CompositePublicInputs, ZkParams};
@@ -432,6 +432,21 @@ pub(crate) fn recursive_certificate_to_node<C: Serialize>(
     Ok(node.normalized())
 }
 
+/// Convert the compact final-layer batch-STARK certificate into the generic
+/// proof-node tree without expanding its internal proof structure.
+///
+/// The compact route's size target applies to the canonical postcard body.
+/// Encoding it as `Bytes` preserves that size at the noun boundary while still
+/// letting the Rust verifier reconstruct and canonicalize the typed
+/// certificate.
+pub(crate) fn compact_recursive_certificate_to_node(
+    certificate: &ai_pow_zk::recursion::AiPowCompactBatchRecursiveCertificate,
+) -> Result<AiProofNode, CertificateNounError> {
+    let bytes = ai_pow_zk::recursion::encode_compact_batch_recursive_certificate(certificate)
+        .map_err(|e| CertificateNounError::Serialize(e.to_string()))?;
+    Ok(AiProofNode::Bytes(bytes))
+}
+
 /// Reconstruct a serde-backed recursive certificate from a decoded proof-node
 /// tree.
 ///
@@ -583,6 +598,39 @@ pub fn ai_pow_recursive_certificate_from_node_with_limits(
     canonical_certificate_from_node_with_limits(node, limits)
 }
 
+/// Reconstruct the compact final-layer batch-STARK certificate from a decoded
+/// Hoon-compatible proof-node tree.
+pub fn ai_pow_compact_recursive_certificate_from_node(
+    node: &AiProofNode,
+) -> Result<ai_pow_zk::recursion::AiPowCompactBatchRecursiveCertificate, CertificateNounError> {
+    ai_pow_compact_recursive_certificate_from_node_with_limits(
+        node,
+        CertificateNounLimits::default(),
+    )
+}
+
+/// Reconstruct a compact recursive certificate after enforcing explicit
+/// proof-node resource limits and canonical postcard encoding.
+pub fn ai_pow_compact_recursive_certificate_from_node_with_limits(
+    node: &AiProofNode,
+    limits: CertificateNounLimits,
+) -> Result<ai_pow_zk::recursion::AiPowCompactBatchRecursiveCertificate, CertificateNounError> {
+    validate_proof_node_limits(node, limits)?;
+    let AiProofNode::Bytes(bytes) = node else {
+        return Err(CertificateNounError::Shape(
+            "compact recursive certificate must be bytes",
+        ));
+    };
+    let certificate = ai_pow_zk::recursion::decode_compact_batch_recursive_certificate(bytes)
+        .map_err(|e| CertificateNounError::Deserialize(e.to_string()))?;
+    let canonical = ai_pow_zk::recursion::encode_compact_batch_recursive_certificate(&certificate)
+        .map_err(|e| CertificateNounError::Serialize(e.to_string()))?;
+    if canonical != *bytes {
+        return Err(CertificateNounError::NonCanonicalProofNode);
+    }
+    Ok(certificate)
+}
+
 /// Build the Hoon `ai-pow-certificate` noun:
 ///
 /// ```hoon
@@ -625,6 +673,27 @@ pub fn build_ai_pow_certificate_noun_from_recursive_run(
         run.public_inputs(),
         run.certificate(),
     )
+}
+
+/// Build the Hoon `ai-pow-certificate` noun from a compact recursive prover
+/// run.
+///
+/// This is the selected production-proof constructor. It keeps the same
+/// verifier-derived metadata envelope as the checkpoint constructor, but stores
+/// the compact certificate as canonical bytes so the noun wire artifact remains
+/// close to the compact proof size.
+pub fn build_ai_pow_certificate_noun_from_compact_recursive_run(
+    run: &AiPowCompactRecursiveCertificateRun,
+) -> Result<NounSlab, CertificateNounError> {
+    let certificate = compact_recursive_certificate_to_node(run.certificate())?;
+    Ok(build_ai_pow_certificate_noun_from_node(
+        &run.zk_params(),
+        run.found_idx(),
+        run.trace_height(),
+        &run.commitments(),
+        run.public_inputs(),
+        &certificate,
+    ))
 }
 
 /// Build the same top-level certificate noun from an already-serialized proof
@@ -992,6 +1061,56 @@ pub fn build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run(
         ));
     }
     let certificate = recursive_certificate_to_node(run.certificate())?;
+    build_ai_pow_pearl_merge_artifact_noun_from_node(
+        &parts.statement, aux_inclusion, &parts.zk_params, parts.found_idx, parts.trace_height,
+        &parts.commitments, &parts.public_inputs, &certificate,
+    )
+}
+
+/// Build the canonical `%ai-pow` artifact from a successful Pearl-compatible
+/// ticket and a real compact recursive prover run.
+pub fn build_ai_pow_pearl_merge_artifact_noun_from_ticket_compact_recursive_run(
+    attempt: &PearlMergeTicketAttempt,
+    aux_inclusion: &PearlAuxInclusionProof,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    max_pattern_len: usize,
+    run: &AiPowCompactRecursiveCertificateRun,
+) -> Result<NounSlab, CertificateNounError> {
+    let parts = pearl_merge_recursive_certificate_parts_from_ticket_public_inputs(
+        attempt,
+        a_row_major,
+        b_col_major,
+        max_pattern_len,
+        run.public_inputs(),
+    )?;
+    validate_pearl_merge_ticket_aux_inclusion(&parts, aux_inclusion)?;
+    if run.zk_params() != parts.zk_params {
+        return Err(CertificateNounError::PearlMergePublicInputMismatch(
+            "recursive-run.zk-params",
+        ));
+    }
+    if run.found_idx() != parts.found_idx {
+        return Err(CertificateNounError::PearlMergePublicInputMismatch(
+            "recursive-run.found-idx",
+        ));
+    }
+    if run.strip_schedule() != &parts.strip_schedule {
+        return Err(CertificateNounError::PearlMergePublicInputMismatch(
+            "recursive-run.strip-schedule",
+        ));
+    }
+    if run.trace_height() != parts.trace_height {
+        return Err(CertificateNounError::PearlMergePublicInputMismatch(
+            "recursive-run.trace-height",
+        ));
+    }
+    if run.commitments() != parts.commitments {
+        return Err(CertificateNounError::PearlMergePublicInputMismatch(
+            "recursive-run.commitments",
+        ));
+    }
+    let certificate = compact_recursive_certificate_to_node(run.certificate())?;
     build_ai_pow_pearl_merge_artifact_noun_from_node(
         &parts.statement, aux_inclusion, &parts.zk_params, parts.found_idx, parts.trace_height,
         &parts.commitments, &parts.public_inputs, &certificate,
@@ -3899,7 +4018,7 @@ mod tests {
     };
     use ai_pow::prover::params_tag;
     use ai_pow::synth::synth_matrices;
-    use ai_pow::zk_bridge::{expected_layer0_rows, zk_params_from_matmul};
+    use ai_pow::zk_bridge::zk_params_from_matmul;
 
     use super::*;
 
@@ -3995,7 +4114,15 @@ mod tests {
         pis.hash_a = words_le(&commitments.h_a_chunk);
         pis.hash_b = words_le(&commitments.h_b_chunk);
         pis.hash_jackpot = [1, 0, 0, 0, 0, 0, 0, 0];
-        let trace_height = expected_layer0_rows(&params).required_trace_len();
+        let zk_params = zk_params_from_matmul(&params);
+        let col_tiles = params.n / params.tile;
+        let tile_i = found_idx / col_tiles;
+        let tile_j = found_idx % col_tiles;
+        let strip_schedule = StripIndexSchedule::from_tile(&zk_params, tile_i, tile_j)
+            .expect("fixture tile schedule");
+        let trace_height = expected_layer0_rows_for_strip_schedule(&params, &strip_schedule)
+            .expect("fixture trace height")
+            .required_trace_len();
         (params, commitments, pis, trace_height, found_idx)
     }
 
@@ -6325,6 +6452,24 @@ mod tests {
             err,
             CertificateNounError::NonCanonicalField { field: "ext2.c0" }
         ));
+    }
+
+    #[test]
+    fn compact_recursive_certificate_from_node_requires_canonical_bytes() {
+        assert!(matches!(
+            ai_pow_compact_recursive_certificate_from_node(&AiProofNode::Unit),
+            Err(CertificateNounError::Shape(
+                "compact recursive certificate must be bytes"
+            ))
+        ));
+
+        let err = match ai_pow_compact_recursive_certificate_from_node(&AiProofNode::Bytes(vec![
+            0xff, 0x00,
+        ])) {
+            Ok(_) => panic!("invalid compact postcard bytes must reject"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, CertificateNounError::Deserialize(_)));
     }
 
     #[test]

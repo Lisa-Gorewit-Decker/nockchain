@@ -294,7 +294,7 @@ pub(crate) struct ZkProofArtifact {
     pub trace_height: usize,
 }
 
-/// Prover-side result for a recursive AI-PoW certificate.
+/// Prover-side result for the large checkpoint recursive AI-PoW certificate.
 ///
 /// This is the object current checkpoint callers hand to the Hoon noun encoder:
 /// it contains the hardened batch-STARK recursive checkpoint certificate plus
@@ -306,9 +306,9 @@ pub(crate) struct ZkProofArtifact {
 /// [`prove_ai_pow_recursive_certificate`] rejects before producing this value.
 /// Fields are private so downstream crates cannot synthesize a fake prover-run
 /// handle and accidentally feed noncanonical proof material into artifact
-/// builders. This large checkpoint run object is not the compact final-layer
-/// batch-STARK production candidate, which is promoted inside `ai-pow-zk` but
-/// not yet wired through this bridge/noun path.
+/// builders. This large checkpoint run object remains available for regression
+/// and fallback validation; the selected production-proof direction is
+/// [`AiPowCompactRecursiveCertificateRun`].
 pub struct AiPowRecursiveCertificateRun {
     zk_params: ZkParams,
     found_idx: u32,
@@ -368,6 +368,96 @@ impl AiPowRecursiveCertificateRun {
 
     pub fn l1_outer_cert_ms(&self) -> u128 {
         self.l1_outer_cert_ms
+    }
+}
+
+/// Prover-side result for the compact final-layer batch-STARK recursive
+/// AI-PoW certificate.
+///
+/// This is the selected production-proof direction. It carries the same
+/// verifier-derived statement metadata as [`AiPowRecursiveCertificateRun`],
+/// but the proof artifact is the compact L2 certificate body plus its explicit
+/// verifier-key/setup digest. The verifier-owned compact context is
+/// intentionally not exposed here or serialized through the miner noun; a
+/// production verifier must derive or pin that context independently.
+pub struct AiPowCompactRecursiveCertificateRun {
+    zk_params: ZkParams,
+    found_idx: u32,
+    strip_schedule: ai_pow_zk::canonical::StripIndexSchedule,
+    commitments: ZkPublicCommitments,
+    pis: CompositePublicInputs,
+    trace_height: usize,
+    l1_circuit_build_ms: u128,
+    l1_outer_cert_ms: u128,
+    l2_prep_ms: u128,
+    l2_prove_ms: u128,
+    l2_compact_ms: u128,
+    l2_compact_verify_ms: u128,
+    certificate: ai_pow_zk::recursion::AiPowCompactBatchRecursiveCertificate,
+}
+
+impl AiPowCompactRecursiveCertificateRun {
+    /// ZK parameter subset bound by this recursive certificate.
+    pub fn zk_params(&self) -> ZkParams {
+        self.zk_params
+    }
+
+    /// Linear tile index proved by the recursive certificate.
+    pub fn found_idx(&self) -> u32 {
+        self.found_idx
+    }
+
+    /// Exact verifier-side A-row/B-column schedule bound by this run.
+    pub fn strip_schedule(&self) -> &ai_pow_zk::canonical::StripIndexSchedule {
+        &self.strip_schedule
+    }
+
+    /// Public matrix commitments bound by the recursive certificate.
+    pub fn commitments(&self) -> ZkPublicCommitments {
+        self.commitments
+    }
+
+    /// Layer-0 public inputs bound by the recursive certificate.
+    pub fn public_inputs(&self) -> &CompositePublicInputs {
+        &self.pis
+    }
+
+    /// Layer-0 trace height bound by the recursive certificate.
+    pub fn trace_height(&self) -> usize {
+        self.trace_height
+    }
+
+    /// Compact recursive certificate object produced by the prover.
+    pub fn certificate(&self) -> &ai_pow_zk::recursion::AiPowCompactBatchRecursiveCertificate {
+        &self.certificate
+    }
+
+    pub fn verifier_key_digest(&self) -> &ai_pow_zk::recursion::AiPowCompactBatchVerifierKeyDigest {
+        self.certificate.verifier_key_digest()
+    }
+
+    pub fn l1_circuit_build_ms(&self) -> u128 {
+        self.l1_circuit_build_ms
+    }
+
+    pub fn l1_outer_cert_ms(&self) -> u128 {
+        self.l1_outer_cert_ms
+    }
+
+    pub fn l2_prep_ms(&self) -> u128 {
+        self.l2_prep_ms
+    }
+
+    pub fn l2_prove_ms(&self) -> u128 {
+        self.l2_prove_ms
+    }
+
+    pub fn l2_compact_ms(&self) -> u128 {
+        self.l2_compact_ms
+    }
+
+    pub fn l2_compact_verify_ms(&self) -> u128 {
+        self.l2_compact_verify_ms
     }
 }
 
@@ -1034,6 +1124,86 @@ pub fn prove_ai_pow_recursive_certificate(
     })
 }
 
+/// Build the selected compact final-layer batch-STARK recursive AI-PoW
+/// certificate for a solved block.
+///
+/// This follows the same chain-verifier boundary as
+/// [`prove_ai_pow_recursive_certificate`]: the Layer-0 proof, canonical program,
+/// public inputs, target hit, nonce binding, and current full-matmul admission
+/// guard are checked before the compact recursion API is called. The returned
+/// run carries only the compact certificate; verifier-owned L2 metadata/setup
+/// must be derived or pinned by the verifier and is not accepted from miners.
+pub fn prove_ai_pow_compact_recursive_certificate(
+    ctx: &BlockContext<'_>,
+    params: &MatmulParams,
+    nonce: &[u8],
+    target: &[u8; 32],
+    found_idx: u32,
+) -> Result<AiPowCompactRecursiveCertificateRun, BridgeError> {
+    params
+        .validate_prod_envelope()
+        .map_err(BridgeError::InvalidParams)?;
+    ensure_context_params(ctx, params)?;
+    ensure_context_attempt(ctx, nonce)?;
+    let commitments = ZkPublicCommitments::from_context(ctx);
+    ensure_attempt_found_idx(
+        &ctx.block_commitment, &ctx.nonce, params, &commitments, found_idx,
+    )?;
+    ensure_found_tile_hits_target(ctx, nonce, target, found_idx)?;
+    validate_canonical_recursive_certificate_params(params)?;
+    let num_tiles = params.num_tiles();
+    let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
+        found_idx,
+        num_tiles,
+    })?;
+    let (artifact, prover_program, _) =
+        prove_ai_pow_tiled_full(ctx, params, nonce, tile_i, tile_j, |_| {}, None)?;
+    let verified = derive_ai_pow_statement(
+        &ctx.block_commitment, &ctx.nonce, params, target, found_idx, &commitments, &artifact.pis,
+        artifact.trace_height, true,
+    )?;
+    verify_ai_pow_tiled_with_statement(params, target, &verified, &artifact)?;
+    let zk_params = zk_params_from(params);
+    let ZkProofArtifact {
+        proof,
+        pis,
+        trace_height,
+    } = artifact;
+    let verified_l0 = unsafe {
+        // SAFETY: `derive_ai_pow_statement` plus
+        // `verify_ai_pow_tiled_with_statement` above checked the
+        // canonical program, public inputs, target, selected work unit,
+        // commitments, nonce, and production/full-work boundary.
+        ai_pow_zk::recursion::ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+            prover_program,
+            proof,
+            &pis,
+        )
+    };
+    let compact =
+        ai_pow_zk::recursion::prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof(
+            &zk_params,
+            &CircuitConfig::PROD,
+            &verified_l0,
+        )
+        .map_err(|e| BridgeError::RecursiveCertificate(format!("{e:?}")))?;
+    Ok(AiPowCompactRecursiveCertificateRun {
+        zk_params,
+        found_idx,
+        strip_schedule: verified.strip_schedule,
+        commitments,
+        pis,
+        trace_height,
+        l1_circuit_build_ms: compact.l1_circuit_build_ms,
+        l1_outer_cert_ms: compact.l1_outer_cert_ms,
+        l2_prep_ms: compact.l2_prep_ms,
+        l2_prove_ms: compact.l2_prove_ms,
+        l2_compact_ms: compact.l2_compact_ms,
+        l2_compact_verify_ms: compact.l2_compact_verify_ms,
+        certificate: compact.compact_cert,
+    })
+}
+
 /// Build the hardened batch-STARK recursive AI-PoW checkpoint for a
 /// Pearl-compatible merge-mined ticket.
 ///
@@ -1233,6 +1403,209 @@ pub fn prove_pearl_merge_recursive_certificate(
         l1_in_circuit_verify_ms: l1.l1_in_circuit_verify_ms,
         l1_outer_cert_ms: l1.l1_outer_cert_ms,
         certificate: l1.l1_cert,
+    })
+}
+
+/// Build the selected compact final-layer batch-STARK recursive certificate for
+/// a Pearl-compatible merge-mined ticket.
+///
+/// This is the production-oriented counterpart to
+/// [`prove_pearl_merge_recursive_certificate`]. It preserves the exact same
+/// Pearl statement, aux, matrix, ticket, public-input, and target prechecks,
+/// then emits the compact L2 certificate instead of the large checkpoint.
+pub fn prove_pearl_merge_compact_recursive_certificate(
+    attempt: &PearlMergeTicketAttempt,
+    params: &MatmulParams,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    max_pattern_len: usize,
+) -> Result<AiPowCompactRecursiveCertificateRun, BridgeError> {
+    if params.difficulty_bits != 0 || params.spot_checks != 1 {
+        return Err(BridgeError::PearlMergeUnsupportedTileShape);
+    }
+    validate_scheduled_params(params)?;
+
+    let statement_bytes = attempt
+        .statement
+        .to_bytes()
+        .map_err(BridgeError::PearlMergeStatement)?;
+    let statement = PearlMergePublicStatement::from_bytes(&statement_bytes)
+        .map_err(BridgeError::PearlMergeStatement)?;
+    let block_header = PearlIncompleteBlockHeader::from_bytes(&statement.block_header)
+        .map_err(BridgeError::PearlMergeStatement)?;
+    let public_params =
+        PearlPublicProofParams::from_public_data(block_header, &statement.public_data)
+            .map_err(BridgeError::PearlMergeStatement)?;
+    if public_params != attempt.public_params {
+        return Err(BridgeError::PublicInputMismatch("ticket.public-params"));
+    }
+    let statement_aux = PearlNockchainAux::from_bytes(&statement.aux_bytes)
+        .map_err(BridgeError::PearlMergeStatement)?;
+    if statement_aux != attempt.aux {
+        return Err(BridgeError::PublicInputMismatch("ticket.aux"));
+    }
+    if statement.expected_aux_commitment != attempt.aux_commitment {
+        return Err(BridgeError::PublicInputMismatch("ticket.aux-commitment"));
+    }
+
+    let precheck = verify_pearl_merge_public_statement_bytes(
+        &attempt.aux.nock_block_commitment, &statement_bytes, a_row_major, b_col_major,
+        &attempt.nockchain_target, max_pattern_len,
+    )
+    .map_err(BridgeError::PearlMergeStatement)?;
+    if precheck.work.commitments != attempt.commitments {
+        return Err(BridgeError::PublicInputMismatch("ticket.commitments"));
+    }
+    if precheck.work.ticket != attempt.ticket {
+        return Err(BridgeError::PublicInputMismatch("ticket.work"));
+    }
+    if precheck.work.pearl_target != attempt.pearl_target {
+        return Err(BridgeError::PublicInputMismatch("ticket.pearl-target"));
+    }
+    if precheck.work.nockchain_target != attempt.nockchain_target {
+        return Err(BridgeError::PublicInputMismatch("ticket.nockchain-target"));
+    }
+    if precheck.aux_commitment != attempt.aux_commitment {
+        return Err(BridgeError::PublicInputMismatch("ticket.aux-commitment"));
+    }
+
+    if params.m != public_params.m
+        || params.k != public_params.mining_config.common_dim
+        || params.n != public_params.n
+        || params.noise_rank != u32::from(public_params.mining_config.rank)
+    {
+        return Err(BridgeError::ParamsMismatch {
+            context: MatmulParams {
+                m: public_params.m,
+                k: public_params.mining_config.common_dim,
+                n: public_params.n,
+                noise_rank: u32::from(public_params.mining_config.rank),
+                tile: params.tile,
+                spot_checks: params.spot_checks,
+                difficulty_bits: params.difficulty_bits,
+            },
+            supplied: *params,
+        });
+    }
+
+    let zk_params = zk_params_from(params);
+    let strip_schedule = StripIndexSchedule::from_indices(
+        &zk_params,
+        precheck.work.ticket.a_rows.clone(),
+        precheck.work.ticket.b_cols.clone(),
+    )
+    .map_err(BridgeError::ZkParamsInvalid)?;
+    let legacy_tile = pearl_merge_legacy_ticket(params, &public_params);
+    let found_idx = legacy_tile.map(|(idx, _, _)| idx).unwrap_or(0);
+    let (tile_i, tile_j) = legacy_tile
+        .map(|(_, tile_i, tile_j)| (tile_i, tile_j))
+        .unwrap_or((0, 0));
+
+    let zctx = ZkProverContext {
+        a: a_row_major,
+        b: b_col_major,
+        params: *params,
+        kappa: precheck.work.commitments.kappa,
+        h_a_chunk: precheck.work.commitments.h_a,
+        h_b_chunk: precheck.work.commitments.h_b,
+        s_a: precheck.work.commitments.s_a,
+        s_b: precheck.work.commitments.s_b,
+        jackpot_key: precheck.work.commitments.s_a,
+    };
+    let (artifact, prover_program, _) = prove_ai_pow_scheduled_full_with_context(
+        &zctx,
+        params,
+        tile_i,
+        tile_j,
+        &strip_schedule,
+        |_| {},
+        None,
+    )?;
+
+    expect_pi_eq(
+        &artifact.pis.hash_a,
+        &bytes_to_words_le(&precheck.work.commitments.h_a),
+        "HASH_A",
+    )?;
+    expect_pi_eq(
+        &artifact.pis.hash_b,
+        &bytes_to_words_le(&precheck.work.commitments.h_b),
+        "HASH_B",
+    )?;
+    expect_pi_eq(
+        &artifact.pis.job_key,
+        &bytes_to_words_le(&precheck.work.commitments.kappa),
+        "JOB_KEY",
+    )?;
+    expect_pi_eq(
+        &artifact.pis.commitment_hash,
+        &bytes_to_words_le(&precheck.work.commitments.s_a),
+        "COMMITMENT_HASH",
+    )?;
+    if artifact.pis.jackpot != tile_state_words(&precheck.work.ticket.tile_state) {
+        return Err(BridgeError::PublicInputMismatch("JACKPOT_MSG"));
+    }
+    expect_pi_eq(
+        &artifact.pis.hash_jackpot,
+        &bytes_to_words_le(&precheck.work.ticket.jackpot_hash),
+        "HASH_JACKPOT",
+    )?;
+
+    let verified = VerifiedZkStatement {
+        tile_i,
+        tile_j,
+        strip_schedule: strip_schedule.clone(),
+        derived: ZkDerivedStatement {
+            kappa: precheck.work.commitments.kappa,
+            s_a: precheck.work.commitments.s_a,
+            s_b: precheck.work.commitments.s_b,
+        },
+    };
+    verify_ai_pow_tiled_with_statement(
+        params, &precheck.work.nockchain_adjusted_target, &verified, &artifact,
+    )?;
+
+    let ZkProofArtifact {
+        proof,
+        pis,
+        trace_height,
+    } = artifact;
+    let verified_l0 = unsafe {
+        // SAFETY: the Pearl merge path validates the Pearl statement,
+        // commitments, target, explicit strip schedule, canonical
+        // program, and public inputs before reaching this recursion
+        // boundary.
+        ai_pow_zk::recursion::ChainVerifiedCompositeProof::from_parts_after_chain_statement_verification(
+            prover_program,
+            proof,
+            &pis,
+        )
+    };
+    let compact =
+        ai_pow_zk::recursion::prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof(
+            &zk_params,
+            &CircuitConfig::PROD,
+            &verified_l0,
+        )
+        .map_err(|e| BridgeError::RecursiveCertificate(format!("{e:?}")))?;
+
+    Ok(AiPowCompactRecursiveCertificateRun {
+        zk_params,
+        found_idx,
+        strip_schedule,
+        commitments: ZkPublicCommitments {
+            h_a_chunk: precheck.work.commitments.h_a,
+            h_b_chunk: precheck.work.commitments.h_b,
+        },
+        pis,
+        trace_height,
+        l1_circuit_build_ms: compact.l1_circuit_build_ms,
+        l1_outer_cert_ms: compact.l1_outer_cert_ms,
+        l2_prep_ms: compact.l2_prep_ms,
+        l2_prove_ms: compact.l2_prove_ms,
+        l2_compact_ms: compact.l2_compact_ms,
+        l2_compact_verify_ms: compact.l2_compact_verify_ms,
+        certificate: compact.compact_cert,
     })
 }
 

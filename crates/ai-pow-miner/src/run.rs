@@ -52,7 +52,9 @@ use ai_pow::pearl_compat::{
     PEARL_AUX_INCLUSION_MAX_COINBASE_TX_BYTES, PEARL_AUX_INCLUSION_MAX_MERKLE_BRANCH,
     PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG,
 };
-use ai_pow::zk_bridge::{AiPowRecursiveCertificateRun, ZkPublicCommitments};
+use ai_pow::zk_bridge::{
+    AiPowCompactRecursiveCertificateRun, AiPowRecursiveCertificateRun, ZkPublicCommitments,
+};
 use ai_pow_zk::{CompositePublicInputs, ZkParams};
 use futures::StreamExt;
 use nockapp::nockapp::wire::Wire;
@@ -69,6 +71,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::certificate_noun::{
+    build_ai_pow_pearl_merge_artifact_noun_from_ticket_compact_recursive_run,
     build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs_node,
     build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run,
     decode_ai_pow_pearl_merge_artifact_metadata_slab, AiProofNode, CertificateNounError,
@@ -111,11 +114,12 @@ pub(crate) struct PearlMergeCertificateProof {
 }
 
 impl PearlMergeCertificateProof {
-    pub(crate) fn from_recursive_run(
-        run: &AiPowRecursiveCertificateRun,
+    pub(crate) fn from_compact_recursive_run(
+        run: &AiPowCompactRecursiveCertificateRun,
     ) -> Result<Self, AiPowCertificateBuildError> {
-        let certificate = crate::certificate_noun::recursive_certificate_to_node(run.certificate())
-            .map_err(|e| AiPowCertificateBuildError(e.to_string()))?;
+        let certificate =
+            crate::certificate_noun::compact_recursive_certificate_to_node(run.certificate())
+                .map_err(|e| AiPowCertificateBuildError(e.to_string()))?;
         Ok(Self {
             zk_params: run.zk_params(),
             found_idx: run.found_idx(),
@@ -144,9 +148,9 @@ pub struct PearlMergeSubmissionConfig {
 
 impl PearlMergeSubmissionConfig {
     /// Build the canonical production Pearl-compatible Nockchain submission
-    /// config. The certificate builder is fixed to the recursive prover, so
-    /// external callers cannot accidentally install a plain-proof or synthetic
-    /// certificate path.
+    /// config. The certificate builder is fixed to the selected compact
+    /// recursive prover, so external callers cannot accidentally install a
+    /// plain-proof or synthetic certificate path.
     pub fn new_recursive(
         gateway: PearlGatewayMinerRpcConfig,
         mining_config: PearlMiningConfig,
@@ -158,7 +162,7 @@ impl PearlMergeSubmissionConfig {
         b: Arc<Vec<i8>>,
     ) -> Self {
         let certificate_builder = Arc::new(move |attempt: &PearlMergeTicketAttempt| {
-            let run = ai_pow::zk_bridge::prove_pearl_merge_recursive_certificate(
+            let run = ai_pow::zk_bridge::prove_pearl_merge_compact_recursive_certificate(
                 attempt,
                 &params,
                 a.as_slice(),
@@ -170,7 +174,7 @@ impl PearlMergeSubmissionConfig {
                     "refusing to build Pearl-compatible recursive certificate before successful Nockchain target check: {e}"
                 ))
             })?;
-            PearlMergeCertificateProof::from_recursive_run(&run)
+            PearlMergeCertificateProof::from_compact_recursive_run(&run)
         });
 
         Self {
@@ -1511,6 +1515,22 @@ pub fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_recursive_run(
     run: &AiPowRecursiveCertificateRun,
 ) -> Result<NounSlab, AiPowCertificatePokeError> {
     let artifact = build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run(
+        attempt, aux_inclusion, a_row_major, b_col_major, max_pattern_len, run,
+    )?;
+    build_ai_pow_pearl_merge_certificate_poke(&artifact)
+}
+
+/// Build the production Pearl-format-compatible Nockchain consensus poke from
+/// a successful shared ticket and the matching compact recursive prover run.
+pub fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_compact_recursive_run(
+    attempt: &PearlMergeTicketAttempt,
+    aux_inclusion: &PearlAuxInclusionProof,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    max_pattern_len: usize,
+    run: &AiPowCompactRecursiveCertificateRun,
+) -> Result<NounSlab, AiPowCertificatePokeError> {
+    let artifact = build_ai_pow_pearl_merge_artifact_noun_from_ticket_compact_recursive_run(
         attempt, aux_inclusion, a_row_major, b_col_major, max_pattern_len, run,
     )?;
     build_ai_pow_pearl_merge_certificate_poke(&artifact)

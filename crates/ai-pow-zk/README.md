@@ -72,9 +72,12 @@ artifact.
 > proving, `9.440s` L2 prep, `29.743s` L2 proving, `37ms` compact
 > verification, and `58.603s` uncached proof wall; decoded verification passes,
 > wrong public inputs reject, wrong certificate digest rejects, and stale
-> context digest rejects. The bridge, miner noun, Hoon wire path, and
-> production-pinned expected digest are still not wired to this compact
-> certificate.
+> context digest rejects. The Rust `ai-pow` bridge now exposes compact
+> recursive run builders, and `ai-pow-miner`'s Pearl-compatible submission
+> builder now packages the compact certificate as canonical postcard bytes in
+> a bounded proof-node atom so the noun boundary does not structurally
+> re-inflate the proof. The Hoon verifier hook, production-pinned expected
+> digest selection, and final jammed noun-size measurement are still open.
 > A prior deeper PCS profile showed cached L2 dominated by main/permutation
 > trace Merkle commitments (`13.3s` + `12.9s`), so the next production lever is
 > reducing committed recursive-verifier matrix volume, especially Tip5/MMCS
@@ -569,15 +572,15 @@ anchor merge-mining compat.
 
 `ai-pow-zk` is downstream of `ai-pow`'s nonce-bound attempt context. The
 `ai-pow` bridge constructs a `CompositeTrace` and `CompositePublicInputs` from
-verifier-derived attempt data, proves the Layer-0 composite STARK, and can wrap
-that proof with the batch-STARK recursive checkpoint certificate. The current
-primary production recursive proof candidate is compact batch-STARK L2 over a
-fast statement-bound L1 proof. `ai-pow-zk` now exposes a typed compact
-certificate/context API for that route, but the bridge, miner noun, and Hoon
-wire path still encode the large batch-STARK checkpoint. That checkpoint noun
-path is retained for soundness regression and fallback validation while the
-compact certificate gains verifier-key/setup digest pinning and production wire
-integration.
+verifier-derived attempt data, proves the Layer-0 composite STARK, and now has
+typed builders for both the large batch-STARK checkpoint and the selected
+compact batch-STARK L2 certificate. The current primary production recursive
+proof route is compact batch-STARK L2 over a fast statement-bound L1 proof.
+`ai-pow-miner` packages that compact certificate as canonical bytes inside the
+existing `%ai-pow` noun envelope for Pearl-compatible submissions. The large
+checkpoint noun path is retained for soundness regression and fallback
+validation. Hoon-side verification, production-pinned verifier-key/setup digest
+selection, and final wire-size measurement remain open.
 
 The `composite_prove` / `composite_verify` APIs are Layer-0 primitives. They
 are useful for circuit tests and for the recursive-certificate builder, but the
