@@ -2282,6 +2282,9 @@ mod tests {
         if let Some(rest) = tag.strip_prefix("challenger_phase/") {
             let phase = rest.split('/').next().unwrap_or("unknown");
             format!("challenger:{phase}")
+        } else if let Some(rest) = tag.strip_prefix("npo_phase/") {
+            let phase = rest.split('/').next().unwrap_or("unknown");
+            format!("npo:{phase}")
         } else if tag.contains("mmcs") || tag.contains("merkle") || tag.contains("fri") {
             "fri_mmcs".to_string()
         } else if tag.contains("challenger") || tag.contains("transcript") {
@@ -3854,12 +3857,14 @@ mod tests {
                 .expect("profile selected L2 verifier challenger phases");
 
         eprintln!(
-            "selected fast-L1 compact L2 Tip5 challenger phase summary [TEST_PEARL]: tagged_tip5_ops={} tip5_non_mmcs_ops={} untagged_non_mmcs_tip5_ops={} phase_counts={:?}",
+            "selected fast-L1 compact L2 Tip5 challenger/MMCS phase summary [TEST_PEARL]: tagged_tip5_ops={} tip5_ops={} untagged_tip5_ops={} tip5_mmcs_ops={} tip5_non_mmcs_ops={} phase_counts={:?}",
             phase_profile.tagged_tip5_ops,
-            phase_profile.tip5_non_mmcs_ops,
+            phase_profile.tip5_ops,
             phase_profile
-                .tip5_non_mmcs_ops
+                .tip5_ops
                 .saturating_sub(phase_profile.tagged_tip5_ops),
+            phase_profile.tip5_mmcs_ops,
+            phase_profile.tip5_non_mmcs_ops,
             phase_profile.tag_categories,
         );
 
@@ -3877,14 +3882,130 @@ mod tests {
             "phase tags should account for challenger Tip5 rows"
         );
         assert!(
-            phase_profile.tagged_tip5_ops < phase_profile.tip5_non_mmcs_ops,
-            "the selected circuit should still expose non-MMCS, non-challenger Tip5 rows"
+            phase_profile
+                .tag_categories
+                .contains_key("npo:mmcs_leaf_base_coeffs")
+                || phase_profile
+                    .tag_categories
+                    .contains_key("npo:mmcs_leaf_extension_elements"),
+            "MMCS leaf hashing should be present in the Tip5 phase profile"
+        );
+        assert!(
+            phase_profile
+                .tag_categories
+                .contains_key("npo:mmcs_path_sibling"),
+            "MMCS path hashing should be present in the Tip5 phase profile"
         );
         assert!(
             phase_profile
                 .tag_categories
                 .contains_key("challenger:batch_pcs_verify"),
             "FRI/PCS verification should be present in the challenger phase profile"
+        );
+    }
+
+    #[test]
+    #[ignore = "selected compact L2 verifier L1-query-shape profile is opt-in"]
+    fn selected_compact_l2_tip5_l1_lb4_nq15_phase_profile_for_test_pearl() {
+        const L1_LOG_BLOWUP: usize = 4;
+        const L1_NUM_QUERIES: usize = 15;
+        const L1_CAP_HEIGHT: usize = 4;
+        const L1_LOG_FINAL_POLY_LEN: usize = 2;
+        const L2_LOG_BLOWUP: usize = 5;
+        const L2_NUM_QUERIES: usize = 12;
+        const L2_LOG_FINAL_POLY_LEN: usize = 2;
+        const L2_MAX_LOG_ARITY: usize = 3;
+        const L2_CAP_HEIGHT: usize = 4;
+
+        assert_eq!(L1_LOG_BLOWUP * L1_NUM_QUERIES, 60);
+        assert_eq!(L2_LOG_BLOWUP * L2_NUM_QUERIES, 60);
+
+        let zk = test_zk_params();
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&zk, &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+
+        let statement_digest_public_values = statement_digest_public_values_for_l1(&built);
+        let l1_config = pure_query_l1_stark_config_with_shape_and_cap(
+            L1_LOG_BLOWUP, L1_NUM_QUERIES, L1_CAP_HEIGHT,
+        );
+        let l1_prep_wall_start = std::time::Instant::now();
+        let l1_prep = build_l1_outer_prep_for_test_pearl(&built, l1_config.clone(), DIGEST_ELEMS)
+            .expect("lb4/nq15 L1 prep");
+        let l1_prep_wall_ms = l1_prep_wall_start.elapsed().as_millis();
+        let l1_cached_prove_start = std::time::Instant::now();
+        let l1_artifact = prove_l1_outer_with_prep_for_test_pearl(&l1_prep, &built, &proof)
+            .expect("lb4/nq15 L1 proof with cached prep");
+        let l1_cached_prove_ms = l1_cached_prove_start.elapsed().as_millis();
+        let l1 = l1_artifact.proof;
+        assert_eq!(
+            l1.public_binding_lanes, DIGEST_ELEMS,
+            "L1 proof must expose the statement digest"
+        );
+
+        let l2_config = pure_query_l1_stark_config_with_fri_shape(
+            L2_LOG_BLOWUP, L2_NUM_QUERIES, L2_LOG_FINAL_POLY_LEN, L2_MAX_LOG_ARITY, L2_CAP_HEIGHT,
+        );
+        let l2_prep_wall_start = std::time::Instant::now();
+        let l2_prep =
+            build_l2_over_l1_outer_prep_for_test_pearl_with_preprocessed_transcript_profile_mode(
+                &l1,
+                l1_config,
+                &pure_query_fri_verifier_params_for_l1(L1_LOG_BLOWUP, L1_LOG_FINAL_POLY_LEN),
+                l2_config,
+                L2_LOG_BLOWUP,
+                L2_LOG_FINAL_POLY_LEN,
+                L2VerifierProfileModeForTestPearl::FullNativeWithChallengerPhaseTags,
+            )
+            .expect("lb4/nq15 phase-tagged L2 prep over statement-bound L1");
+        let l2_prep_wall_ms = l2_prep_wall_start.elapsed().as_millis();
+        let phase_profile =
+            profile_l2_tip5_verifier_for_test_pearl(&l2_prep, &l1, &statement_digest_public_values)
+                .expect("profile lb4/nq15 L1 into selected L2 verifier");
+
+        eprintln!(
+            "selected compact L2 Tip5 L1-query-shape profile [TEST_PEARL L1 lb4_nq15_cap4 -> L2 lb5_nq12_cap4]: tip5_ops={} tip5_pow2_height={} rows_over_previous_pow2={} rows_to_current_pow2={} tip5_mmcs_ops={} tip5_non_mmcs_ops={} tagged_tip5_ops={} phase_counts={:?} l1_prep_wall_ms={} l1_cached_prove_ms={} l1_air_setup_ms={} l1_witness_run_ms={} l1_stark_prove_ms={} l2_prep_wall_ms={} l2_circuit_define_ms={} l2_circuit_build_ms={} l2_air_setup_ms={} l2_witness_run_ms={}",
+            phase_profile.tip5_ops,
+            phase_profile.tip5_trace_pow2_height,
+            phase_profile.tip5_rows_over_previous_pow2,
+            phase_profile.tip5_rows_to_current_pow2,
+            phase_profile.tip5_mmcs_ops,
+            phase_profile.tip5_non_mmcs_ops,
+            phase_profile.tagged_tip5_ops,
+            phase_profile.tag_categories,
+            l1_prep_wall_ms,
+            l1_cached_prove_ms,
+            l1_prep.timings.air_setup_ms,
+            l1_artifact.timings.witness_run_ms,
+            l1_artifact.timings.stark_prove_ms,
+            l2_prep_wall_ms,
+            l2_prep.timings.circuit_define_ms,
+            l2_prep.timings.circuit_build_ms,
+            l2_prep.timings.air_setup_ms,
+            phase_profile.witness_run_ms,
+        );
+
+        assert_eq!(
+            phase_profile.mmcs_ids_not_tip5, 0,
+            "MMCS private-data op ids should all identify Tip5 rows"
+        );
+        assert_eq!(
+            phase_profile.tip5_trace_rows, phase_profile.tip5_ops,
+            "Tip5 trace rows should match compiled Tip5 operation count"
         );
     }
 
@@ -4207,6 +4328,20 @@ mod tests {
                 ("lb4_nq15_lfp2_mla3_cap6", 4, 15, 2, 3, 6),
                 ("lb4_nq15_lfp2_mla4_cap4", 4, 15, 2, 4, 4),
             ],
+        );
+    }
+
+    #[test]
+    #[ignore = "L1 lb4/nq15 over selected compact L2 timing breakdown is opt-in"]
+    fn pure_query_l2_over_l1_lb4_nq15_selected_l2_timing_for_test_pearl() {
+        init_batch_stark_profile_tracing_for_test_pearl();
+        run_pure_query_l2_over_l1_statement_bound_candidate_size_breakdown_for_test_pearl(
+            "lb4_nq15_cap4",
+            4,
+            15,
+            4,
+            2,
+            &[("lb5_nq12_lfp2_mla3_cap4", 5, 12, 2, 3, 4)],
         );
     }
 

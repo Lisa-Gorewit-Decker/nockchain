@@ -60,9 +60,12 @@ artifact.
 > does not cross it, and cap `5/6` currently exposes a recursive-verifier
 > support gap despite native L1 verification passing. New diagnostics show that
 > deterministic preprocessed transcript omission saves only `70` Tip5 rows
-> (`4,791 -> 4,721`) and does not cross the halving boundary; challenger
-> Fiat-Shamir phase tags account for only `371` non-MMCS rows, leaving `2,200`
-> non-MMCS/non-challenger Tip5 rows as the next row-reduction target. A focused
+> (`4,791 -> 4,721`) and does not cross the halving boundary; full phase tags
+> account for every Tip5 row as MMCS leaf/path hashing plus `371` challenger
+> rows. L1 `lb=4,nq=15` crosses the Tip5 boundary (`3,851` rows, padded to
+> `4,096`) but leaves cached L2 proving essentially flat at `28.743s` and raises
+> cached L1 proving to `29.584s`, so query-count retuning is not the total-time
+> lever. A focused
 > `lb4,nq15`
 > frontier sweep rules out cheap FRI/cap retuning: the fastest-size frontier is
 > still `174,676` bytes. The relaxed size gate is now plausibly in range; the

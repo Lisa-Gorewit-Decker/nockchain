@@ -115,7 +115,9 @@ impl<F: Field> CircuitBuilder<F> {
                 for (j, &d) in row_digest.iter().take(digest_ext).enumerate() {
                     inputs[digest_ext + j] = Some(d);
                 }
-                let _ = self.add_perm(
+                let previous_phase =
+                    self.set_npo_profile_phase(Some("mmcs_path_digest_injection"));
+                let inject_result = self.add_perm(
                     permutation_config,
                     &PermCall {
                         new_start: false,
@@ -126,7 +128,9 @@ impl<F: Field> CircuitBuilder<F> {
                         return_all_outputs: false,
                         mmcs_index_sum: None,
                     },
-                )?;
+                );
+                self.set_npo_profile_phase(previous_phase);
+                let _ = inject_result?;
             }
 
             let mut inputs = vec![None; width_ext];
@@ -135,7 +139,8 @@ impl<F: Field> CircuitBuilder<F> {
                     inputs[j] = Some(d);
                 }
             }
-            let (op_id, maybe_output) = self.add_perm(
+            let previous_phase = self.set_npo_profile_phase(Some("mmcs_path_sibling"));
+            let sibling_result = self.add_perm(
                 permutation_config,
                 &PermCall {
                     new_start: is_first,
@@ -146,7 +151,9 @@ impl<F: Field> CircuitBuilder<F> {
                     return_all_outputs: false,
                     mmcs_index_sum: None,
                 },
-            )?;
+            );
+            self.set_npo_profile_phase(previous_phase);
+            let (op_id, maybe_output) = sibling_result?;
             op_ids.push(op_id);
             output = maybe_output;
         }
@@ -157,7 +164,8 @@ impl<F: Field> CircuitBuilder<F> {
             for (j, &t) in tail.iter().take(digest_ext).enumerate() {
                 inputs[digest_ext + j] = Some(t);
             }
-            let (_, tail_output) = self.add_perm(
+            let previous_phase = self.set_npo_profile_phase(Some("mmcs_path_tail"));
+            let tail_result = self.add_perm(
                 permutation_config,
                 &PermCall {
                     new_start: false,
@@ -168,7 +176,9 @@ impl<F: Field> CircuitBuilder<F> {
                     return_all_outputs: false,
                     mmcs_index_sum: None,
                 },
-            )?;
+            );
+            self.set_npo_profile_phase(previous_phase);
+            let (_, tail_output) = tail_result?;
             output = tail_output;
         }
 

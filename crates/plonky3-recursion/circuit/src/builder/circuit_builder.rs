@@ -83,6 +83,12 @@ pub struct CircuitBuilder<F: Field> {
     /// Routes decomposition reconnect through `recompose/coeff` when set (see
     /// [`Self::set_recompose_coeff_ctl_for_decompose_links`]).
     recompose_coeff_ctl_for_decompose_links: bool,
+
+    /// Optional diagnostic phase name attached to subsequently added permutation NPOs.
+    npo_profile_phase: Option<&'static str>,
+
+    /// Monotone counter used to make diagnostic NPO phase tags unique.
+    npo_profile_counter: usize,
 }
 
 impl<F> Default for CircuitBuilder<F>
@@ -115,7 +121,29 @@ where
             ext_recompose_coeffs: HashMap::new(),
             ext_select_sources: HashMap::new(),
             recompose_coeff_ctl_for_decompose_links: false,
+            npo_profile_phase: None,
+            npo_profile_counter: 0,
         }
+    }
+
+    /// Set an optional diagnostic phase label for subsequently added permutation NPOs.
+    ///
+    /// This records metadata tags only. It does not affect circuit semantics,
+    /// constraints, witness assignment, or transcript state. The previous phase
+    /// is returned so callers can restore it around a local profiling scope.
+    pub fn set_npo_profile_phase(&mut self, phase: Option<&'static str>) -> Option<&'static str> {
+        let previous = self.npo_profile_phase;
+        self.npo_profile_phase = phase;
+        previous
+    }
+
+    pub(crate) fn tag_npo_profile_phase(&mut self, op_id: NonPrimitiveOpId) {
+        if let Some(phase) = self.npo_profile_phase {
+            let tag = format!("npo_phase/{phase}/{}", self.npo_profile_counter);
+            self.tag_op(op_id, tag)
+                .expect("NPO phase profile tags must be unique");
+        }
+        self.npo_profile_counter += 1;
     }
 
     /// Toggle whether [`Self::decompose_ext_to_base_coeffs`] reconnects hinted coefficients via the

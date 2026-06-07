@@ -178,7 +178,7 @@ impl<F: Field> CircuitBuilder<F> {
         cfg: PermConfig,
         call: &PermCall,
     ) -> Result<(NonPrimitiveOpId, Vec<Option<ExprId>>), CircuitBuilderError> {
-        match cfg {
+        let result = match cfg {
             PermConfig::Poseidon1(config) => self.add_poseidon1_perm(&Poseidon1PermCall {
                 config,
                 new_start: call.new_start,
@@ -209,6 +209,10 @@ impl<F: Field> CircuitBuilder<F> {
                 return_all_outputs: call.return_all_outputs,
                 mmcs_index_sum: call.mmcs_index_sum,
             }),
+        };
+        if let Ok((op_id, _)) = &result {
+            self.tag_npo_profile_phase(*op_id);
         }
+        result
     }
 }

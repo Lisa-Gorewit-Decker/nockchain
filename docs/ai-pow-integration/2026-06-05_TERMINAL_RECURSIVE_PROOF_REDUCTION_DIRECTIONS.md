@@ -118,16 +118,19 @@ Done and verified:
   `695` Tip5 rows to halve the dominant Tip5 table height to `4,096`. The
   compiled Tip5 calls split into `2,220` MMCS private-data op IDs and `2,571`
   non-MMCS rows; the generated trace has `2,620` rows carrying explicit
-  `mmcs_bit` bindings. A new challenger phase-tag profile accounts for only
-  `371` of the non-MMCS rows as Fiat-Shamir challenger work; the largest
-  tagged challenger phases are opened permutation values (`88`), opened trace
-  values (`84`), opened preprocessed values (`69`), and PCS challenge derivation
-  (`58`). The remaining `2,200` non-MMCS/non-challenger Tip5 rows are now the
-  main unresolved row bucket after MMCS. A profile-only circuit that skips
-  deterministic preprocessed opened-value transcript observations saves only
-  `70` Tip5 rows (`4,791 -> 4,721`) and still pads to `8,192`, so a
-  verifier-key/setup-digest transcript by itself does not cross the `4,096`
-  boundary. A hidden-L1 cap-height profile does not provide a cheap crossing:
+  `mmcs_bit` bindings. A new full phase-tag profile accounts for all `4,791`
+  rows: `2,220` Merkle-path sibling compressions, `1,620` base-field MMCS leaf
+  hashes, `400` path digest-injection compressions, `180` extension-element
+  MMCS leaf hashes, and `371` Fiat-Shamir challenger rows. A profile-only
+  circuit that skips deterministic preprocessed opened-value transcript
+  observations saves only `70` Tip5 rows (`4,791 -> 4,721`) and still pads to
+  `8,192`, so a verifier-key/setup-digest transcript by itself does not cross
+  the `4,096` boundary. L1 query-count retuning is also negative as a total-time
+  lever: L1 `lb=4,nq=15` cuts selected-L2 Tip5 rows to `3,851` and pads the
+  Tip5 table to `4,096`, but the full timing diagnostic still measures cached
+  L2 proving at `28.743s` while cached L1 proving rises to `29.584s`; the
+  compact wrapper is `142,649` bytes, but cached serial L1+L2 proving is about
+  `58.327s`. A hidden-L1 cap-height profile does not provide a cheap crossing:
   cap `3` has `4,967` Tip5 rows, cap `4` has `4,791`, and cap `5/6` L1 proofs
   verify natively but the current L2 recursive verifier rejects them with
   witness conflicts. Cap retuning is therefore not a production lever until the
@@ -229,14 +232,16 @@ What remains:
   remains in cached L1 STARK proving. Reaching `~30s` total requires a real L1/L2
   batch-STARK/PCS reduction rather than only setup caching, quotient
   optimization, or recursive-witness optimization.
-- Investigate the `2,200` selected-L2 Tip5 rows that are neither MMCS
-  private-data rows nor challenger transcript rows. The current evidence rules
-  out deterministic preprocessed opened-value transcript omission as a primary
-  lever: it saves `70` rows and leaves the Tip5 table at `8,192` padded rows.
-  The next viable row-reduction work must either remove/merge those
-  non-MMCS/non-challenger Tip5 rows, reduce MMCS rows directly, or change the
-  recursive verifier proof shape so those tables are not committed at the
-  current L2 LDE volume.
+- Reduce the L2 STARK prover's dominant commitment spans rather than only
+  cutting selected verifier rows. The phase-tag profile shows the selected-L2
+  Tip5 rows are already fully explained by MMCS leaf/path hashing plus
+  challenger rows. L1 `lb=4,nq=15` proves that halving the Tip5 table alone is
+  not enough on this machine: cached L2 proving remains `28.743s`, and the
+  slower L1 row makes the cached serial total worse. The next viable work must
+  either reduce the large ALU/permutation table volume that remains after the
+  Tip5 table halves, reduce both L1 and L2 commitment work together, or change
+  the recursive verifier proof shape so these large tables are not committed at
+  the current L2 LDE volume.
 - Count the final certificate bytes exactly, including any carried public-value
   limbs, verifier-key/setup digest, and chain-owned statement metadata that is
   not otherwise derivable by the verifier.
@@ -1471,9 +1476,17 @@ main/permutation trace Merkle commitments. The split is not purely MMCS:
 non-MMCS rows; the generated trace has `2,620` rows with explicit `mmcs_bit`
 bindings.
 
-A phase-tagged full-transcript diagnostic then split the non-MMCS row bucket:
-only `371` rows are challenger Fiat-Shamir duplexes. The tagged challenger
-phases are:
+A phase-tagged full-transcript diagnostic then accounts for every Tip5 row:
+
+| Tip5 phase | Rows |
+|---|---:|
+| MMCS Merkle-path sibling compressions | `2,220` |
+| MMCS base-field leaf hashes | `1,620` |
+| MMCS path digest-injection compressions | `400` |
+| MMCS extension-element leaf hashes | `180` |
+| Fiat-Shamir challenger duplexes | `371` |
+
+The challenger rows split as:
 
 | Challenger phase | Tip5 rows |
 |---|---:|
@@ -1490,13 +1503,35 @@ phases are:
 | PCS verify transcript | `2` |
 | Lookup challenge sampling | `1` |
 
-This means `2,200` selected-L2 Tip5 rows are non-MMCS but also not challenger
-transcript rows. A profile-only lower bound that skips deterministic
+This rules out the earlier "unknown non-MMCS/non-challenger" hypothesis: those
+rows are ordinary PCS/MMCS leaf and path hashing rows that were not returned as
+private-data op ids. A profile-only lower bound that skips deterministic
 preprocessed opened-value transcript observations removes only `70` Tip5 rows:
 `4,791 -> 4,721`. The table still pads to `8,192` rows, with `625` rows over
 the previous power-of-two boundary. A verifier-key/setup-digest transcript may
-still be useful for wire-size cleanliness, but it is not the primary time lever
-unless paired with a larger reduction of the non-challenger or MMCS Tip5 rows.
+still be useful for wire-size cleanliness, but it is not the primary time lever.
+
+The natural query-count retune was then measured directly. Switching L1 from
+the selected `lb=3,nq=20` shape to `lb=4,nq=15` removes one quarter of the
+query-driven MMCS work in the L2 verifier. The row profile crosses the desired
+Tip5 boundary:
+
+| L1 shape, selected L2 `lb=5,nq=12` | Tip5 rows | Tip5 padded height | MMCS sibling rows | Base leaf rows | Extension leaf rows | Path injection rows |
+|---|---:|---:|---:|---:|---:|---:|
+| `lb=3,nq=20,cap=4` | `4,791` | `8,192` | `2,220` | `1,620` | `180` | `400` |
+| `lb=4,nq=15,cap=4` | `3,851` | `4,096` | `1,830` | `1,215` | `135` | `300` |
+
+That crossing is not enough to meet the total time gate. The full one-row
+timing diagnostic for L1 `lb=4,nq=15,cap=4` and L2
+`lb=5,nq=12,lfp=2,mla=3,cap=4` reports compact wrapper `142,649` bytes and
+metadata-free compact body `141,769` bytes, but L1 cached proving rises to
+`29.584s` (`38.977s` with L1 prep) and L2 cached proving remains `28.743s`
+(`38.115s` with L2 prep). Cached serial L1+L2 proving is therefore about
+`58.327s`, worse than the selected `lb=3,nq=20` L1 row. The L2 prove time
+staying flat after halving the Tip5 padded height means the remaining commitment
+bottleneck is not solved by Tip5-row reduction alone; ALU/permutation table
+volume and other committed matrices still dominate enough to keep L2 near
+`29s`.
 
 A hidden-L1 cap-height profile checked the cheapest possible way to reduce
 MMCS path hashing before redesigning the verifier relation. It is not enough.

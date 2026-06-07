@@ -14,6 +14,17 @@ use p3_util::log2_strict_usize;
 
 use crate::Target;
 
+fn with_npo_profile_phase<EF: Field, T>(
+    circuit: &mut CircuitBuilder<EF>,
+    phase: &'static str,
+    f: impl FnOnce(&mut CircuitBuilder<EF>) -> T,
+) -> T {
+    let previous_phase = circuit.set_npo_profile_phase(Some(phase));
+    let result = f(circuit);
+    circuit.set_npo_profile_phase(previous_phase);
+    result
+}
+
 /// Hash base field coefficients using overwrite-mode sponge (matching native PaddingFreeSponge).
 ///
 /// Native `PaddingFreeSponge` uses "overwrite mode": when absorbing a partial chunk,
@@ -396,13 +407,15 @@ where
         // Hash using overwrite-mode sponge (matching native PaddingFreeSponge). When salts
         // are present the coefficients (incl. salt private inputs) must be recomposed via
         // ALU so they appear as ALU operands on the WitnessChecks bus.
-        *digest = add_hash_base_coeffs_overwrite::<F, EF>(
-            circuit,
-            &permutation_config,
-            &all_base_coeffs,
-            true,
-            salts.is_some(),
-        )?;
+        *digest = with_npo_profile_phase(circuit, "mmcs_leaf_base_coeffs", |circuit| {
+            add_hash_base_coeffs_overwrite::<F, EF>(
+                circuit,
+                &permutation_config,
+                &all_base_coeffs,
+                true,
+                salts.is_some(),
+            )
+        })?;
     }
 
     let op_vals_digests = formatted_digests;
@@ -499,19 +512,23 @@ where
                 }
                 all_base.extend(salts[mat_idx].iter().copied());
             }
-            add_hash_base_coeffs_overwrite::<F, EF>(
-                circuit,
-                &permutation_config,
-                &all_base,
-                true,
-                true,
-            )?
+            with_npo_profile_phase(circuit, "mmcs_leaf_extension_salted_base_coeffs", |circuit| {
+                add_hash_base_coeffs_overwrite::<F, EF>(
+                    circuit,
+                    &permutation_config,
+                    &all_base,
+                    true,
+                    true,
+                )
+            })?
         } else {
             let all_ext: Vec<Target> = mats_at_height
                 .iter()
                 .flat_map(|&mat_idx| opened_extension_values[mat_idx].iter().copied())
                 .collect();
-            add_hash_extension_elements::<F, EF>(circuit, &permutation_config, &all_ext, true)?
+            with_npo_profile_phase(circuit, "mmcs_leaf_extension_elements", |circuit| {
+                add_hash_extension_elements::<F, EF>(circuit, &permutation_config, &all_ext, true)
+            })?
         };
     }
 
