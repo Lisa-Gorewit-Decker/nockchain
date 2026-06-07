@@ -84,8 +84,12 @@ artifact.
 > verifier-key/setup digest and rejects a mismatched context or certificate
 > digest. That expected digest now has an explicit canonical production config
 > encoding: five Goldilocks limbs as 40 little-endian bytes, with wrong-length
-> and noncanonical-limb encodings rejected before proof verification. The Hoon
-> verifier hook and production source for that pinned digest are still open.
+> and noncanonical-limb encodings rejected before proof verification. The
+> compact L2 prep/cache is now a Rust API (`AiPowCompactBatchProverCache`,
+> wrapped by `ai-pow` as `AiPowCompactRecursiveProverCache`) with stale L1
+> metadata/setup rejection before reuse. The Hoon verifier hook, production
+> source for the pinned digest, and production cache warm-up lifecycle are still
+> open.
 > A prior deeper PCS profile showed cached L2 dominated by main/permutation
 > trace Merkle commitments (`13.3s` + `12.9s`), so the next production lever is
 > reducing committed recursive-verifier matrix volume, especially Tip5/MMCS
@@ -594,7 +598,9 @@ and expected verifier-key/setup digest. The verifier-key/setup digest is
 encoded for production configuration as canonical 40-byte Goldilocks limbs;
 wrong-length or noncanonical bytes reject before compact proof verification.
 Hoon-side verification and the production source for that pinned digest remain
-open.
+open. Rust now also exposes a reusable compact prover cache for the fixed L1
+proof shape; production still needs an agreed cache warm-up and lifecycle, and
+the cached L1+L2 proving time remains above the `~30s` target.
 
 The `composite_prove` / `composite_verify` APIs are Layer-0 primitives. They
 are useful for circuit tests and for the recursive-certificate builder, but the

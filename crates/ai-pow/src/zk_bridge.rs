@@ -472,6 +472,59 @@ impl AiPowCompactRecursiveCertificateRun {
     }
 }
 
+/// Reusable prover-side setup for the selected compact recursive certificate.
+///
+/// This wraps the `ai-pow-zk` compact batch-STARK setup cache. It is not a
+/// proof artifact and must not be supplied by a miner to a verifier.
+pub struct AiPowCompactRecursiveProverCache {
+    inner: ai_pow_zk::recursion::AiPowCompactBatchProverCache,
+}
+
+impl AiPowCompactRecursiveProverCache {
+    /// Build a compact-recursion cache from a representative canonical L1
+    /// recursive certificate run.
+    ///
+    /// The cache is guarded against stale L1 proof metadata when it is used.
+    pub fn from_l1_recursive_certificate_run(
+        run: &AiPowRecursiveCertificateRun,
+    ) -> Result<Self, BridgeError> {
+        let inner = ai_pow_zk::recursion::build_compact_batch_prover_cache_from_l1_certificate(
+            run.certificate(),
+        )
+        .map_err(|e| BridgeError::RecursiveCertificate(format!("{e:?}")))?;
+        Ok(Self { inner })
+    }
+
+    pub fn l2_statement_public_binding_lanes(&self) -> usize {
+        self.inner.l2_statement_public_binding_lanes()
+    }
+}
+
+fn prove_compact_batch_from_verified_l0(
+    zk_params: &ZkParams,
+    verified_l0: &ai_pow_zk::recursion::ChainVerifiedCompositeProof<'_>,
+    cache: Option<&AiPowCompactRecursiveProverCache>,
+) -> Result<ai_pow_zk::recursion::CompactBatchCertificateRun, BridgeError> {
+    match cache {
+        Some(cache) => {
+            ai_pow_zk::recursion::prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof_with_prover_cache(
+                zk_params,
+                &CircuitConfig::PROD,
+                verified_l0,
+                &cache.inner,
+            )
+        }
+        None => {
+            ai_pow_zk::recursion::prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof(
+                zk_params,
+                &CircuitConfig::PROD,
+                verified_l0,
+            )
+        }
+    }
+    .map_err(|e| BridgeError::RecursiveCertificate(format!("{e:?}")))
+}
+
 /// Recursive-certificate byte envelope for bridge tests and diagnostics.
 ///
 /// This envelope carries the chain-verifier statement metadata plus the
@@ -1151,6 +1204,36 @@ pub fn prove_ai_pow_compact_recursive_certificate(
     target: &[u8; 32],
     found_idx: u32,
 ) -> Result<AiPowCompactRecursiveCertificateRun, BridgeError> {
+    prove_ai_pow_compact_recursive_certificate_inner(ctx, params, nonce, target, found_idx, None)
+}
+
+/// Cached-setup variant of [`prove_ai_pow_compact_recursive_certificate`].
+pub fn prove_ai_pow_compact_recursive_certificate_with_prover_cache(
+    ctx: &BlockContext<'_>,
+    params: &MatmulParams,
+    nonce: &[u8],
+    target: &[u8; 32],
+    found_idx: u32,
+    cache: &AiPowCompactRecursiveProverCache,
+) -> Result<AiPowCompactRecursiveCertificateRun, BridgeError> {
+    prove_ai_pow_compact_recursive_certificate_inner(
+        ctx,
+        params,
+        nonce,
+        target,
+        found_idx,
+        Some(cache),
+    )
+}
+
+fn prove_ai_pow_compact_recursive_certificate_inner(
+    ctx: &BlockContext<'_>,
+    params: &MatmulParams,
+    nonce: &[u8],
+    target: &[u8; 32],
+    found_idx: u32,
+    cache: Option<&AiPowCompactRecursiveProverCache>,
+) -> Result<AiPowCompactRecursiveCertificateRun, BridgeError> {
     params
         .validate_prod_envelope()
         .map_err(BridgeError::InvalidParams)?;
@@ -1191,13 +1274,7 @@ pub fn prove_ai_pow_compact_recursive_certificate(
             &pis,
         )
     };
-    let compact =
-        ai_pow_zk::recursion::prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof(
-            &zk_params,
-            &CircuitConfig::PROD,
-            &verified_l0,
-        )
-        .map_err(|e| BridgeError::RecursiveCertificate(format!("{e:?}")))?;
+    let compact = prove_compact_batch_from_verified_l0(&zk_params, &verified_l0, cache)?;
     Ok(AiPowCompactRecursiveCertificateRun {
         zk_params,
         found_idx,
@@ -1432,6 +1509,38 @@ pub fn prove_pearl_merge_compact_recursive_certificate(
     b_col_major: &[i8],
     max_pattern_len: usize,
 ) -> Result<AiPowCompactRecursiveCertificateRun, BridgeError> {
+    prove_pearl_merge_compact_recursive_certificate_inner(
+        attempt, params, a_row_major, b_col_major, max_pattern_len, None,
+    )
+}
+
+/// Cached-setup variant of [`prove_pearl_merge_compact_recursive_certificate`].
+pub fn prove_pearl_merge_compact_recursive_certificate_with_prover_cache(
+    attempt: &PearlMergeTicketAttempt,
+    params: &MatmulParams,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    max_pattern_len: usize,
+    cache: &AiPowCompactRecursiveProverCache,
+) -> Result<AiPowCompactRecursiveCertificateRun, BridgeError> {
+    prove_pearl_merge_compact_recursive_certificate_inner(
+        attempt,
+        params,
+        a_row_major,
+        b_col_major,
+        max_pattern_len,
+        Some(cache),
+    )
+}
+
+fn prove_pearl_merge_compact_recursive_certificate_inner(
+    attempt: &PearlMergeTicketAttempt,
+    params: &MatmulParams,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    max_pattern_len: usize,
+    cache: Option<&AiPowCompactRecursiveProverCache>,
+) -> Result<AiPowCompactRecursiveCertificateRun, BridgeError> {
     if params.difficulty_bits != 0 || params.spot_checks != 1 {
         return Err(BridgeError::PearlMergeUnsupportedTileShape);
     }
@@ -1593,13 +1702,7 @@ pub fn prove_pearl_merge_compact_recursive_certificate(
             &pis,
         )
     };
-    let compact =
-        ai_pow_zk::recursion::prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof(
-            &zk_params,
-            &CircuitConfig::PROD,
-            &verified_l0,
-        )
-        .map_err(|e| BridgeError::RecursiveCertificate(format!("{e:?}")))?;
+    let compact = prove_compact_batch_from_verified_l0(&zk_params, &verified_l0, cache)?;
 
     Ok(AiPowCompactRecursiveCertificateRun {
         zk_params,
