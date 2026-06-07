@@ -22,10 +22,13 @@ stages after this is reviewed.
 > a raw Layer-0 proof on the block wire. The current Hoon shape is
 > `[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]`, where
 > `cert` is a structured recursive certificate noun with custom digest/field
-> auras. As of the 2026-06-05 re-audit, the batch-STARK certificate noun should
-> be read as a soundness-hardened checkpoint/fallback path; the production
-> recursive proof target is the native terminal certificate. The nonce is an
-> opaque Rust-owned `[len data]` envelope, not the legacy `@uxncmn` atom.
+> auras. As of the 2026-06-07 route decision, the active production
+> recursive-proof candidate is the compact final-layer batch-STARK L2 route over
+> a fast statement-bound L1 proof; native terminal is retained as the fallback
+> route. The older large batch-STARK checkpoint certificate should be read as a
+> soundness-hardened checkpoint/fallback object, not the production wire
+> artifact. The nonce is an opaque Rust-owned `[len data]` envelope, not the
+> legacy `@uxncmn` atom.
 > `MatmulProof` and Layer-0 `BatchProof` remain prover internals.
 >
 > Scope note, 2026-06-01: real Hoon verifier wiring is intentionally not part
@@ -61,9 +64,10 @@ artifact shape is:
 where `ai-pow-nonce` is `[len=@ud data=@uxaipownonce]` and the data bytes are
 opaque to Hoon. Rust owns the Pearl-compatible `AIP1` envelope inside those
 bytes. Plain `MatmulProof`, raw Layer-0 STARKs, and single opaque proof atoms
-are not block artifacts. The native terminal certificate is the production
-recursive target; the batch-STARK structured certificate noun is retained as a
-checkpoint/fallback path because it exceeds the production size budget.
+are not block artifacts. The active recursive target is the compact
+final-layer batch-STARK L2 certificate described in the 2026-06-07 route
+decision; native terminal remains fallback, and the older large batch-STARK
+checkpoint noun remains too large for production wire use.
 
 This document is retained as the historical path that motivated the current
 noun shape. The normative current spec is
@@ -98,10 +102,11 @@ plain spot-check openings and the raw Layer-0 STARK. The matrix commitment is
 bound in-circuit (M52 `HASH_A`/`HASH_B` ↔ `h_a_chunk`/`h_b_chunk`), the
 jackpot/target relation is bound in the Layer-0 public inputs, and the
 recursive certificate binds those public inputs as outer public values. The
-current production target for that recursive certificate is the native terminal
-backend; the batch-STARK recursive noun path is soundness-hardened but too
-large. `MatmulProof` and raw Layer-0 `BatchProof` values stay prover-internal
-and are **not** serialized into the block.
+current production candidate for that recursive certificate is the compact
+final-layer batch-STARK L2 route over a fast statement-bound L1 proof. Native
+terminal remains fallback. The older large batch-STARK checkpoint noun path is
+soundness-hardened but too large. `MatmulProof` and raw Layer-0 `BatchProof`
+values stay prover-internal and are **not** serialized into the block.
 
 ---
 

@@ -1,13 +1,22 @@
 # Native Terminal Compression Spec
 
 Date: 2026-06-03
-Status: implementation plan and interface checkpoint.
+Status: native-terminal fallback implementation plan and interface checkpoint.
+
+> Route decision, 2026-06-07: the active production recursive-proof candidate
+> is the compact final-layer batch-STARK L2 route over a fast statement-bound
+> L1 proof, summarized in
+> `2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md`. This document
+> remains the native-terminal fallback and diagnostic record. References below
+> to "production terminal" describe the terminal profile and verifier
+> requirements for that fallback, not the currently committed primary route.
 
 ## Goal
 
 Produce a native compact terminal certificate for the AI-PoW recursive verifier
-circuit, targeting about 100 KiB while retaining the production 60-bit minimum
-soundness floor and keeping recursive proving near the current 30 s budget.
+circuit as a fallback route, targeting about 100 KiB while retaining the
+production 60-bit minimum soundness floor and keeping recursive proving near
+the current 30 s budget.
 
 This is not a dependency integration and not a renamed external proof system.
 External code may be read as design reference, but the implementation must be
@@ -66,9 +75,10 @@ Rejected size routes measured on 2026-06-03:
 - fixed-int bincode for the current integrated terminal backend was re-tested
   on 2026-06-05 and rejected. The heavy integrated-LogUp checkpoint grew from
   `240,160` bytes / `234.5 KiB` under postcard to `259,618` bytes /
-  `253.5 KiB` under fixed-int bincode. The small typed production checkpoint
-  also grew from `904` bytes to `1,510` bytes. The active production proof-body
-  codec therefore stays postcard with explicit no-trailing-bytes decoding.
+  `253.5 KiB` under fixed-int bincode. The small typed terminal checkpoint
+  also grew from `904` bytes to `1,510` bytes. The native-terminal fallback
+  proof-body codec therefore stays postcard with explicit no-trailing-bytes
+  decoding.
 
 The path-compression result is security-relevant: the only safe version would
 rederive query indices from the Fiat-Shamir transcript after all commitments,
@@ -700,12 +710,13 @@ for this route.
   bytes / `97.0 KiB`, integrated NPO compact FRI payload `80,885` bytes /
   `79.0 KiB`, `total_prove=23.688s`, and `total_verify=62.6ms`; the complete
   polynomial NPO production rerun later measured `226,248` bytes / `220.9 KiB`
-  and failed the hard 100 KiB gate. The active production path therefore uses
-  exhaustive supported-NPO row checking under the native terminal certificate:
-  the real Tip5 L0 verifier-circuit release measurement is `85,948` bytes /
-  `83.9 KiB`, with `prove=1.492s` and `verify=1.181s`. The polynomial
-  NPO/proximity backend remains implemented as a diagnostic and future
-  hardening path. The current reduction and fallback analysis is summarized in
+  and failed the hard 100 KiB gate. The native-terminal fallback path therefore
+  uses exhaustive supported-NPO row checking under the native terminal
+  certificate: the real Tip5 L0 verifier-circuit release measurement is
+  `85,948` bytes / `83.9 KiB`, with `prove=1.492s` and `verify=1.181s`. The
+  polynomial NPO/proximity backend remains implemented as a diagnostic and
+  future hardening path. The current reduction and fallback analysis is
+  summarized in
   `2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md`. The
   decompressor rejects non-canonical packed digest limbs before restoring the
   ordinary Plonky3 FRI proof, so digest packing is representation-only for the
@@ -1981,12 +1992,12 @@ Completion audit against the active terminal-compression requirements:
 
 Security-audit conclusions for the current implementation checkpoint:
 
-- The typed compact production proof now gives native terminal certificates a
+- The typed compact terminal fallback proof now gives native terminal certificates a
   non-witness primitive sparse-R1CS row-product argument plus exhaustive
   supported-NPO row checking under one assignment-root prelude. This removes
   the previous full-witness serialization baseline and the sampled NPO
   production path, while keeping exhaustive Merkle-opening NPO verification as
-  the active production boundary until the polynomial/proximity backend is
+  the active terminal fallback boundary until the polynomial/proximity backend is
   complete.
 - The current production proof is a sumcheck-backed primitive sparse-R1CS
   argument plus deterministic exhaustive checking of every supported Tip5 and

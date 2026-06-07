@@ -443,7 +443,7 @@ not be conflated:
    preprocessed openings, and binds the L1 statement digest through final L2
    public lanes. It is not yet promoted to the production certificate wire/API.
 3. `crates/plonky3-recursion/recursion/src/terminal.rs::TerminalCertificate`
-   is the native terminal certificate target that currently meets the size and
+   is the native terminal fallback target that currently meets the size and
    release-time gates for the recursion-crate Tip5 verifier fixture.
 4. `crates/ai-pow-zk/src/recursion.rs::AiPowTerminalRecursiveCertificate`
    now wires that terminal backend to the actual composite L1 verifier circuit

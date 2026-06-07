@@ -9,6 +9,14 @@ Status: Draft specification, sizing note, and implementation checklist.
 > not the legacy `ai-ncmn` / `@uxncmn` atom. The current Nockchain-side
 > submission shape and Pearl-compatible nonce envelope are specified in
 > `2026-06-01_PEARL_MERGE_MINING_COMPATIBILITY_SPEC.md`.
+>
+> Route decision, 2026-06-07: the active production recursive-certificate
+> candidate is the compact final-layer batch-STARK L2 route over a fast
+> statement-bound L1 proof, summarized in
+> `2026-06-05_TERMINAL_RECURSIVE_PROOF_REDUCTION_DIRECTIONS.md`. Native
+> terminal remains the fallback route. The older large batch-STARK checkpoint
+> certificate remains a hardened verifier checkpoint/fallback object, but it is
+> not the production wire artifact.
 
 ## 1. Goal
 
@@ -56,13 +64,16 @@ and public-input fields are admissible only as typed statement data inside
 certificate. In particular, Hoon should not grow a `MatmulProof` type or
 an `AiPowBatchProof`/Layer-0 ZKP proof arm.
 
-The production proof artifact target is the native terminal recursive
-certificate described in
-`2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md`. The batch-STARK recursive
-certificate exposed by `ai_pow_zk::recursion::AiPowRecursiveCertificate` and
-produced through `prove_canonical_ai_pow_certificate` is a
-soundness-hardened recursive-verifier checkpoint/fallback path, not the final
-production wire object, because it exceeds the ~100 KiB size budget.
+The active production proof artifact target is now the compact final-layer
+batch-STARK L2 route over a fast statement-bound L1 proof, with
+verifier-owned setup/metadata binding and explicit final public-value binding
+of the L1 statement digest. Native terminal compression remains the fallback
+route described in `2026-06-03_NATIVE_TERMINAL_COMPRESSION_SPEC.md`. The older
+large batch-STARK recursive certificate exposed by
+`ai_pow_zk::recursion::AiPowRecursiveCertificate` and produced through
+`prove_canonical_ai_pow_certificate` is a soundness-hardened
+recursive-verifier checkpoint/fallback path, not the final production wire
+object, because its checkpoint envelope exceeds the size budget.
 
 ## 3. Encoding Principles
 

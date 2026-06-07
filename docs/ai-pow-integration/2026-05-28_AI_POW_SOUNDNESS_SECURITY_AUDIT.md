@@ -201,8 +201,11 @@ Fix plan:
 - Current batch-STARK checkpoint artifact fields are `nonce`, `zk_params`,
   `found_idx`, `trace_height`, `[h_a_chunk h_b_chunk]`,
   `CompositePublicInputs`, and the structured recursive certificate. It must
-  not persist legacy `h_a` / `h_b` row/column roots. The production recursive
-  proof target is the native terminal certificate.
+  not persist legacy `h_a` / `h_b` row/column roots. As of the 2026-06-07 route
+  decision, the active production recursive-proof candidate is compact
+  batch-STARK L2 over a fast statement-bound L1 proof; native terminal remains
+  fallback, and the older large checkpoint certificate is not the production
+  wire artifact.
 
 Tests:
 
@@ -759,9 +762,10 @@ Current behavior:
   `[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]`.
 - Done for the batch-STARK checkpoint path: `ai-pow-certificate` is a
   structured recursive certificate noun using custom compact auras for BLAKE3
-  digests, AI-PoW nonce bytes, and degree-2 field elements. The production
-  recursive proof target is the native terminal certificate, not this oversized
-  checkpoint noun.
+  digests, AI-PoW nonce bytes, and degree-2 field elements. The active
+  production candidate is now compact batch-STARK L2 over a fast
+  statement-bound L1 proof. Native terminal is fallback, and the older large
+  checkpoint noun remains oversized for production wire use.
 - Done for checkpoint plumbing: the Rust miner emits
   `[%command %pow %ai-pow nonce cert]` only after it has a recursive
   certificate builder.
