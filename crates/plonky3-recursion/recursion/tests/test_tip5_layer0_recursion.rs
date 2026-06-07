@@ -767,7 +767,7 @@ fn tip5_layer0_outer_cert_lb6() {
 // ---------------------------------------------------------------------
 
 #[test]
-#[ignore = "DEFERRED terminal-compression milestone (≤100KB, relaxed 2026-05-21 from the original ≤65KB), NOT C3/M-S5: C3/M-S5 is RE-SCOPED to the soundness-correct vertical-recursion cert (LANDED — see test_tip5_layer0_compression.rs c3_stage_a/b/c_* and 2026-05-19_C3_OUTER_CERT_DESIGN.md §13.2/§14). The terminal-compression size bar is a SEPARATE future milestone (size-targeted SNARK/STARK-to-SNARK wrap / proof-folding / smaller AIR). The `serialized_len <= 102_400` assert below stays #[ignore]d until that deferred milestone closes it. Bar relaxation rationale: see 2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md 2026-05-21 addendum"]
+#[ignore = "DEFERRED layer0-recursion size milestone (<=100KB, relaxed 2026-05-21 from the original <=65KB), NOT C3/M-S5: C3/M-S5 is re-scoped to the soundness-correct vertical-recursion cert. The serialized_len <= 102_400 assert below stays ignored until that separate size residual closes."]
 fn tip5_layer0_outer_cert_size_residual() {
     // Measure the serialized PROD `BatchStarkProof` length and assert
     // the ≤100 KB M-S5b bar (2026-05-21 maintainer relaxation from

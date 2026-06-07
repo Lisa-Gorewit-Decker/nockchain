@@ -1,13 +1,12 @@
 # AI-PoW Recursive Proof Reduction Directions
 
 Date: 2026-06-05
-Status: accepted decision checkpoint, revised after stack-level integration
-audit, 2026-06-07 route decision, and BLAKE3 final-layer production-route
-measurement. The compact final-layer batch-STARK route is now the selected
-primary production-proof direction because the native BLAKE3 final L2 layer
-hits the relaxed crate-level byte and time gates with explicit public-value and
-verifier-owned setup binding. Native terminal remains fallback evidence. The
-large batch-STARK checkpoint envelope remains too large.
+Status: historical route-investigation log. This document records the terminal
+and batch-STARK reduction work that led to the current compact final-layer
+batch-STARK route. It is no longer the production source of truth. For the
+current pipeline, commitments, API surface, and verifier-key binding contract,
+read
+[`crates/ai-pow-zk/docs/2026-06-07_COMPACT_RECURSIVE_PRODUCTION_PIPELINE.md`](../../crates/ai-pow-zk/docs/2026-06-07_COMPACT_RECURSIVE_PRODUCTION_PIPELINE.md).
 
 ## Goal
 

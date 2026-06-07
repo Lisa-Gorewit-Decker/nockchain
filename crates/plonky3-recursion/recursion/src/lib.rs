@@ -12,7 +12,6 @@ pub mod pcs;
 pub mod prelude;
 pub mod public_inputs;
 pub mod recursion;
-pub mod terminal;
 pub mod traits;
 pub mod types;
 pub mod verifier;
@@ -35,23 +34,9 @@ pub use public_inputs::{
 pub use recursion::{
     AggregationCircuitFingerprint, AggregationPrepCache, BatchOnly, NextLayerPrepCache,
     PcsRecursionBackend, ProveNextLayerParams, RecursionInput, RecursionOutput,
-    VerifierCircuitResult, build_and_prove_aggregation_layer, build_and_prove_next_layer,
-    build_next_layer_circuit, build_next_layer_prep, build_terminal_witness,
-    prove_aggregation_layer, prove_next_layer,
-};
-pub use terminal::{
-    TerminalAssignmentEvaluationProof, TerminalBindingDigest, TerminalCertificate,
-    TerminalCertificateHeader, TerminalCircuitFingerprint, TerminalCommitmentDigest,
-    TerminalCompressor, TerminalConstraintQueryPlan, TerminalMerkleSibling,
-    TerminalOracleCommitment, TerminalOracleMerkleTree, TerminalOracleMultiProof,
-    TerminalOracleMultiValueOpening, TerminalOracleOpening, TerminalOraclePrefixProof,
-    TerminalPrimitiveConstraintOpening, TerminalPrimitiveConstraintProof, TerminalProductionProof,
-    TerminalProofBodyDigest, TerminalProofKind, TerminalProofParameters, TerminalProofPrelude,
-    TerminalPublicValuesDigest, TerminalQueryPlan, TerminalR1csRowProductRound,
-    TerminalR1csRowProductSumcheckProof, TerminalR1csSumcheckRound, TerminalRelationDigest,
-    TerminalRelationProfile, TerminalSparseR1csEntry, TerminalSparseR1csMatrix,
-    TerminalSparseR1csRelation, TerminalSparseR1csSumcheckProof, TerminalSparseR1csVariable,
-    TerminalTranscriptChallengeDigest, TerminalWitness,
+    VerifierCircuitFingerprint, VerifierCircuitResult, VerifierCircuitWitness,
+    build_and_prove_aggregation_layer, build_and_prove_next_layer, build_next_layer_circuit,
+    build_next_layer_prep, build_verifier_witness, prove_aggregation_layer, prove_next_layer,
 };
 pub use traits::{
     Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,

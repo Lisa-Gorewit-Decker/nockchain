@@ -8,7 +8,17 @@ convention); everything else lives here. Dates are git-derived
 (`created` = first commit that added the file, `last updated` = most
 recent commit that touched it).
 
-## Status · roadmap · cross-cutting
+## Current
+
+| Document | Created | Last updated | What it is |
+|---|---|---|---|
+| [`2026-06-07_COMPACT_RECURSIVE_PRODUCTION_PIPELINE.md`](2026-06-07_COMPACT_RECURSIVE_PRODUCTION_PIPELINE.md) | 2026-06-07 | 2026-06-07 | **Authoritative current pipeline** for the selected compact recursive certificate route: stages, commitments, soundness, wire shape, verifier-key digest, and remaining integration work. |
+
+All older roadmap, terminal-compression, proof-size, and route-investigation
+documents are historical unless the current pipeline document explicitly links
+to them for background.
+
+## Historical Status · Roadmap · Cross-Cutting
 
 | Document | Created | Last updated | What it is |
 |---|---|---|---|

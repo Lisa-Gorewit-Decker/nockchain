@@ -28,7 +28,6 @@ use p3_lookup::{Lookup, LookupData, LookupProtocol};
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 use tracing::instrument;
 
-use crate::terminal::{TerminalCircuitFingerprint, TerminalWitness};
 use crate::traits::{LookupMetadata, RecursiveAir};
 use crate::types::RecursiveLagrangeSelectors;
 use crate::verifier::VerificationError;
@@ -64,6 +63,37 @@ pub struct AggregationPrepCache<SC: StarkGenericConfig + 'static> {
     pub circuit_fingerprint: AggregationCircuitFingerprint,
     pub circuit_prover_data: Rc<CircuitProverData<SC>>,
     pub prover: BatchStarkProver<SC>,
+}
+
+/// Stable fingerprint for a compiled verifier circuit.
+///
+/// This records the structural fields that affect witness packing and operation
+/// execution. A mismatch here is always a cache miss.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VerifierCircuitFingerprint {
+    pub witness_count: u32,
+    pub public_flat_len: usize,
+    pub private_flat_len: usize,
+    pub ops_len: usize,
+}
+
+impl VerifierCircuitFingerprint {
+    pub const fn from_circuit<F>(circuit: &Circuit<F>) -> Self {
+        Self {
+            witness_count: circuit.witness_count,
+            public_flat_len: circuit.public_flat_len,
+            private_flat_len: circuit.private_flat_len,
+            ops_len: circuit.ops.len(),
+        }
+    }
+}
+
+/// Executed verifier-circuit witness used as input to circuit proving.
+pub struct VerifierCircuitWitness<F> {
+    pub fingerprint: VerifierCircuitFingerprint,
+    pub public_inputs: Vec<F>,
+    pub private_inputs: Vec<F>,
+    pub traces: Traces<F>,
 }
 
 /// Input to one recursion step: either a uni-stark proof or a batch-stark proof (with common data).
@@ -261,18 +291,14 @@ pub struct NextLayerPrepCache<SC: StarkGenericConfig + 'static> {
     pub prover: BatchStarkProver<SC>,
 }
 
-/// Execute a verifier circuit and package the assignment for terminal proving.
-///
-/// The current production path feeds `witness.traces` into [`BatchStarkProver`].
-/// A native compact terminal compressor should consume this same bundle without
-/// inheriting the batch-STARK proof format.
-pub fn build_terminal_witness<SC, A, B, const D: usize>(
+/// Execute a verifier circuit and package the assignment for circuit proving.
+pub fn build_verifier_witness<SC, A, B, const D: usize>(
     prev: &RecursionInput<'_, SC, A>,
     verification_circuit: &Circuit<SC::Challenge>,
     verifier_result: &B::VerifierResult,
     config: &SC,
     backend: &B,
-) -> Result<TerminalWitness<SC::Challenge>, VerificationError>
+) -> Result<VerifierCircuitWitness<SC::Challenge>, VerificationError>
 where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
@@ -294,8 +320,8 @@ where
         .map_err(|e| proof_shape_err(&e))?;
     let traces = runner.run().map_err(VerificationError::Circuit)?;
 
-    Ok(TerminalWitness {
-        fingerprint: TerminalCircuitFingerprint::from_circuit(verification_circuit),
+    Ok(VerifierCircuitWitness {
+        fingerprint: VerifierCircuitFingerprint::from_circuit(verification_circuit),
         public_inputs,
         private_inputs,
         traces,
@@ -461,7 +487,7 @@ where
     CircuitTableAir<SC, 8>: Sync,
 {
     if let Some(cached) = prep {
-        let terminal_witness = build_terminal_witness::<SC, A, B, D>(
+        let verifier_witness = build_verifier_witness::<SC, A, B, D>(
             prev,
             verification_circuit,
             verifier_result,
@@ -470,7 +496,7 @@ where
         )?;
         let proof = cached
             .prover
-            .prove_all_tables(&terminal_witness.traces, &cached.circuit_prover_data)
+            .prove_all_tables(&verifier_witness.traces, &cached.circuit_prover_data)
             .map_err(|e| proof_shape_err(&e.to_string()))?;
         return Ok(RecursionOutput(
             proof,
@@ -494,7 +520,7 @@ where
     let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
     let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
 
-    let terminal_witness = build_terminal_witness::<SC, A, B, D>(
+    let verifier_witness = build_verifier_witness::<SC, A, B, D>(
         prev,
         verification_circuit,
         verifier_result,
@@ -517,7 +543,7 @@ where
         prover.register_table_prover(p);
     }
     let proof = prover
-        .prove_all_tables(&terminal_witness.traces, &circuit_prover_data)
+        .prove_all_tables(&verifier_witness.traces, &circuit_prover_data)
         .map_err(|e| proof_shape_err(&e.to_string()))?;
 
     Ok(RecursionOutput(proof, Rc::new(circuit_prover_data)))

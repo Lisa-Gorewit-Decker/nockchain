@@ -119,8 +119,7 @@ impl CircuitConfig {
     /// `lb=4 nq=15 pow=0` counts no proof-system PoW grinding, so
     /// `bits = lb*nq = 4*15 = 60` pure-query Johnson bits (Theorem 1.5,
     /// proven). This leaves a ≥38-bit margin above the known-insecure
-    /// CYCLE-SUM floor at the chain LDR (~22 bits at n≤2^22) and matches the
-    /// native terminal profile's pure-query `nq=15` anchoring.
+    /// CYCLE-SUM floor at the chain LDR (~22 bits at n≤2^22).
     ///
     /// **Trade-off vs the prior `lb=4 nq=20 = 82-bit` PROD:** 25%
     /// fewer queries ⇒ proportional proof-size shrinkage at the inner
