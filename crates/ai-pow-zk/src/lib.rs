@@ -22,19 +22,23 @@
 //!
 //! ## Public API
 //!
-//! - [`recursion::prove_canonical_ai_pow_certificate`] — the hardened
-//!   batch-STARK recursive checkpoint wrapper. It proves the Layer-0 composite
-//!   STARK, recursively verifies that proof in an L1 circuit, and returns the
-//!   batch-STARK recursive certificate. The certificate includes the Layer-0
-//!   proof/program context needed to rebuild and bind the exact L1 verifier
-//!   circuit during verification. It is soundness-relevant, but it is too large
-//!   to be the production consensus, block-persistence, or wire-transmission
-//!   artifact.
+//! Production callers normally use `ai_pow::zk_bridge`, not this crate
+//! directly. Lower-level callers that already performed chain statement
+//! verification should use:
+//!
 //! - [`recursion::prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof`]
-//!   — selected compact final-layer batch-STARK production direction. It proves the
+//!   — selected compact final-layer batch-STARK route. It proves the
 //!   statement-bound L1 proof inside a compact L2 proof, carries only the final
 //!   compact body plus an explicit verifier-key digest, and verifies against
 //!   verifier-owned metadata/setup and public values.
+//! - [`recursion::prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof_with_prover_cache`]
+//!   — same proof path with reusable prover-side setup.
+//! - [`recursion::verify_compact_batch_recursive_certificate_with_context`]
+//!   — verifier entrypoint for compact certificates. The context and expected
+//!   verifier-key digest must come from verifier-owned configuration.
+//!
+//! Layer-0 APIs remain public for bridge internals and tests:
+//!
 //! - [`composite_proof::composite_prove_pinned_logup`] /
 //!   [`composite_proof::composite_verify_pinned_logup`] — Layer-0
 //!   composite STARK primitives. These are intermediate inputs to the
@@ -77,8 +81,8 @@
 //! for the verifier-key/setup digest before consensus readiness is claimed.
 //! Earlier M9.1 / M10.1b prototypes were retired once M10.1c had full LogUp +
 //! PI binding + bench data.
-//! See `2026-05-14_ENGINEERING_REPORT.md` for the architectural review and bench
-//! numbers; `2026-05-14_M10_1C_PROGRESS.md` for the phase-by-phase history.
+//! See `docs/2026-06-07_COMPACT_RECURSIVE_PRODUCTION_PIPELINE.md` for the
+//! current production pipeline.
 //!
 //! ## What's not yet bound
 //!

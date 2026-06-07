@@ -15,6 +15,22 @@
 //!   The composite is a single LogUp AIR proven by `p3_batch_stark`, so
 //!   it routes through the lookup-aware batch entrypoint with the
 //!   composite AIR as the single generic `A` (the de-risk's path 3a).
+//!
+//! ## Recommended entrypoints
+//!
+//! The production bridge should enter this module only after it has verified
+//! the Layer-0 statement against chain-owned data and constructed a
+//! [`ChainVerifiedCompositeProof`]. From there, use:
+//!
+//! - [`prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof`]
+//! - [`prove_compact_batch_recursive_certificate_from_chain_verified_composite_proof_with_prover_cache`]
+//! - [`verify_compact_batch_recursive_certificate_with_context`]
+//! - [`encode_compact_batch_recursive_certificate`]
+//! - [`decode_compact_batch_recursive_certificate`]
+//!
+//! The non-compact L1 checkpoint functions are hidden from normal rustdoc.
+//! They remain available to bridge internals and regression tests, but are too
+//! large for the selected production wire artifact.
 
 use p3_batch_stark::{BatchProof, CommonData};
 use p3_circuit::ops::{
@@ -65,6 +81,7 @@ pub type AiPowCompactBatchVerifierKeyDigest = [Val; DIGEST_ELEMS];
 ///
 /// Consensus code must still derive and check the statement metadata
 /// externally before accepting this certificate.
+#[doc(hidden)]
 #[derive(Serialize, Deserialize)]
 pub struct AiPowRecursiveCertificate {
     /// Layer-0 pinned LogUp proof recursively verified by the L1 circuit.
@@ -93,7 +110,7 @@ impl AiPowRecursiveCertificate {
 
     /// The outer proof, exposed for diagnostics and size accounting only.
     ///
-    /// Production verification must call [`verify_recursive_certificate`], which
+    /// Checkpoint verification must call [`verify_recursive_certificate`], which
     /// rebuilds and runs the canonical L1 verifier circuit, checks this proof's
     /// stable circuit metadata, and verifies the submitted proof body.
     pub fn l1_outer_proof(&self) -> &AiPowL1OuterProof {
@@ -103,7 +120,7 @@ impl AiPowRecursiveCertificate {
     /// The embedded Layer-0 proof, exposed for diagnostics and size accounting
     /// only.
     ///
-    /// Production verification must call [`verify_recursive_certificate`], which
+    /// Checkpoint verification must call [`verify_recursive_certificate`], which
     /// verifies this proof inside the rebuilt L1 verifier circuit.
     pub fn l0_proof(&self) -> &BatchProof<AiPowStarkConfig> {
         &self.l0_proof
@@ -564,6 +581,7 @@ impl Permutation<[Challenge; 16]> for LiftTip5 {
 
 /// A fully-built L1 verifier circuit for a composite proof, plus
 /// everything needed to run it.
+#[doc(hidden)]
 pub struct BuiltCompositeL1 {
     /// The L1 verifier circuit (proves "I verified the composite proof").
     pub circuit: p3_circuit::Circuit<Challenge>,
@@ -594,6 +612,7 @@ pub struct BuiltCompositeL1 {
 /// must match the proof's transcript exactly, or the in-circuit
 /// challenger desynchronizes. (`num_queries` is intrinsic to the
 /// proof shape and need not be threaded.)
+#[doc(hidden)]
 pub fn build_composite_l1_verifier_circuit(
     config: &AiPowStarkConfig,
     composite_air: &CompositeFullAirWithLookupsPinned,
@@ -724,6 +743,7 @@ fn build_composite_l1_verifier_circuit_with_recompose_coeff_ctl(
 /// Run a built composite-L1 verifier circuit against the composite
 /// proof's FRI opening data. `Ok(())` iff the in-circuit verification
 /// accepts.
+#[doc(hidden)]
 pub fn run_composite_l1_verifier(
     built: &BuiltCompositeL1,
     proof: &BatchProof<AiPowStarkConfig>,
@@ -1010,6 +1030,7 @@ fn prove_compact_batch_l1_with_prep(
 ///
 /// Returns the L1 outer proof on accept; an `Err` if the L1 verifier circuit
 /// runner rejects before outer proving.
+#[doc(hidden)]
 pub fn prove_composite_l1_outer_cert(
     built: &BuiltCompositeL1,
     proof: &BatchProof<AiPowStarkConfig>,
@@ -1078,6 +1099,7 @@ fn prove_composite_l1_outer_cert_with_config_and_table_packing(
 /// inputs, comparing stable rebuilt outer metadata to the submitted outer
 /// proof, and verifying the submitted outer proof with the production
 /// batch-STARK verifier. It is not the selected compact production wire path.
+#[doc(hidden)]
 pub fn verify_recursive_certificate(
     cert: &AiPowRecursiveCertificate,
     zk_params: &crate::params::ZkParams,
@@ -1202,6 +1224,7 @@ fn verify_recursive_certificate_inner(
 /// `l1_cert` is the batch-STARK recursive checkpoint certificate. The Layer-0
 /// proof and pinned program are intentionally owned by that certificate so
 /// verification can rebuild and bind the exact L1 verifier circuit.
+#[doc(hidden)]
 pub struct L1RecursionRun {
     /// Composite (Layer-0) STARK trace height — the dominant cost
     /// and memory driver.
@@ -1234,6 +1257,7 @@ pub struct L1RecursionRun {
 /// the canonical Layer-0 proof and pinned program from a mining solution.
 /// The returned `l1_cert` is the recursive proof artifact; consensus admission
 /// still belongs to the outer ai-pow statement verifier.
+#[doc(hidden)]
 pub struct L1CertificateRun {
     /// Wall-clock (ms) to build the L1 recursive-verifier circuit.
     pub l1_circuit_build_ms: u128,
@@ -1286,6 +1310,7 @@ pub struct CompactBatchCertificateRun {
 /// / `CommonData` plumbing. The canonical program is extracted from the
 /// trace and pinned (CRIT-1), exactly as the Layer-0 proving path
 /// (`composite_prove_pinned_logup`).
+#[doc(hidden)]
 pub fn recurse_composite_to_l1(
     zk_params: &crate::params::ZkParams,
     profile: &crate::circuit::CircuitConfig,
@@ -1412,6 +1437,7 @@ impl AiPowCompactBatchProverCache {
 /// The cache is guarded against stale L1 metadata before use, so a cache built
 /// for a different L1 shape rejects instead of silently proving against the
 /// wrong verifier circuit.
+#[doc(hidden)]
 pub fn build_compact_batch_prover_cache_from_l1_certificate(
     l1_cert: &AiPowRecursiveCertificate,
 ) -> Result<AiPowCompactBatchProverCache, VerificationError> {
@@ -1427,6 +1453,7 @@ pub fn build_compact_batch_prover_cache_from_l1_certificate(
 /// This function recursively verifies the Layer-0 proof in-circuit and
 /// returns only the recursive L1 certificate. It does not serialize,
 /// persist, or bless the Layer-0 proof as a block artifact.
+#[doc(hidden)]
 pub fn prove_recursive_certificate_from_chain_verified_composite_proof(
     zk_params: &crate::params::ZkParams,
     profile: &crate::circuit::CircuitConfig,
@@ -1945,6 +1972,7 @@ pub fn decode_compact_batch_recursive_certificate(
 /// Consensus callers must separately derive the exact public statement and
 /// reject selected-tile statements that do not prove the intended full-matmul
 /// work unit.
+#[doc(hidden)]
 pub fn prove_canonical_ai_pow_certificate(
     zk_params: &crate::params::ZkParams,
     profile: &crate::circuit::CircuitConfig,
@@ -1962,6 +1990,7 @@ pub fn prove_canonical_ai_pow_certificate(
 /// because raw Layer-0 proofs are not block/wire certificates for Nockchain
 /// AI-PoW. This helper is not the compact final-layer batch-STARK production
 /// candidate.
+#[doc(hidden)]
 pub fn encode_recursive_certificate(
     cert: &AiPowRecursiveCertificate,
 ) -> Result<Vec<u8>, bincode::error::EncodeError> {
@@ -1972,6 +2001,7 @@ pub fn encode_recursive_certificate(
 ///
 /// Decoding is structural only; callers still need to verify the certificate
 /// against chain-derived statement data once the verifier is wired.
+#[doc(hidden)]
 pub fn decode_recursive_certificate(
     bytes: &[u8],
 ) -> Result<AiPowRecursiveCertificate, bincode::error::DecodeError> {

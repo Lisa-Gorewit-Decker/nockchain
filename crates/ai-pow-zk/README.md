@@ -74,10 +74,10 @@ body.
 
 ## Historical Docs
 
-The dated roadmap, terminal-compression, proof-size, and route-investigation
-documents under `docs/` are historical unless they are explicitly referenced by
-the current pipeline document. They are useful for audit trail and negative
-measurements, but they are not the active implementation guide.
+Historical roadmap, terminal-compression, proof-size, and route-investigation
+documents were removed from this branch and remain available in git history.
+The active implementation guide is the current compact pipeline document linked
+above.
 
 ## Validation
 

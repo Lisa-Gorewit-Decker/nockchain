@@ -1,6 +1,6 @@
 //! Wire vocabulary for the AI-PoW miner.
 //!
-//! [`AiPowMinerWire`] mirrors `zk_pow_miner::wire::ZkPowMinerWire`
+//! [`crate::wire::AiPowMinerWire`] mirrors `zk_pow_miner::wire::ZkPowMinerWire`
 //! (`SOURCE = "zk-pow-miner"`) on its own source `"ai-pow-miner"` so the
 //! kernel-side handler for the AI puzzle can be registered independently
 //! of the dumb-puzzle ZK PoW path. Both wires share the same tag

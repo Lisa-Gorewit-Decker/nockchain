@@ -51,6 +51,19 @@
 //! below. The production Nockchain path proves the shared Pearl-compatible
 //! attempt with Nockchain's recursive certificate and does not serialize
 //! Pearl's ZKP.
+//!
+//! ## Recommended public entrypoints
+//!
+//! Production callers should use the compact certificate builders:
+//!
+//! - [`prove_pearl_merge_compact_recursive_certificate`]
+//! - [`prove_pearl_merge_compact_recursive_certificate_with_prover_cache`]
+//! - [`prove_ai_pow_compact_recursive_certificate`]
+//! - [`prove_ai_pow_compact_recursive_certificate_with_prover_cache`]
+//!
+//! The similarly named non-compact builders remain only as oversized
+//! batch-STARK checkpoint/regression helpers. They are deliberately hidden from
+//! normal rustdoc so callers do not mistake them for the production proof path.
 
 use ai_pow_zk::canonical::StripIndexSchedule;
 use ai_pow_zk::composite_proof::{
@@ -307,8 +320,9 @@ pub(crate) struct ZkProofArtifact {
 /// Fields are private so downstream crates cannot synthesize a fake prover-run
 /// handle and accidentally feed noncanonical proof material into artifact
 /// builders. This large checkpoint run object remains available for regression
-/// and fallback validation; the selected production-proof direction is
+/// validation; the selected production-proof direction is
 /// [`AiPowCompactRecursiveCertificateRun`].
+#[doc(hidden)]
 pub struct AiPowRecursiveCertificateRun {
     zk_params: ZkParams,
     found_idx: u32,
@@ -498,7 +512,12 @@ impl AiPowCompactRecursiveProverCache {
     /// Build a compact-recursion cache from a representative canonical L1
     /// recursive certificate run.
     ///
-    /// The cache is guarded against stale L1 proof metadata when it is used.
+    /// Prefer [`AiPowCompactRecursiveCertificateRun::into_prover_cache`], which
+    /// returns reusable setup from an actual compact production run. This helper
+    /// remains only for checkpoint/regression workflows that start from the
+    /// oversized L1 certificate.
+    #[doc(hidden)]
+    #[deprecated(note = "prefer AiPowCompactRecursiveCertificateRun::into_prover_cache")]
     pub fn from_l1_recursive_certificate_run(
         run: &AiPowRecursiveCertificateRun,
     ) -> Result<Self, BridgeError> {
@@ -1130,7 +1149,7 @@ fn prove_ai_pow_block(
 /// returned value deliberately does not expose the plain `MatmulProof`. The
 /// active production recursive proof candidate is the compact final-layer
 /// batch-STARK certificate; this larger checkpoint certificate exceeds the
-/// wire-size budget and remains a hardened regression/fallback path.
+/// wire-size budget and remains a hardened regression checkpoint.
 ///
 /// Current soundness boundary: the recursive Layer-0 statement proves one
 /// verifier-derived jackpot tile. For native AI-PoW, `params.num_tiles() > 1`
@@ -1138,6 +1157,7 @@ fn prove_ai_pow_block(
 /// spending ZK proving work. Pearl merge-mining uses
 /// [`prove_pearl_merge_recursive_certificate`] because Pearl's unit is an
 /// explicit tile ticket from a committed work instance.
+#[doc(hidden)]
 pub fn prove_ai_pow_recursive_certificate(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
@@ -1323,6 +1343,7 @@ fn prove_ai_pow_compact_recursive_certificate_inner(
 /// reuse Pearl's own ZKP. This checkpoint path remains useful for soundness
 /// regression, but the active production recursive proof candidate is the
 /// compact final-layer batch-STARK certificate.
+#[doc(hidden)]
 pub fn prove_pearl_merge_recursive_certificate(
     attempt: &PearlMergeTicketAttempt,
     params: &MatmulParams,

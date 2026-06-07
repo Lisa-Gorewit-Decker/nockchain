@@ -281,7 +281,7 @@ fn build_pearl_merge_submission_config(
 
     let mine_opts = PearlMergeMineOptions::default();
 
-    Ok(PearlMergeSubmissionConfig::new_recursive(
+    Ok(PearlMergeSubmissionConfig::new_compact_recursive(
         gateway,
         mining_config,
         aux_template,

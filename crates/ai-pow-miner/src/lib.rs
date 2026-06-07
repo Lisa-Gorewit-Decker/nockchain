@@ -6,8 +6,8 @@
 //!   Pearl-style ticket attempts and constructs the recursive certificate only
 //!   after the Nockchain target is hit. The selected noun encoder packages the
 //!   compact final-layer batch-STARK certificate as canonical bytes inside the
-//!   `%ai-pow` artifact; the large checkpoint certificate and native terminal
-//!   certificate are fallback/regression paths unless the route decision changes.
+//!   `%ai-pow` artifact. The large checkpoint certificate remains a regression
+//!   path; native terminal compression has been removed from this API.
 //! * Pearl Gateway proof-submission plumbing for Pearl-side hits. This remains
 //!   Rust-only miner metadata; it is not part of the Hoon `%ai-pow` artifact.
 //! * A Rust-owned opaque nonce envelope for `%ai-pow` artifacts. Hoon sees the

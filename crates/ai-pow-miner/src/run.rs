@@ -6,10 +6,10 @@
 //! `set-mining-key` / `enable-mining` / `WatchEffects` / `submit`)
 //! is shared via [`nockchain_mining_common::NodeClient`]; only the
 //! puzzle-specific bits (the AI-PoW matmul prover and
-//! `AiPowMinerWire` submission wire) live here.
+//! [`crate::wire::AiPowMinerWire`] submission wire) live here.
 //!
 //! ## Lifecycle
-//! 1. Build the [`MinerConfig`] with AI-puzzle parameters, matrices, and the
+//! 1. Build the [`crate::run::MinerConfig`] with AI-puzzle parameters, matrices, and the
 //!    Pearl header source.
 //! 2. (re)connect to the node with backoff.
 //! 3. `set_mining_key` → `watch_candidates` → `enable_mining(true)`
@@ -22,7 +22,7 @@
 //!    - worker result:
 //!      - success → build the recursive certificate artifact only after a
 //!        target hit, then poke the node with a `%ai-pow` command on
-//!        [`AiPowMinerWire::Mined`].
+//!        [`crate::wire::AiPowMinerWire::Mined`].
 //!      - error → log + idle.
 //! 5. Stream drop → outer loop reconnects.
 //!
@@ -101,7 +101,7 @@ type AiPowPearlMergeCertificateBuilder = dyn Fn(&PearlMergeTicketAttempt) -> Res
 ///
 /// This stays crate-internal so external callers cannot inject synthetic proof
 /// nodes or route around the recursive prover selected by
-/// [`PearlMergeSubmissionConfig::new_recursive`]. Tests inside this crate may
+/// [`PearlMergeSubmissionConfig::new_compact_recursive`]. Tests inside this crate may
 /// still inject synthetic proof nodes to exercise the surrounding noun and
 /// run-loop plumbing without running the prover.
 #[derive(Debug, Clone)]
@@ -152,7 +152,7 @@ impl PearlMergeSubmissionConfig {
     /// config. The certificate builder is fixed to the selected compact
     /// recursive prover, so external callers cannot accidentally install a
     /// plain-proof or synthetic certificate path.
-    pub fn new_recursive(
+    pub fn new_compact_recursive(
         gateway: PearlGatewayMinerRpcConfig,
         mining_config: PearlMiningConfig,
         aux_template: PearlNockchainAux,
@@ -220,6 +220,27 @@ impl PearlMergeSubmissionConfig {
             mine_opts,
             certificate_builder,
         }
+    }
+
+    /// Compatibility alias for [`Self::new_compact_recursive`].
+    ///
+    /// New callers should use the explicit compact name so it is clear that the
+    /// production miner is not selecting the older oversized recursive
+    /// checkpoint path.
+    #[deprecated(note = "use PearlMergeSubmissionConfig::new_compact_recursive")]
+    pub fn new_recursive(
+        gateway: PearlGatewayMinerRpcConfig,
+        mining_config: PearlMiningConfig,
+        aux_template: PearlNockchainAux,
+        max_pattern_len: usize,
+        mine_opts: PearlMergeMineOptions,
+        params: MatmulParams,
+        a: Arc<Vec<i8>>,
+        b: Arc<Vec<i8>>,
+    ) -> Self {
+        Self::new_compact_recursive(
+            gateway, mining_config, aux_template, max_pattern_len, mine_opts, params, a, b,
+        )
     }
 
     pub(crate) fn build_certificate_for_attempt(
@@ -1455,7 +1476,7 @@ pub(crate) fn build_ai_pow_pearl_merge_certificate_poke(
 /// Test-only poke builder from an already-serialized recursive proof node.
 ///
 /// Production callers use
-/// [`build_ai_pow_pearl_merge_certificate_poke_from_ticket_recursive_run`].
+/// [`build_ai_pow_pearl_merge_certificate_poke_from_ticket_compact_recursive_run`].
 #[cfg(test)]
 pub(crate) fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_node(
     attempt: &PearlMergeTicketAttempt,
@@ -1475,7 +1496,7 @@ pub(crate) fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_node(
 /// Crate-internal poke builder for the run loop after its certificate builder
 /// has produced private-field [`PearlMergeCertificateProof`] data. Tests use it
 /// with synthetic proof nodes; production code gets that wrapper only through
-/// the recursive prover selected by [`PearlMergeSubmissionConfig::new_recursive`].
+/// the recursive prover selected by [`PearlMergeSubmissionConfig::new_compact_recursive`].
 #[cfg(test)]
 pub(crate) fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_public_inputs_node(
     attempt: &PearlMergeTicketAttempt,
@@ -1540,7 +1561,11 @@ pub(crate) fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_proof(
 }
 
 /// Build the production Pearl-format-compatible Nockchain consensus poke from
-/// a successful shared ticket and the matching real recursive prover run.
+/// a successful shared ticket and the matching checkpoint recursive prover run.
+///
+/// This is retained for checkpoint/regression workflows. Production callers use
+/// [`build_ai_pow_pearl_merge_certificate_poke_from_ticket_compact_recursive_run`].
+#[doc(hidden)]
 pub fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_recursive_run(
     attempt: &PearlMergeTicketAttempt,
     aux_inclusion: &PearlAuxInclusionProof,
@@ -4237,7 +4262,7 @@ mod tests {
         let a = cfg.puzzle.a.clone();
         let b = cfg.puzzle.b.clone();
         let pearl_cfg = cfg.puzzle.pearl_merge.clone();
-        cfg.puzzle.pearl_merge = PearlMergeSubmissionConfig::new_recursive(
+        cfg.puzzle.pearl_merge = PearlMergeSubmissionConfig::new_compact_recursive(
             gateway.config.clone(),
             pearl_cfg.mining_config,
             pearl_cfg.aux_template,

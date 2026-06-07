@@ -10,6 +10,20 @@
 //! boundary does not re-inflate the compact certificate. Recursive verifier
 //! helpers are still Rust boundaries only; Hoon consensus remains fail-closed
 //! and does not call them in the current milestone.
+//!
+//! ## Production API guide
+//!
+//! - Build a Pearl-compatible `%ai-pow` artifact with
+//!   [`crate::certificate_noun::build_ai_pow_pearl_merge_artifact_noun_from_ticket_compact_recursive_run`].
+//! - Verify a compact artifact with verifier-owned setup using
+//!   [`crate::certificate_noun::verify_ai_pow_pearl_merge_compact_artifact_jam_with_digest_bytes_and_context`].
+//! - Use metadata precheck helpers such as
+//!   [`crate::certificate_noun::precheck_ai_pow_pearl_merge_artifact_jam_with_context`] when caller code
+//!   only needs cheap nonce/statement/target rejection before proof traversal.
+//!
+//! The non-compact checkpoint constructors and verifiers are retained for
+//! regression only and are hidden from normal rustdoc. They are too large for
+//! the selected production wire path.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -587,6 +601,7 @@ where
 
 /// Reconstruct the batch-STARK recursive checkpoint certificate from a decoded
 /// Hoon-compatible proof-node tree.
+#[doc(hidden)]
 pub fn ai_pow_recursive_certificate_from_node(
     node: &AiProofNode,
 ) -> Result<ai_pow_zk::recursion::AiPowRecursiveCertificate, CertificateNounError> {
@@ -595,6 +610,7 @@ pub fn ai_pow_recursive_certificate_from_node(
 
 /// Reconstruct a recursive certificate after enforcing explicit proof-node
 /// resource limits.
+#[doc(hidden)]
 pub fn ai_pow_recursive_certificate_from_node_with_limits(
     node: &AiProofNode,
     limits: CertificateNounLimits,
@@ -666,6 +682,7 @@ fn build_ai_pow_certificate_noun<C: Serialize>(
 /// has private fields, so downstream callers cannot synthesize a fake run or
 /// accidentally package a diagnostic or non-canonical proof object as the block
 /// certificate.
+#[doc(hidden)]
 pub fn build_ai_pow_certificate_noun_from_recursive_run(
     run: &AiPowRecursiveCertificateRun,
 ) -> Result<NounSlab, CertificateNounError> {
@@ -815,7 +832,7 @@ pub(crate) fn build_ai_pow_pearl_merge_artifact_noun_from_node(
 /// recursive statement binds the explicit Pearl ticket schedule, not a native
 /// verifier-selected full-matmul attempt. This helper does not build a block
 /// artifact and does not accept proof material; the public production artifact
-/// builder requires a real [`AiPowRecursiveCertificateRun`].
+/// builder requires a real [`AiPowCompactRecursiveCertificateRun`].
 pub fn pearl_merge_recursive_certificate_parts_from_ticket(
     attempt: &PearlMergeTicketAttempt,
     a_row_major: &[i8],
@@ -952,7 +969,7 @@ pub fn pearl_merge_recursive_certificate_parts_from_ticket(
 /// trusted matrices. The only field this API does not derive is `cumsum`,
 /// because that is a Layer-0 trace detail rather than part of Pearl's public
 /// work statement. This is still a metadata helper, not a public artifact
-/// constructor; block submission uses the recursive-run builder.
+/// constructor; block submission uses the compact recursive-run builder.
 pub fn pearl_merge_recursive_certificate_parts_from_ticket_public_inputs(
     attempt: &PearlMergeTicketAttempt,
     a_row_major: &[i8],
@@ -979,7 +996,7 @@ fn validate_pearl_merge_ticket_aux_inclusion(
 /// Pearl-compatible ticket and an already-serialized recursive proof node.
 ///
 /// Production callers use
-/// [`build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run`].
+/// [`build_ai_pow_pearl_merge_artifact_noun_from_ticket_compact_recursive_run`].
 #[cfg(test)]
 pub(crate) fn build_ai_pow_pearl_merge_artifact_noun_from_ticket_node(
     attempt: &PearlMergeTicketAttempt,
@@ -1023,6 +1040,7 @@ pub(crate) fn build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs_n
 
 /// Build the canonical `%ai-pow` artifact from a successful Pearl-compatible
 /// ticket and a real recursive prover run.
+#[doc(hidden)]
 pub fn build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run(
     attempt: &PearlMergeTicketAttempt,
     aux_inclusion: &PearlAuxInclusionProof,
@@ -1756,6 +1774,7 @@ pub fn precheck_ai_pow_pearl_merge_command_metadata_with_context<J>(
 /// decoding. It is not wired from Hoon in the current milestone. It rejects
 /// replay/tamper through the Pearl-compatible statement precheck before
 /// reconstructing and verifying the recursive certificate.
+#[doc(hidden)]
 pub fn verify_decoded_ai_pow_pearl_merge_artifact(
     artifact: &PearlMergeAiPowArtifactShape,
     candidate_nock_block_commitment: &[u8; 32],
@@ -1777,6 +1796,7 @@ pub fn verify_decoded_ai_pow_pearl_merge_artifact(
 }
 
 /// Limit-explicit form of [`verify_decoded_ai_pow_pearl_merge_artifact`].
+#[doc(hidden)]
 pub fn verify_decoded_ai_pow_pearl_merge_artifact_with_limits(
     artifact: &PearlMergeAiPowArtifactShape,
     limits: CertificateNounLimits,
@@ -1800,6 +1820,7 @@ pub fn verify_decoded_ai_pow_pearl_merge_artifact_with_limits(
 }
 
 /// Context-based form of [`verify_decoded_ai_pow_pearl_merge_artifact`].
+#[doc(hidden)]
 pub fn verify_decoded_ai_pow_pearl_merge_artifact_with_context(
     artifact: &PearlMergeAiPowArtifactShape,
     context: PearlMergeAiPowVerifierContext<'_>,
@@ -1813,6 +1834,7 @@ pub fn verify_decoded_ai_pow_pearl_merge_artifact_with_context(
 
 /// Context and limit-explicit form of
 /// [`verify_decoded_ai_pow_pearl_merge_artifact`].
+#[doc(hidden)]
 pub fn verify_decoded_ai_pow_pearl_merge_artifact_with_context_and_limits(
     artifact: &PearlMergeAiPowArtifactShape,
     context: PearlMergeAiPowVerifierContext<'_>,
@@ -1915,6 +1937,7 @@ pub fn verify_decoded_ai_pow_pearl_merge_compact_artifact_with_digest_bytes_and_
 /// caller to re-jam the noun: tag and opaque nonce decode, recursive
 /// certificate metadata decode, cheap Pearl-compatible statement precheck, then
 /// proof-node traversal and recursive verification.
+#[doc(hidden)]
 pub fn verify_ai_pow_pearl_merge_artifact_slab<J>(
     slab: &NounSlab<J>,
     limits: CertificateNounLimits,
@@ -1938,6 +1961,7 @@ pub fn verify_ai_pow_pearl_merge_artifact_slab<J>(
 }
 
 /// Context-based form of [`verify_ai_pow_pearl_merge_artifact_slab`].
+#[doc(hidden)]
 pub fn verify_ai_pow_pearl_merge_artifact_slab_with_context<J>(
     slab: &NounSlab<J>,
     limits: CertificateNounLimits,
@@ -2205,6 +2229,7 @@ fn tile_state_words(tile_state: &ai_pow::matmul::TileState) -> [u32; 16] {
 /// those verifier-derived Layer-0 public inputs. It is not the Nockchain
 /// consensus/block-wire entrypoint; the production artifact boundary is the
 /// Pearl merge-mined `%ai-pow` verifier.
+#[doc(hidden)]
 pub fn verify_decoded_ai_pow_certificate(
     shape: &AiPowCertificateShape,
     block_commitment: &[u8],
@@ -2230,6 +2255,7 @@ pub fn verify_decoded_ai_pow_certificate(
 /// Nockchain statement precheck, and only then proof-node traversal and
 /// recursive verification. It is a Rust verifier boundary only; Hoon
 /// consensus remains fail-closed and does not call it in this milestone.
+#[doc(hidden)]
 pub fn verify_ai_pow_pearl_merge_artifact_jam(
     jammed: &[u8],
     limits: CertificateNounLimits,
@@ -2253,6 +2279,7 @@ pub fn verify_ai_pow_pearl_merge_artifact_jam(
 }
 
 /// Context-based form of [`verify_ai_pow_pearl_merge_artifact_jam`].
+#[doc(hidden)]
 pub fn verify_ai_pow_pearl_merge_artifact_jam_with_context(
     jammed: &[u8],
     limits: CertificateNounLimits,
