@@ -499,7 +499,6 @@ pub fn make_libp2p_driver(
             let peer_status_interval = libp2p_config.peer_status_interval_secs();
             let seen_tx_clear_interval = libp2p_config.seen_tx_clear_interval();
             let min_peers = libp2p_config.min_peers();
-            let poke_timeout = libp2p_config.poke_timeout();
             let low_priority_peek_timeout = libp2p_config.low_priority_peek_timeout();
             let failed_pings_before_close = libp2p_config.failed_pings_before_close();
             let req_res_gen2_send_enabled = libp2p_config.req_res_gen2_send_enabled;
@@ -581,7 +580,7 @@ pub fn make_libp2p_driver(
             let nockchain_timer_mutex = Arc::new(Mutex::new(()));
             let (traffic_handle, effect_handle) = handle.dup();
             let traffic_cop = traffic_cop::TrafficCop::new_with_peek_timeout(
-                traffic_handle, &mut join_set, poke_timeout, low_priority_peek_timeout,
+                traffic_handle, &mut join_set, low_priority_peek_timeout,
             );
 
             let mut initial_peer_retries_remaining = initial_peer_retries;

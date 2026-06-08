@@ -130,6 +130,14 @@ pub fn decimal_to_base_p(value: UBig) -> Result<[u64; 5], NockAppError> {
         })?;
         value /= &prime;
     }
+    // A canonical tip5 hash occupies exactly five base-p limbs; reject any
+    // nonzero high quotient rather than silently truncating it, which would let
+    // distinct values alias the same five-limb digest.
+    if value != BigUint::from(0u8) {
+        return Err(NockAppError::OtherError(
+            "base58 value is out of the five-limb tip5 domain".to_string(),
+        ));
+    }
     Ok(result)
 }
 
@@ -154,6 +162,24 @@ mod tests {
     fn test_tip5_ubig_isomorphism() {
         let tip5 = [1, 2, 3, 4, 5];
         iso(tip5);
+    }
+
+    // A value out of the five-limb tip5 domain must be rejected,
+    // not silently truncated (truncation aliases distinct values to one digest).
+    #[test]
+    fn decimal_to_base_p_rejects_out_of_domain() {
+        // p^5 needs a sixth base-p limb; the old code mapped it to the all-zero
+        // digest, an alias of the empty base58 string. (Build with `&p * &p`
+        // rather than `UBig::pow`, which is deprecated for leaking via the
+        // global allocator.)
+        let p = UBig::from(P);
+        let p2 = &p * &p;
+        let p4 = &p2 * &p2;
+        let out_of_domain = &p4 * &p;
+        assert!(
+            decimal_to_base_p(out_of_domain).is_err(),
+            "a value with a nonzero high quotient must be rejected"
+        );
     }
 
     #[test]

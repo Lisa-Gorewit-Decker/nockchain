@@ -622,9 +622,11 @@
   ++  do-import-extended
     |=  =cause:wt
     ?>  ?=(%import-extended -.cause)
-    %-  (debug "import-extended: {<extended-key.cause>}")
+    ::  log only non-secret metadata (key type, protocol version, depth, public
+    ::  fingerprint), never the raw extended key.
     =/  core  (from-extended-key:s10 extended-key.cause)
     =/  is-private=?  !=(0 prv:core)
+    %-  (debug "import-extended: type={<?:(is-private %prv %pub)>} v={<protocol-version:core>} dep={<dep:core>} pub={<(en:base58:wrap public-key:core)>}")
     =/  key-type=?(%pub %prv)  ?:(is-private %prv %pub)
     =/  coil-key=key:wt
       ?:  is-private
@@ -815,7 +817,24 @@
     ::  We do not need to reverse the endian-ness of the seed phrase
     ::  because the bip39 code expects a tape.
     ::  TODO: move this conversion into s10
-    =/  seed=byts  [64 (to-seed:bip39 (trip seed-phrase.cause) "")]
+    =/  mnem=tape  (trip seed-phrase.cause)
+    ::  Reject phrases that are not valid BIP39 mnemonics
+    ::  (word count, wordlist membership, checksum) so a mistyped or invalid
+    ::  phrase cannot silently import a different wallet than intended.
+    ?~  (from-mnemonic:bip39 mnem)
+      :_  state
+      :~  :-  %markdown
+          %-  crip
+          """
+          ## Invalid Seed Phrase
+
+          The provided phrase is not a valid BIP39 mnemonic. Check the word
+          count (12/15/18/21/24), the spelling of each word against the BIP39
+          English wordlist, and the checksum. No wallet was imported.
+          """
+          [%exit 1]
+      ==
+    =/  seed=byts  [64 (to-seed:bip39 mnem "")]
     =/  cor  (from-seed:s10 seed version.cause)
     =/  [master-pubkey-coil=coil:wt master-privkey-coil=coil:wt]
       ?-    version.cause
@@ -1626,7 +1645,8 @@
     =/  old-active  active-master.state
     =.  active-master.state  (some master-public-coil)
     %-  (debug "keygen: public key: {<(en:base58:wrap public-key:cor)>}")
-    %-  (debug "keygen: private key: {<(en:base58:wrap private-key:cor)>}")
+    ::  log only the public key; the seed phrase / zprv are revealed only by the
+    ::  explicit show-seed-phrase / show-master-zprv commands.
     =/  pub-label  `(crip "master-public-{<(end [3 4] public-key:cor)>}")
     =/  prv-label  `(crip "master-public-{<(end [3 4] public-key:cor)>}")
     =.  keys.state  (key:put:v master-public-coil ~ pub-label)
@@ -1815,6 +1835,9 @@
   ++  do-sign-hash
     |=  =cause:wt
     ?>  ?=(%sign-hash -.cause)
+    ::  sign-hash signs a caller-supplied opaque Tip5 digest with the spend key,
+    ::  which is not bound to a human-readable purpose; emit a warning and prefer
+    ::  sign-message for human-readable payloads.
     =/  sk=schnorr-seckey:transact  (sign-key:get:v sign-key.cause)
     =/  digest=hash:transact  (from-b58:hash:transact hash-b58.cause)
     =/  sig=schnorr-signature:transact
@@ -1825,7 +1848,16 @@
     =/  path=@t  'hash.sig'
     :_  state
     :~  [%file %write path sig-jam]
-        [%markdown '## Hash signed, signature saved to hash.sig']
+        :-  %markdown
+        %-  crip
+        """
+        ## Hash signed, signature saved to hash.sig
+
+        > **WARNING:** you signed an opaque hash with your spend key. If this
+        > hash was a transaction sig-hash, this signature can authorize a spend
+        > of your funds. Only sign hashes you produced yourself. For
+        > human-readable payloads use `sign-message` instead.
+        """
         [%exit 0]
     ==
   ::

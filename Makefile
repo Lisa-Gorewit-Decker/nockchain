@@ -203,6 +203,14 @@ install-nockchain-peek: assets/peek.jam
 HOONC ?= hoonc
 HOONC_FLAGS ?=
 
+# Optional root for per-kernel data/PMA directories. When set, each kernel build
+# is handed its own `--data-dir $(HOONC_PMA_ROOT)/<name>` so several hoonc runs
+# can proceed in parallel without sharing (or clobbering) PMA/checkpoint state.
+# Left empty for local builds so the default shared ~/.nockapp/hoonc cache is
+# reused across kernels. See the `build-kernels-ci` target below.
+HOONC_PMA_ROOT ?=
+hoonc_data_flag = $(if $(HOONC_PMA_ROOT),--data-dir $(HOONC_PMA_ROOT)/$(1))
+
 .PHONY: ensure-dirs
 ensure-dirs:
 	mkdir -p hoon
@@ -237,39 +245,55 @@ build-hoon: ensure-dirs update-hoonc $(HOON_TARGETS)
 build-assets: ensure-dirs $(HOON_TARGETS)
 	$(call show_env_vars)
 
+# Number of kernel builds to run concurrently in `build-kernels-ci`.
+KERNEL_JOBS ?= 2
+
+# Build every kernel in parallel, each in its own ephemeral PMA dir. Used by CI
+# to cut the previously-serial kernel build time. Each hoonc run is `--ephemeral`
+# (no PMA/event-log/checkpoint writes) and gets a unique `--data-dir` plus a
+# unique output filename, so KERNEL_JOBS builds can run at once without sharing
+# state or clobbering each other's output. Override concurrency with KERNEL_JOBS.
+.PHONY: build-kernels-ci
+build-kernels-ci: ensure-dirs
+	$(call show_env_vars)
+	$(MAKE) -j$(KERNEL_JOBS) \
+		HOONC_FLAGS="$(HOONC_FLAGS) --ephemeral" \
+		HOONC_PMA_ROOT="$(CURDIR)/.hoonc-pma" \
+		$(HOON_TARGETS)
+
 HOON_SRCS := $(find hoon -type file -name '*.hoon')
 
 ## Build dumb.jam with hoonc
 assets/dumb.jam: ensure-dirs hoon/apps/dumbnet/outer.hoon $(HOON_SRCS)
 	$(call show_env_vars)
 	rm -f assets/dumb.jam
-	$(HOONC) $(HOONC_FLAGS) hoon/apps/dumbnet/outer.hoon hoon
-	mv out.jam assets/dumb.jam
+	$(HOONC) $(HOONC_FLAGS) $(call hoonc_data_flag,dumb) --output $(@F) hoon/apps/dumbnet/outer.hoon hoon
+	mv $(@F) $@
 
 ## Build wal.jam with hoonc
 assets/wal.jam: ensure-dirs hoon/apps/wallet/wallet.hoon $(HOON_SRCS)
 	$(call show_env_vars)
 	rm -f assets/wal.jam
-	$(HOONC) $(HOONC_FLAGS) hoon/apps/wallet/wallet.hoon hoon
-	mv out.jam assets/wal.jam
+	$(HOONC) $(HOONC_FLAGS) $(call hoonc_data_flag,wal) --output $(@F) hoon/apps/wallet/wallet.hoon hoon
+	mv $(@F) $@
 
 ## Build mining.jam with hoonc
 assets/miner.jam: ensure-dirs hoon/apps/dumbnet/miner.hoon $(HOON_SRCS)
 	$(call show_env_vars)
 	rm -f assets/miner.jam
-	$(HOONC) $(HOONC_FLAGS) hoon/apps/dumbnet/miner.hoon hoon
-	mv out.jam assets/miner.jam
+	$(HOONC) $(HOONC_FLAGS) $(call hoonc_data_flag,miner) --output $(@F) hoon/apps/dumbnet/miner.hoon hoon
+	mv $(@F) $@
 
 ## Build peek.jam with hoonc
 assets/peek.jam: ensure-dirs hoon/apps/peek/peek.hoon $(HOON_SRCS)
 	$(call show_env_vars)
 	rm -f assets/peek.jam
-	$(HOONC) $(HOONC_FLAGS) hoon/apps/peek/peek.hoon hoon
-	mv out.jam assets/peek.jam
+	$(HOONC) $(HOONC_FLAGS) $(call hoonc_data_flag,peek) --output $(@F) hoon/apps/peek/peek.hoon hoon
+	mv $(@F) $@
 
 ## Build bridge.jam
 assets/bridge.jam: ensure-dirs hoon/apps/bridge/bridge.hoon $(HOON_SRCS)
 	$(call show_env_vars)
 	rm -f assets/bridge.jam
-	$(HOONC) $(HOONC_FLAGS) hoon/apps/bridge/bridge.hoon hoon
-	mv out.jam assets/bridge.jam
+	$(HOONC) $(HOONC_FLAGS) $(call hoonc_data_flag,bridge) --output $(@F) hoon/apps/bridge/bridge.hoon hoon
+	mv $(@F) $@

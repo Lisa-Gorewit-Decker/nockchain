@@ -2152,6 +2152,25 @@ pub const CURVE_JETS: &[HotEntry] = &[
         1,
         batch_verify_affine_jet,
     ),
+    (
+        &[
+            K_138,
+            Left(b"one"),
+            Left(b"two"),
+            Left(b"tri"),
+            Left(b"qua"),
+            Left(b"pen"),
+            Left(b"zeke"),
+            Left(b"ext-field"),
+            Left(b"misc-lib"),
+            Left(b"cheetah"),
+            Left(b"belt-schnorr"),
+            Left(b"affine"),
+            Left(b"batch-verify"),
+        ],
+        1,
+        belt_schnorr_batch_verify_jet,
+    ),
 ];
 
 pub const CUSTOM_LIST_JETS: &[HotEntry] = &[

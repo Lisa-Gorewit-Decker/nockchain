@@ -1,5 +1,5 @@
 use nockchain_math::noun_ext::NounMathExtHandle;
-use nockchain_math::structs::HoonMapIter;
+use nockchain_math::structs::collect_zmap_entries_strict;
 use nockchain_math::zoon::zmap::ZMap;
 use nockchain_math::zoon::zset::ZSet;
 use nockvm::noun::{Noun, NounAllocator, NounSpace};
@@ -73,8 +73,9 @@ impl NounEncode for Inputs {
 
 impl NounDecode for Inputs {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let entries = HoonMapIter::new(&noun.in_space(space))
-            .filter(|entry| entry.is_cell())
+        let entries = collect_zmap_entries_strict(&noun.in_space(space))
+            .map_err(|_| NounDecodeError::Custom("malformed inputs z-map node".into()))?
+            .into_iter()
             .map(|entry| {
                 let [key, value] = entry
                     .uncell()

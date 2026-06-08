@@ -24,12 +24,15 @@ const LOW_PRIORITY_QUEUE_MAX_PER_KEY: usize = 256;
 
 /// Timestamp (seconds since UNIX epoch) of the last successful TrafficCop
 /// kernel operation. Bumped after high/low-priority pokes return from
-/// `handle.poke_timeout` and after low-priority peeks return from
-/// `handle.peek`. The libp2p-watchdog thread reads this in parallel with the
-/// driver heartbeat counter and dumps thread stacks if it stops advancing,
-/// which is the precise signal that was missing on the 2026-04-18 LAX1 stall
-/// (heartbeat kept ticking because it's an independent task; only the kernel
-/// side wedged).
+/// `handle.poke` and after low-priority peeks return from `handle.peek`. The
+/// libp2p-watchdog thread reads this in parallel with the driver heartbeat
+/// counter and dumps thread stacks if it stops advancing, which is the precise
+/// signal that was missing on the 2026-04-18 LAX1 stall (heartbeat kept ticking
+/// because it's an independent task; only the kernel side wedged). Consensus
+/// pokes are no longer bounded by a wall-clock timeout (so that a slow host
+/// cannot turn "still validating" into a Nack/timeout), which means a genuine
+/// kernel livelock now freezes this counter rather than masking itself as a
+/// stream of timeout returns — exactly what the watchdog is there to catch.
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -73,15 +76,14 @@ impl TrafficCop {
     pub(crate) fn new(
         handle: NockAppHandle,
         join_set: &mut TrackedJoinSet<Result<(), NockAppError>>,
-        poke_timeout: Duration,
+        peek_timeout: Duration,
     ) -> Self {
-        Self::new_with_peek_timeout(handle, join_set, poke_timeout, poke_timeout)
+        Self::new_with_peek_timeout(handle, join_set, peek_timeout)
     }
 
     pub(crate) fn new_with_peek_timeout(
         handle: NockAppHandle,
         join_set: &mut TrackedJoinSet<Result<(), NockAppError>>,
-        poke_timeout: Duration,
         peek_timeout: Duration,
     ) -> Self {
         let (system_high_priority_pokes, system_high) = key_fair_queue::channel_with_limits(
@@ -101,7 +103,6 @@ impl TrafficCop {
                 system_high,
                 peer_high,
                 low,
-                poke_timeout,
                 peek_timeout,
                 last_poke_completed_at.clone(),
             ),
@@ -208,7 +209,6 @@ async fn traffic_cop_task(
     mut system_high: key_fair_queue::Receiver<(), TrafficCopPoke>,
     mut peer_high: key_fair_queue::Receiver<PeerId, TrafficCopPoke>,
     mut low: key_fair_queue::Receiver<Option<PeerId>, TrafficCopAction>,
-    poke_timeout: Duration,
     peek_timeout: Duration,
     last_poke_completed_at: Arc<AtomicU64>,
 ) -> Result<(), NockAppError> {
@@ -227,7 +227,7 @@ async fn traffic_cop_task(
                 system_high_priority_poke = system_high.recv(), if system_high_open => match system_high_priority_poke {
                     Some((_, poke)) => {
                         consecutive_peer_high = 0;
-                        process_poke(&handle, poke_timeout, poke, "system high priority", &last_poke_completed_at).await;
+                        process_poke(&handle, poke, "system high priority", &last_poke_completed_at).await;
                     }
                     None => {
                         system_high_open = false;
@@ -238,7 +238,6 @@ async fn traffic_cop_task(
                         consecutive_peer_high = 0;
                         process_low_priority_action(
                             &handle,
-                            poke_timeout,
                             peek_timeout,
                             action,
                             &last_poke_completed_at,
@@ -252,7 +251,7 @@ async fn traffic_cop_task(
                 peer_high_priority_poke = peer_high.recv(), if peer_high_open => match peer_high_priority_poke {
                     Some((_peer_id, poke)) => {
                         consecutive_peer_high = consecutive_peer_high.saturating_add(1);
-                        process_poke(&handle, poke_timeout, poke, "peer high priority", &last_poke_completed_at).await;
+                        process_poke(&handle, poke, "peer high priority", &last_poke_completed_at).await;
                     }
                     None => {
                         peer_high_open = false;
@@ -267,7 +266,7 @@ async fn traffic_cop_task(
                 system_high_priority_poke = system_high.recv(), if system_high_open => match system_high_priority_poke {
                     Some((_, poke)) => {
                         consecutive_peer_high = 0;
-                        process_poke(&handle, poke_timeout, poke, "system high priority", &last_poke_completed_at).await;
+                        process_poke(&handle, poke, "system high priority", &last_poke_completed_at).await;
                     }
                     None => {
                         system_high_open = false;
@@ -276,7 +275,7 @@ async fn traffic_cop_task(
                 peer_high_priority_poke = peer_high.recv(), if peer_high_open => match peer_high_priority_poke {
                     Some((_peer_id, poke)) => {
                         consecutive_peer_high = consecutive_peer_high.saturating_add(1);
-                        process_poke(&handle, poke_timeout, poke, "peer high priority", &last_poke_completed_at).await;
+                        process_poke(&handle, poke, "peer high priority", &last_poke_completed_at).await;
                     }
                     None => {
                         peer_high_open = false;
@@ -287,7 +286,6 @@ async fn traffic_cop_task(
                         consecutive_peer_high = 0;
                         process_low_priority_action(
                             &handle,
-                            poke_timeout,
                             peek_timeout,
                             action,
                             &last_poke_completed_at,
@@ -308,7 +306,6 @@ async fn traffic_cop_task(
 
 async fn process_poke(
     handle: &NockAppHandle,
-    poke_timeout: Duration,
     TrafficCopPoke {
         wire,
         cause,
@@ -344,11 +341,12 @@ async fn process_poke(
     }
 
     let now = Instant::now();
-    let res = handle.poke_timeout(wire, cause, poke_timeout).await;
-    // Record kernel-side progress: even `res = Err(..)` means the kernel
-    // did something (usually a timeout return). What we care about is
-    // "did the await complete at all", which distinguishes the 2026-04-18
-    // kernel livelock where this call would hang indefinitely.
+    // No wall-clock timeout: a consensus poke runs to completion so that a slow
+    // host cannot turn "still validating" into a Nack/timeout.
+    // Recording progress here means the await actually returned; a genuine
+    // kernel livelock now leaves this un-bumped, which is the signal the
+    // libp2p-watchdog watches for (see the `unix_now` docstring).
+    let res = handle.poke(wire, cause).await;
     last_poke_completed_at.store(unix_now(), Ordering::Relaxed);
     if let Some(timing) = timing {
         let _ = timing.send(now.elapsed());
@@ -360,7 +358,6 @@ async fn process_poke(
 
 async fn process_low_priority_action(
     handle: &NockAppHandle,
-    poke_timeout: Duration,
     peek_timeout: Duration,
     action: TrafficCopAction,
     last_poke_completed_at: &Arc<AtomicU64>,
@@ -392,7 +389,9 @@ async fn process_low_priority_action(
                 return;
             }
             let now = Instant::now();
-            let res = handle.poke_timeout(wire, cause, poke_timeout).await;
+            // No wall-clock timeout on consensus pokes; see
+            // `process_poke`.
+            let res = handle.poke(wire, cause).await;
             last_poke_completed_at.store(unix_now(), Ordering::Relaxed);
             if let Some(timing) = timing {
                 let _ = timing.send(now.elapsed());

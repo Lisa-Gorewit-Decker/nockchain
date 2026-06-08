@@ -6,7 +6,7 @@ use nockapp::Noun;
 use nockchain_math::belt::Belt;
 use nockchain_math::noun_ext::NounMathExtHandle;
 use nockchain_math::owned_based_noun::{owned_based_noun_decode_error, OwnedBasedNoun};
-use nockchain_math::structs::HoonMapIter;
+use nockchain_math::structs::collect_zmap_entries_strict;
 use nockchain_math::zoon::common::DefaultTipHasher;
 use nockchain_math::zoon::zmap::{self, ZMap};
 use nockvm::noun::{NounAllocator, NounSpace, D};
@@ -369,8 +369,9 @@ impl NounEncode for NoteData {
 impl NounDecode for NoteData {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let handle = noun.in_space(space);
-        let entries = HoonMapIter::new(&handle)
-            .filter(|entry| entry.is_cell())
+        let entries = collect_zmap_entries_strict(&handle)
+            .map_err(|_| NounDecodeError::Custom("malformed note-data z-map node".into()))?
+            .into_iter()
             .map(|entry| {
                 let [raw_key, raw_value] = entry.uncell().map_err(|_| {
                     NounDecodeError::Custom("note-data entry must be a cell".into())

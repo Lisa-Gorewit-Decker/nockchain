@@ -197,6 +197,42 @@ impl<'a> HoonMapIter<'a> {
     }
 }
 
+/// Strictly collect every entry node (`[key value]` slot) of a z-map (treap),
+/// returning an error on *any* malformed node instead of silently skipping it.
+///
+/// The lenient `HoonMapIter` `Iterator` impl drops malformed subtrees (and
+/// callers further `.filter(|e| e.is_cell())` away non-cell entries), which lets
+/// a malformed noun decode to a normalized struct in Rust while Hoon
+/// `based`/`validate` would reject it — a Rust/Hoon interpretation drift. Use
+/// this in consensus transaction decoders so malformed input fails to decode.
+///
+/// A node must be a `[entry [left right]]` cell; each child must be either a
+/// further node cell or the empty-map marker `~` (the atom 0). The returned
+/// entry nouns are NOT required to be cells — the caller's decode (e.g.
+/// `uncell`) enforces the `[key value]` shape, so a non-cell entry still errors.
+pub fn collect_zmap_entries_strict<'a>(
+    root: &NounHandle<'a>,
+) -> std::result::Result<Vec<NounHandle<'a>>, nockvm::noun::Error> {
+    let space = root.space();
+    let mut out: Vec<NounHandle<'a>> = Vec::new();
+    let mut stack: Vec<NounHandle<'a>> = vec![*root];
+    while let Some(noun) = stack.pop() {
+        if !noun.is_cell() {
+            // A non-cell subtree is only valid as the empty-map marker `~` (0).
+            if noun.as_atom()?.as_u64()? != 0 {
+                return not_cell();
+            }
+            continue;
+        }
+        let cell = noun.as_cell()?;
+        let children = cell.tail().as_cell()?;
+        stack.push(children.tail().noun().in_space(space));
+        stack.push(children.head().noun().in_space(space));
+        out.push(cell.head().noun().in_space(space));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -221,6 +257,51 @@ mod tests {
 
     fn test_pma(label: &str) -> Pma {
         Pma::new(100000, test_pma_path(label)).expect("failed to create test PMA")
+    }
+
+    // Strict z-map collection must reject malformed treap nodes
+    // instead of silently skipping them (which would let Rust normalize a noun
+    // that Hoon rejects). A treap node is `[entry [left right]]` with each child
+    // either a node cell or the empty marker `~` (0).
+    #[test]
+    fn collect_zmap_entries_strict_accepts_valid_rejects_malformed() {
+        let mut stack = NockStack::new(nockvm::mem::NOCK_STACK_SIZE_TINY, 0);
+
+        // valid single-node treap: [[1 2] [~ ~]]
+        let entry = T(&mut stack, &[D(1), D(2)]);
+        let empty_children = T(&mut stack, &[D(0), D(0)]);
+        let good = T(&mut stack, &[entry, empty_children]);
+
+        // malformed: left child is a non-zero atom (neither a node nor ~)
+        let bad_children = T(&mut stack, &[D(5), D(0)]);
+        let bad_child = T(&mut stack, &[entry, bad_children]);
+
+        // malformed: tail is not a `[left right]` cell
+        let bad_tail = T(&mut stack, &[entry, D(7)]);
+
+        let space = stack.noun_space();
+
+        let ok = collect_zmap_entries_strict(&good.in_space(&space))
+            .expect("a valid single-node treap should collect");
+        assert_eq!(ok.len(), 1, "valid treap should yield exactly one entry");
+
+        assert!(
+            collect_zmap_entries_strict(&bad_child.in_space(&space)).is_err(),
+            "a non-zero, non-cell subtree must be rejected, not skipped"
+        );
+        assert!(
+            collect_zmap_entries_strict(&bad_tail.in_space(&space)).is_err(),
+            "a node whose tail is not a [left right] cell must be rejected"
+        );
+
+        // the empty map (~) is valid and yields nothing
+        let empty = D(0).in_space(&space);
+        assert_eq!(
+            collect_zmap_entries_strict(&empty)
+                .expect("empty map decodes")
+                .len(),
+            0
+        );
     }
 
     #[test]

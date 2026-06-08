@@ -1,6 +1,6 @@
 use bitvec::prelude::{BitSlice, Lsb0};
 use nockvm::interpreter::Context;
-use nockvm::jets::util::slot;
+use nockvm::jets::util::{slot, BAIL_FAIL};
 use nockvm::jets::JetErr;
 use nockvm::mem::NockStack;
 use nockvm::noun::{Cell, Noun, NounSpace, T};
@@ -11,20 +11,20 @@ use crate::jets::tip5_jets::*;
 use crate::utils::*;
 
 // edit door values
+//  Returns `Err(BAIL_FAIL)` rather than panicking on a zero edit axis or a tree
+//  that is too shallow for the axis, so such inputs fall back to the Hoon arm.
 fn door_edit(
     stack: &mut NockStack,
     edit_axis_path: u64,
     patch: Noun,
     mut tree: Noun,
     space: &NounSpace,
-) -> Noun {
+) -> Result<Noun, JetErr> {
     let edit_axis = BitSlice::<u64, Lsb0>::from_element(&edit_axis_path);
 
     let mut res = patch;
     let mut dest: *mut Noun = &mut res;
-    let mut cursor = edit_axis
-        .last_one()
-        .expect("0 is not allowed as an edit axis");
+    let mut cursor = edit_axis.last_one().ok_or(BAIL_FAIL)?;
     loop {
         if cursor == 0 {
             unsafe {
@@ -52,10 +52,10 @@ fn door_edit(
                 tree = tree_cell.head().noun();
             }
         } else {
-            panic!("Invalid axis for edit");
+            return Err(BAIL_FAIL);
         };
     }
-    res
+    Ok(res)
 }
 
 pub fn sponge_absorb_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
@@ -68,8 +68,14 @@ pub fn sponge_absorb_jet(context: &mut Context, subject: Noun) -> Result<Noun, J
     let mut input_vec = hoon_list_to_vecbelt(input_noun, &space)?;
     let mut sponge = hoon_list_to_sponge(sponge_noun, &space)?;
 
-    // assert that input is made of base field elements
-    tip5::hash::assert_all_based(&input_vec);
+    // require that input is made of base field elements; return a deterministic
+    // jet error (falling back to Hoon) rather than panicking otherwise
+    if !input_vec
+        .iter()
+        .all(|b| crate::form::belt::based_check(b.0))
+    {
+        return Err(BAIL_FAIL);
+    }
 
     // pad input with ~[1 0 ... 0] to be a multiple of rate
     let (q, r) = tip5::hash::tip5_calc_q_r(&input_vec);
@@ -83,7 +89,7 @@ pub fn sponge_absorb_jet(context: &mut Context, subject: Noun) -> Result<Noun, J
 
     // update sponge in door
     let new_sponge = vec_to_hoon_list(stack, &sponge);
-    let edit = door_edit(stack, 6, new_sponge, door, &space);
+    let edit = door_edit(stack, 6, new_sponge, door, &space)?;
 
     Ok(edit)
 }
@@ -124,7 +130,7 @@ pub fn sponge_squeeze_jet(context: &mut Context, subject: Noun) -> Result<Noun, 
 
     // update sponge in door
     let new_sponge = vec_to_hoon_list(stack, &sponge);
-    let edit = door_edit(stack, 6, new_sponge, door, &space);
+    let edit = door_edit(stack, 6, new_sponge, door, &space)?;
 
     let output_noun = vec_to_hoon_list(stack, &output);
     let res = T(stack, &[output_noun, edit]);

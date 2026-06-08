@@ -17,6 +17,35 @@ use crate::utils::{
     vec_to_hoon_list, vecnoun_to_hoon_list,
 };
 
+/// The `tip5` door is parameterized by `num-rounds` (default 7). Production
+/// always uses the default, but the door also supports a 5-round variant
+/// (`round-constants` branches on `num-rounds ∈ {5, 7}`). These jets implement
+/// only the 7-round permutation, so a non-default round count must be declined
+/// (Punt) and left to the interpreted Hoon — otherwise the jet would silently
+/// return a 7-round digest where the Hoon returns a 5-round one (a jet/Hoon
+/// divergence).
+///
+/// For a gate that is a direct arm of the `tip5` door, the gate's subject is
+/// `[sample [battery context]]` whose `context` (axis 7) is the door core; the
+/// door's `num-rounds` sample is at axis 6 of that core, i.e. axis 30 of the
+/// gate subject. If the value can't be read or isn't 7, Punt (safe: the Hoon
+/// is authoritative either way).
+const TIP5_DOOR_NUM_ROUNDS_AXIS: u64 = 30;
+
+fn require_default_num_rounds(subject: Noun, space: &NounSpace) -> Result<(), JetErr> {
+    let num_rounds = slot(subject, TIP5_DOOR_NUM_ROUNDS_AXIS, space)
+        .map_err(|_| JetErr::Punt)?
+        .in_space(space)
+        .as_atom()
+        .map_err(|_| JetErr::Punt)?
+        .as_u64()
+        .map_err(|_| JetErr::Punt)?;
+    if num_rounds != tip5::NUM_ROUNDS as u64 {
+        return Err(JetErr::Punt);
+    }
+    Ok(())
+}
+
 pub fn hoon_list_to_sponge(
     list: Noun,
     space: &NounSpace,
@@ -45,6 +74,7 @@ pub fn hoon_list_to_sponge(
 
 pub fn permutation_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
+    require_default_num_rounds(subject, &space)?;
     let stack = &mut context.stack;
     let sample = slot(subject, 6, &space)?;
     let mut sponge = hoon_list_to_sponge(sample, &space)?;
@@ -57,6 +87,7 @@ pub fn permutation_jet(context: &mut Context, subject: Noun) -> Result<Noun, Jet
 
 pub fn hash_varlen_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
+    require_default_num_rounds(subject, &space)?;
     let stack = &mut context.stack;
     let input = slot(subject, 6, &space)?;
     let mut input_vec = hoon_list_to_vecbelt(input, &space)?;
@@ -95,7 +126,12 @@ pub fn mont_reduction_jet(context: &mut Context, subject: Noun) -> Result<Noun, 
         if x_atom.size() > 2 {
             // mont_reduction asserts that x < RP, so u128 should be sufficient anyway??!!
             let x_bitslice = x_atom.as_bitslice();
-            assert!(fits_in_u128(x_bitslice));
+            // Atoms wider than u128 are out of mont_reduction's domain (Hoon
+            // asserts x < RP); return a jet error so the runtime falls back to
+            // the Hoon arm instead of panicking.
+            if !fits_in_u128(x_bitslice) {
+                return Err(BAIL_FAIL);
+            }
             bitslice_to_u128(x_bitslice)
         } else if x_atom.size() == 2 {
             let x = x_atom.as_u64_pair()?;
@@ -115,6 +151,7 @@ pub fn mont_reduction_jet(context: &mut Context, subject: Noun) -> Result<Noun, 
 
 pub fn hash_belts_list_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
+    require_default_num_rounds(subject, &space)?;
     let stack = &mut context.stack;
     let input = slot(subject, 6, &space)?;
     tip5::hash::hash_belts_list(stack, input, &space)
@@ -133,6 +170,7 @@ pub fn digest_to_noundigest(stack: &mut NockStack, digest: [u64; 5]) -> Noun {
 //hash-10: hash list of 10 belts into a list of 5 belts
 pub fn hash_10_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
+    require_default_num_rounds(subject, &space)?;
     let stack = &mut context.stack;
     let input = slot(subject, 6, &space)?;
     let mut input_vec = hoon_list_to_vecbelt(input, &space)?;
@@ -144,6 +182,7 @@ pub fn hash_10_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr>
 
 pub fn hash_pairs_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
+    require_default_num_rounds(subject, &space)?;
     let stack = &mut context.stack;
     let lis_noun = slot(subject, 6, &space)?; // (list (list @))
 
@@ -157,7 +196,9 @@ pub fn hash_pairs(
 ) -> Result<Noun, JetErr> {
     let lis = hoon_list_to_vecnoun(lis_noun, space)?;
     let lent_lis = lis.len();
-    assert!(lent_lis > 0);
+    if lent_lis == 0 {
+        return Err(BAIL_FAIL);
+    }
 
     let mut res: Vec<Noun> = Vec::new();
 
@@ -181,6 +222,7 @@ pub fn hash_pairs(
 
 pub fn hash_ten_cell_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
+    require_default_num_rounds(subject, &space)?;
     let stack = &mut context.stack;
     let ten_cell = slot(subject, 6, &space)?; // [noun-digest noun-digest]
     hash_ten_cell(stack, ten_cell, &space)
@@ -243,12 +285,12 @@ fn hash_hashable_leaf(stack: &mut NockStack, p: Noun, space: &NounSpace) -> Resu
     tip5::hash::hash_noun_varlen(stack, p, space)
 }
 fn hash_hashable_list(stack: &mut NockStack, p: Noun, space: &NounSpace) -> Result<Noun, JetErr> {
+    // Propagate any per-element error as a jet error (falling back to Hoon)
+    // instead of panicking.
     let turn: Vec<Noun> = HoonList::try_from(p, space)?
         .into_iter()
-        .map(|x| {
-            hash_hashable(stack, x, space).expect("hash_hashable should succeed for list element")
-        })
-        .collect();
+        .map(|x| hash_hashable(stack, x, space))
+        .collect::<Result<Vec<Noun>, JetErr>>()?;
     let turn_list = vecnoun_to_hoon_list(stack, &turn, space);
     tip5::hash::hash_noun_varlen(stack, turn_list, space)
 }
@@ -383,6 +425,9 @@ mod tests {
     #[test]
     fn test_hash_varlen_jet() {
         let c = &mut init_context();
+        // tip5-door payload carrying the default num-rounds=7 at axis 30 of the
+        // gate subject, so the round-count guard sees the production config.
+        let pay = T(&mut c.stack, &[D(0), D(7), D(0)]);
 
         // [%test-hash-varlen-tv ~]
         let b11048995573592393898 = belt_as_noun(&mut c.stack, Belt(11048995573592393898));
@@ -398,7 +443,7 @@ mod tests {
                 D(0),
             ],
         );
-        assert_jet(c, hash_varlen_jet, sam, res);
+        assert_jet_door(c, hash_varlen_jet, sam, pay, res);
 
         // [%test-hash-varlen-tv [i=2 t=~]]
         let b12061287490523852513 = belt_as_noun(&mut c.stack, Belt(12061287490523852513));
@@ -414,7 +459,7 @@ mod tests {
                 D(0),
             ],
         );
-        assert_jet(c, hash_varlen_jet, sam, res);
+        assert_jet_door(c, hash_varlen_jet, sam, pay, res);
 
         // [%test-hash-varlen-tv [i=5 t=[i=26 t=~]]]
         let b13674194094340317530 = belt_as_noun(&mut c.stack, Belt(13674194094340317530));
@@ -431,9 +476,10 @@ mod tests {
                 D(0),
             ],
         );
-        assert_jet(c, hash_varlen_jet, sam, res);
+        assert_jet_door(c, hash_varlen_jet, sam, pay, res);
 
         let c = &mut init_context();
+        let pay = T(&mut c.stack, &[D(0), D(7), D(0)]);
         // (hash-varlen:tip5.zeke ~[1 2.448 1 0 0 0 0 0 0 0])
         // [ i=12.811.986.333.282.368.874
         //   t=[i=13.601.598.673.786.067.780 t=~[3.807.788.325.936.413.287 5.511.165.615.113.400.862 11.490.077.061.305.916.457]]
@@ -456,6 +502,40 @@ mod tests {
                 D(0),
             ],
         );
-        assert_jet(c, hash_varlen_jet, sam, res);
+        assert_jet_door(c, hash_varlen_jet, sam, pay, res);
+    }
+
+    // The round-count guard reads num-rounds at axis 30 of a tip5-door arm gate.
+    // `[a [sample [b [num-rounds c]]]]` places the sample at axis 6 and
+    // num-rounds at axis 30, matching the real gate layout.
+    #[test]
+    fn round_guard_accepts_default_7() {
+        let c = &mut init_context();
+        let subj = T(&mut c.stack, &[D(0), D(0), D(0), D(7), D(0)]);
+        let space = c.stack.noun_space();
+        assert!(require_default_num_rounds(subj, &space).is_ok());
+    }
+
+    #[test]
+    fn round_guard_punts_on_non_default_5() {
+        let c = &mut init_context();
+        let subj = T(&mut c.stack, &[D(0), D(0), D(0), D(5), D(0)]);
+        let space = c.stack.noun_space();
+        assert!(matches!(
+            require_default_num_rounds(subj, &space),
+            Err(JetErr::Punt)
+        ));
+    }
+
+    #[test]
+    fn round_guard_punts_when_axis_absent() {
+        let c = &mut init_context();
+        // [0 sample 0]: axis 7 is an atom, so axis 30 can't be read -> Punt.
+        let subj = T(&mut c.stack, &[D(0), D(0), D(0)]);
+        let space = c.stack.noun_space();
+        assert!(matches!(
+            require_default_num_rounds(subj, &space),
+            Err(JetErr::Punt)
+        ));
     }
 }

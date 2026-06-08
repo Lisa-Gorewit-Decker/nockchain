@@ -1116,10 +1116,7 @@ async fn build_scripted_traffic_cop_with_dropped_peek_reply(
     }
 }
 
-fn build_live_traffic_cop(
-    checkpoint_app: CheckpointApp,
-    poke_timeout: Duration,
-) -> LiveTrafficCopHarness {
+fn build_live_traffic_cop(checkpoint_app: CheckpointApp) -> LiveTrafficCopHarness {
     let CheckpointApp { _home, mut app } = checkpoint_app;
     let handle = app.get_handle();
     let (traffic_handle, effect_handle) = handle.dup();
@@ -1130,7 +1127,6 @@ fn build_live_traffic_cop(
     let traffic = traffic_cop::TrafficCop::new_with_peek_timeout(
         traffic_handle,
         &mut join_set,
-        poke_timeout,
         Duration::from_secs(30),
     );
     LiveTrafficCopHarness {
@@ -1142,7 +1138,7 @@ fn build_live_traffic_cop(
     }
 }
 
-async fn build_live_traffic_cop_with_test_kernel(poke_timeout: Duration) -> LiveTrafficCopHarness {
+async fn build_live_traffic_cop_with_test_kernel() -> LiveTrafficCopHarness {
     let (_home, mut app) = setup_nockapp("test-ker.jam").await;
     let handle = app.get_handle();
     let (traffic_handle, effect_handle) = handle.dup();
@@ -1153,7 +1149,6 @@ async fn build_live_traffic_cop_with_test_kernel(poke_timeout: Duration) -> Live
     let traffic = traffic_cop::TrafficCop::new_with_peek_timeout(
         traffic_handle,
         &mut join_set,
-        poke_timeout,
         Duration::from_secs(30),
     );
     LiveTrafficCopHarness {
@@ -1482,20 +1477,20 @@ where
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn req_res_driver_gen2_like_high_priority_timeout_storm_does_not_starve_followup_peek_or_timer(
-) {
+async fn req_res_driver_gen2_like_high_priority_backlog_does_not_starve_followup_peek_or_timer() {
     use nockapp::drivers::timer::TimerWire;
     use nockapp::wire::{SystemWire, Wire};
 
     let transcript = DriverTranscript::default();
     transcript.record(
-        "scenario", "gen2-like multi-peer timeout storm should not starve follow-up peek or timer",
+        "scenario",
+        "gen2-like multi-peer high-priority backlog should not starve follow-up peek or timer",
     );
 
     // Pre-nous already had TrafficCop. The regression shape here is the
     // nous-era workload, many peers feeding high-priority timeout pokes
     // into one serialized dispatcher, not TrafficCop existing at all.
-    let live_traffic = build_live_traffic_cop_with_test_kernel(Duration::from_nanos(1)).await;
+    let live_traffic = build_live_traffic_cop_with_test_kernel().await;
     let burst = 16_384usize;
     let probe_deadline = Duration::from_secs(5);
 
@@ -1561,7 +1556,7 @@ async fn req_res_driver_gen2_like_high_priority_timeout_storm_does_not_starve_fo
     let followup_peek = followup_peek.expect("peek timeout already checked");
     let followup_timer = followup_timer.expect("timer timeout already checked");
 
-    followup_peek.expect("follow-up peek should complete while timeout storm is active");
+    followup_peek.expect("follow-up peek should complete while high-priority backlog is active");
     let (timer_result, timing_result) = followup_timer;
     timing_result.expect("follow-up timer should still report elapsed timing");
     assert!(
@@ -1569,22 +1564,24 @@ async fn req_res_driver_gen2_like_high_priority_timeout_storm_does_not_starve_fo
             timer_result,
             Ok(nockapp::driver::PokeResult::Ack) | Ok(nockapp::driver::PokeResult::Nack)
         ),
-        "follow-up timer poke should complete while timeout storm is active: {timer_result:?}",
+        "follow-up timer poke should complete while high-priority backlog is active: {timer_result:?}",
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn req_res_driver_route_response_fact_timeout_storm_does_not_starve_followup_peek_or_timer() {
+async fn req_res_driver_route_response_fact_high_priority_backlog_does_not_starve_followup_peek_or_timer(
+) {
     use nockapp::drivers::timer::TimerWire;
     use nockapp::wire::Wire;
     use nockvm::noun::Atom;
 
     let transcript = DriverTranscript::default();
     transcript.record(
-        "scenario", "route_response_fact timeout storm should not starve follow-up peek or timer",
+        "scenario",
+        "route_response_fact high-priority backlog should not starve follow-up peek or timer",
     );
 
-    let live_traffic = build_live_traffic_cop(start_nockchain_app().await, Duration::from_nanos(1));
+    let live_traffic = build_live_traffic_cop(start_nockchain_app().await);
     let metrics = isolated_test_metrics();
     let driver_state = Arc::new(Mutex::new(P2PState::new(
         metrics.clone(),
@@ -1654,19 +1651,19 @@ async fn req_res_driver_route_response_fact_timeout_storm_does_not_starve_follow
 
     assert!(
         followup_peek.is_ok(),
-        "follow-up peek timed out behind route_response_fact timeout storm; timer_completed={}",
+        "follow-up peek timed out behind route_response_fact high-priority backlog; timer_completed={}",
         followup_timer.is_ok(),
     );
     assert!(
         followup_timer.is_ok(),
-        "follow-up timer poke timed out behind route_response_fact timeout storm; peek_completed={}",
+        "follow-up timer poke timed out behind route_response_fact high-priority backlog; peek_completed={}",
         followup_peek.is_ok(),
     );
 
     let followup_peek = followup_peek.expect("peek timeout already checked");
     let followup_timer = followup_timer.expect("timer timeout already checked");
 
-    followup_peek.expect("follow-up peek should complete while timeout storm is active");
+    followup_peek.expect("follow-up peek should complete while high-priority backlog is active");
     let (timer_result, timing_result) = followup_timer;
     timing_result.expect("follow-up timer should still report elapsed timing");
     assert!(
@@ -1674,7 +1671,7 @@ async fn req_res_driver_route_response_fact_timeout_storm_does_not_starve_follow
             timer_result,
             Ok(nockapp::driver::PokeResult::Ack) | Ok(nockapp::driver::PokeResult::Nack)
         ),
-        "follow-up timer poke should complete while timeout storm is active: {timer_result:?}",
+        "follow-up timer poke should complete while high-priority backlog is active: {timer_result:?}",
     );
 }
 
@@ -3918,7 +3915,7 @@ async fn heard_elders_re_emits_same_recovery_window_until_progress() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn route_response_fact_repeated_heard_elders_re_emits_recovery_window_until_progress() {
-    let live_traffic = build_live_traffic_cop(start_nockchain_app().await, Duration::from_secs(1));
+    let live_traffic = build_live_traffic_cop(start_nockchain_app().await);
     drain_effects(&live_traffic.effect_handle).await;
     seed_fakenet_pre_genesis(&live_traffic.effect_handle).await;
     send_born(&live_traffic.effect_handle).await;
@@ -5335,7 +5332,7 @@ async fn run_tx_live_response_sample(
                 "live tx replay sample {label} unique_count={unique_count} wave_count={wave_count} payload_len={payload_len}"
             ),
         );
-    let live_traffic = build_live_traffic_cop(start_nockchain_app().await, Duration::from_secs(1));
+    let live_traffic = build_live_traffic_cop(start_nockchain_app().await);
     drain_effects(&live_traffic.effect_handle).await;
 
     let metrics = isolated_test_metrics();
@@ -6500,7 +6497,7 @@ async fn run_checkpoint_prefetch_cost_sample(
     );
 
     let checkpoint_app = start_checkpoint_app(chkjam_path).await;
-    let live_traffic = build_live_traffic_cop(checkpoint_app, Duration::from_secs(timeout_seconds));
+    let live_traffic = build_live_traffic_cop(checkpoint_app);
     let (swarm_tx, mut swarm_rx) = tokio::sync::mpsc::channel(4);
     let mut equix_builder = equix::EquiXBuilder::new();
 
@@ -6658,7 +6655,7 @@ async fn run_checkpoint_requester_cost_sample(
         ),
     );
     let checkpoint_app = start_checkpoint_app(chkjam_path).await;
-    let live_traffic = build_live_traffic_cop(checkpoint_app, Duration::from_secs(timeout_seconds));
+    let live_traffic = build_live_traffic_cop(checkpoint_app);
     let (swarm_tx, mut swarm_rx) = tokio::sync::mpsc::channel(4);
     let mut equix_builder = equix::EquiXBuilder::new();
 
@@ -13287,7 +13284,7 @@ async fn req_res_gen2_checkpoint_range_scry_latency_report() {
             return;
         }
     };
-    let live_traffic = build_live_traffic_cop(checkpoint_app, Duration::from_secs(60));
+    let live_traffic = build_live_traffic_cop(checkpoint_app);
     let peer = PeerId::random();
 
     println!("req-res gen2 checkpoint range scry latency report");

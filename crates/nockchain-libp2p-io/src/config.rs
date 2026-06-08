@@ -130,8 +130,6 @@ const IDENTIFY_PROTOCOL_VERSION: &str = "/nockchain-1-identify";
 
 const PEER_STORE_RECORD_CAPACITY: usize = 1024;
 
-// Default timeout for network-originating pokes
-const POKE_TIMEOUT_SECS: u64 = 180;
 const LOW_PRIORITY_PEEK_TIMEOUT_SECS: u64 = 180;
 
 // Default max failed pings before closing connection
@@ -388,10 +386,6 @@ pub struct LibP2PConfig {
     #[serde(default = "default_seen_tx_clear_interval")]
     pub seen_tx_clear_interval: u64,
 
-    /// Timeout for pokes
-    #[serde(default = "default_poke_timeout_secs")]
-    pub poke_timeout_secs: u64,
-
     /// Timeout for low-priority peeks.
     #[serde(default = "default_low_priority_peek_timeout_secs")]
     pub low_priority_peek_timeout_secs: u64,
@@ -616,10 +610,6 @@ fn default_seen_tx_clear_interval() -> u64 {
     SEEN_TX_CLEAR_INTERVAL // By default, clear seen_tx cache after every new block on heaviest chain
 }
 
-fn default_poke_timeout_secs() -> u64 {
-    POKE_TIMEOUT_SECS // Timeout for pokes
-}
-
 fn default_low_priority_peek_timeout_secs() -> u64 {
     LOW_PRIORITY_PEEK_TIMEOUT_SECS
 }
@@ -726,7 +716,6 @@ impl Default for LibP2PConfig {
             peer_status_interval_secs: default_peer_status_interval_secs(),
             elders_debounce_reset_secs: default_elders_debounce_reset_secs(),
             seen_tx_clear_interval: default_seen_tx_clear_interval(),
-            poke_timeout_secs: default_poke_timeout_secs(),
             low_priority_peek_timeout_secs: default_low_priority_peek_timeout_secs(),
             failed_pings_before_close: default_failed_pings_before_close(),
             ip_hygiene_enabled: default_ip_hygiene_enabled(),
@@ -1003,14 +992,6 @@ impl LibP2PConfig {
 
     pub fn min_peers(&self) -> usize {
         self.min_peers
-    }
-
-    pub fn poke_timeout_secs(&self) -> u64 {
-        self.poke_timeout_secs
-    }
-
-    pub fn poke_timeout(&self) -> Duration {
-        Duration::from_secs(self.poke_timeout_secs)
     }
 
     pub fn low_priority_peek_timeout(&self) -> Duration {

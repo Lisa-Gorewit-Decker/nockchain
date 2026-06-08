@@ -2,7 +2,7 @@ use nockapp::noun::slab::{NockJammer, NounSlab};
 use nockchain_math::belt::Belt;
 use nockchain_math::noun_ext::NounMathExtHandle;
 use nockchain_math::owned_based_noun::{owned_based_noun_decode_error, OwnedBasedNoun};
-use nockchain_math::structs::{HoonList, HoonMapIter};
+use nockchain_math::structs::{collect_zmap_entries_strict, HoonList};
 use nockchain_math::zoon::common::DefaultTipHasher;
 use nockchain_math::zoon::zmap::{self, ZMap};
 use nockchain_math::zoon::zset::ZSet;
@@ -395,8 +395,9 @@ impl NounDecode for Witness {
             .map_err(|_| NounDecodeError::Custom("witness hax tail not a cell".into()))?;
 
         let hax_map = cell.head();
-        let hax_entries = HoonMapIter::new(&hax_map)
-            .filter(|entry| entry.is_cell())
+        let hax_entries = collect_zmap_entries_strict(&hax_map)
+            .map_err(|_| NounDecodeError::Custom("malformed witness hax z-map node".into()))?
+            .into_iter()
             .map(|entry| {
                 let [hash_raw, value_noun] = entry.uncell().map_err(|_| {
                     NounDecodeError::Custom("witness hax entry must be a pair".into())

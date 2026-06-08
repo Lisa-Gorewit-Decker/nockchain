@@ -123,6 +123,23 @@ fn spend1_signature_verifier_rejects_pubkey_hash_mismatch_v1() -> TestResult<()>
 }
 
 #[test]
+fn spend1_signature_verifier_rejects_non_canonical_limb_v1() -> TestResult<()> {
+    let (spend1, mut entry) = first_fixture_witness_signature()?;
+    // A limb of exactly 2^32 is a valid Goldilocks element but not a canonical
+    // 32-bit digit, so it must be rejected before any curve arithmetic.
+    entry.signature.chal[0] = nockchain_math::belt::Belt(1u64 << 32);
+
+    let err = spend1
+        .verify_pkh_signature(&entry)
+        .expect_err("non-canonical limb should fail");
+    assert!(matches!(
+        err,
+        v1::Spend1SignatureVerificationError::NonCanonicalSignature
+    ));
+    Ok(())
+}
+
+#[test]
 fn spend1_signature_verifier_rejects_mutated_signature_v1() -> TestResult<()> {
     let (spend1, mut entry) = first_fixture_witness_signature()?;
     entry.signature.chal[0] =

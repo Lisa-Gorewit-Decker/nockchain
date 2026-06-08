@@ -3,7 +3,9 @@ use std::cell::RefCell;
 use nockapp::noun::slab::{NockJammer, NounSlab};
 use nockapp::utils::make_tas;
 use nockchain_math::belt::Belt;
-use nockchain_math::crypto::cheetah::{ch_add, ch_neg, ch_scal_big, trunc_g_order, A_GEN, F6_ZERO};
+use nockchain_math::crypto::cheetah::{
+    belt_schnorr_t8_to_ubig, ch_add, ch_neg, ch_scal_big, trunc_g_order, A_GEN, F6_ZERO, G_ORDER,
+};
 use nockchain_math::tip5::hash::hash_varlen;
 use nockchain_math::zoon::zmap::ZMap;
 use nockchain_math::zoon::zset::ZSet;
@@ -192,6 +194,18 @@ impl SchnorrSignature {
     fn sig_ubig(&self) -> ibig::UBig {
         belt_schnorr_t8_to_ubig(&self.sig)
     }
+
+    /// Every 32-bit limb of both `chal` and `sig` must be a canonical digit
+    /// (`< 2^32`), mirroring `based:belt-schnorr` in Hoon. The scalar is
+    /// reconstructed from these limbs as base-2^32 digits, so requiring
+    /// canonical limbs makes the encoding unique.
+    pub fn is_canonical(&self) -> bool {
+        const LIMB_BOUND: u64 = 1 << 32;
+        self.chal
+            .iter()
+            .chain(self.sig.iter())
+            .all(|limb| limb.0 < LIMB_BOUND)
+    }
 }
 
 impl Spend1 {
@@ -208,9 +222,20 @@ impl Spend1 {
             });
         }
 
+        // reject non-canonical limb encodings
+        if !entry.signature.is_canonical() {
+            return Err(Spend1SignatureVerificationError::NonCanonicalSignature);
+        }
+
         let sig_hash = self.sig_hash_digest()?;
         let chal = entry.signature.chal_ubig();
         let sig = entry.signature.sig_ubig();
+        // match the Hoon `+verify:affine:schnorr` scalar-range guards
+        // (`0 < scalar < g-order`) before any curve arithmetic.
+        let zero = ibig::UBig::from(0u8);
+        if chal == zero || sig == zero || chal >= *G_ORDER || sig >= *G_ORDER {
+            return Err(Spend1SignatureVerificationError::InvalidSignature);
+        }
         let left = ch_scal_big(&sig, &A_GEN)
             .map_err(|_| Spend1SignatureVerificationError::SignatureArithmetic)?;
         let right = ch_neg(
@@ -251,6 +276,8 @@ pub enum Spend1SignatureVerificationError {
     SignatureArithmetic,
     #[error("invalid spend-1 Schnorr signature")]
     InvalidSignature,
+    #[error("non-canonical spend-1 Schnorr signature (limb >= 2^32)")]
+    NonCanonicalSignature,
 }
 
 #[derive(Debug, Clone)]
@@ -265,15 +292,4 @@ impl NounEncode for NoteDataKey {
 fn hashable_leaf_value<T: NounEncode, A: NounAllocator>(allocator: &mut A, value: &T) -> Noun {
     let noun = value.to_noun(allocator);
     hashable_leaf_noun(allocator, noun)
-}
-
-fn belt_schnorr_t8_to_ubig<const N: usize>(belts: &[Belt; N]) -> ibig::UBig {
-    let radix = ibig::UBig::from(1u64 << 32);
-    let mut result = ibig::UBig::from(0u8);
-    let mut power = ibig::UBig::from(1u8);
-    for belt in belts {
-        result += ibig::UBig::from(belt.0) * &power;
-        power *= &radix;
-    }
-    result
 }

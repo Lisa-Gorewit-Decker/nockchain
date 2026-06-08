@@ -423,6 +423,10 @@
       (based:^hash p.u.output-source.form)
     ?&  based-output-source
         (based:^hash lock-root.form)
+        ::  note-data values are hashed into the seed (and thus the tx id), so
+        ::  every value must be a valid field leaf or the id hash would assert.
+        ::  Reject deterministically here rather than crash during hashing.
+        (based:note-data note-data.form)
         (^based gift.form)
         (based:^hash parent-hash.form)
     ==
@@ -1320,12 +1324,22 @@
   ++  based
     |=  =form
     ^-  ?
+    |^
     ?&  (based:lock-merkle-proof lmp.form)
         (based:pkh-signature pkh.form)
+        ::  hax preimage *values* are hashed into the witness (and thus the tx
+        ::  id), so every value's leaves must be valid field atoms or the id
+        ::  hash would assert. Validate values, not only keys, so a malformed
+        ::  preimage is rejected deterministically instead of crashing hashing.
         %-  ~(rep z-by hax.form)
         |=  [[k=^hash v=*] a=?]
-        &(a (based:^hash k))
+        ?&(a (based:^hash k) (based-noun v))
     ==
+    ++  based-noun
+      |=  n=*
+      ?^  n  ?&($(n -.n) $(n +.n))
+      (^based n)
+    --
   ::
   ++  hashable
     |=  =form

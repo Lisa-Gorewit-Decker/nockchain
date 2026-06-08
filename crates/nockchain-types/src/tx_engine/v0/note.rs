@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use anyhow::Result;
 use nockapp::Noun;
 use nockchain_math::noun_ext::NounMathExtHandle;
-use nockchain_math::structs::HoonMapIter;
+use nockchain_math::structs::collect_zmap_entries_strict;
 use nockchain_math::zoon::zmap::ZMap;
 use nockchain_math::zoon::zset::ZSet;
 use nockvm::noun::{NounAllocator, NounSpace, SIG};
@@ -62,9 +62,11 @@ impl NounDecode for Lock {
         let cell = noun.in_space(space).as_cell()?;
         let keys_required = cell.head().as_atom()?.as_u64()?;
 
-        // It is called HoonMapIter, but it can be used for sets as well
+        // The treap structure is shared with z-sets; collect strictly so a
+        // malformed pubkey-set node fails to decode rather than being skipped.
         let tail = cell.tail();
-        let pubkeys_iter = HoonMapIter::new(&tail);
+        let pubkeys_iter = collect_zmap_entries_strict(&tail)
+            .map_err(|_| NounDecodeError::Custom("malformed lock pubkey-set node".into()))?;
 
         let mut pubkeys = Vec::new();
         for pubkey in pubkeys_iter {
@@ -130,8 +132,9 @@ impl NounEncode for Balance {
 impl NounDecode for Balance {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let noun_handle = noun.in_space(space);
-        let notes = HoonMapIter::new(&noun_handle)
-            .filter(|kv| kv.is_cell())
+        let notes = collect_zmap_entries_strict(&noun_handle)
+            .map_err(|_| NounDecodeError::Custom("malformed balance z-map node".into()))?
+            .into_iter()
             .map(|kv| {
                 let [k, v] = kv.uncell()?;
                 let name = Name::from_noun_handle(&k)?;
