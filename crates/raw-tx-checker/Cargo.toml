@@ -13,3 +13,6 @@ nockvm = { workspace = true }
 noun-serde = { workspace = true }
 tracing = { workspace = true }
 zkvm-jetpack = { workspace = true }
+
+[lints]
+workspace = true

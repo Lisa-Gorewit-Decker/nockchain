@@ -37,3 +37,6 @@ tonic = { workspace = true }
 [[bench]]
 name = "peek_refresh"
 harness = false
+
+[lints]
+workspace = true

@@ -59,8 +59,8 @@ criterion = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 
-[lints.clippy]
-missing_safety_doc = "allow"
+[lints]
+workspace = true
 
 [[bench]]
 name = "hoonc_hotspots"

@@ -8,3 +8,6 @@ license = "MIT OR Apache-2.0"
 serde = { workspace = true, features = ["derive"] }
 serde_yaml.workspace = true
 thiserror.workspace = true
+
+[lints]
+workspace = true

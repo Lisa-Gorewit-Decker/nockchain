@@ -17,3 +17,6 @@ murmur3-sys = { path = "./murmur3-sys", optional = true }
 
 [dev-dependencies]
 quickcheck = "1.0.3"
+
+[lints]
+workspace = true

@@ -54,9 +54,14 @@ features = ["html_reports"]
 workspace = true
 
 [lints.clippy]
+unwrap_used = "deny"
 missing_safety_doc = "allow"
 
 [lints.rust]
+# Mirror the workspace `warnings = "deny"` (priority -1 so the explicit
+# unexpected_cfgs warn level below still wins). ibig keeps its own [lints]
+# tables rather than `workspace = true` because of this crate-specific cfg.
+warnings = { level = "deny", priority = -1 }
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(force_bits, values("16","32","64"))',
 ] }

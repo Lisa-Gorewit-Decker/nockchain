@@ -24,3 +24,6 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 quickcheck = { workspace = true }
+
+[lints]
+workspace = true

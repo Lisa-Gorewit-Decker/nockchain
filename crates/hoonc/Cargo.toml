@@ -36,3 +36,6 @@ tracing-tracy = { workspace = true, optional = true, features = [
     "ondemand",
 ] }
 walkdir = "2.5.0"
+
+[lints]
+workspace = true

@@ -24,3 +24,6 @@ tracing.workspace = true
 
 [dev-dependencies]
 quickcheck.workspace = true
+
+[lints]
+workspace = true

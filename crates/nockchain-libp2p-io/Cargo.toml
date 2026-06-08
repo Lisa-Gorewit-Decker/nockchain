@@ -59,3 +59,6 @@ tempfile = { workspace = true }
 tonic = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zkvm-jetpack = { workspace = true }
+
+[lints]
+workspace = true

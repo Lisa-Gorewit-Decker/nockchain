@@ -16,3 +16,6 @@ rustls.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 zkvm-jetpack.workspace = true
+
+[lints]
+workspace = true

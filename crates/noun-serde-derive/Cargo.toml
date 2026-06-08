@@ -19,3 +19,6 @@ tracing.workspace = true
 nockapp.workspace = true
 nockvm_macros.workspace = true
 noun-serde.workspace = true
+
+[lints]
+workspace = true

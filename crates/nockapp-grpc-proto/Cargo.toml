@@ -27,3 +27,6 @@ glob = { workspace = true }
 prost-build = { workspace = true }
 tonic-build = { workspace = true }
 tonic-prost-build = { workspace = true }
+
+[lints]
+workspace = true
