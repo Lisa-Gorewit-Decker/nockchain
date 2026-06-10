@@ -154,6 +154,12 @@ pub struct AuthorizedRetryPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizedTransactionExport {
+    pub submitted_raw_tx_id: String,
+    pub transaction_jam: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SequencerJournalRecoveryReport {
     pub journal_id: String,
     pub start_sequence: u64,
@@ -1257,6 +1263,16 @@ impl WithdrawalSequencerStore {
     ) -> Result<Option<AuthorizedRetryPayload>, BridgeError> {
         let id = id.clone();
         self.with_conn(move |conn| load_authorized_transaction_for_retry(conn, &id))
+            .await
+    }
+
+    /// Loads the stored authorized transaction envelope for operator export.
+    pub async fn load_authorized_transaction_export_by_tx_id(
+        &self,
+        tx_id: &str,
+    ) -> Result<Option<AuthorizedTransactionExport>, BridgeError> {
+        let tx_id = tx_id.to_string();
+        self.with_conn(move |conn| load_authorized_transaction_export_by_tx_id(conn, &tx_id))
             .await
     }
 
@@ -6369,6 +6385,41 @@ fn load_authorized_transaction_for_retry(
     }))
 }
 
+fn load_authorized_transaction_export_by_tx_id(
+    conn: &mut SqliteConnection,
+    tx_id: &str,
+) -> Result<Option<AuthorizedTransactionExport>, BridgeError> {
+    use crate::withdrawal::sequencer::schema::sequencer_withdrawals::dsl as sequenced;
+
+    let row = sequencer_withdrawals::table
+        .filter(sequenced::authorized_transaction_name.eq(Some(tx_id.to_string())))
+        .first::<SequencerWithdrawalStoredRow>(conn)
+        .optional()
+        .map_err(|err| {
+            BridgeError::Runtime(format!("authorized transaction export query failed: {err}"))
+        })?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let row = try_into_sequenced_withdrawal_view(row)?;
+    let submitted_raw_tx_id = row.authorized_transaction_name.ok_or_else(|| {
+        BridgeError::Runtime(format!(
+            "withdrawal {:?} epoch {} is missing authorized transaction id for export",
+            row.id, row.current_epoch
+        ))
+    })?;
+    let transaction_jam = row.authorized_transaction_jam.ok_or_else(|| {
+        BridgeError::Runtime(format!(
+            "withdrawal {:?} epoch {} authorized transaction {} is missing transaction jam for export",
+            row.id, row.current_epoch, submitted_raw_tx_id
+        ))
+    })?;
+    Ok(Some(AuthorizedTransactionExport {
+        submitted_raw_tx_id,
+        transaction_jam,
+    }))
+}
+
 /// Loads the append-only submission history in event-id order.
 fn load_events(
     conn: &mut SqliteConnection,
@@ -9471,6 +9522,24 @@ mod tests {
             Some(expected.transaction_jam)
         );
         assert_eq!(stored.authorized_raw_tx, Some(expected.raw_tx_bytes));
+    }
+
+    #[tokio::test]
+    async fn load_authorized_transaction_export_by_tx_id_returns_transaction_jam() {
+        let (_dir, service) = open_service().await;
+        let proposal = sample_proposal(88_002, 0);
+
+        authorize_with_handoffs(&service, &proposal).await;
+
+        let expected =
+            stored_authorized_transaction(&proposal.transaction).expect("stored authorized tx");
+        let export = service
+            .load_authorized_transaction_export_by_tx_id(&expected.submitted_raw_tx_id)
+            .await
+            .expect("load transaction export")
+            .expect("transaction export exists");
+        assert_eq!(export.submitted_raw_tx_id, expected.submitted_raw_tx_id);
+        assert_eq!(export.transaction_jam, expected.transaction_jam);
     }
 
     #[tokio::test]

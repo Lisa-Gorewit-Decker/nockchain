@@ -77,6 +77,11 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 (If you build manually with `cargo build`, be sure to use `--release` for `hoonc`.)
 
+
+## Roswell proof and test harness
+
+Roswell is a NockApp kernel for public Nockchain proof conformance and Hoon test execution. Build the public jam with `make assets/roswell.jam`, then run `cargo run --release --bin roswell -- --new --ephemeral run-suite` for the public suite, `cargo run --release --bin roswell -- --new --ephemeral prove-puzzle 2 1 --filename proof-v2-len1` to generate a complete proof jam, `cargo run --release --bin roswell -- --new --ephemeral make-proof-snapshot 2 1 --filename proof-v2-len1-snapshot` to generate a proof-state snapshot for conformance/debugging, `cargo run --release --bin roswell -- --new --ephemeral make-proof-stream-window 2 1 0 --filename proof-v2-len1-stream` to generate a proof stream window, `cargo run --release --bin roswell -- --new --ephemeral assemble-proof-stream --window proof-v2-len1-stream.jam --filename proof-v2-len1-from-stream` to assemble a proof from stream windows, `cargo run --release --bin roswell -- --new --ephemeral assemble-proof-continuation --snapshot proof-snapshot.jam --window continuation-window.jam --filename proof-from-continuation` to assemble a proof from a snapshot and continuation windows, and `cargo run --release --bin roswell -- --new --ephemeral check-proof --proof proof-v2-len1.jam` to verify a proof.
+
 ## Install Wallet
 
 After you've run the setup and build commands, install the wallet:

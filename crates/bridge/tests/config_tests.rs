@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 use std::str::FromStr;
 
 use alloy::primitives::Address;
@@ -1213,6 +1214,8 @@ nockchain_start_height = 25
     let config =
         SequencerConfigToml::from_file(&config_path).expect("Failed to parse sequencer config");
     assert_eq!(config.nockchain_confirmation_depth, 100);
+    assert!(!config.manual_submit_approval);
+    assert_eq!(config.manual_submit_approval_dir, None);
     assert_eq!(
         config
             .nock_contract_address()
@@ -1267,12 +1270,48 @@ nockchain_start_height = 25
         "withdrawal-sequencer"
     );
     assert_eq!(config.sequencer_journal.object_store.journal_id, "default");
+    assert!(!config.manual_submit_approval);
+    assert_eq!(config.manual_submit_approval_dir, None);
     assert_eq!(
         config
             .validated_nodes()
             .expect("sequencer nodes should validate")
             .len(),
         5
+    );
+}
+
+#[test]
+fn sequencer_config_parses_manual_submit_approval_fields() {
+    let temp_dir = TempDir::new().expect("Failed to create temporary directory");
+    let config_path = temp_dir.path().join("sequencer-conf.toml");
+    let pkhs = sample_pkhs_b58();
+
+    let config_content = format!(
+        r#"
+nock_contract_address = "0x0000000000000000000000000000000000000001"
+nockchain_confirmation_depth = 100
+manual_submit_approval = true
+manual_submit_approval_dir = "/var/lib/nockchain-bridge-sequencer/withdrawal-approvals"
+
+[sequencer_journal]
+enabled = false
+
+{nodes}
+"#,
+        nodes = sequencer_nodes_toml(&pkhs)
+    );
+
+    fs::write(&config_path, config_content).expect("Failed to write test config file");
+
+    let config =
+        SequencerConfigToml::from_file(&config_path).expect("Failed to parse sequencer config");
+    assert!(config.manual_submit_approval);
+    assert_eq!(
+        config.manual_submit_approval_dir.as_deref(),
+        Some(Path::new(
+            "/var/lib/nockchain-bridge-sequencer/withdrawal-approvals"
+        ))
     );
 }
 

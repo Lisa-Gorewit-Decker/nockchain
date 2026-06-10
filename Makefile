@@ -222,7 +222,7 @@ build-trivial: ensure-dirs
 	echo '%trivial' > hoon/trivial.hoon
 	$(HOONC) $(HOONC_FLAGS) --arbitrary hoon/trivial.hoon
 
-HOON_TARGETS=assets/dumb.jam assets/wal.jam assets/miner.jam assets/peek.jam assets/bridge.jam
+HOON_TARGETS=assets/dumb.jam assets/wal.jam assets/miner.jam assets/peek.jam assets/bridge.jam assets/roswell.jam
 
 .PHONY: nuke-hoonc-data
 nuke-hoonc-data:
@@ -296,4 +296,11 @@ assets/bridge.jam: ensure-dirs hoon/apps/bridge/bridge.hoon $(HOON_SRCS)
 	$(call show_env_vars)
 	rm -f assets/bridge.jam
 	$(HOONC) $(HOONC_FLAGS) $(call hoonc_data_flag,bridge) --output $(@F) hoon/apps/bridge/bridge.hoon hoon
+	mv $(@F) $@
+
+## Build roswell.jam
+assets/roswell.jam: ensure-dirs hoon/apps/roswell/roswell.hoon $(HOON_SRCS)
+	$(call show_env_vars)
+	rm -f assets/roswell.jam
+	$(HOONC) $(HOONC_FLAGS) $(call hoonc_data_flag,roswell) --output $(@F) hoon/apps/roswell/roswell.hoon hoon
 	mv $(@F) $@

@@ -779,6 +779,19 @@ impl BridgeRuntimeHandle {
         self.poke_blocking_timeout(wire, slab, BASE_BLOCK_COMMIT_ACK_TIMEOUT)
             .await
     }
+
+    pub async fn send_repair_pending_base_block_commit(
+        &self,
+        ack: BaseBlockCommitAck,
+    ) -> Result<(), BridgeError> {
+        let cause = BridgeCause::repair_pending_base_block_commit(ack);
+        let mut slab: NounSlab<NockJammer> = NounSlab::new();
+        let noun = cause.to_noun(&mut slab);
+        slab.set_root(noun);
+        let wire = OnePunchWire::Poke.to_wire();
+        self.poke_blocking_timeout(wire, slab, BASE_BLOCK_COMMIT_ACK_TIMEOUT)
+            .await
+    }
 }
 
 #[async_trait]

@@ -35,6 +35,10 @@
     [~ state]
   ?^  stop=(validate-base-blocks-sequence blocks)
     [[%0 %stop u.stop stop-info]~ old-state]
+  ?^  hold=(base-find-deposit-settlement-hold blocks)
+    ?:  !=(~ nock-hold.hash-state.old-state)
+      [[%0 %stop 'incoming base blocks would create both base and nock hold' stop-info]~ old-state]
+    [~ old-state(base-hold.hash-state `u.hold)]
   =/  withdrawals=(list nock-withdrawal-request:effect)
     (base-propose-withdrawals blocks)
   =/  pending=pending-base-block-withdrawals
@@ -55,6 +59,8 @@
       [[%0 %stop msg.process-fail stop-info]~ old-state]
     ::
         %hold
+      ?:  !=(~ nock-hold.hash-state.old-state)
+        [[%0 %stop 'incoming base blocks would create both base and nock hold' stop-info]~ old-state]
       [~ old-state(base-hold.hash-state `hold.process-fail)]
     ==
    ::
@@ -102,6 +108,33 @@
       nock-hold.hash-state.state
     [~ state]
   ==
+::
+++  repair-pending-base-block-commit
+  |=  ack=base-block-commit-ack
+  ^-  [(list effect) bridge-state]
+  =/  old-state  state
+  =/  stop-info  (get-stop-info old-state)
+  =/  maybe-pending=(unit pending-base-block-commit-data)
+    pending-base-block-commit.hash-state.state
+  ?~  maybe-pending
+    [~ old-state]
+  =/  pending=pending-base-block-commit-data  u.maybe-pending
+  =/  metadata=pending-base-block-withdrawals  metadata.pending
+  ?.  =(blocks-hash.ack blocks-hash.metadata)
+    [[%0 %stop 'base block pending repair ack hash mismatch' stop-info]~ old-state]
+  ?.  =(first-height.ack first-height.metadata)
+    [[%0 %stop 'base block pending repair ack first height mismatch' stop-info]~ old-state]
+  ?.  =(last-height.ack last-height.metadata)
+    [[%0 %stop 'base block pending repair ack last height mismatch' stop-info]~ old-state]
+  ?^  hold=(base-find-deposit-settlement-hold blocks.pending)
+    ?:  !=(~ nock-hold.hash-state.old-state)
+      [[%0 %stop 'pending base block repair would create both base and nock hold' stop-info]~ old-state]
+    =/  repaired=bridge-state  old-state
+    =.  pending-base-block-commit.hash-state.repaired  ~
+    [~ repaired(base-hold.hash-state `u.hold)]
+  =/  repaired=bridge-state  old-state
+  =.  pending-base-block-commit.hash-state.repaired  ~
+  [~ repaired]
 ::
 ++  validate-base-blocks-sequence
   |=  blocks=base-blocks
@@ -219,35 +252,40 @@
   state
 ::
 ::  +base-process-deposit-settlements: confirm the deposits in the latest base block batch
+++  base-find-deposit-settlement-hold
+  |=  latest-blocks=base-blocks
+  ^-  (unit [=hash:t height=@])
+  =+  settlements=~(tap z-by deposit-settlements.latest-blocks)
+  =/  hold=(unit [=hash:t height=@])  ~
+  |-
+  ?~  settlements  hold
+  =/  [event-id=beid settlement=deposit-settlement]
+    i.settlements
+  =/  [as-of=nock-hash height=@]  [as-of nock-height]:settlement
+  ?:  (~(has z-by nock-hashchain.hash-state.state) as-of)
+    $(settlements t.settlements)
+  %=    $
+      settlements
+    t.settlements
+  ::
+      hold
+    ?~  hold  `[as-of height]
+    ?:  (lte height height.u.hold)  hold
+    `[as-of height]
+  ==
+::
 ++  base-process-deposit-settlements
   |=  latest-blocks=base-blocks
   ^-  process-result
+  ?^  hold=(base-find-deposit-settlement-hold latest-blocks)
+    [%| [%hold u.hold]]
   =+  settlements=~(tap z-by deposit-settlements.latest-blocks)
-  =/  hold  base-hold.hash-state.state
   |-
   ?~  settlements
-    ?~  hold  [%& state]
-    [%| [%hold u.hold]]
+    [%& state]
   =/  [event-id=beid settlement=deposit-settlement]
     i.settlements
   =/  [name=nname:t as-of=nock-hash height=@]  [counterpart as-of nock-height]:settlement
-  ?.  (~(has z-by nock-hashchain.hash-state.state) as-of)
-   ::  this means that we still have not processed the nockchain deposit tx
-   ::  corresponding to the settlement. put a hold on it. if there is already a
-   ::  hold, pick the hold with the greatest height.
-    %=    $
-        settlements
-      t.settlements
-    ::
-        hold
-      ?~  hold  `[as-of height]
-      ?:  (lte height height.u.hold)  hold
-      `[as-of height]
-    ==
-  ::
-  ::  If there is a hold, do not process the settlement
-  ?:  !=(~ hold)
-    $(settlements t.settlements)
   =/  counterpart=deposit
     =+  block-with-deposit=(~(got z-by nock-hashchain.hash-state.state) as-of)
     (~(got z-by deposits.block-with-deposit) name)

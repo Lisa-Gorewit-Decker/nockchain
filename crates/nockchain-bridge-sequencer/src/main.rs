@@ -43,6 +43,10 @@ fn public_nockchain_client_addr(public_addr: SocketAddr) -> SocketAddr {
     )
 }
 
+fn withdrawal_sequencer_data_dir() -> PathBuf {
+    nockapp::system_data_dir().join("nockchain")
+}
+
 // When enabled, use jemalloc for more stable memory allocation.
 #[cfg(all(feature = "jemalloc", not(feature = "tracing-heap")))]
 #[global_allocator]
@@ -299,9 +303,13 @@ async fn start_withdrawal_sequencer(
     node_pkhs: Vec<bridge::shared::types::Tip5Hash>,
     node_eth_addresses: bridge::shared::signing::BridgeNodeEthAddressMap,
     journal: SequencerJournalHandle,
+    manual_submit_approval: bridge::withdrawal::sequencer::approval::ManualSubmitApprovalConfig,
 ) -> Result<tokio::task::JoinHandle<Result<(), BridgeError>>, Box<dyn Error>> {
-    let data_dir = nockapp::system_data_dir().join("nockchain");
+    let data_dir = withdrawal_sequencer_data_dir();
     tokio::fs::create_dir_all(&data_dir).await?;
+    if manual_submit_approval.enabled {
+        tokio::fs::create_dir_all(&manual_submit_approval.approval_dir).await?;
+    }
     let mut withdrawal_state_store =
         bridge::withdrawal::sequencer::store::WithdrawalSequencerStore::open(
             data_dir.join("withdrawal-state-store.sqlite"),
@@ -373,6 +381,7 @@ async fn start_withdrawal_sequencer(
             sequencer_listen_addr, service_store, sequencer_submitter, base_height_tracker,
             base_withdrawal_verifier, handoff_window_blocks,
             authorized_submit_retry_after_base_blocks, node_pkhs, node_eth_addresses,
+            manual_submit_approval,
         )
         .await
     });
@@ -438,6 +447,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         };
     let sequencer_config =
         bridge::shared::config::SequencerConfigToml::from_file(&cli.sequencer_config_path)?;
+    let sequencer_data_dir = withdrawal_sequencer_data_dir();
+    let manual_submit_approval =
+        bridge::withdrawal::sequencer::approval::ManualSubmitApprovalConfig {
+            enabled: sequencer_config.manual_submit_approval,
+            approval_dir: sequencer_config
+                .manual_submit_approval_dir
+                .clone()
+                .unwrap_or_else(|| {
+                    bridge::withdrawal::sequencer::approval::default_manual_submit_approval_dir(
+                        &sequencer_data_dir,
+                    )
+                }),
+        };
     let bridge_constants = sequencer_config.bridge_constants()?;
     let journal = build_sequencer_journal(&cli, &sequencer_config.sequencer_journal)?;
     let confirmation_policy =
@@ -505,6 +527,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         withdrawal_node_pkhs,
         withdrawal_node_eth_addresses,
         journal,
+        manual_submit_approval,
     )
     .await?;
 

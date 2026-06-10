@@ -50,6 +50,7 @@ impl Default for BaseObserverLoopPolicy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NockObserverLoopPolicy {
     pub poll_interval: Duration,
+    pub request_timeout: Duration,
     pub connect_retry: RetryPolicy,
     pub connect_failure_sleep: Duration,
 }
@@ -58,6 +59,7 @@ impl Default for NockObserverLoopPolicy {
     fn default() -> Self {
         Self {
             poll_interval: Duration::from_secs(10),
+            request_timeout: Duration::from_secs(30),
             connect_retry: RetryPolicy {
                 min_delay: Duration::from_secs(1),
                 max_delay: Duration::from_secs(300),
@@ -119,6 +121,7 @@ mod tests {
     fn default_nock_observer_policy_matches_existing_behavior() {
         let policy = NockObserverLoopPolicy::default();
         assert_eq!(policy.poll_interval, Duration::from_secs(10));
+        assert_eq!(policy.request_timeout, Duration::from_secs(30));
         assert_eq!(policy.connect_retry.min_delay, Duration::from_secs(1));
         assert_eq!(policy.connect_retry.max_delay, Duration::from_secs(300));
         assert_eq!(policy.connect_retry.max_times, None);

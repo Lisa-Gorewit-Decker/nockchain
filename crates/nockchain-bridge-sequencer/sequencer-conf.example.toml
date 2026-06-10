@@ -8,6 +8,10 @@ nock_contract_address = "0x..."
 # Nockchain confirmations required before sequencer settlement observations are final.
 nockchain_confirmation_depth = 100
 
+# Optional manual operator approval gate for authorized withdrawal submission.
+manual_submit_approval = false
+manual_submit_approval_dir = "/var/lib/nockchain-bridge-sequencer/withdrawal-approvals"
+
 # Remote withdrawal sequencer journal.
 # Production defaults to fail-closed if this is enabled but object storage is
 # not configured. Local/dev configs may disable this explicitly.

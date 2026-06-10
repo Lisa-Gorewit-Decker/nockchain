@@ -28,6 +28,7 @@ use bridge::shared::config::{
 use bridge::shared::ingress::proto as ingress_proto;
 use bridge::shared::ingress::proto::bridge_ingress_client::BridgeIngressClient;
 use bridge::shared::ingress::proto::withdrawal_sequencer_client::WithdrawalSequencerClient;
+use bridge::shared::nockchain::fetch_private_blockchain_constants;
 use bridge::shared::proposer::withdrawal_turn_proposer;
 use bridge::shared::signing::BridgeSigner;
 use bridge::withdrawal::transport::withdrawal_id_from_proto;
@@ -63,6 +64,7 @@ const BRIDGE_DEV_SEQUENCER_JOURNAL_SIGNING_KEY_ENV: &str =
     "BRIDGE_DEV_SEQUENCER_JOURNAL_SIGNING_KEY";
 const BRIDGE_DEV_WITHDRAWAL_ACTIVATION_NOCK_NEXT_HEIGHT_ENV: &str =
     "BRIDGE_DEV_WITHDRAWAL_ACTIVATION_NOCK_NEXT_HEIGHT";
+const BRIDGE_DEV_MANUAL_SUBMIT_APPROVAL_ENV: &str = "BRIDGE_DEV_MANUAL_SUBMIT_APPROVAL";
 const BRIDGE_DEV_FAKENET_GENESIS_JAM_ENV: &str = "BRIDGE_DEV_FAKENET_GENESIS_JAM";
 const BRIDGE_DEV_FAKENET_POW_LEN_ENV: &str = "BRIDGE_DEV_FAKENET_POW_LEN";
 const BRIDGE_DEV_FAKENET_LOG_DIFFICULTY_ENV: &str = "BRIDGE_DEV_FAKENET_LOG_DIFFICULTY";
@@ -202,6 +204,21 @@ fn optional_u64_env(key: &str) -> Result<Option<u64>> {
     parse_optional_u64_env_value(key, optional_env_string(key)?.as_deref())
 }
 
+fn parse_bool_env_value(key: &str, raw: Option<&str>) -> Result<bool> {
+    let Some(raw) = raw else {
+        return Ok(false);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "0" | "false" | "no" | "off" => Ok(false),
+        "1" | "true" | "yes" | "on" => Ok(true),
+        _ => bail!("{key} must be a boolean: use 1/0, true/false, yes/no, or on/off"),
+    }
+}
+
+fn bool_env(key: &str) -> Result<bool> {
+    parse_bool_env_value(key, optional_env_string(key)?.as_deref())
+}
+
 fn parse_optional_millis_env_value(key: &str, raw: Option<&str>) -> Result<Option<u64>> {
     let Some(raw) = raw else {
         return Ok(None);
@@ -269,6 +286,10 @@ fn fakenet_log_difficulty() -> Result<u64> {
 
 fn base_blocks_chunk() -> Result<u64> {
     Ok(optional_u64_env(BRIDGE_DEV_BASE_BLOCKS_CHUNK_ENV)?.unwrap_or(1))
+}
+
+fn bridge_dev_manual_submit_approval() -> Result<bool> {
+    bool_env(BRIDGE_DEV_MANUAL_SUBMIT_APPROVAL_ENV)
 }
 
 alloy::sol! {
@@ -1389,6 +1410,7 @@ async fn run_up(
         .await?,
     );
     wait_for_port(SocketTarget::PrivateNodeGrpc, Duration::from_secs(20)).await?;
+    wait_for_private_node_blockchain_constants(NODE_STARTUP_TIMEOUT).await?;
     for (node_id, config_path) in bridge_configs.bridge_paths.iter().enumerate() {
         children.push(spawn_bridge(
             &paths, node_id, config_path, needs_fresh_state, args.start,
@@ -2857,6 +2879,8 @@ fn write_bridge_configs(
     let sequencer_config = SequencerConfigToml {
         nock_contract_address: vnet.nock_contract_address.clone(),
         nockchain_confirmation_depth: profile.cluster.nockchain_confirmation_depth,
+        manual_submit_approval: bridge_dev_manual_submit_approval()?,
+        manual_submit_approval_dir: None,
         nodes: (0..5usize)
             .map(|peer_id| SequencerNodeInfoToml {
                 eth_pubkey: BRIDGE_ETH_ADDRS[peer_id].to_string(),
@@ -3422,6 +3446,24 @@ async fn wait_for_port(target: SocketTarget, timeout: Duration) -> Result<()> {
             Err(_) if Instant::now() < deadline => sleep(Duration::from_millis(250)).await,
             Err(err) => {
                 return Err(err).with_context(|| format!("timed out waiting for {addr}"));
+            }
+        }
+    }
+}
+
+async fn wait_for_private_node_blockchain_constants(timeout: Duration) -> Result<()> {
+    let endpoint = format!("http://{}", node_private_grpc_addr()?);
+    let deadline = Instant::now() + timeout;
+    loop {
+        match fetch_private_blockchain_constants(&endpoint).await {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                if Instant::now() >= deadline {
+                    return Err(anyhow!(err.to_string())).with_context(|| {
+                        format!("timed out waiting for blockchain constants from {endpoint}")
+                    });
+                }
+                sleep(Duration::from_millis(500)).await;
             }
         }
     }
@@ -4608,6 +4650,22 @@ mod tests {
             Some("bad"),
         )
         .is_err());
+    }
+
+    #[test]
+    fn manual_submit_approval_override_parses_booleans() {
+        assert!(!parse_bool_env_value(BRIDGE_DEV_MANUAL_SUBMIT_APPROVAL_ENV, None).unwrap());
+        assert!(!parse_bool_env_value(BRIDGE_DEV_MANUAL_SUBMIT_APPROVAL_ENV, Some("")).unwrap());
+        assert!(!parse_bool_env_value(BRIDGE_DEV_MANUAL_SUBMIT_APPROVAL_ENV, Some("0")).unwrap());
+        assert!(
+            !parse_bool_env_value(BRIDGE_DEV_MANUAL_SUBMIT_APPROVAL_ENV, Some("false")).unwrap()
+        );
+        assert!(parse_bool_env_value(BRIDGE_DEV_MANUAL_SUBMIT_APPROVAL_ENV, Some("1")).unwrap());
+        assert!(parse_bool_env_value(BRIDGE_DEV_MANUAL_SUBMIT_APPROVAL_ENV, Some("true")).unwrap());
+        assert!(parse_bool_env_value(BRIDGE_DEV_MANUAL_SUBMIT_APPROVAL_ENV, Some("yes")).unwrap());
+        assert!(
+            parse_bool_env_value(BRIDGE_DEV_MANUAL_SUBMIT_APPROVAL_ENV, Some("maybe")).is_err()
+        );
     }
 
     #[test]

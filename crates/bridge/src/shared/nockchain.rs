@@ -1,3 +1,5 @@
+use std::fmt::Display;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -10,7 +12,7 @@ use nockchain_types::tx_engine::common::{BlockId, Heavy, Page, TxId};
 use nockchain_types::BlockchainConstants;
 use nockvm::noun::{NounAllocator, NounSpace};
 use noun_serde::prelude::*;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use tracing::{debug, info, warn};
 
 use crate::core::loop_policy::NockObserverLoopPolicy;
@@ -28,6 +30,8 @@ use crate::shared::types::Tx;
 use crate::withdrawal::snapshot::BridgeNoteSnapshotService;
 
 const CLIENT_PID: i32 = 1;
+const NOCK_GRPC_TIMEOUT_MARKER: &str = " timed out after ";
+pub const DEFAULT_NOCK_GRPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub const BLOCKCHAIN_CONSTANTS_PATH: &str = "blockchain-constants";
 
 /// Default nockchain confirmation depth used by the driver if not specified in config.
@@ -51,41 +55,118 @@ fn confirmed_height(chain_tip: u64, confirmation_depth: u64) -> Option<u64> {
 
 pub struct NockGrpcSource {
     client: PrivateNockAppGrpcClient,
+    request_timeout: Duration,
 }
 
 impl NockGrpcSource {
     pub async fn connect(endpoint: String) -> Result<Self, BridgeError> {
-        let client = PrivateNockAppGrpcClient::connect(endpoint)
-            .await
-            .map_err(|err| BridgeError::EventMonitoring(err.to_string()))?;
-        Ok(Self { client })
+        Self::connect_with_timeout(endpoint, DEFAULT_NOCK_GRPC_REQUEST_TIMEOUT).await
+    }
+
+    pub async fn connect_with_timeout(
+        endpoint: String,
+        request_timeout: Duration,
+    ) -> Result<Self, BridgeError> {
+        let client = connect_private_nockapp(endpoint, request_timeout).await?;
+        Ok(Self {
+            client,
+            request_timeout,
+        })
     }
 
     pub fn from_client(client: PrivateNockAppGrpcClient) -> Self {
-        Self { client }
+        Self::from_client_with_timeout(client, DEFAULT_NOCK_GRPC_REQUEST_TIMEOUT)
+    }
+
+    pub fn from_client_with_timeout(
+        client: PrivateNockAppGrpcClient,
+        request_timeout: Duration,
+    ) -> Self {
+        Self {
+            client,
+            request_timeout,
+        }
     }
 }
 
 pub async fn fetch_private_blockchain_constants(
     endpoint: &str,
 ) -> Result<BlockchainConstants, BridgeError> {
-    let mut client = PrivateNockAppGrpcClient::connect(endpoint.to_string())
-        .await
-        .map_err(|err| BridgeError::EventMonitoring(err.to_string()))?;
+    let mut client =
+        connect_private_nockapp(endpoint.to_string(), DEFAULT_NOCK_GRPC_REQUEST_TIMEOUT).await?;
     fetch_private_blockchain_constants_from_client(&mut client).await
 }
 
 pub async fn fetch_private_blockchain_constants_from_client(
     client: &mut PrivateNockAppGrpcClient,
 ) -> Result<BlockchainConstants, BridgeError> {
+    fetch_private_blockchain_constants_from_client_with_timeout(
+        client, DEFAULT_NOCK_GRPC_REQUEST_TIMEOUT,
+    )
+    .await
+}
+
+async fn fetch_private_blockchain_constants_from_client_with_timeout(
+    client: &mut PrivateNockAppGrpcClient,
+    request_timeout: Duration,
+) -> Result<BlockchainConstants, BridgeError> {
     let mut path_slab = NounSlab::<NockJammer>::new();
     let path_noun = vec![BLOCKCHAIN_CONSTANTS_PATH.to_string()].to_noun(&mut path_slab);
     path_slab.set_root(path_noun);
-    let response = client
-        .peek(CLIENT_PID, path_slab.jam().to_vec())
-        .await
-        .map_err(|err| BridgeError::EventMonitoring(err.to_string()))?;
+    let response = peek_private_nockapp(
+        client,
+        "blockchain-constants peek",
+        path_slab.jam().to_vec(),
+        request_timeout,
+    )
+    .await?;
     decode_blockchain_constants_response(response)
+}
+
+async fn connect_private_nockapp(
+    endpoint: String,
+    request_timeout: Duration,
+) -> Result<PrivateNockAppGrpcClient, BridgeError> {
+    with_nock_grpc_timeout(
+        "private nockapp gRPC connect",
+        request_timeout,
+        PrivateNockAppGrpcClient::connect(endpoint),
+    )
+    .await
+}
+
+async fn peek_private_nockapp(
+    client: &mut PrivateNockAppGrpcClient,
+    operation: &str,
+    path: Vec<u8>,
+    request_timeout: Duration,
+) -> Result<Vec<u8>, BridgeError> {
+    with_nock_grpc_timeout(operation, request_timeout, client.peek(CLIENT_PID, path)).await
+}
+
+async fn with_nock_grpc_timeout<F, T, E>(
+    operation: &str,
+    request_timeout: Duration,
+    future: F,
+) -> Result<T, BridgeError>
+where
+    F: Future<Output = Result<T, E>>,
+    E: Display,
+{
+    match timeout(request_timeout, future).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(err)) => Err(BridgeError::EventMonitoring(err.to_string())),
+        Err(_) => Err(BridgeError::EventMonitoring(format!(
+            "{operation} timed out after {request_timeout:?}"
+        ))),
+    }
+}
+
+fn is_nock_grpc_timeout_error(err: &BridgeError) -> bool {
+    matches!(
+        err,
+        BridgeError::EventMonitoring(message) if message.contains(NOCK_GRPC_TIMEOUT_MARKER)
+    )
 }
 
 pub async fn bootstrap_blockchain_constants(
@@ -150,7 +231,7 @@ fn nock_block_still_waiting_for_kernel(
 #[async_trait]
 impl NockSourcePort for NockGrpcSource {
     async fn tip_info(&mut self) -> Result<Option<NockTipInfo>, BridgeError> {
-        let info = Self::fetch_tip_info_from_client(&mut self.client).await?;
+        let info = Self::fetch_tip_info_from_client(&mut self.client, self.request_timeout).await?;
         Ok(info.map(|(height, tip_hash)| NockTipInfo { height, tip_hash }))
     }
 
@@ -158,20 +239,20 @@ impl NockSourcePort for NockGrpcSource {
         &mut self,
         height: u64,
     ) -> Result<Option<NockBlockEvent>, BridgeError> {
-        Self::fetch_block_at_height_from_client(&mut self.client, height).await
+        Self::fetch_block_at_height_from_client(&mut self.client, height, self.request_timeout)
+            .await
     }
 }
 
 impl NockGrpcSource {
     async fn fetch_tip_info_from_client(
         client: &mut PrivateNockAppGrpcClient,
+        request_timeout: Duration,
     ) -> Result<Option<(u64, String)>, BridgeError> {
         let heavy_path = vec![Bytes::from("heavy")];
         let heavy_bytes = jam_path(&heavy_path)?;
-        let response = client
-            .peek(CLIENT_PID, heavy_bytes)
-            .await
-            .map_err(|err| BridgeError::EventMonitoring(err.to_string()))?;
+        let response =
+            peek_private_nockapp(client, "heavy peek", heavy_bytes, request_timeout).await?;
         let heavy: Heavy = {
             let (heavy_slab, heavy_noun) = cue_response(response)?;
             let heavy_space = heavy_slab.noun_space();
@@ -186,10 +267,8 @@ impl NockGrpcSource {
 
         let block_path = vec![Bytes::from("block"), Bytes::from(block_id_base58)];
         let block_bytes = jam_path(&block_path)?;
-        let response = client
-            .peek(CLIENT_PID, block_bytes)
-            .await
-            .map_err(|err| BridgeError::EventMonitoring(err.to_string()))?;
+        let response =
+            peek_private_nockapp(client, "tip block peek", block_bytes, request_timeout).await?;
         let (page, _page_noun) = {
             let (page_slab, block_noun) = cue_response(response)?;
             let page_space = page_slab.noun_space();
@@ -201,13 +280,13 @@ impl NockGrpcSource {
     async fn fetch_block_at_height_from_client(
         client: &mut PrivateNockAppGrpcClient,
         height: u64,
+        request_timeout: Duration,
     ) -> Result<Option<NockBlockEvent>, BridgeError> {
         let heavy_n_path = vec![Bytes::from("heavy-n"), Bytes::from(height.to_bytes()?)];
         let heavy_n_bytes = jam_path(&heavy_n_path)?;
-        let response = client
-            .peek(CLIENT_PID, heavy_n_bytes)
-            .await
-            .map_err(|err| BridgeError::EventMonitoring(err.to_string()))?;
+        let response =
+            peek_private_nockapp(client, "height block peek", heavy_n_bytes, request_timeout)
+                .await?;
         let (page_slab, block_noun) = cue_response(response)?;
         let (page, page_noun) = {
             let page_space = page_slab.noun_space();
@@ -217,7 +296,10 @@ impl NockGrpcSource {
             }
         };
 
-        let txs = Self::fetch_transactions_from_client(client, &page.digest, &page.tx_ids).await?;
+        let txs = Self::fetch_transactions_from_client(
+            client, &page.digest, &page.tx_ids, request_timeout,
+        )
+        .await?;
 
         Ok(Some(NockBlockEvent {
             block: page,
@@ -231,6 +313,7 @@ impl NockGrpcSource {
         client: &mut PrivateNockAppGrpcClient,
         block_id: &BlockId,
         tx_ids: &[TxId],
+        request_timeout: Duration,
     ) -> Result<Vec<(TxId, Tx)>, BridgeError> {
         let block_id_base58 = block_id.to_base58();
         let mut txs = Vec::with_capacity(tx_ids.len());
@@ -242,10 +325,9 @@ impl NockGrpcSource {
                 Bytes::from(tx_id_base58),
             ];
             let tx_bytes = jam_path(&tx_path)?;
-            let response = client
-                .peek(CLIENT_PID, tx_bytes)
-                .await
-                .map_err(|err| BridgeError::EventMonitoring(err.to_string()))?;
+            let response =
+                peek_private_nockapp(client, "block transaction peek", tx_bytes, request_timeout)
+                    .await?;
             let (tx_slab, tx_noun) = cue_response(response)?;
             let tx_space = tx_slab.noun_space();
             let tx = decode_tx_from_peek(&tx_noun, &tx_space)?;
@@ -385,7 +467,11 @@ impl NockchainWatcher {
             let attempt_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
             let attempt_count_notify = attempt_count.clone();
             let endpoint = self.connection.endpoint.clone();
-            let connect = || async { PrivateNockAppGrpcClient::connect(endpoint.clone()).await };
+            let request_timeout = self.connection.policy.request_timeout;
+            let connect = || {
+                let endpoint = endpoint.clone();
+                async move { connect_private_nockapp(endpoint, request_timeout).await }
+            };
 
             self.update_status(NockchainApiStatus::connecting(1, None));
 
@@ -448,7 +534,9 @@ impl NockchainWatcher {
                     }
                     was_connected = true;
 
-                    let mut source = NockGrpcSource::from_client(client);
+                    let mut source = NockGrpcSource::from_client_with_timeout(
+                        client, self.connection.policy.request_timeout,
+                    );
                     if let Err(err) = self.stream_events_with_source(&mut source).await {
                         let error_msg = err.to_string();
                         warn!(
@@ -499,6 +587,14 @@ impl NockchainWatcher {
             let tip_info = match source.tip_info().await {
                 Ok(info) => info,
                 Err(err) => {
+                    if is_nock_grpc_timeout_error(&err) {
+                        warn!(
+                            target: "bridge.nock-watcher",
+                            error=%err,
+                            "failed to fetch tip height after nock gRPC timeout; reconnecting nock gRPC source"
+                        );
+                        return Err(err);
+                    }
                     warn!(
                         target: "bridge.nock-watcher",
                         error=%err,
@@ -643,6 +739,15 @@ impl NockchainWatcher {
                     );
                 }
                 Err(err) => {
+                    if is_nock_grpc_timeout_error(&err) {
+                        warn!(
+                            target: "bridge.nock-watcher",
+                            target = target_height,
+                            error=%err,
+                            "failed to fetch block at height after nock gRPC timeout; reconnecting nock gRPC source"
+                        );
+                        return Err(err);
+                    }
                     warn!(
                         target: "bridge.nock-watcher",
                         target = target_height,
@@ -995,6 +1100,39 @@ mod tests {
         assert!(!nock_block_still_waiting_for_kernel(Some(7), Some(8)));
         assert!(!nock_block_still_waiting_for_kernel(Some(7), None));
         assert!(!nock_block_still_waiting_for_kernel(None, Some(7)));
+    }
+
+    #[tokio::test]
+    async fn nock_grpc_timeout_returns_event_monitoring_error() {
+        let err = with_nock_grpc_timeout(
+            "test nock request",
+            Duration::from_millis(1),
+            std::future::pending::<Result<(), BridgeError>>(),
+        )
+        .await
+        .expect_err("pending request should time out");
+
+        assert!(
+            matches!(err, BridgeError::EventMonitoring(_)),
+            "unexpected error variant: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("test nock request timed out"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn nock_grpc_timeout_classifier_matches_private_timeout_format() {
+        let timeout_err =
+            BridgeError::EventMonitoring("height block peek timed out after 30s".to_string());
+        let event_monitoring_err =
+            BridgeError::EventMonitoring("height block peek failed to decode response".to_string());
+        let runtime_err = BridgeError::Runtime("height block peek timed out after 30s".to_string());
+
+        assert!(is_nock_grpc_timeout_error(&timeout_err));
+        assert!(!is_nock_grpc_timeout_error(&event_monitoring_err));
+        assert!(!is_nock_grpc_timeout_error(&runtime_err));
     }
 
     #[test]

@@ -106,6 +106,8 @@ struct BridgeCli {
 const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("../bridge-conf.example.toml");
 const NETWORK_MONITOR_POLL_SECS: u64 = 15;
 const NOCK_OBSERVER_POLL_MILLIS_ENV: &str = "BRIDGE_NOCK_OBSERVER_POLL_MILLIS";
+const NOCK_OBSERVER_REQUEST_TIMEOUT_MILLIS_ENV: &str =
+    "BRIDGE_NOCK_OBSERVER_REQUEST_TIMEOUT_MILLIS";
 const DEFAULT_BRIDGE_WITHDRAWAL_LOCK_ROOT_B58: &str =
     "AcsPkuhXQoGeEsF91yynpm1kcW17PQ2Z1MEozgx7YnDPkZwrtzLuuqd";
 
@@ -174,6 +176,14 @@ fn nock_observer_loop_policy_from_env() -> Result<NockObserverLoopPolicy, Bridge
         std::env::var(NOCK_OBSERVER_POLL_MILLIS_ENV).ok().as_deref(),
     )? {
         policy.poll_interval = poll_interval;
+    }
+    if let Some(request_timeout) = parse_optional_duration_millis_env_value(
+        NOCK_OBSERVER_REQUEST_TIMEOUT_MILLIS_ENV,
+        std::env::var(NOCK_OBSERVER_REQUEST_TIMEOUT_MILLIS_ENV)
+            .ok()
+            .as_deref(),
+    )? {
+        policy.request_timeout = request_timeout;
     }
     Ok(policy)
 }
@@ -977,6 +987,7 @@ async fn main() -> Result<(), BridgeError> {
         runtime_handle.as_ref(),
         withdrawal_registry.as_ref(),
         withdrawal_activation_cutoff,
+        cli.start,
     )
     .await?;
     info!(

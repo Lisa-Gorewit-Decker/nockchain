@@ -2140,7 +2140,7 @@ mod tests {
             7,
             "/bin/sh",
             &[
-                "-lc".to_string(),
+                "-c".to_string(),
                 "printf 'env=%s cwd=%s' \"$COMMAND_TEST_VALUE\" \"$PWD\"".to_string(),
             ],
             &env,

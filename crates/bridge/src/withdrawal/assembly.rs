@@ -107,6 +107,13 @@ pub trait WithdrawalKernelPort: Send + Sync {
         &self,
         ack: BaseBlockCommitAck,
     ) -> Result<(), BridgeError>;
+
+    /// Explicitly repairs a stale staged Base batch so the Base watcher can
+    /// reprocess it through the normal incoming Base path.
+    async fn poke_repair_pending_base_block_commit(
+        &self,
+        ack: BaseBlockCommitAck,
+    ) -> Result<(), BridgeError>;
 }
 
 #[async_trait]
@@ -158,6 +165,13 @@ impl WithdrawalKernelPort for BridgeRuntimeHandle {
         ack: BaseBlockCommitAck,
     ) -> Result<(), BridgeError> {
         BridgeRuntimeHandle::send_base_block_withdrawals_committed(self, ack).await
+    }
+
+    async fn poke_repair_pending_base_block_commit(
+        &self,
+        ack: BaseBlockCommitAck,
+    ) -> Result<(), BridgeError> {
+        BridgeRuntimeHandle::send_repair_pending_base_block_commit(self, ack).await
     }
 }
 
@@ -319,6 +333,18 @@ pub async fn recover_pending_base_block_commit_after_activation<K: WithdrawalKer
         pending, kernel, proposal_registry, activation_cutoff,
     )
     .await
+}
+
+pub async fn repair_pending_base_block_commit<K: WithdrawalKernelPort>(
+    kernel: &K,
+) -> Result<bool, BridgeError> {
+    let Some(pending) = kernel.peek_pending_base_block_commit().await? else {
+        return Ok(false);
+    };
+    kernel
+        .poke_repair_pending_base_block_commit(pending.ack())
+        .await?;
+    Ok(true)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1883,6 +1909,19 @@ mod tests {
                 .take();
             Ok(())
         }
+
+        async fn poke_repair_pending_base_block_commit(
+            &self,
+            ack: BaseBlockCommitAck,
+        ) -> Result<(), BridgeError> {
+            let pending = self
+                .pending_base_commit
+                .lock()
+                .expect("pending base commit lock")
+                .take();
+            assert_eq!(pending.as_ref().map(PendingBaseBlockCommit::ack), Some(ack));
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -2679,6 +2718,37 @@ mod tests {
                 .as_slice(),
             &[pending.ack()]
         );
+        assert!(registry
+            .load_sorted_tracked_withdrawal_requests()
+            .await
+            .expect("load tracked requests")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn repair_pending_base_block_commit_repairs_without_tracking_or_ack() {
+        let (_dir, registry) = open_services().await;
+        let request = sample_withdrawal_request();
+        let pending = sample_pending_base_commit(vec![request]);
+        let kernel = RecordingKernelPort {
+            pending_base_commit: Mutex::new(Some(pending.clone())),
+            ..Default::default()
+        };
+
+        let repaired = repair_pending_base_block_commit(&kernel)
+            .await
+            .expect("repair pending base commit");
+        assert!(repaired);
+        assert!(kernel
+            .base_commit_acks
+            .lock()
+            .expect("base commit acks lock")
+            .is_empty());
+        assert!(kernel
+            .pending_base_commit
+            .lock()
+            .expect("pending base commit lock")
+            .is_none());
         assert!(registry
             .load_sorted_tracked_withdrawal_requests()
             .await

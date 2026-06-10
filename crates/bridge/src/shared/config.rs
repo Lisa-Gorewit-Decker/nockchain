@@ -89,6 +89,10 @@ pub struct NodeInfoToml {
 pub struct SequencerConfigToml {
     pub nock_contract_address: String,
     pub nockchain_confirmation_depth: u64,
+    #[serde(default)]
+    pub manual_submit_approval: bool,
+    #[serde(default)]
+    pub manual_submit_approval_dir: Option<PathBuf>,
     pub nodes: Vec<SequencerNodeInfoToml>,
     #[serde(default)]
     pub sequencer_journal: SequencerJournalConfigToml,

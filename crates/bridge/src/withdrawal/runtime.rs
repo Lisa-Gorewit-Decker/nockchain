@@ -11,10 +11,11 @@ use crate::shared::errors::BridgeError;
 use crate::shared::kernel_projection::KernelProjectionPosition;
 use crate::shared::stop::StopHandle;
 use crate::withdrawal::assembly::{
-    recover_pending_base_block_commit_after_activation, restore_tracked_withdrawal_requests,
-    run_withdrawal_assembly_loop, run_withdrawal_signing_loop, withdrawal_activation_readiness,
-    WithdrawalActivationReadiness, WithdrawalAssemblyContext, WithdrawalAssemblyLoopPolicy,
-    WithdrawalKernelPort, WithdrawalSigningContext, WithdrawalSigningLoopPolicy,
+    recover_pending_base_block_commit_after_activation, repair_pending_base_block_commit,
+    restore_tracked_withdrawal_requests, run_withdrawal_assembly_loop, run_withdrawal_signing_loop,
+    withdrawal_activation_readiness, WithdrawalActivationReadiness, WithdrawalAssemblyContext,
+    WithdrawalAssemblyLoopPolicy, WithdrawalKernelPort, WithdrawalSigningContext,
+    WithdrawalSigningLoopPolicy,
 };
 use crate::withdrawal::proposals::WithdrawalProposalRegistry;
 use crate::withdrawal::submission::{
@@ -46,11 +47,21 @@ pub async fn bootstrap_runtime<K: WithdrawalKernelPort>(
     kernel: &K,
     proposal_registry: &WithdrawalProposalRegistry,
     activation_cutoff: WithdrawalActivationCutoff,
+    repair_stale_pending_base_commit: bool,
 ) -> Result<u64, BridgeError> {
-    recover_pending_base_block_commit_after_activation(
-        kernel, proposal_registry, activation_cutoff,
-    )
-    .await?;
+    if repair_stale_pending_base_commit {
+        if repair_pending_base_block_commit(kernel).await? {
+            info!(
+                target: "bridge.withdrawal",
+                "repaired stale pending base block commit for watcher replay"
+            );
+        }
+    } else {
+        recover_pending_base_block_commit_after_activation(
+            kernel, proposal_registry, activation_cutoff,
+        )
+        .await?;
+    }
     restore_tracked_withdrawal_requests(kernel, proposal_registry, activation_cutoff).await
 }
 
@@ -289,6 +300,15 @@ mod tests {
             self.pending.lock().expect("pending lock").take();
             Ok(())
         }
+
+        async fn poke_repair_pending_base_block_commit(
+            &self,
+            ack: BaseBlockCommitAck,
+        ) -> Result<(), BridgeError> {
+            let pending = self.pending.lock().expect("pending lock").take();
+            assert_eq!(pending.as_ref().map(PendingBaseBlockCommit::ack), Some(ack));
+            Ok(())
+        }
     }
 
     fn sample_request() -> NockWithdrawalRequestKernelData {
@@ -358,6 +378,7 @@ mod tests {
             WithdrawalActivationCutoff {
                 nock_next_height: 0,
             },
+            false,
         )
         .await
         .expect("bootstrap runtime");
@@ -366,5 +387,43 @@ mod tests {
             kernel.acks.lock().expect("ack lock").as_slice(),
             &[pending.ack()]
         );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_start_repair_rewinds_pending_without_ack_or_tracking() {
+        let (_dir, registry) = open_registry().await;
+        let request = sample_request();
+        let pending = PendingBaseBlockCommit {
+            blocks_hash: request.as_of.clone(),
+            first_height: request.base_batch_end,
+            last_height: request.base_batch_end,
+            withdrawals: vec![request],
+        };
+        let kernel = BootstrapKernel {
+            pending: Mutex::new(Some(pending.clone())),
+            acks: Mutex::new(Vec::new()),
+            base_next_height: Some(pending.first_height),
+            nock_next_height: Some(0),
+            base_history: vec![],
+        };
+
+        let restored = bootstrap_runtime(
+            &kernel,
+            &registry,
+            WithdrawalActivationCutoff {
+                nock_next_height: 0,
+            },
+            true,
+        )
+        .await
+        .expect("bootstrap runtime");
+        assert_eq!(restored, 0);
+        assert!(kernel.acks.lock().expect("ack lock").is_empty());
+        assert!(kernel.pending.lock().expect("pending lock").is_none());
+        assert!(registry
+            .load_sorted_tracked_withdrawal_requests()
+            .await
+            .expect("load tracked requests")
+            .is_empty());
     }
 }

@@ -5,7 +5,7 @@ core.workflow(
     # Run from the checked-out open branch contents in CI.
     origin = folder.origin(),
     destination = git.destination(
-        url = "https://github.com/zorp-corp/nockchain-staging.git",
+        url = "https://github.com/nockchain/nockchain-staging.git",
         fetch = "master",
         push = "staging",
     ),

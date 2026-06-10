@@ -30,6 +30,9 @@ use crate::shared::ingress::proto::{
 use crate::shared::proposer::withdrawal_turn_proposer;
 use crate::shared::types::{zero_tip5_hash, AtomBytes, Tip5Hash};
 use crate::withdrawal::proposals::TrackedWithdrawalRequest;
+use crate::withdrawal::sequencer::approval::{
+    check_manual_submit_approval, ManualSubmitApprovalConfig, ManualSubmitApprovalDecision,
+};
 use crate::withdrawal::sequencer::base_height::SequencerBaseHeightTracker;
 use crate::withdrawal::sequencer::base_verifier::SequencerBaseWithdrawalVerifier;
 use crate::withdrawal::sequencer::store::{
@@ -58,6 +61,7 @@ pub struct WithdrawalSequencerRpcService {
     handoff_window_blocks: u64,
     node_pkhs: Vec<nockchain_types::tx_engine::common::Hash>,
     node_eth_addresses: HashMap<u64, Address>,
+    manual_submit_approval: ManualSubmitApprovalConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +132,11 @@ impl WithdrawalSequencerRpcService {
         self
     }
 
+    pub fn with_manual_submit_approval(mut self, config: ManualSubmitApprovalConfig) -> Self {
+        self.manual_submit_approval = config;
+        self
+    }
+
     /// Builds the sequencer RPC service with an explicit bounded submit retry
     /// policy, primarily for tests that need deterministic retry timing.
     #[allow(clippy::too_many_arguments)]
@@ -152,6 +161,7 @@ impl WithdrawalSequencerRpcService {
             handoff_window_blocks,
             node_pkhs,
             node_eth_addresses,
+            manual_submit_approval: ManualSubmitApprovalConfig::default(),
         }
     }
 
@@ -451,6 +461,7 @@ pub async fn serve_withdrawal_sequencer(
     authorized_submit_retry_after_base_blocks: u64,
     node_pkhs: Vec<nockchain_types::tx_engine::common::Hash>,
     node_eth_addresses: HashMap<u64, Address>,
+    manual_submit_approval: ManualSubmitApprovalConfig,
 ) -> Result<(), BridgeError> {
     let reflection_service = ReflectionBuilder::configure()
         .register_encoded_file_descriptor_set(crate::shared::grpc::FILE_DESCRIPTOR_SET)
@@ -460,7 +471,8 @@ pub async fn serve_withdrawal_sequencer(
         withdrawal_state_store, submitter, base_height_tracker, base_withdrawal_verifier,
         handoff_window_blocks, node_pkhs, node_eth_addresses,
     )
-    .with_authorized_submit_retry_after_base_blocks(authorized_submit_retry_after_base_blocks);
+    .with_authorized_submit_retry_after_base_blocks(authorized_submit_retry_after_base_blocks)
+    .with_manual_submit_approval(manual_submit_approval);
 
     tonic::transport::Server::builder()
         .add_service(reflection_service)
@@ -482,6 +494,7 @@ pub async fn serve_withdrawal_sequencer_with_shutdown(
     authorized_submit_retry_after_base_blocks: u64,
     node_pkhs: Vec<nockchain_types::tx_engine::common::Hash>,
     node_eth_addresses: HashMap<u64, Address>,
+    manual_submit_approval: ManualSubmitApprovalConfig,
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), BridgeError> {
     let reflection_service = ReflectionBuilder::configure()
@@ -492,7 +505,8 @@ pub async fn serve_withdrawal_sequencer_with_shutdown(
         withdrawal_state_store, submitter, base_height_tracker, base_withdrawal_verifier,
         handoff_window_blocks, node_pkhs, node_eth_addresses,
     )
-    .with_authorized_submit_retry_after_base_blocks(authorized_submit_retry_after_base_blocks);
+    .with_authorized_submit_retry_after_base_blocks(authorized_submit_retry_after_base_blocks)
+    .with_manual_submit_approval(manual_submit_approval);
 
     tonic::transport::Server::builder()
         .add_service(reflection_service)
@@ -1313,6 +1327,18 @@ impl WithdrawalSequencer for WithdrawalSequencerRpcService {
             }));
         }
 
+        match check_manual_submit_approval(&self.manual_submit_approval, &status_row)
+            .map_err(|err| Status::internal(format!("manual approval check failed: {err}")))?
+        {
+            ManualSubmitApprovalDecision::Approved => {}
+            ManualSubmitApprovalDecision::Deferred(reason) => {
+                metrics::init_metrics()
+                    .sequencer_withdrawal_submit_deferred
+                    .increment();
+                return Ok(Response::new(Self::deferred_submit_response(reason)));
+            }
+        }
+
         if let Err(err) = self.submitter.submission_node_available().await {
             metrics::init_metrics()
                 .sequencer_withdrawal_submit_deferred
@@ -1493,6 +1519,7 @@ impl WithdrawalSequencer for WithdrawalSequencerRpcService {
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, VecDeque};
+    use std::fs;
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -1517,6 +1544,9 @@ mod tests {
     };
     use crate::shared::signing::BridgeSigner;
     use crate::shared::types::AtomBytes;
+    use crate::withdrawal::sequencer::approval::{
+        approval_file_path, render_approval_record, write_approval_record_atomic,
+    };
     use crate::withdrawal::sequencer::base_verifier::SequencerBaseWithdrawalRejection;
     use crate::withdrawal::sequencer::store::WithdrawalSubmissionEventType;
     use crate::withdrawal::submission::{
@@ -1865,6 +1895,47 @@ mod tests {
             )
             .await
             .expect("register withdrawal ordering");
+    }
+
+    async fn authorize_for_submission(
+        rpc: &WithdrawalSequencerRpcService,
+        withdrawal_state_store: &WithdrawalSequencerStore,
+        base_height_tracker: &SequencerBaseHeightTracker,
+        proposal: &WithdrawalProposalData,
+        withdrawal_nonce: u64,
+    ) -> (
+        crate::shared::ingress::proto::WithdrawalProposalEnvelope,
+        u64,
+    ) {
+        register_proposal_ordering(withdrawal_state_store, proposal, withdrawal_nonce).await;
+        withdrawal_state_store
+            .record_proposal_canonicalized(proposal, 100)
+            .await
+            .expect("canonicalize proposal");
+        withdrawal_state_store
+            .record_proposal_signed(proposal, 1, 100)
+            .await
+            .expect("record signed proposal");
+        base_height_tracker.record_confirmed_base_height(120);
+
+        let mut proposal_proto = proposal_to_proto(proposal).expect("proposal proto");
+        proposal_proto.withdrawal_nonce = withdrawal_nonce;
+        let caller_node_id = expected_proposer(proposal, 0);
+        let authorize = rpc
+            .authorize_proposal(Request::new(SequencerAuthorizeProposalRequest {
+                proposal: Some(proposal_proto.clone()),
+                commit_certificate: Some(sample_commit_certificate(proposal).await),
+                caller_node_id,
+            }))
+            .await
+            .expect("authorize response")
+            .into_inner();
+        assert!(
+            authorize.request_accepted,
+            "authorization response: {authorize:?}"
+        );
+
+        (proposal_proto, caller_node_id)
     }
 
     async fn register_withdrawal_request(
@@ -3337,6 +3408,260 @@ mod tests {
             .lock()
             .expect("submitted proposals lock")
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn sequencer_rpc_manual_approval_disabled_preserves_existing_submit_behavior() {
+        let (rpc, withdrawal_state_store, base_height_tracker, submitter, _dir) =
+            open_rpc_service().await;
+        let proposal = sample_proposal(30);
+        let withdrawal_nonce = 1;
+        let (proposal_proto, caller_node_id) = authorize_for_submission(
+            &rpc, &withdrawal_state_store, &base_height_tracker, &proposal, withdrawal_nonce,
+        )
+        .await;
+
+        let submit = rpc
+            .submit_proposal(Request::new(SequencerSubmitProposalRequest {
+                proposal: Some(proposal_proto),
+                caller_node_id,
+            }))
+            .await
+            .expect("submit response")
+            .into_inner();
+        assert!(submit.request_accepted, "submit response: {submit:?}");
+        assert_eq!(
+            submitter
+                .submitted
+                .lock()
+                .expect("submitted proposals lock")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn sequencer_rpc_manual_approval_enabled_without_file_defers_without_submit_attempt() {
+        let (rpc, withdrawal_state_store, base_height_tracker, submitter, dir) =
+            open_rpc_service().await;
+        let approval_dir = dir.path().join("approvals");
+        let rpc = rpc.with_manual_submit_approval(ManualSubmitApprovalConfig {
+            enabled: true,
+            approval_dir,
+        });
+        let proposal = sample_proposal(31);
+        let withdrawal_nonce = 1;
+        let (proposal_proto, caller_node_id) = authorize_for_submission(
+            &rpc, &withdrawal_state_store, &base_height_tracker, &proposal, withdrawal_nonce,
+        )
+        .await;
+
+        let deferred = rpc
+            .submit_proposal(Request::new(SequencerSubmitProposalRequest {
+                proposal: Some(proposal_proto),
+                caller_node_id,
+            }))
+            .await
+            .expect("deferred submit response")
+            .into_inner();
+        assert!(!deferred.request_accepted);
+        assert!(deferred
+            .error
+            .starts_with(WITHDRAWAL_SUBMIT_DEFERRED_PREFIX));
+        assert!(deferred.error.contains("manual operator approval"));
+        assert!(submitter
+            .submitted
+            .lock()
+            .expect("submitted proposals lock")
+            .is_empty());
+
+        let sequenced = withdrawal_state_store
+            .fetch_sequenced_withdrawal(&proposal.id)
+            .await
+            .expect("fetch authorized withdrawal")
+            .expect("authorized withdrawal exists");
+        assert_eq!(sequenced.state, WithdrawalState::Authorized);
+        assert_eq!(sequenced.submit_attempt_count, 0);
+        assert_eq!(sequenced.last_submit_attempt_base_height, None);
+    }
+
+    #[tokio::test]
+    async fn sequencer_rpc_manual_approval_enabled_with_malformed_file_defers() {
+        let (rpc, withdrawal_state_store, base_height_tracker, submitter, dir) =
+            open_rpc_service().await;
+        let approval_dir = dir.path().join("approvals");
+        let rpc = rpc.with_manual_submit_approval(ManualSubmitApprovalConfig {
+            enabled: true,
+            approval_dir: approval_dir.clone(),
+        });
+        let proposal = sample_proposal(32);
+        let withdrawal_nonce = 1;
+        let (proposal_proto, caller_node_id) = authorize_for_submission(
+            &rpc, &withdrawal_state_store, &base_height_tracker, &proposal, withdrawal_nonce,
+        )
+        .await;
+        let facts = withdrawal_state_store
+            .list_pending_approval_facts()
+            .await
+            .expect("pending approval facts")
+            .pop()
+            .expect("one pending approval");
+        fs::create_dir_all(&approval_dir).expect("create approval dir");
+        fs::write(
+            approval_file_path(&approval_dir, &facts.authorized_transaction_name)
+                .expect("approval path"),
+            "not-an-approval-record",
+        )
+        .expect("write malformed approval");
+
+        let deferred = rpc
+            .submit_proposal(Request::new(SequencerSubmitProposalRequest {
+                proposal: Some(proposal_proto),
+                caller_node_id,
+            }))
+            .await
+            .expect("deferred submit response")
+            .into_inner();
+        assert!(!deferred.request_accepted);
+        assert!(deferred.error.contains("malformed"));
+        assert!(submitter
+            .submitted
+            .lock()
+            .expect("submitted proposals lock")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn sequencer_rpc_manual_approval_enabled_with_mismatched_file_defers() {
+        let (rpc, withdrawal_state_store, base_height_tracker, submitter, dir) =
+            open_rpc_service().await;
+        let approval_dir = dir.path().join("approvals");
+        let rpc = rpc.with_manual_submit_approval(ManualSubmitApprovalConfig {
+            enabled: true,
+            approval_dir: approval_dir.clone(),
+        });
+        let proposal = sample_proposal(33);
+        let withdrawal_nonce = 1;
+        let (proposal_proto, caller_node_id) = authorize_for_submission(
+            &rpc, &withdrawal_state_store, &base_height_tracker, &proposal, withdrawal_nonce,
+        )
+        .await;
+        let mut facts = withdrawal_state_store
+            .list_pending_approval_facts()
+            .await
+            .expect("pending approval facts")
+            .pop()
+            .expect("one pending approval");
+        facts.epoch = facts.epoch.saturating_add(1);
+        fs::create_dir_all(&approval_dir).expect("create approval dir");
+        fs::write(
+            approval_file_path(&approval_dir, &facts.authorized_transaction_name)
+                .expect("approval path"),
+            render_approval_record(&facts),
+        )
+        .expect("write mismatched approval");
+
+        let deferred = rpc
+            .submit_proposal(Request::new(SequencerSubmitProposalRequest {
+                proposal: Some(proposal_proto),
+                caller_node_id,
+            }))
+            .await
+            .expect("deferred submit response")
+            .into_inner();
+        assert!(!deferred.request_accepted);
+        assert!(deferred.error.contains("does not match"));
+        assert!(submitter
+            .submitted
+            .lock()
+            .expect("submitted proposals lock")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn sequencer_rpc_manual_approval_enabled_with_matching_file_submits() {
+        let (rpc, withdrawal_state_store, base_height_tracker, submitter, dir) =
+            open_rpc_service().await;
+        let approval_dir = dir.path().join("approvals");
+        let rpc = rpc.with_manual_submit_approval(ManualSubmitApprovalConfig {
+            enabled: true,
+            approval_dir: approval_dir.clone(),
+        });
+        let proposal = sample_proposal(34);
+        let withdrawal_nonce = 1;
+        let (proposal_proto, caller_node_id) = authorize_for_submission(
+            &rpc, &withdrawal_state_store, &base_height_tracker, &proposal, withdrawal_nonce,
+        )
+        .await;
+        let facts = withdrawal_state_store
+            .list_pending_approval_facts()
+            .await
+            .expect("pending approval facts")
+            .pop()
+            .expect("one pending approval");
+        write_approval_record_atomic(&approval_dir, &facts).expect("write approval record");
+
+        let accepted = rpc
+            .submit_proposal(Request::new(SequencerSubmitProposalRequest {
+                proposal: Some(proposal_proto),
+                caller_node_id,
+            }))
+            .await
+            .expect("accepted submit response")
+            .into_inner();
+        assert!(accepted.request_accepted, "submit response: {accepted:?}");
+        assert_eq!(
+            submitter
+                .submitted
+                .lock()
+                .expect("submitted proposals lock")
+                .len(),
+            1
+        );
+
+        let sequenced = withdrawal_state_store
+            .fetch_sequenced_withdrawal(&proposal.id)
+            .await
+            .expect("fetch submitted withdrawal")
+            .expect("submitted withdrawal exists");
+        assert_eq!(sequenced.state, WithdrawalState::MempoolAccepted);
+        assert_eq!(sequenced.submit_attempt_count, 1);
+        assert_eq!(sequenced.last_submit_attempt_base_height, Some(120));
+    }
+
+    #[tokio::test]
+    async fn sequencer_rpc_approval_fact_introspection_lists_authorized_rows() {
+        let (rpc, withdrawal_state_store, base_height_tracker, _submitter, _dir) =
+            open_rpc_service().await;
+        let proposal = sample_proposal(35);
+        let proposal_hash = proposal.proposal_hash().expect("proposal hash");
+        let withdrawal_nonce = 1;
+        authorize_for_submission(
+            &rpc, &withdrawal_state_store, &base_height_tracker, &proposal, withdrawal_nonce,
+        )
+        .await;
+
+        let pending = withdrawal_state_store
+            .list_pending_approval_facts()
+            .await
+            .expect("pending approval facts");
+        assert_eq!(pending.len(), 1);
+        let facts = &pending[0];
+        assert_eq!(facts.withdrawal_id_as_of, proposal.id.as_of.to_base58());
+        assert_eq!(
+            facts.withdrawal_id_base_event_id,
+            hex::encode(&proposal.id.base_event_id.0)
+        );
+        assert_eq!(facts.epoch, proposal.epoch);
+        assert_eq!(facts.proposal_hash, proposal_hash);
+        assert!(!facts.authorized_transaction_name.is_empty());
+
+        let by_tx_id = withdrawal_state_store
+            .load_authorized_approval_facts_by_tx_id(&facts.authorized_transaction_name)
+            .await
+            .expect("load approval facts by tx id")
+            .expect("approval facts by tx id");
+        assert_eq!(by_tx_id, *facts);
     }
 
     #[tokio::test]

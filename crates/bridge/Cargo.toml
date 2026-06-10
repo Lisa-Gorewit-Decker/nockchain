@@ -77,6 +77,7 @@ zkvm-jetpack.workspace = true
 tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
+kernels-roswell = { workspace = true }
 tempfile = "3.8"
 
 [lints]

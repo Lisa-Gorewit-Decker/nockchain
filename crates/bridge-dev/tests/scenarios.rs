@@ -27,6 +27,7 @@ const BASE_BLOCKS_CHUNK_ENV: &str = "BRIDGE_DEV_BASE_BLOCKS_CHUNK";
 const BRIDGE_SAVE_INTERVAL_MILLIS_ENV: &str = "BRIDGE_DEV_BRIDGE_SAVE_INTERVAL_MILLIS";
 const NOCK_OBSERVER_POLL_MILLIS_ENV: &str = "BRIDGE_NOCK_OBSERVER_POLL_MILLIS";
 const RUST_LOG_ENV: &str = "RUST_LOG";
+const MANUAL_SUBMIT_APPROVAL_ENV: &str = "BRIDGE_DEV_MANUAL_SUBMIT_APPROVAL";
 const BRIDGE_DEV_SEQUENCER_JOURNAL_ENABLED_ENV: &str = "BRIDGE_DEV_SEQUENCER_JOURNAL_ENABLED";
 const R2_E2E_ENABLE_ENV: &str = "BRIDGE_R2_RUN_E2E";
 const R2_E2E_URL_ENV: &str = "BRIDGE_R2_TEST_URL";
@@ -45,15 +46,16 @@ const E2E_DEPOSIT_SPEND_TIMEOUT_SECS: u64 = 1_800;
 const E2E_WITHDRAWAL_AMOUNT_NOCK: &str = "1001";
 const E2E_WITHDRAWAL_BASE_ADVANCE_BLOCKS: &str = "10";
 const E2E_WITHDRAWAL_PHASE_POLL_SECS: u64 = 30;
+const E2E_MANUAL_APPROVAL_DEFER_TIMEOUT_SECS: u64 = 90;
 const WAIT_WITHDRAWAL_TIMEOUT_FRAGMENT: &str = "timed out waiting for withdrawal";
 const REQUIRED_E2E_ENV: &[&str] = &[
     "TENDERLY_ACCESS_KEY", "TENDERLY_ACCOUNT_ID", "TENDERLY_PROJECT_SLUG",
     "TENDERLY_TEST_PRIVATE_KEY",
 ];
 const SECRET_ENV: &[&str] = &[
-    "TENDERLY_ACCESS_KEY", "TENDERLY_TEST_PRIVATE_KEY", "BRIDGE_DEV_OWNER_PRIVATE_KEY",
-    R2_E2E_ACCESS_KEY_ID_ENV, R2_E2E_SECRET_ACCESS_KEY_ENV, R2_E2E_TOKEN_ENV,
-    "WITHDRAWAL_SEQUENCER_JOURNAL_OBJECT_STORE_SECRET_ACCESS_KEY",
+    "TENDERLY_ACCESS_KEY", "TENDERLY_PRIVATE_KEY", "TENDERLY_TEST_PRIVATE_KEY",
+    "BRIDGE_DEV_OWNER_PRIVATE_KEY", R2_E2E_ACCESS_KEY_ID_ENV, R2_E2E_SECRET_ACCESS_KEY_ENV,
+    R2_E2E_TOKEN_ENV, "WITHDRAWAL_SEQUENCER_JOURNAL_OBJECT_STORE_SECRET_ACCESS_KEY",
 ];
 const ALL_COMPONENTS: &[&str] =
     &["node", "bridge-0", "bridge-1", "bridge-2", "bridge-3", "bridge-4"];
@@ -662,6 +664,97 @@ impl BridgeDevScenario {
         parse_observed_withdrawal(&stdout, phase)
     }
 
+    fn wait_for_withdrawal_manual_approval_facts(
+        &mut self,
+        target: &ObservedWithdrawal,
+        timeout_secs: u64,
+    ) -> Result<ObservedWithdrawal> {
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+        let mut last_error = None;
+        let mut last_observed = None;
+
+        loop {
+            self.ensure_up_still_running()?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+
+            let chunk_secs = remaining.as_secs().clamp(1, E2E_WITHDRAWAL_PHASE_POLL_SECS);
+            match self.wait_for_withdrawal_phase_once("Ready", "--ready", chunk_secs, Some(target))
+            {
+                Ok(withdrawal) => {
+                    assert_same_withdrawal(target, &withdrawal)?;
+                    if !is_placeholder(&withdrawal.proposal_hash)
+                        && !is_placeholder(&withdrawal.authorized_transaction_name)
+                    {
+                        return Ok(withdrawal);
+                    }
+                    last_observed = Some(withdrawal);
+                }
+                Err(err) => {
+                    if !err.to_string().contains(WAIT_WITHDRAWAL_TIMEOUT_FRAGMENT) {
+                        return Err(err)
+                            .context("failed while waiting for withdrawal approval facts")
+                            .with_context(|| self.cluster_context());
+                    }
+                    last_error = Some(err);
+                }
+            }
+
+            if Instant::now() >= deadline {
+                break;
+            }
+
+            self.run_checked(&["advance-base", "--blocks", E2E_WITHDRAWAL_BASE_ADVANCE_BLOCKS])
+                .context("failed to advance Base while waiting for withdrawal approval facts")?;
+        }
+
+        let last_observed = last_observed
+            .map(|withdrawal| format!("; last observed withdrawal={withdrawal:?}"))
+            .unwrap_or_default();
+        match last_error {
+            Some(err) => Err(err)
+                .with_context(|| {
+                    format!(
+                        "timed out waiting {timeout_secs}s for withdrawal approval facts{last_observed}"
+                    )
+                })
+                .with_context(|| self.cluster_context()),
+            None => bail!(
+                "timed out waiting {timeout_secs}s for withdrawal approval facts{last_observed}"
+            ),
+        }
+    }
+
+    fn assert_withdrawal_not_submitted_before_manual_approval(
+        &mut self,
+        target: &ObservedWithdrawal,
+    ) -> Result<()> {
+        match self.wait_for_withdrawal_phase_for(
+            "Submitted",
+            "--submitted",
+            E2E_MANUAL_APPROVAL_DEFER_TIMEOUT_SECS,
+            Some(target),
+        ) {
+            Ok(submitted) => {
+                bail!("withdrawal submitted before manual approval was registered: {:?}", submitted)
+            }
+            Err(err) => {
+                let rendered = format!("{err:#}");
+                if rendered.contains(WAIT_WITHDRAWAL_TIMEOUT_FRAGMENT)
+                    || rendered.contains("timed out waiting")
+                {
+                    Ok(())
+                } else {
+                    Err(err)
+                        .context("submitted wait failed unexpectedly before manual approval")
+                        .with_context(|| self.cluster_context())
+                }
+            }
+        }
+    }
+
     fn complete_deposit_on_all_nodes(&mut self) -> Result<ObservedDeposit> {
         self.complete_deposit_on_all_nodes_after(None)
     }
@@ -731,6 +824,58 @@ impl BridgeDevScenario {
 
     fn bridge_data_dir(&self, node_id: usize) -> PathBuf {
         self.run_root.join(format!("bridge-{node_id}"))
+    }
+
+    fn sequencer_config_path(&self) -> PathBuf {
+        self.run_root
+            .join("bridge-configs")
+            .join("sequencer-conf.toml")
+    }
+
+    fn sequencer_data_dir(&self) -> PathBuf {
+        self.run_root.join("node")
+    }
+
+    fn sequencer_ctl_binary(&self) -> PathBuf {
+        self.workspace_root
+            .join("target/release/nockchain-bridge-sequencer-ctl")
+    }
+
+    fn ensure_sequencer_ctl_binary(&self) -> Result<()> {
+        let path = self.sequencer_ctl_binary();
+        if !path.exists() {
+            bail!(
+                "nockchain-bridge-sequencer-ctl binary not found at {}. Build with `cargo build --release -p nockchain-bridge-sequencer --bin nockchain-bridge-sequencer-ctl` before running the manual approval bridge-dev E2E scenario",
+                path.display()
+            );
+        }
+        Ok(())
+    }
+
+    fn run_sequencer_ctl_checked(&self, args: &[&str]) -> Result<String> {
+        self.ensure_sequencer_ctl_binary()?;
+        let binary = self.sequencer_ctl_binary();
+        let output = Command::new(&binary)
+            .args(args)
+            .arg("--sequencer-config-path")
+            .arg(self.sequencer_config_path())
+            .arg("--data-dir")
+            .arg(self.sequencer_data_dir())
+            .output()
+            .with_context(|| format!("failed to run {} {}", binary.display(), args.join(" ")))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if output.status.success() {
+            return Ok(stdout.into_owned());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "{} {} exited with {}\nstdout:\n{}\nstderr:\n{}",
+            binary.display(),
+            args.join(" "),
+            output.status,
+            redact(&stdout),
+            redact(&stderr)
+        )
     }
 
     fn sequencer_sqlite_path(&self) -> PathBuf {
@@ -969,6 +1114,73 @@ fn withdrawal_happy_path_reaches_executed() -> Result<()> {
     assert_cluster_available(&status)?;
     assert_sequencer_idle(&status)?;
     Ok(())
+}
+
+#[test]
+#[ignore = "requires Tenderly VNET credentials, release bridge binaries, and sequencer ctl binary"]
+fn withdrawal_manual_approval_defers_until_ctl_approval() -> Result<()> {
+    let _guard = e2e_guard();
+    if !e2e_enabled()? {
+        return Ok(());
+    }
+    let mut scenario = BridgeDevScenario::new("withdrawal-manual-approval")?;
+    scenario.extend_env_overrides([(MANUAL_SUBMIT_APPROVAL_ENV.to_string(), "1".to_string())]);
+    scenario.ensure_sequencer_ctl_binary()?;
+
+    scenario.spawn_fresh_cluster()?;
+    let status = scenario.wait_for_status(Duration::from_secs(60))?;
+    assert_cluster_available(&status)?;
+    scenario.complete_deposit_on_all_nodes()?;
+    scenario.request_withdrawal_after_mint()?;
+
+    let pending = scenario.wait_for_withdrawal_phase("Pending", "--pending", 240)?;
+    let ready = scenario.wait_for_withdrawal_phase_for("Ready", "--ready", 480, Some(&pending))?;
+    let authorized = scenario.wait_for_withdrawal_manual_approval_facts(&ready, 480)?;
+    scenario.assert_withdrawal_not_submitted_before_manual_approval(&pending)?;
+
+    let tx_id = authorized.authorized_transaction_name.as_str();
+    let pending_approvals = scenario.run_sequencer_ctl_checked(&["pending-approvals"])?;
+    assert_contains_all(&pending_approvals, &["manual_submit_approval=true"])?;
+    assert_contains(
+        &pending_approvals,
+        &format!("proposal_hash={}", authorized.proposal_hash),
+    )?;
+    assert_contains(
+        &pending_approvals,
+        &format!("authorized_transaction_name={tx_id}"),
+    )?;
+
+    let approval_facts =
+        scenario.run_sequencer_ctl_checked(&["show-approval", "--tx-id", tx_id])?;
+    assert_contains_all(
+        &approval_facts,
+        &[
+            "manual_submit_approval=true", "withdrawal_id_as_of=", "withdrawal_id_base_event_id=",
+            "epoch=",
+        ],
+    )?;
+    assert_contains(
+        &approval_facts,
+        &format!("proposal_hash={}", authorized.proposal_hash),
+    )?;
+    assert_contains(
+        &approval_facts,
+        &format!("authorized_transaction_name={tx_id}"),
+    )?;
+
+    let approval =
+        scenario.run_sequencer_ctl_checked(&["approve-withdrawal", "--tx-id", tx_id, "--yes"])?;
+    assert_contains_all(&approval, &["approval_written="])?;
+    assert_contains(&approval, &format!("authorized_transaction_name={tx_id}"))?;
+
+    let submitted =
+        scenario.wait_for_withdrawal_phase_for("Submitted", "--submitted", 600, Some(&pending))?;
+    let executed =
+        scenario.wait_for_withdrawal_phase_for("Executed", "--executed", 720, Some(&pending))?;
+    assert_withdrawal_progression(&pending, &authorized, &submitted, &executed)?;
+    let status = scenario.wait_for_status(Duration::from_secs(120))?;
+    assert_cluster_available(&status)?;
+    assert_sequencer_idle(&status)
 }
 
 #[test]
@@ -1422,6 +1634,10 @@ fn assert_contains_all(haystack: &str, needles: &[&str]) -> Result<()> {
     Ok(())
 }
 
+fn assert_contains(haystack: &str, needle: &str) -> Result<()> {
+    assert_contains_all(haystack, &[needle])
+}
+
 fn process_state<'a>(status: &'a str, component_name: &str) -> Option<&'a str> {
     status.lines().find_map(|line| {
         let columns = line.split_whitespace().collect::<Vec<_>>();
@@ -1708,10 +1924,14 @@ fn assert_not_placeholder(
     value: &str,
     withdrawal: &ObservedWithdrawal,
 ) -> Result<()> {
-    if value == "-" || value.trim().is_empty() {
+    if is_placeholder(value) {
         bail!("withdrawal {} has placeholder {field_name}: {:?}", withdrawal.phase, withdrawal);
     }
     Ok(())
+}
+
+fn is_placeholder(value: &str) -> bool {
+    value == "-" || value.trim().is_empty()
 }
 
 fn assert_same_withdrawal(

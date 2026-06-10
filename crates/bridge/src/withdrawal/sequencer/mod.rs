@@ -1,3 +1,4 @@
+pub mod approval;
 pub mod base_height;
 pub mod base_verifier;
 pub mod client;
