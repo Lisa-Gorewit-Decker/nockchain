@@ -15,7 +15,7 @@ use thiserror::Error;
 use crate::observability::metrics;
 use crate::shared::errors::BridgeError;
 use crate::shared::ingress::proto::WithdrawalCommitCertificate;
-use crate::shared::types::{AtomBytes, Tip5Hash};
+use crate::shared::types::{BaseEventId, Tip5Hash};
 use crate::withdrawal::proposals::TrackedWithdrawalRequest;
 use crate::withdrawal::raw_tx as withdrawal_raw_tx;
 use crate::withdrawal::sequencer::journal::{
@@ -1320,7 +1320,7 @@ impl WithdrawalSequencerStore {
                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at INTEGER NOT NULL,
                 withdrawal_id_as_of BLOB NOT NULL CHECK(length(withdrawal_id_as_of) = 40),
-                withdrawal_id_base_event_id BLOB NOT NULL,
+                withdrawal_id_base_event_id BLOB NOT NULL CHECK(length(withdrawal_id_base_event_id) = 32),
                 epoch INTEGER NOT NULL,
                 proposal_hash TEXT NOT NULL,
                 transaction_name TEXT NOT NULL,
@@ -1359,7 +1359,7 @@ impl WithdrawalSequencerStore {
 
             CREATE TABLE IF NOT EXISTS sequencer_withdrawals (
                 withdrawal_id_as_of BLOB NOT NULL CHECK(length(withdrawal_id_as_of) = 40),
-                withdrawal_id_base_event_id BLOB NOT NULL,
+                withdrawal_id_base_event_id BLOB NOT NULL CHECK(length(withdrawal_id_base_event_id) = 32),
                 withdrawal_nonce INTEGER NOT NULL UNIQUE,
                 current_epoch INTEGER NOT NULL,
                 proposal_hash TEXT,
@@ -1398,7 +1398,7 @@ impl WithdrawalSequencerStore {
 
             CREATE TABLE IF NOT EXISTS withdrawal_reserved_inputs (
                 withdrawal_id_as_of BLOB NOT NULL CHECK(length(withdrawal_id_as_of) = 40),
-                withdrawal_id_base_event_id BLOB NOT NULL,
+                withdrawal_id_base_event_id BLOB NOT NULL CHECK(length(withdrawal_id_base_event_id) = 32),
                 epoch INTEGER NOT NULL,
                 input_first BLOB NOT NULL CHECK(length(input_first) = 40),
                 input_last BLOB NOT NULL CHECK(length(input_last) = 40),
@@ -1883,7 +1883,7 @@ fn decode_journal_event_identity(
     Ok(DecodedJournalEvent {
         id: WithdrawalId {
             as_of,
-            base_event_id: AtomBytes(base_event_id),
+            base_event_id: crate::shared::types::BaseEventId(base_event_id),
         },
         epoch: event.withdrawal.epoch,
         withdrawal_nonce: event.withdrawal.withdrawal_nonce,
@@ -5702,7 +5702,7 @@ fn same_base_event_id(left: &WithdrawalId, right: &WithdrawalId) -> bool {
 /// Loads the accepted nonce for a withdrawal from the durable sequencer row.
 fn fetch_withdrawal_nonce(
     conn: &mut SqliteConnection,
-    base_event_id: &AtomBytes,
+    base_event_id: &BaseEventId,
 ) -> Result<Option<u64>, BridgeError> {
     use crate::withdrawal::sequencer::schema::sequencer_withdrawals::dsl as sequenced;
 
@@ -5849,7 +5849,7 @@ fn require_authorized(
 /// Loads one sequencer-owned current-state row by Base burn event id.
 fn fetch_sequenced_withdrawal(
     conn: &mut SqliteConnection,
-    base_event_id: &AtomBytes,
+    base_event_id: &BaseEventId,
 ) -> Result<Option<SequencedWithdrawalView>, BridgeError> {
     use crate::withdrawal::sequencer::schema::sequencer_withdrawals::dsl as sequenced;
 
@@ -5863,7 +5863,7 @@ fn fetch_sequenced_withdrawal(
 
 fn load_canonical_proposal_artifacts(
     conn: &mut SqliteConnection,
-    base_event_id: &AtomBytes,
+    base_event_id: &BaseEventId,
 ) -> Result<Option<WithdrawalSequencerProposalArtifacts>, BridgeError> {
     let Some(row) = fetch_sequenced_withdrawal(conn, base_event_id)? else {
         return Ok(None);
@@ -6023,7 +6023,7 @@ fn try_into_reserved_input_row(
     Ok(SequencerReservedInputRow {
         id: WithdrawalId {
             as_of: tip5_from_bytes(&withdrawal_id_as_of)?,
-            base_event_id: AtomBytes(withdrawal_id_base_event_id),
+            base_event_id: crate::shared::types::BaseEventId(withdrawal_id_base_event_id),
         },
         epoch: u64::try_from(epoch)
             .map_err(|err| BridgeError::ValueConversion(format!("epoch overflow: {err}")))?,
@@ -6362,19 +6362,12 @@ fn load_authorized_transaction_for_retry(
                 id, existing.current_epoch
             ))
         })?;
-    let raw_tx_bytes = match existing.authorized_raw_tx {
-        Some(raw_tx_bytes) => raw_tx_bytes,
-        None => {
-            let transaction_jam = existing.authorized_transaction_jam.ok_or_else(|| {
-                BridgeError::Runtime(format!(
-                    "withdrawal {:?} epoch {} proposal {} is missing both authorized_raw_tx and authorized_transaction_jam for orphan retry",
-                    id, existing.current_epoch, proposal_hash
-                ))
-            })?;
-            let transaction = cue_transaction(transaction_jam)?;
-            withdrawal_raw_tx::persisted_raw_tx_from_transaction(&transaction)?.raw_tx_bytes
-        }
-    };
+    let raw_tx_bytes = existing.authorized_raw_tx.ok_or_else(|| {
+        BridgeError::Runtime(format!(
+            "withdrawal {:?} epoch {} proposal {} is missing authorized_raw_tx for orphan retry",
+            id, existing.current_epoch, proposal_hash
+        ))
+    })?;
 
     Ok(Some(AuthorizedRetryPayload {
         id: existing.id,
@@ -6442,7 +6435,7 @@ fn try_into_submission_event_record(
 ) -> Result<WithdrawalSubmissionEventRecord, BridgeError> {
     let id = WithdrawalId {
         as_of: tip5_from_bytes(&row.withdrawal_id_as_of)?,
-        base_event_id: AtomBytes(row.withdrawal_id_base_event_id),
+        base_event_id: crate::shared::types::BaseEventId(row.withdrawal_id_base_event_id),
     };
     let epoch = u64::try_from(row.epoch)
         .map_err(|err| BridgeError::ValueConversion(format!("event epoch overflow: {err}")))?;
@@ -6505,7 +6498,7 @@ fn try_into_sequenced_withdrawal_view(
     Ok(SequencedWithdrawalView {
         id: WithdrawalId {
             as_of: tip5_from_bytes(&row.withdrawal_id_as_of)?,
-            base_event_id: AtomBytes(row.withdrawal_id_base_event_id),
+            base_event_id: crate::shared::types::BaseEventId(row.withdrawal_id_base_event_id),
         },
         withdrawal_nonce: Some(u64::try_from(row.withdrawal_nonce).map_err(|err| {
             BridgeError::ValueConversion(format!("sequenced withdrawal nonce overflow: {err}"))
@@ -6800,8 +6793,10 @@ mod tests {
     };
     use crate::withdrawal::transport::withdrawal_id_to_proto;
 
-    fn sample_base_event_id(start: u8) -> AtomBytes {
-        AtomBytes((0..32).map(|offset| start.wrapping_add(offset)).collect())
+    fn sample_base_event_id(start: u8) -> crate::shared::types::BaseEventId {
+        crate::shared::types::BaseEventId(
+            (0..32).map(|offset| start.wrapping_add(offset)).collect(),
+        )
     }
 
     fn fixture_transaction() -> nockchain_types::v1::Transaction {
@@ -9758,15 +9753,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_authorized_transaction_for_retry_falls_back_to_transaction_jam_when_raw_tx_missing(
-    ) {
+    async fn load_authorized_transaction_for_retry_rejects_missing_authorized_raw_tx() {
         let (_dir, service) = open_service().await;
         let proposal = sample_proposal(96, 0);
 
         mempool_accept_with_handoffs(&service, &proposal, 1, 200, None).await;
-        let expected_raw_tx =
-            withdrawal_raw_tx::persisted_raw_tx_from_transaction(&proposal.transaction)
-                .expect("persisted raw tx");
 
         let id = proposal.id.clone();
         service
@@ -9792,17 +9783,18 @@ mod tests {
             .await
             .expect("clear authorized_raw_tx");
 
-        let payload = service
+        let err = service
             .load_authorized_transaction_for_retry(&proposal.id)
             .await
-            .expect("load authorized retry payload")
-            .expect("mempool-accepted retry payload exists");
-        assert_eq!(payload.raw_tx_bytes, expected_raw_tx.raw_tx_bytes);
+            .expect_err("missing authorized_raw_tx should fail");
+        assert!(err
+            .to_string()
+            .contains("missing authorized_raw_tx for orphan retry"));
     }
 
     #[tokio::test]
-    async fn load_authorized_transaction_for_retry_rejects_missing_both_raw_tx_and_transaction_jam()
-    {
+    async fn load_authorized_transaction_for_retry_rejects_missing_authorized_raw_tx_without_transaction_jam(
+    ) {
         let (_dir, service) = open_service().await;
         let proposal = sample_proposal(97, 0);
 
@@ -9839,9 +9831,9 @@ mod tests {
             .load_authorized_transaction_for_retry(&proposal.id)
             .await
             .expect_err("missing both retry artifacts should fail");
-        assert!(err.to_string().contains(
-            "missing both authorized_raw_tx and authorized_transaction_jam for orphan retry"
-        ));
+        assert!(err
+            .to_string()
+            .contains("missing authorized_raw_tx for orphan retry"));
     }
 
     #[tokio::test]

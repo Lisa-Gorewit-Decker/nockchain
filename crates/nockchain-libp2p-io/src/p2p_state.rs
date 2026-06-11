@@ -35,6 +35,14 @@ const KERNEL_BLOCK_HEIGHT_REQUEST_CAP: usize = 65_536;
 const SEEN_BLOCKS_CAP: usize = 65_536;
 const BLOCK_RECEIPT_CAP: usize = 65_536;
 const ELDERS_NEGATIVE_CACHE_CAP: usize = 8_192;
+const ELDERS_REQUEST_COOLDOWN_CAP: usize = 8_192;
+/// Minimum spacing between identical outbound elders requests (same block
+/// id, same target peer). A repeat inside this window is always redundant:
+/// the previous response is either in flight or was just processed. During
+/// a deep reorg the kernel legitimately re-emits the same elders request on
+/// every duplicate-block poke, which without damping turns into a burst of
+/// redundant outbound requests.
+pub(crate) const ELDERS_REQUEST_COOLDOWN: Duration = Duration::from_secs(5);
 const RESPONSE_SIZE_HINT_CAP: usize = 16_384;
 const DEFERRED_HEARD_BLOCK_TOTAL_CAP: usize = 65_536;
 pub(crate) const DEFERRED_HEARD_BLOCK_PER_PEER_CAP: usize = 4_096;
@@ -596,6 +604,8 @@ pub struct P2PState {
     pub elders_cache: BTreeMap<String, NounSlab>,
     pub elders_negative_cache: BTreeSet<String>,
     elders_negative_cache_order: VecDeque<String>,
+    elders_request_last_sent: BTreeMap<String, Instant>,
+    elders_request_last_sent_order: VecDeque<String>,
     peer_request_health: BTreeMap<PeerId, PeerRequestHealth>,
     deferred_heard_blocks: BTreeMap<u64, BTreeMap<String, DeferredHeardBlock>>,
     deferred_heard_block_count_by_peer: BTreeMap<PeerId, usize>,
@@ -707,6 +717,8 @@ impl P2PState {
             elders_cache: BTreeMap::new(),
             elders_negative_cache: BTreeSet::new(),
             elders_negative_cache_order: VecDeque::new(),
+            elders_request_last_sent: BTreeMap::new(),
+            elders_request_last_sent_order: VecDeque::new(),
             peer_request_health: BTreeMap::new(),
             deferred_heard_blocks: BTreeMap::new(),
             deferred_heard_block_count_by_peer: BTreeMap::new(),
@@ -2236,6 +2248,35 @@ impl P2PState {
         self.kernel_requested_block_heights.contains(&height)
     }
 
+    /// Returns true when an elders request identified by `key` (block id +
+    /// target peer) may be sent now, recording the send time. Returns false
+    /// when an identical request went out within `cooldown` — the kernel
+    /// re-emits the same elders request on every duplicate-block poke, and
+    /// only the first one per window is useful.
+    pub fn should_send_elders_request(
+        &mut self,
+        key: &str,
+        now: Instant,
+        cooldown: Duration,
+    ) -> bool {
+        if let Some(last_sent) = self.elders_request_last_sent.get(key) {
+            if now.duration_since(*last_sent) < cooldown {
+                return false;
+            }
+        } else {
+            self.elders_request_last_sent_order
+                .push_back(key.to_owned());
+            while self.elders_request_last_sent_order.len() > ELDERS_REQUEST_COOLDOWN_CAP {
+                let Some(evicted) = self.elders_request_last_sent_order.pop_front() else {
+                    break;
+                };
+                self.elders_request_last_sent.remove(&evicted);
+            }
+        }
+        self.elders_request_last_sent.insert(key.to_owned(), now);
+        true
+    }
+
     pub fn try_start_processing_block(&mut self, block_id: &str) -> bool {
         self.try_start_processing_block_with_seen_replay(block_id, false)
     }
@@ -3317,6 +3358,41 @@ mod tests {
         assert!(
             state.try_start_processing_tx(tx_id),
             "cancelled tx processing should allow a fresh retry"
+        );
+    }
+
+    #[test]
+    fn elders_request_cooldown_gates_identical_requests() {
+        let metrics = isolated_test_metrics();
+        let mut state = P2PState::new(metrics, LIBP2P_CONFIG.seen_tx_clear_interval);
+        let cooldown = Duration::from_secs(5);
+        let start = Instant::now();
+        let key_a = "block-a:peer-1";
+        let key_b = "block-a:peer-2";
+
+        assert!(
+            state.should_send_elders_request(key_a, start, cooldown),
+            "first elders request for a key should send"
+        );
+        assert!(
+            !state.should_send_elders_request(key_a, start + Duration::from_secs(1), cooldown),
+            "identical elders request inside the cooldown window should be suppressed"
+        );
+        assert!(
+            state.should_send_elders_request(key_b, start, cooldown),
+            "same block toward a different peer is a distinct key and should send"
+        );
+        assert!(
+            state.should_send_elders_request(key_a, start + cooldown, cooldown),
+            "elders request after the cooldown elapses should send again"
+        );
+        assert!(
+            !state.should_send_elders_request(
+                key_a,
+                start + cooldown + Duration::from_secs(1),
+                cooldown
+            ),
+            "resend should re-arm the cooldown window"
         );
     }
 
