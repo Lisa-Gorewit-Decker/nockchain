@@ -1,5 +1,27 @@
+use std::fmt;
+
 use nockapp::CrownError;
 use thiserror::Error;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BridgeRuntimeTransportErrorKind {
+    PeekChannelClosed,
+    PeekResponseDropped,
+    PokeChannelClosed,
+    PokeResponseDropped,
+}
+
+impl fmt::Display for BridgeRuntimeTransportErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::PeekChannelClosed => "peek channel closed",
+            Self::PeekResponseDropped => "peek response dropped",
+            Self::PokeChannelClosed => "poke channel closed",
+            Self::PokeResponseDropped => "poke response dropped",
+        };
+        f.write_str(label)
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum BridgeError {
@@ -44,6 +66,12 @@ pub enum BridgeError {
 
     #[error("Bridge runtime error: {0}")]
     Runtime(String),
+
+    #[error("Bridge runtime transport error ({kind}): {detail}")]
+    RuntimeTransport {
+        kind: BridgeRuntimeTransportErrorKind,
+        detail: String,
+    },
 
     #[error("Signature generation failed: {0}")]
     SignatureGeneration(String),

@@ -68,6 +68,7 @@ const BRIDGE_DEV_MANUAL_SUBMIT_APPROVAL_ENV: &str = "BRIDGE_DEV_MANUAL_SUBMIT_AP
 const BRIDGE_DEV_FAKENET_GENESIS_JAM_ENV: &str = "BRIDGE_DEV_FAKENET_GENESIS_JAM";
 const BRIDGE_DEV_FAKENET_POW_LEN_ENV: &str = "BRIDGE_DEV_FAKENET_POW_LEN";
 const BRIDGE_DEV_FAKENET_LOG_DIFFICULTY_ENV: &str = "BRIDGE_DEV_FAKENET_LOG_DIFFICULTY";
+const BRIDGE_DEV_FAKENET_BYTHOS_PHASE_ENV: &str = "BRIDGE_DEV_FAKENET_BYTHOS_PHASE";
 const BRIDGE_DEV_BASE_BLOCKS_CHUNK_ENV: &str = "BRIDGE_DEV_BASE_BLOCKS_CHUNK";
 const BRIDGE_DEV_BRIDGE_SAVE_INTERVAL_MILLIS_ENV: &str = "BRIDGE_DEV_BRIDGE_SAVE_INTERVAL_MILLIS";
 const FAKENET_GENESIS_JAM_RELATIVE_TO_CRATES: &str =
@@ -282,6 +283,10 @@ fn fakenet_pow_len() -> Result<u64> {
 
 fn fakenet_log_difficulty() -> Result<u64> {
     Ok(optional_u64_env(BRIDGE_DEV_FAKENET_LOG_DIFFICULTY_ENV)?.unwrap_or(FAKENET_LOG_DIFFICULTY))
+}
+
+fn fakenet_bythos_phase() -> Result<Option<u64>> {
+    optional_u64_env(BRIDGE_DEV_FAKENET_BYTHOS_PHASE_ENV)
 }
 
 fn base_blocks_chunk() -> Result<u64> {
@@ -3028,6 +3033,10 @@ async fn spawn_node(
         "--sequencer-config-path".to_string(),
         sequencer_config_path.display().to_string(),
     ];
+    if let Some(bythos_phase) = fakenet_bythos_phase()? {
+        args.push("--fakenet-bythos-phase".to_string());
+        args.push(bythos_phase.to_string());
+    }
     if fresh_state {
         args.insert(0, "--new".to_string());
     }
@@ -4644,6 +4653,10 @@ mod tests {
         assert_eq!(
             parse_optional_u64_env_value(BRIDGE_DEV_BASE_BLOCKS_CHUNK_ENV, Some("10")).unwrap(),
             Some(10)
+        );
+        assert_eq!(
+            parse_optional_u64_env_value(BRIDGE_DEV_FAKENET_BYTHOS_PHASE_ENV, Some("125")).unwrap(),
+            Some(125)
         );
         assert!(parse_optional_u64_env_value(
             BRIDGE_DEV_WITHDRAWAL_ACTIVATION_NOCK_NEXT_HEIGHT_ENV,

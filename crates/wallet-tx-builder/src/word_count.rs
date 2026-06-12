@@ -384,7 +384,9 @@ mod tests {
     use nockchain_types::tx_engine::v1::note::{
         NoteData, NOTE_DATA_KEY_BRIDGE_WITHDRAWAL, NOTE_DATA_KEY_LOCK,
     };
-    use nockchain_types::tx_engine::v1::tx::{Lock, LockPrimitive, Pkh, Spend};
+    use nockchain_types::tx_engine::v1::tx::{
+        Lock, LockMerkleProof, LockPrimitive, MerkleProof, Pkh, Spend, Witness,
+    };
     use nockchain_types::v1::Transaction;
     use nockvm::ext::NounExt;
     use nockvm::mem::NockStack;
@@ -411,6 +413,10 @@ mod tests {
         witness_words: u64,
     }
 
+    const BRIDGE_PRE_BYTHOS_STUB_WITH_CHANGE: &str =
+        "bridge-multisig-withdrawal-pre-bythos-stub-with-change";
+    const BRIDGE_PRE_BYTHOS_STUB_ORIGIN_PAGE: u64 = 7;
+
     fn hash(v: u64) -> Hash {
         Hash::from_limbs(&[v, 0, 0, 0, 0])
     }
@@ -424,6 +430,44 @@ mod tests {
                 blob: value.jam_bytes(),
             }],
         }
+    }
+
+    fn bridge_multisig_spend_condition() -> SpendCondition {
+        SpendCondition::new(vec![LockPrimitive::Pkh(Pkh::new(
+            3,
+            vec![hash(1), hash(2), hash(3), hash(4), hash(5)],
+        ))])
+    }
+
+    fn empty_merkle_proof() -> MerkleProof {
+        MerkleProof {
+            root: hash(99),
+            path: Vec::new(),
+        }
+    }
+
+    fn count_witness_words(
+        lock_merkle_proof: LockMerkleProof,
+        spend_condition: &SpendCondition,
+    ) -> u64 {
+        WordCountEstimator::count_encoded_leaves(&Witness::new(
+            lock_merkle_proof,
+            WordCountEstimator::synthetic_pkh_signature(spend_condition),
+            Vec::new(),
+        ))
+    }
+
+    fn encoded_stub_and_full_witness_words() -> (u64, u64) {
+        let spend_condition = bridge_multisig_spend_condition();
+        let stub_words = count_witness_words(
+            LockMerkleProof::new_stub(spend_condition.clone(), 1, empty_merkle_proof()),
+            &spend_condition,
+        );
+        let full_words = count_witness_words(
+            LockMerkleProof::new_full(spend_condition.clone(), 1, empty_merkle_proof()),
+            &spend_condition,
+        );
+        (stub_words, full_words)
     }
 
     fn decode_note_data_fixtures() -> Vec<FixtureEntry> {
@@ -499,6 +543,29 @@ mod tests {
             .into_iter()
             .find(|fixture| normalize_case_tag(&fixture.case) == case)
             .unwrap_or_else(|| panic!("missing fixture case: {case}"))
+    }
+
+    fn first_witness_spend_condition(
+        transaction: Transaction,
+    ) -> (LockMerkleProof, SpendCondition) {
+        let Transaction::V1(tx) = transaction;
+        let (name, spend) = tx.spends.0.into_iter().next().expect("fixture spend");
+        let Spend::Witness(spend) = spend else {
+            panic!("fixture must contain a v1 witness spend");
+        };
+        let nockchain_types::tx_engine::v1::tx::InputMetadata::SpendConditions(input_metadata) =
+            tx.metadata.inputs
+        else {
+            panic!("fixture must carry spend-condition metadata");
+        };
+        let spend_condition = input_metadata
+            .0
+            .into_iter()
+            .find(|(candidate, _)| candidate == &name)
+            .map(|(_, spend_condition)| spend_condition)
+            .expect("fixture metadata for witness spend");
+
+        (spend.witness.lock_merkle_proof, spend_condition)
     }
 
     fn outputs_from_transaction_fixture(case: &str) -> Vec<PlannedOutput> {
@@ -887,6 +954,210 @@ mod tests {
         assert_eq!(estimator.estimate_v0_witness_words(1), 31);
         assert_eq!(estimator.estimate_v0_witness_words(2), 61);
         assert_eq!(estimator.estimate_v0_witness_words(3), 91);
+    }
+
+    #[test]
+    fn pre_bythos_stub_lmp_tx_fee_is_discounted_by_one_witness_word() {
+        let spend_condition = bridge_multisig_spend_condition();
+        let bythos_phase = BlockHeight(Belt(80));
+        let context = ChainContext {
+            height: BlockHeight(Belt(93)),
+            bythos_phase: bythos_phase.clone(),
+            base_fee: 256,
+            input_fee_divisor: 4,
+            min_fee: 0,
+        };
+        let (actual_stub_words, actual_full_words) = encoded_stub_and_full_witness_words();
+        assert_eq!(
+            actual_full_words - actual_stub_words,
+            1,
+            "full LMP carries the %full version atom that legacy stub LMP omits"
+        );
+
+        // Regression for bridge withdrawals that spend a pre-Bythos bridge
+        // multisig note after Bythos activation. The selected input's origin
+        // height, not the current chain height, determines the LMP shape.
+        let estimated_stub_words = estimate_witness_words(
+            &[WitnessWordInput {
+                spend_condition: spend_condition.clone(),
+                input_origin_page: BlockHeight(Belt(7)),
+                spend_condition_count: Some(1),
+            }],
+            &context,
+        );
+        let estimated_full_words = estimate_witness_words(
+            &[WitnessWordInput {
+                spend_condition,
+                input_origin_page: bythos_phase,
+                spend_condition_count: Some(1),
+            }],
+            &context,
+        );
+        assert_eq!(estimated_stub_words, actual_stub_words);
+        assert_eq!(estimated_full_words, actual_full_words);
+
+        let seed_words = 37;
+        let stub_fee = compute_minimum_fee(FeeInputs {
+            seed_words,
+            witness_words: estimated_stub_words,
+            base_fee: context.base_fee,
+            input_fee_divisor: context.input_fee_divisor,
+            min_fee: context.min_fee,
+            height: context.height.clone(),
+            bythos_phase: context.bythos_phase.clone(),
+        })
+        .minimum_fee;
+        let full_fee = compute_minimum_fee(FeeInputs {
+            seed_words,
+            witness_words: estimated_full_words,
+            base_fee: context.base_fee,
+            input_fee_divisor: context.input_fee_divisor,
+            min_fee: context.min_fee,
+            height: context.height,
+            bythos_phase: context.bythos_phase,
+        })
+        .minimum_fee;
+
+        assert_eq!(
+            full_fee - stub_fee,
+            context.base_fee / context.input_fee_divisor,
+            "one extra full-proof witness word should be charged after the Bythos witness discount"
+        );
+    }
+
+    #[test]
+    fn mixed_stub_and_full_lmp_inputs_charge_each_input_shape() {
+        let spend_condition = bridge_multisig_spend_condition();
+        let bythos_phase = BlockHeight(Belt(80));
+        let context = ChainContext {
+            height: BlockHeight(Belt(93)),
+            bythos_phase: bythos_phase.clone(),
+            base_fee: 256,
+            input_fee_divisor: 4,
+            min_fee: 0,
+        };
+        let (stub_words, full_words) = encoded_stub_and_full_witness_words();
+
+        let mixed_words = estimate_witness_words(
+            &[
+                WitnessWordInput {
+                    spend_condition: spend_condition.clone(),
+                    input_origin_page: BlockHeight(Belt(7)),
+                    spend_condition_count: Some(1),
+                },
+                WitnessWordInput {
+                    spend_condition,
+                    input_origin_page: bythos_phase,
+                    spend_condition_count: Some(1),
+                },
+            ],
+            &context,
+        );
+
+        assert_eq!(
+            mixed_words,
+            stub_words + full_words,
+            "a mixed withdrawal must charge pre-Bythos and post-Bythos inputs independently"
+        );
+
+        let fee = compute_minimum_fee(FeeInputs {
+            seed_words: 37,
+            witness_words: mixed_words,
+            base_fee: context.base_fee,
+            input_fee_divisor: context.input_fee_divisor,
+            min_fee: context.min_fee,
+            height: context.height,
+            bythos_phase: context.bythos_phase,
+        });
+
+        assert_eq!(fee.witness_fee, mixed_words * 64);
+        assert_eq!(fee.minimum_fee, fee.seed_fee + fee.witness_fee);
+    }
+
+    #[test]
+    fn stub_and_full_lmp_tx_fees_can_match_when_min_fee_floor_dominates() {
+        let (stub_words, full_words) = encoded_stub_and_full_witness_words();
+        assert_eq!(
+            full_words - stub_words,
+            1,
+            "this case still uses distinct stub/full proof shapes"
+        );
+
+        let min_fee = 1_000_000;
+        let stub_fee = compute_minimum_fee(FeeInputs {
+            seed_words: 0,
+            witness_words: stub_words,
+            base_fee: 256,
+            input_fee_divisor: 4,
+            min_fee,
+            height: BlockHeight(Belt(93)),
+            bythos_phase: BlockHeight(Belt(80)),
+        });
+        let full_fee = compute_minimum_fee(FeeInputs {
+            seed_words: 0,
+            witness_words: full_words,
+            base_fee: 256,
+            input_fee_divisor: 4,
+            min_fee,
+            height: BlockHeight(Belt(93)),
+            bythos_phase: BlockHeight(Belt(80)),
+        });
+
+        assert!(stub_fee.word_fee < min_fee);
+        assert!(full_fee.word_fee < min_fee);
+        assert_eq!(stub_fee.minimum_fee, min_fee);
+        assert_eq!(
+            full_fee.minimum_fee, stub_fee.minimum_fee,
+            "when both word fees are below the floor, the final tx fee is identical"
+        );
+    }
+
+    #[test]
+    fn pre_bythos_bridge_multisig_stub_fixture_fee_matches_hoon_oracle() {
+        let fixture = withdrawal_tx_fixture_entry(BRIDGE_PRE_BYTHOS_STUB_WITH_CHANGE);
+        let (lock_merkle_proof, spend_condition) =
+            first_witness_spend_condition(fixture.transaction.clone());
+        assert!(
+            matches!(lock_merkle_proof, LockMerkleProof::Stub(_)),
+            "fixture should spend a pre-Bythos note using the legacy stub proof shape"
+        );
+        let context = ChainContext {
+            height: BlockHeight(Belt(fixture.height)),
+            bythos_phase: BlockHeight(Belt(10)),
+            base_fee: 256,
+            input_fee_divisor: 4,
+            min_fee: 0,
+        };
+
+        let estimated_seed_words = estimate_seed_words(
+            &outputs_from_transaction_fixture(BRIDGE_PRE_BYTHOS_STUB_WITH_CHANGE),
+            &context,
+        );
+        let estimated_witness_words = estimate_witness_words(
+            &[WitnessWordInput {
+                spend_condition,
+                input_origin_page: BlockHeight(Belt(BRIDGE_PRE_BYTHOS_STUB_ORIGIN_PAGE)),
+                spend_condition_count: Some(1),
+            }],
+            &context,
+        );
+        let minimum_fee = compute_minimum_fee(FeeInputs {
+            seed_words: estimated_seed_words,
+            witness_words: estimated_witness_words,
+            base_fee: context.base_fee,
+            input_fee_divisor: context.input_fee_divisor,
+            min_fee: context.min_fee,
+            height: context.height,
+            bythos_phase: context.bythos_phase,
+        })
+        .minimum_fee;
+
+        assert_eq!(estimated_seed_words, fixture.seed_words);
+        assert_eq!(estimated_witness_words, fixture.witness_words);
+        assert_eq!(
+            minimum_fee, fixture.min_fee,
+            "fixture words/min-fee are generated by the Hoon wallet estimate-fee path"
+        );
     }
 
     #[test]

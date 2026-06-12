@@ -84,9 +84,6 @@
         %base-block-withdrawals-committed
       (commit-base-block-withdrawals:base ack.cause)
       ::
-        %repair-pending-base-block-commit
-      (repair-pending-base-block-commit:base ack.cause)
-      ::
         %nockchain-block
       (incoming-nockchain-block:nock +>.cause rest)
       ::

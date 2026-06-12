@@ -76,8 +76,9 @@ impl WithdrawalProposalData {
         hasher.update(&self.epoch.to_be_bytes());
         hasher.update(&self.snapshot.height.to_be_bytes());
         hasher.update(&self.snapshot.block_id.to_be_limb_bytes());
+        let selected_inputs = normalized_note_names(&self.selected_inputs);
         hasher.update(
-            &u64::try_from(self.selected_inputs.len())
+            &u64::try_from(selected_inputs.len())
                 .map_err(|err| {
                     BridgeError::ValueConversion(format!(
                         "selected input count too large for proposal hash: {err}"
@@ -85,7 +86,7 @@ impl WithdrawalProposalData {
                 })?
                 .to_be_bytes(),
         );
-        for input in &self.selected_inputs {
+        for input in &selected_inputs {
             hasher.update(&input.first.to_be_limb_bytes());
             hasher.update(&input.last.to_be_limb_bytes());
         }

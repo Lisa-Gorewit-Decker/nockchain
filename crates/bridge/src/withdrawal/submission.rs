@@ -4,9 +4,11 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use backon::Retryable;
+use nockapp::noun::slab::{NockJammer, NounSlab};
 use nockapp_grpc::pb::common::v1::Base58Hash;
 use nockapp_grpc::pb::public::v2::transaction_accepted_response;
 use nockapp_grpc::services::public_nockchain::v2::client::PublicNockchainGrpcClient;
+use noun_serde::NounEncode;
 use prost::Message;
 use thiserror::Error;
 use tokio::time::{interval, MissedTickBehavior};
@@ -1376,8 +1378,8 @@ fn merge_signed_transaction(
             nockchain_types::v1::Transaction::V1(signed_tx),
         ) => {
             if base_tx.name != signed_tx.name
-                || base_tx.spends != signed_tx.spends
-                || base_tx.metadata != signed_tx.metadata
+                || !noun_encoded_eq(&base_tx.spends, &signed_tx.spends)
+                || !noun_encoded_eq(&base_tx.metadata, &signed_tx.metadata)
             {
                 return Err(BridgeError::Runtime(
                     "signed withdrawal transaction diverged from canonical proposal".into(),
@@ -1388,6 +1390,17 @@ fn merge_signed_transaction(
             Ok(())
         }
     }
+}
+
+fn noun_encoded_eq<T: NounEncode>(left: &T, right: &T) -> bool {
+    noun_encoded_bytes(left) == noun_encoded_bytes(right)
+}
+
+fn noun_encoded_bytes<T: NounEncode>(value: &T) -> Vec<u8> {
+    let mut slab: NounSlab<NockJammer> = NounSlab::new();
+    let noun = value.to_noun(&mut slab);
+    slab.set_root(noun);
+    slab.jam().to_vec()
 }
 
 /// Merges witness maps from multiple signer contributions into a single witness
@@ -2059,6 +2072,69 @@ mod tests {
             selected_inputs: transaction.normalized_input_names(),
             transaction,
         }
+    }
+
+    fn append_cloned_input(transaction: &mut nockchain_types::v1::Transaction) -> Name {
+        let nockchain_types::v1::Transaction::V1(transaction_v1) = transaction;
+        let second_name = Name::new(
+            Tip5Hash([Belt(901), Belt(902), Belt(903), Belt(904), Belt(905)]),
+            Tip5Hash([Belt(911), Belt(912), Belt(913), Belt(914), Belt(915)]),
+        );
+        let (_, first_spend) = transaction_v1
+            .spends
+            .0
+            .first()
+            .cloned()
+            .expect("fixture transaction should contain a spend");
+        transaction_v1
+            .spends
+            .0
+            .push((second_name.clone(), first_spend));
+
+        let nockchain_types::v1::InputMetadata::SpendConditions(input_metadata) =
+            &mut transaction_v1.metadata.inputs
+        else {
+            panic!("fixture transaction must use spend-condition metadata");
+        };
+        let (_, first_condition) = input_metadata
+            .0
+            .first()
+            .cloned()
+            .expect("fixture transaction should contain input metadata");
+        input_metadata
+            .0
+            .push((second_name.clone(), first_condition));
+
+        let nockchain_types::v1::WitnessData::Witnesses(witness_map) =
+            &mut transaction_v1.witness_data
+        else {
+            panic!("fixture transaction must use witness data");
+        };
+        let (_, first_witness) = witness_map
+            .0
+            .first()
+            .cloned()
+            .expect("fixture transaction should contain witness data");
+        witness_map.0.push((second_name.clone(), first_witness));
+        second_name
+    }
+
+    fn reverse_transaction_map_order(transaction: &mut nockchain_types::v1::Transaction) {
+        let nockchain_types::v1::Transaction::V1(transaction_v1) = transaction;
+        transaction_v1.spends.0.reverse();
+        let nockchain_types::v1::InputMetadata::SpendConditions(input_metadata) =
+            &mut transaction_v1.metadata.inputs
+        else {
+            panic!("fixture transaction must use spend-condition metadata");
+        };
+        input_metadata.0.reverse();
+        transaction_v1.metadata.outputs.0.reverse();
+        let nockchain_types::v1::WitnessData::Witnesses(witness_map) =
+            &mut transaction_v1.witness_data
+        else {
+            panic!("fixture transaction must use witness data");
+        };
+        witness_map.0.reverse();
     }
 
     async fn register_proposal_ordering(
@@ -3088,6 +3164,30 @@ mod tests {
                 .is_none(),
             "base signer plus one stored contribution should still be below the 3-of-5 threshold"
         );
+    }
+
+    #[test]
+    fn merge_signed_transaction_accepts_normalized_map_order() {
+        let (mut proposal, signer_pkhs) = sample_multisig_proposal(0);
+        append_cloned_input(&mut proposal.transaction);
+        proposal.selected_inputs = proposal.transaction.normalized_input_names();
+        let mut signed = signed_contribution(
+            &proposal,
+            &signer_pkhs,
+            &[signer_pkhs[2].clone(), signer_pkhs[0].clone()],
+        );
+        reverse_transaction_map_order(&mut signed.transaction);
+
+        let (
+            nockchain_types::v1::Transaction::V1(base_tx),
+            nockchain_types::v1::Transaction::V1(signed_tx),
+        ) = (&proposal.transaction, &signed.transaction);
+        assert_ne!(base_tx.spends, signed_tx.spends);
+        assert_ne!(base_tx.metadata, signed_tx.metadata);
+
+        let mut merged = proposal.transaction.clone();
+        merge_signed_transaction(&mut merged, &signed.transaction)
+            .expect("canonical map order should not make signed transaction diverge");
     }
 
     #[test]

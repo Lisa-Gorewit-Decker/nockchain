@@ -146,12 +146,9 @@ fn validate_lock_merkle_proof(
                 format!("{label} full proof version is not %full"),
             ));
         }
-        LockMerkleProof::Stub(_) => {
-            return Err(invalid_body(
-                proposal,
-                format!("{label} proof is not full lock-merkle-proof"),
-            ));
-        }
+        // Legacy bridge notes can still carry pre-Bythos stub proofs. Accept
+        // them, then apply the same bridge-lock constraints below.
+        LockMerkleProof::Stub(_) => {}
     }
     if proof.spend_condition() != spend_condition {
         return Err(invalid_body(
@@ -288,11 +285,11 @@ fn validate_transaction_outputs(
         }
     }
 
-    if withdrawal_seed_count != 1 {
+    if withdrawal_seed_count == 0 {
         return Err(invalid_body(
             proposal,
             format!(
-                "withdrawal transaction must create exactly one recipient output, found {withdrawal_seed_count}"
+                "withdrawal transaction must create at least one recipient output, found {withdrawal_seed_count}"
             ),
         ));
     }
@@ -745,6 +742,44 @@ mod tests {
     }
 
     #[test]
+    fn validate_withdrawal_transaction_body_accepts_split_recipient_seeds() {
+        let (mut proposal, bridge_lock_root) = sample_proposal();
+        let Transaction::V1(tx) = &mut proposal.transaction;
+        let (_, Spend::Witness(spend)) = tx.spends.0.first_mut().expect("spend") else {
+            panic!("expected witness spend");
+        };
+        let mut second_withdrawal_seed = spend.seeds.0[0].clone();
+        spend.seeds.0[0].gift = Nicks(500);
+        second_withdrawal_seed.gift = Nicks((proposal.amount - 500) as usize);
+        second_withdrawal_seed.parent_hash = hash(602);
+        spend.seeds.0.insert(1, second_withdrawal_seed);
+
+        validate_withdrawal_transaction_body(&proposal, &bridge_lock_root, TEST_NICKS_FEE_PER_NOCK)
+            .expect("split recipient seeds should validate when the summed amount matches");
+    }
+
+    #[test]
+    fn validate_withdrawal_transaction_body_rejects_missing_recipient_seed() {
+        let (mut proposal, bridge_lock_root) = sample_proposal();
+        let Transaction::V1(tx) = &mut proposal.transaction;
+        let (_, Spend::Witness(spend)) = tx.spends.0.first_mut().expect("spend") else {
+            panic!("expected witness spend");
+        };
+        spend.seeds.0.remove(0);
+
+        let err = validate_withdrawal_transaction_body(
+            &proposal, &bridge_lock_root, TEST_NICKS_FEE_PER_NOCK,
+        )
+        .expect_err("missing recipient seed should fail");
+
+        assert!(
+            err.to_string()
+                .contains("must create at least one recipient output"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn validate_withdrawal_transaction_body_rejects_underpaid_recipient_output() {
         let (mut proposal, bridge_lock_root) = sample_proposal();
         proposal.amount -= 1;
@@ -858,17 +893,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_withdrawal_transaction_body_rejects_stub_lock_merkle_proof() {
+    fn validate_withdrawal_transaction_body_accepts_stub_lock_merkle_proof() {
         let (mut proposal, bridge_lock_root) = sample_proposal();
-        *first_witness_data_lock_proof_mut(&mut proposal) = LockMerkleProof::new_full(
-            bridge_spend_condition(),
-            1,
-            MerkleProof {
-                root: bridge_lock_root.clone(),
-                path: Vec::new(),
-            },
-        );
-        *first_spend_lock_proof_mut(&mut proposal) = LockMerkleProof::new_stub(
+        let proof = LockMerkleProof::new_stub(
             bridge_spend_condition(),
             1,
             MerkleProof {
@@ -877,16 +904,11 @@ mod tests {
             },
         );
 
-        let err = validate_withdrawal_transaction_body(
-            &proposal, &bridge_lock_root, TEST_NICKS_FEE_PER_NOCK,
-        )
-        .expect_err("stub proof should fail");
+        *first_witness_data_lock_proof_mut(&mut proposal) = proof.clone();
+        *first_spend_lock_proof_mut(&mut proposal) = proof;
 
-        assert!(
-            err.to_string()
-                .contains("spend witness proof is not full lock-merkle-proof"),
-            "unexpected error: {err}"
-        );
+        validate_withdrawal_transaction_body(&proposal, &bridge_lock_root, TEST_NICKS_FEE_PER_NOCK)
+            .expect("legacy stub proof should validate for bridge withdrawal inputs");
     }
 
     #[test]
@@ -923,6 +945,22 @@ mod tests {
         assert_ne!(
             original_hash,
             proposal.proposal_hash().expect("mutated hash")
+        );
+    }
+
+    #[test]
+    fn proposal_hash_normalizes_selected_input_order() {
+        let (mut proposal, _) = sample_proposal();
+        proposal
+            .selected_inputs
+            .push(Name::new(hash(401), hash(501)));
+        let original_hash = proposal.proposal_hash().expect("original hash");
+
+        proposal.selected_inputs.reverse();
+
+        assert_eq!(
+            original_hash,
+            proposal.proposal_hash().expect("reordered hash")
         );
     }
 

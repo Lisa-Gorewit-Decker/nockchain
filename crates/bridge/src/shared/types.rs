@@ -461,10 +461,6 @@ impl BridgeCause {
     pub fn base_block_withdrawals_committed(ack: BaseBlockCommitAck) -> Self {
         Self(0, BridgeCauseVariant::BaseBlockWithdrawalsCommitted(ack))
     }
-
-    pub fn repair_pending_base_block_commit(ack: BaseBlockCommitAck) -> Self {
-        Self(0, BridgeCauseVariant::RepairPendingBaseBlockCommit(ack))
-    }
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode)]
@@ -508,9 +504,6 @@ pub enum BridgeCauseVariant {
 
     #[noun(tag = "base-block-withdrawals-committed")]
     BaseBlockWithdrawalsCommitted(BaseBlockCommitAck),
-
-    #[noun(tag = "repair-pending-base-block-commit")]
-    RepairPendingBaseBlockCommit(BaseBlockCommitAck),
 
     #[noun(tag = "nockchain-block")]
     NockchainBlock(NockchainBlockCause),
@@ -1457,28 +1450,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cause_repair_pending_base_block_commit_roundtrip() {
-        init_test_logging();
-        info!("Starting repair-pending-base-block-commit cause roundtrip test");
-
-        let mut allocator: NounSlab<NockJammer> = NounSlab::new();
-        let ack = sample_base_block_commit_ack();
-        let original_cause = BridgeCause::repair_pending_base_block_commit(ack.clone());
-
-        let encoded_noun = original_cause.to_noun(&mut allocator);
-        let decoded_cause = BridgeCause::from_noun(&encoded_noun, &allocator.noun_space())
-            .expect("Failed to decode repair-pending-base-block-commit cause from noun");
-
-        assert_eq!(decoded_cause.0, 0, "Version should be 0");
-        match decoded_cause.1 {
-            BridgeCauseVariant::RepairPendingBaseBlockCommit(decoded) => {
-                assert_eq!(decoded, ack);
-            }
-            _ => panic!("Expected RepairPendingBaseBlockCommit variant"),
-        }
-    }
-
-    #[test]
     fn test_cause_proposed_base_call_roundtrip() {
         init_test_logging();
         info!("Starting proposed-base-call cause roundtrip test");
@@ -1756,10 +1727,6 @@ mod tests {
             (
                 "base-block-withdrawals-committed",
                 BridgeCause::base_block_withdrawals_committed(sample_base_block_commit_ack()),
-            ),
-            (
-                "repair-pending-base-block-commit",
-                BridgeCause::repair_pending_base_block_commit(sample_base_block_commit_ack()),
             ),
             (
                 "proposed-base-call",

@@ -159,11 +159,20 @@
 ++  create-selected-withdrawal-note
   |=  [config=node-config source-hash=hash:t assets=coins:t]
   ^-  selected-withdrawal-note
+  (create-selected-withdrawal-note-at-origin config source-hash assets 0)
+::
+++  create-selected-withdrawal-note-at-origin
+  |=  $:  config=node-config
+          source-hash=hash:t
+          assets=coins:t
+          origin-page=page-number:t
+      ==
+  ^-  selected-withdrawal-note
   =/  signer=schnorr-pubkey:t
     %-  from-sk:schnorr-pubkey:t
     (to-atom:schnorr-seckey:t my-nock-key.config)
   =/  [name=nname:t note=nnote-1:v1:t]
-    (build-v1-note:whel source-hash assets [~ signer])
+    (build-v1-note-at-origin:whel source-hash assets [~ signer] origin-page)
   [name note]
 ::
 ++  make-base-blocks

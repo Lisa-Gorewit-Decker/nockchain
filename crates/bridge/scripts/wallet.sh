@@ -55,6 +55,9 @@ WALLET_DIR="${TEST_DATA_DIR}/wallet"
 NODE_PRIVATE_GRPC_PORT="${NODE_PRIVATE_GRPC_PORT:-5002}"
 NODE_PUBLIC_GRPC_SERVER_ADDR="${NODE_PUBLIC_GRPC_SERVER_ADDR:-http://127.0.0.1:5001}"
 COMMON_WALLET_ARGS=(--data-dir "$WALLET_DIR" --fakenet)
+if [[ -n "${BRIDGE_DEV_FAKENET_BYTHOS_PHASE:-}" ]]; then
+    COMMON_WALLET_ARGS+=(--fakenet-bythos-phase "$BRIDGE_DEV_FAKENET_BYTHOS_PHASE")
+fi
 CLIENT_MODE="private"
 
 # Same v1 seed as run-node-only.sh, plus the legacy v0 seed that matches

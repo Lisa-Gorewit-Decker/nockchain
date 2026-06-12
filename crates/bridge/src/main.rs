@@ -991,7 +991,6 @@ async fn main() -> Result<(), BridgeError> {
         runtime_handle.as_ref(),
         withdrawal_registry.as_ref(),
         withdrawal_activation_cutoff,
-        cli.start,
     )
     .await?;
     info!(

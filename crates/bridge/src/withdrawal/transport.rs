@@ -38,7 +38,9 @@ use crate::withdrawal::submission::{
     register_withdrawal_or_alert, sequenced_withdrawal_released,
     WithdrawalSequencerCanonicalizationError, WithdrawalSequencerPort,
 };
-use crate::withdrawal::types::{WithdrawalId, WithdrawalProposalData, WithdrawalSnapshot};
+use crate::withdrawal::types::{
+    normalized_note_names, WithdrawalId, WithdrawalProposalData, WithdrawalSnapshot,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WithdrawalProposalBroadcastOutcome {
@@ -1798,7 +1800,8 @@ pub(crate) fn signed_proposal_matches_base(
         && base.base_batch_end == signed.base_batch_end
         && base.epoch == signed.epoch
         && base.snapshot == signed.snapshot
-        && base.selected_inputs == signed.selected_inputs
+        && normalized_note_names(&base.selected_inputs)
+            == normalized_note_names(&signed.selected_inputs)
         && signed_transaction_matches_base(&base.transaction, &signed.transaction)
 }
 
@@ -1814,10 +1817,21 @@ fn signed_transaction_matches_base(
             nockchain_types::v1::Transaction::V1(signed_tx),
         ) => {
             base_tx.name == signed_tx.name
-                && base_tx.spends == signed_tx.spends
-                && base_tx.metadata == signed_tx.metadata
+                && noun_encoded_eq(&base_tx.spends, &signed_tx.spends)
+                && noun_encoded_eq(&base_tx.metadata, &signed_tx.metadata)
         }
     }
+}
+
+fn noun_encoded_eq<T: NounEncode>(left: &T, right: &T) -> bool {
+    noun_encoded_bytes(left) == noun_encoded_bytes(right)
+}
+
+fn noun_encoded_bytes<T: NounEncode>(value: &T) -> Vec<u8> {
+    let mut slab: NounSlab<NockJammer> = NounSlab::new();
+    let noun = value.to_noun(&mut slab);
+    slab.set_root(noun);
+    slab.jam().to_vec()
 }
 
 /// Converts a Tip5 hash into the byte representation used by gRPC payloads.
@@ -2807,6 +2821,69 @@ mod tests {
             selected_inputs: transaction.normalized_input_names(),
             transaction,
         }
+    }
+
+    fn append_cloned_input(transaction: &mut nockchain_types::v1::Transaction) -> Name {
+        let nockchain_types::v1::Transaction::V1(transaction_v1) = transaction;
+        let second_name = Name::new(
+            Tip5Hash([Belt(901), Belt(902), Belt(903), Belt(904), Belt(905)]),
+            Tip5Hash([Belt(911), Belt(912), Belt(913), Belt(914), Belt(915)]),
+        );
+        let (_, first_spend) = transaction_v1
+            .spends
+            .0
+            .first()
+            .cloned()
+            .expect("fixture transaction should contain a spend");
+        transaction_v1
+            .spends
+            .0
+            .push((second_name.clone(), first_spend));
+
+        let nockchain_types::v1::InputMetadata::SpendConditions(input_metadata) =
+            &mut transaction_v1.metadata.inputs
+        else {
+            panic!("fixture transaction must use spend-condition metadata");
+        };
+        let (_, first_condition) = input_metadata
+            .0
+            .first()
+            .cloned()
+            .expect("fixture transaction should contain input metadata");
+        input_metadata
+            .0
+            .push((second_name.clone(), first_condition));
+
+        let nockchain_types::v1::WitnessData::Witnesses(witness_map) =
+            &mut transaction_v1.witness_data
+        else {
+            panic!("fixture transaction must use witness data");
+        };
+        let (_, first_witness) = witness_map
+            .0
+            .first()
+            .cloned()
+            .expect("fixture transaction should contain witness data");
+        witness_map.0.push((second_name.clone(), first_witness));
+        second_name
+    }
+
+    fn reverse_transaction_map_order(transaction: &mut nockchain_types::v1::Transaction) {
+        let nockchain_types::v1::Transaction::V1(transaction_v1) = transaction;
+        transaction_v1.spends.0.reverse();
+        let nockchain_types::v1::InputMetadata::SpendConditions(input_metadata) =
+            &mut transaction_v1.metadata.inputs
+        else {
+            panic!("fixture transaction must use spend-condition metadata");
+        };
+        input_metadata.0.reverse();
+        transaction_v1.metadata.outputs.0.reverse();
+        let nockchain_types::v1::WitnessData::Witnesses(witness_map) =
+            &mut transaction_v1.witness_data
+        else {
+            panic!("fixture transaction must use witness data");
+        };
+        witness_map.0.reverse();
     }
 
     fn sample_proposal_for_request(
@@ -4002,6 +4079,84 @@ mod tests {
             )
             .await
             .expect("load signed contribution replay marker"));
+
+        runtime_task.abort();
+    }
+
+    #[tokio::test]
+    async fn ingest_peer_signed_proposal_accepts_normalized_selected_input_and_map_order() {
+        let request = sample_request();
+        let mut base_proposal = sample_proposal(0);
+        let mut signed_proposal = sample_proposal(0);
+        let (base_transaction, target_name, removed_hash) = partially_signed_transaction_gap();
+        base_proposal.transaction = base_transaction;
+        let signer_hash = install_valid_sender_contribution(
+            &mut base_proposal.transaction, &mut signed_proposal.transaction, &target_name,
+            &removed_hash,
+        );
+        append_cloned_input(&mut base_proposal.transaction);
+        append_cloned_input(&mut signed_proposal.transaction);
+        base_proposal.selected_inputs = base_proposal.transaction.normalized_input_names();
+        signed_proposal.selected_inputs = signed_proposal.transaction.normalized_input_names();
+        signed_proposal.selected_inputs.reverse();
+        reverse_transaction_map_order(&mut signed_proposal.transaction);
+
+        assert_ne!(
+            base_proposal.selected_inputs,
+            signed_proposal.selected_inputs
+        );
+        let (
+            nockchain_types::v1::Transaction::V1(base_tx),
+            nockchain_types::v1::Transaction::V1(signed_tx),
+        ) = (&base_proposal.transaction, &signed_proposal.transaction);
+        assert_ne!(base_tx.spends, signed_tx.spends);
+        assert_ne!(base_tx.metadata, signed_tx.metadata);
+        assert_eq!(
+            base_proposal.proposal_hash().expect("base proposal hash"),
+            signed_proposal
+                .proposal_hash()
+                .expect("signed proposal hash")
+        );
+        assert!(signed_proposal_matches_base(
+            &base_proposal, &signed_proposal
+        ));
+
+        let node_pkhs = vec![
+            Tip5Hash([Belt(41), Belt(42), Belt(43), Belt(44), Belt(45)]),
+            signer_hash,
+            Tip5Hash([Belt(61), Belt(62), Belt(63), Belt(64), Belt(65)]),
+        ];
+        let sender_node_id = 1;
+        let (transport, _withdrawal_state_store, runtime_task, _runtime, _dir) =
+            open_transport(0, 1, node_pkhs, WithdrawalFallbackPolicy::default()).await;
+        transport
+            .registry()
+            .track_withdrawal_request(&request)
+            .await
+            .expect("track request");
+        transport
+            .registry()
+            .validate_and_cache_prepared(&base_proposal)
+            .await
+            .expect("persist base proposal");
+        transport
+            .registry()
+            .mark_proposal_prepared(&base_proposal)
+            .await
+            .expect("mark base proposal prepared");
+        transport
+            .registry()
+            .mark_proposal_canonical(&base_proposal)
+            .await
+            .expect("mark base proposal canonical");
+
+        let response = transport
+            .ingest_peer_signed_proposal(sender_node_id, &signed_proposal)
+            .await
+            .expect("ingest valid signed proposal with normalized order");
+
+        assert!(response.accepted);
+        assert_eq!(response.status, "inserted");
 
         runtime_task.abort();
     }

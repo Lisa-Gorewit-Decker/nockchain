@@ -107,13 +107,6 @@ pub trait WithdrawalKernelPort: Send + Sync {
         &self,
         ack: BaseBlockCommitAck,
     ) -> Result<(), BridgeError>;
-
-    /// Explicitly repairs a stale staged Base batch so the Base watcher can
-    /// reprocess it through the normal incoming Base path.
-    async fn poke_repair_pending_base_block_commit(
-        &self,
-        ack: BaseBlockCommitAck,
-    ) -> Result<(), BridgeError>;
 }
 
 #[async_trait]
@@ -165,13 +158,6 @@ impl WithdrawalKernelPort for BridgeRuntimeHandle {
         ack: BaseBlockCommitAck,
     ) -> Result<(), BridgeError> {
         BridgeRuntimeHandle::send_base_block_withdrawals_committed(self, ack).await
-    }
-
-    async fn poke_repair_pending_base_block_commit(
-        &self,
-        ack: BaseBlockCommitAck,
-    ) -> Result<(), BridgeError> {
-        BridgeRuntimeHandle::send_repair_pending_base_block_commit(self, ack).await
     }
 }
 
@@ -333,18 +319,6 @@ pub async fn recover_pending_base_block_commit_after_activation<K: WithdrawalKer
         pending, kernel, proposal_registry, activation_cutoff,
     )
     .await
-}
-
-pub async fn repair_pending_base_block_commit<K: WithdrawalKernelPort>(
-    kernel: &K,
-) -> Result<bool, BridgeError> {
-    let Some(pending) = kernel.peek_pending_base_block_commit().await? else {
-        return Ok(false);
-    };
-    kernel
-        .poke_repair_pending_base_block_commit(pending.ack())
-        .await?;
-    Ok(true)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -798,7 +772,7 @@ pub fn create_withdrawal_execution_driver(
                     error!(
                         target: "bridge.withdrawal",
                         error=%err,
-                        "withdrawal execution driver hit a durable conflict, triggering local stop"
+                        "withdrawal execution driver hit non-retryable error, triggering local stop"
                     );
                     let reason = format!("withdrawal execution persistence conflict: {err}");
                     trigger_local_stop(
@@ -1811,6 +1785,7 @@ mod tests {
     use super::*;
     use crate::observability::status::BridgeStatus;
     use crate::observability::tui::types::{AlertSeverity, NetworkState};
+    use crate::shared::errors::BridgeRuntimeTransportErrorKind;
     use crate::shared::ingress::proto::{
         SequencedWithdrawalStatusResponse, WithdrawalCommitCertificate, WithdrawalCommitSignature,
     };
@@ -1830,7 +1805,7 @@ mod tests {
         base_history: Mutex<Vec<NockWithdrawalRequestKernelData>>,
         pending_base_commit: Mutex<Option<PendingBaseBlockCommit>>,
         base_commit_acks: Mutex<Vec<BaseBlockCommitAck>>,
-        base_commit_ack_error: Mutex<Option<String>>,
+        base_commit_ack_error: Mutex<Option<BridgeError>>,
         create_error: Mutex<Option<String>>,
     }
 
@@ -1895,9 +1870,9 @@ mod tests {
                 .base_commit_ack_error
                 .lock()
                 .expect("base commit ack error lock")
-                .clone()
+                .take()
             {
-                return Err(BridgeError::Runtime(err));
+                return Err(err);
             }
             self.base_commit_acks
                 .lock()
@@ -1907,19 +1882,6 @@ mod tests {
                 .lock()
                 .expect("pending base commit lock")
                 .take();
-            Ok(())
-        }
-
-        async fn poke_repair_pending_base_block_commit(
-            &self,
-            ack: BaseBlockCommitAck,
-        ) -> Result<(), BridgeError> {
-            let pending = self
-                .pending_base_commit
-                .lock()
-                .expect("pending base commit lock")
-                .take();
-            assert_eq!(pending.as_ref().map(PendingBaseBlockCommit::ack), Some(ack));
             Ok(())
         }
     }
@@ -2728,37 +2690,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repair_pending_base_block_commit_repairs_without_tracking_or_ack() {
-        let (_dir, registry) = open_services().await;
-        let request = sample_withdrawal_request();
-        let pending = sample_pending_base_commit(vec![request]);
-        let kernel = RecordingKernelPort {
-            pending_base_commit: Mutex::new(Some(pending.clone())),
-            ..Default::default()
-        };
-
-        let repaired = repair_pending_base_block_commit(&kernel)
-            .await
-            .expect("repair pending base commit");
-        assert!(repaired);
-        assert!(kernel
-            .base_commit_acks
-            .lock()
-            .expect("base commit acks lock")
-            .is_empty());
-        assert!(kernel
-            .pending_base_commit
-            .lock()
-            .expect("pending base commit lock")
-            .is_none());
-        assert!(registry
-            .load_sorted_tracked_withdrawal_requests()
-            .await
-            .expect("load tracked requests")
-            .is_empty());
-    }
-
-    #[tokio::test]
     async fn pending_base_block_before_activation_is_acked_without_tracking() {
         let (_dir, registry) = open_services().await;
         let request = sample_withdrawal_request();
@@ -2807,7 +2738,9 @@ mod tests {
         let pending = sample_pending_base_commit(vec![request.clone()]);
         let kernel = RecordingKernelPort {
             pending_base_commit: Mutex::new(Some(pending.clone())),
-            base_commit_ack_error: Mutex::new(Some("ack enqueue failed".into())),
+            base_commit_ack_error: Mutex::new(Some(BridgeError::Runtime(
+                "ack enqueue failed".into(),
+            ))),
             ..Default::default()
         };
 
@@ -2837,6 +2770,60 @@ mod tests {
                 .as_ref()
                 .map(PendingBaseBlockCommit::ack),
             Some(pending.ack())
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_base_commit_ack_transport_error_returns_without_retry() {
+        let (_dir, registry) = open_services().await;
+        let request = sample_withdrawal_request();
+        let pending = sample_pending_base_commit(vec![request.clone()]);
+        let kernel = RecordingKernelPort {
+            base_next_height: Mutex::new(Some(request.base_batch_end.saturating_add(1))),
+            nock_next_height: Mutex::new(Some(0)),
+            pending_base_commit: Mutex::new(Some(pending.clone())),
+            base_history: Mutex::new(vec![request.clone()]),
+            base_commit_ack_error: Mutex::new(Some(BridgeError::RuntimeTransport {
+                kind: BridgeRuntimeTransportErrorKind::PokeResponseDropped,
+                detail: "simulated channel close".into(),
+            })),
+            ..Default::default()
+        };
+        set_kernel_projection_cursor(registry.as_ref(), pending.first_height, 0).await;
+
+        let err = persist_pending_base_block_withdrawals_after_activation(
+            pending.clone(),
+            &kernel,
+            registry.as_ref(),
+            activation(0),
+        )
+        .await
+        .expect_err("transport ack error should return without retry");
+
+        assert!(
+            matches!(
+                err,
+                BridgeError::RuntimeTransport {
+                    kind: BridgeRuntimeTransportErrorKind::PokeResponseDropped,
+                    ..
+                }
+            ),
+            "unexpected error: {err}"
+        );
+        assert!(kernel
+            .base_commit_acks
+            .lock()
+            .expect("base commit acks lock")
+            .is_empty());
+        assert!(kernel
+            .pending_base_commit
+            .lock()
+            .expect("pending base commit lock")
+            .is_some());
+        assert!(
+            fetch_tracked_from_registry(registry.as_ref(), &request.withdrawal_id())
+                .await
+                .is_some()
         );
     }
 

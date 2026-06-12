@@ -27,8 +27,10 @@ By default the scenarios also use the faster fakenet genesis and difficulty over
 (`BRIDGE_DEV_BASE_BLOCKS_CHUNK`), and a shorter Nock observer poll interval
 (`BRIDGE_NOCK_OBSERVER_POLL_MILLIS`). They also set
 `BRIDGE_DEV_BRIDGE_SAVE_INTERVAL_MILLIS=1000` so restart scenarios do not wait on the normal
-two-minute checkpoint cadence. Set those variables yourself before invoking the tests to exercise
-the normal bridge-dev parameters.
+two-minute checkpoint cadence. The pre-Bythos withdrawal scenario also overrides
+`BRIDGE_DEV_FAKENET_BYTHOS_PHASE` so its bridge multisig deposit is confirmed before Bythos and
+spent after Bythos. Set those variables yourself before invoking the tests to exercise the normal
+bridge-dev parameters.
 
 Covered scenarios:
 
@@ -44,6 +46,12 @@ Covered scenarios:
   bridge nodes, then mints, burns, advances enough Base blocks to fill the observer chunk, and
   verifies one withdrawal reaches pending, ready, submitted, and executed phases with stable
   proposal and authorized transaction artifacts.
+- Withdrawal pre-Bythos happy path seeds bridge-owned Nockchain liquidity before the configured
+  fakenet Bythos phase, waits until Nockchain reaches that phase, then verifies the withdrawal
+  still executes.
+- Withdrawal mixed Bythos-input happy path seeds one bridge-owned note before Bythos and one after
+  Bythos, requests a withdrawal large enough to require both notes, and verifies execution without
+  bridge stop-condition log markers.
 - Withdrawal restart recovery waits until the withdrawal is ready, restarts all bridge processes,
   then verifies the same withdrawal reaches submitted and executed with stable artifacts.
 - Withdrawal sequencer R2 recovery enables the durable sequencer journal, waits until a withdrawal

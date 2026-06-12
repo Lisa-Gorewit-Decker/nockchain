@@ -24,6 +24,7 @@ const PORT_OFFSET_ENV: &str = "BRIDGE_DEV_PORT_OFFSET";
 const FAKENET_GENESIS_JAM_ENV: &str = "BRIDGE_DEV_FAKENET_GENESIS_JAM";
 const FAKENET_POW_LEN_ENV: &str = "BRIDGE_DEV_FAKENET_POW_LEN";
 const FAKENET_LOG_DIFFICULTY_ENV: &str = "BRIDGE_DEV_FAKENET_LOG_DIFFICULTY";
+const FAKENET_BYTHOS_PHASE_ENV: &str = "BRIDGE_DEV_FAKENET_BYTHOS_PHASE";
 const BASE_BLOCKS_CHUNK_ENV: &str = "BRIDGE_DEV_BASE_BLOCKS_CHUNK";
 const BRIDGE_SAVE_INTERVAL_MILLIS_ENV: &str = "BRIDGE_DEV_BRIDGE_SAVE_INTERVAL_MILLIS";
 const NOCK_OBSERVER_POLL_MILLIS_ENV: &str = "BRIDGE_NOCK_OBSERVER_POLL_MILLIS";
@@ -45,10 +46,16 @@ const E2E_FAKENET_GENESIS_JAM_RELATIVE_TO_CRATES: &str =
 const E2E_DEPOSIT_AMOUNT_NICKS: &str = "6553600001";
 const E2E_DEPOSIT_SPEND_TIMEOUT_SECS: u64 = 1_800;
 const E2E_WITHDRAWAL_AMOUNT_NOCK: &str = "1001";
+const E2E_MIXED_INPUT_WITHDRAWAL_AMOUNT_NOCK: &str = "120000";
 const E2E_WITHDRAWAL_BASE_ADVANCE_BLOCKS: &str = "10";
 const E2E_WITHDRAWAL_PHASE_POLL_SECS: u64 = 30;
+const E2E_PRE_BYTHOS_WITHDRAWAL_BYTHOS_PHASE: u64 = 80;
 const E2E_MANUAL_APPROVAL_DEFER_TIMEOUT_SECS: u64 = 90;
 const WAIT_WITHDRAWAL_TIMEOUT_FRAGMENT: &str = "timed out waiting for withdrawal";
+const STOP_CONDITION_LOG_MARKERS: &[&str] = &[
+    "Bridge Stopped", "local stop requested", "local stop activated", "kernel-stop", "peer-stop",
+    "running_state=Stopped",
+];
 const REQUIRED_E2E_ENV: &[&str] = &[
     "TENDERLY_ACCESS_KEY", "TENDERLY_ACCOUNT_ID", "TENDERLY_PROJECT_SLUG",
     "TENDERLY_TEST_PRIVATE_KEY",
@@ -400,6 +407,10 @@ impl BridgeDevScenario {
 
     fn extend_env_overrides(&mut self, envs: impl IntoIterator<Item = (String, String)>) {
         self.env_overrides.extend(envs);
+    }
+
+    fn with_fakenet_bythos_phase(&mut self, phase: u64) {
+        self.extend_env_overrides([(FAKENET_BYTHOS_PHASE_ENV.to_string(), phase.to_string())]);
     }
 
     fn run_checked(&self, args: &[&str]) -> Result<String> {
@@ -764,8 +775,16 @@ impl BridgeDevScenario {
         &mut self,
         after_nonce: Option<u64>,
     ) -> Result<ObservedDeposit> {
+        self.complete_deposit_on_all_nodes_with_amount_after(E2E_DEPOSIT_AMOUNT_NICKS, after_nonce)
+    }
+
+    fn complete_deposit_on_all_nodes_with_amount_after(
+        &mut self,
+        amount_nicks: &str,
+        after_nonce: Option<u64>,
+    ) -> Result<ObservedDeposit> {
         self.run_checked_retry(
-            &["deposit", "--amount-nicks", E2E_DEPOSIT_AMOUNT_NICKS],
+            &["deposit", "--amount-nicks", amount_nicks],
             Duration::from_secs(E2E_DEPOSIT_SPEND_TIMEOUT_SECS),
         )?;
         let submitted = self.wait_for_deposit_on_node_after(
@@ -789,8 +808,12 @@ impl BridgeDevScenario {
     }
 
     fn request_withdrawal_after_mint(&self) -> Result<()> {
-        self.run_checked(&["mint-for-burn", "--amount-nock", E2E_WITHDRAWAL_AMOUNT_NOCK])?;
-        self.run_checked(&["request-withdrawal", "--amount-nock", E2E_WITHDRAWAL_AMOUNT_NOCK])?;
+        self.request_withdrawal_after_mint_amount(E2E_WITHDRAWAL_AMOUNT_NOCK)
+    }
+
+    fn request_withdrawal_after_mint_amount(&self, amount_nock: &str) -> Result<()> {
+        self.run_checked(&["mint-for-burn", "--amount-nock", amount_nock])?;
+        self.run_checked(&["request-withdrawal", "--amount-nock", amount_nock])?;
         self.run_checked(&["advance-base", "--blocks", E2E_WITHDRAWAL_BASE_ADVANCE_BLOCKS])?;
         Ok(())
     }
@@ -811,6 +834,33 @@ impl BridgeDevScenario {
             self.wait_for_withdrawal_phase_for("Executed", "--executed", 720, Some(&pending))?;
         assert_withdrawal_progression(&pending, &ready, &submitted, &executed)?;
         Ok((pending, ready, submitted, executed))
+    }
+
+    fn current_nock_height(&self) -> Result<u64> {
+        let status = self.run_checked(&["status", "--bridges", "--sequencer"])?;
+        parse_status_nock_height(&status)
+    }
+
+    fn wait_for_nock_height_at_least(&mut self, target: u64, timeout: Duration) -> Result<u64> {
+        let deadline = Instant::now() + timeout;
+        let mut last_error = None;
+        while Instant::now() < deadline {
+            self.ensure_up_still_running()?;
+            match self.current_nock_height() {
+                Ok(height) if height >= target => return Ok(height),
+                Ok(height) => {
+                    last_error = Some(anyhow!("nock height {height} is still below {target}"));
+                }
+                Err(err) => last_error = Some(err),
+            }
+            thread::sleep(Duration::from_secs(2));
+        }
+        match last_error {
+            Some(err) => Err(err)
+                .with_context(|| format!("timed out waiting for nock height >= {target}"))
+                .with_context(|| self.cluster_context()),
+            None => bail!("timed out waiting for nock height >= {target}"),
+        }
     }
 
     fn restart_all_bridges(&mut self) -> Result<()> {
@@ -971,6 +1021,85 @@ impl BridgeDevScenario {
         context
     }
 
+    fn current_log_paths(&self) -> Vec<PathBuf> {
+        let current_dir = self.run_root.join("bridge-dev/current");
+        let mut paths = vec![
+            current_dir.join("supervisor.log"),
+            current_dir.join("node.stderr.log"),
+            current_dir.join("node.stdout.log"),
+        ];
+        for node_id in ALL_BRIDGE_NODES {
+            paths.push(current_dir.join(format!("bridge-{node_id}.stderr.log")));
+            paths.push(current_dir.join(format!("bridge-{node_id}.stdout.log")));
+        }
+        paths
+    }
+
+    fn assert_withdrawal_build_selected_input_count(&self, expected: usize) -> Result<()> {
+        let expected_marker = format!("selected_inputs={expected}");
+        let mut build_lines = Vec::new();
+        for path in self.current_log_paths() {
+            let Ok(contents) = fs::read_to_string(&path) else {
+                continue;
+            };
+            for line in contents.lines() {
+                if line.contains("requesting withdrawal proposal build from kernel") {
+                    let plain_line = strip_ansi_codes(line);
+                    if plain_line.contains(&expected_marker) {
+                        return Ok(());
+                    }
+                    build_lines.push(format!(
+                        "{}: {}",
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("log"),
+                        redact(line)
+                    ));
+                }
+            }
+        }
+        if build_lines.is_empty() {
+            bail!(
+                "did not find a withdrawal proposal build log line while checking for {expected_marker}: {}",
+                self.cluster_context()
+            );
+        }
+        bail!(
+            "withdrawal proposal build did not use {expected} selected inputs; observed:\n{}",
+            build_lines.join("\n")
+        );
+    }
+
+    fn assert_no_stop_conditions_in_logs(&self) -> Result<()> {
+        let mut matches = Vec::new();
+        for path in self.current_log_paths() {
+            let Ok(contents) = fs::read_to_string(&path) else {
+                continue;
+            };
+            for (line_index, line) in contents.lines().enumerate() {
+                if STOP_CONDITION_LOG_MARKERS
+                    .iter()
+                    .any(|marker| line.contains(marker))
+                {
+                    matches.push(format!(
+                        "{}:{}: {}",
+                        path.display(),
+                        line_index + 1,
+                        redact(line)
+                    ));
+                }
+            }
+        }
+        if matches.is_empty() {
+            Ok(())
+        } else {
+            bail!(
+                "found bridge stop-condition markers in scenario logs:\n{}",
+                matches.join("\n")
+            )
+        }
+    }
+
     fn stop(&mut self) {
         if self.up_child.is_none() {
             return;
@@ -997,8 +1126,11 @@ impl BridgeDevScenario {
 
 impl Drop for BridgeDevScenario {
     fn drop(&mut self) {
-        self.stop();
-        if env::var(KEEP_RUN_ROOT_ENV).ok().as_deref() == Some("1") {
+        let keep_run_root = env::var(KEEP_RUN_ROOT_ENV).ok().as_deref() == Some("1");
+        if !keep_run_root {
+            self.stop();
+        }
+        if keep_run_root {
             if let Some(tempdir) = self.tempdir.take() {
                 eprintln!(
                     "preserving bridge-dev scenario tempdir at {} because {KEEP_RUN_ROOT_ENV}=1",
@@ -1122,6 +1254,94 @@ fn withdrawal_happy_path_reaches_executed() -> Result<()> {
     let status = scenario.wait_for_status(Duration::from_secs(120))?;
     assert_cluster_available(&status)?;
     assert_sequencer_idle(&status)?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Tenderly VNET credentials and release bridge binaries"]
+fn withdrawal_happy_path_spends_pre_bythos_bridge_deposit() -> Result<()> {
+    let _guard = e2e_guard();
+    if !e2e_enabled()? {
+        return Ok(());
+    }
+    let mut scenario = BridgeDevScenario::new("withdrawal-pre-bythos-deposit")?;
+    let bythos_phase = E2E_PRE_BYTHOS_WITHDRAWAL_BYTHOS_PHASE;
+    scenario.with_fakenet_bythos_phase(bythos_phase);
+
+    scenario.spawn_fresh_cluster()?;
+    let status = scenario.wait_for_status(Duration::from_secs(60))?;
+    assert_cluster_available(&status)?;
+    let initial_height = parse_status_nock_height(&status)?;
+    if initial_height >= bythos_phase {
+        bail!(
+            "cluster started at nock height {initial_height}, already at or past bythos phase {bythos_phase}"
+        );
+    }
+
+    scenario.complete_deposit_on_all_nodes()?;
+    let post_deposit_height = scenario.current_nock_height()?;
+    if post_deposit_height >= bythos_phase {
+        bail!(
+            "bridge multisig deposit was not pre-Bythos: post-deposit nock height {post_deposit_height}, bythos phase {bythos_phase}"
+        );
+    }
+
+    scenario.wait_for_nock_height_at_least(bythos_phase, Duration::from_secs(600))?;
+    scenario.request_withdrawal_after_mint()?;
+    scenario.wait_for_withdrawal_execution()?;
+    let status = scenario.wait_for_status(Duration::from_secs(120))?;
+    assert_cluster_available(&status)?;
+    assert_sequencer_idle(&status)?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Tenderly VNET credentials and release bridge binaries"]
+fn withdrawal_happy_path_spends_mixed_pre_and_post_bythos_bridge_deposits() -> Result<()> {
+    let _guard = e2e_guard();
+    if !e2e_enabled()? {
+        return Ok(());
+    }
+    let mut scenario = BridgeDevScenario::new("withdrawal-mixed-bythos-deposits")?;
+    let bythos_phase = E2E_PRE_BYTHOS_WITHDRAWAL_BYTHOS_PHASE;
+    scenario.with_fakenet_bythos_phase(bythos_phase);
+
+    scenario.spawn_fresh_cluster()?;
+    let status = scenario.wait_for_status(Duration::from_secs(60))?;
+    assert_cluster_available(&status)?;
+    let initial_height = parse_status_nock_height(&status)?;
+    if initial_height >= bythos_phase {
+        bail!(
+            "cluster started at nock height {initial_height}, already at or past bythos phase {bythos_phase}"
+        );
+    }
+
+    let pre_bythos_deposit = scenario.complete_deposit_on_all_nodes()?;
+    let post_pre_deposit_height = scenario.current_nock_height()?;
+    if post_pre_deposit_height >= bythos_phase {
+        bail!(
+            "first bridge multisig deposit was not pre-Bythos: post-deposit nock height {post_pre_deposit_height}, bythos phase {bythos_phase}"
+        );
+    }
+
+    scenario.wait_for_nock_height_at_least(bythos_phase, Duration::from_secs(600))?;
+    let post_bythos_deposit =
+        scenario.complete_deposit_on_all_nodes_after(Some(pre_bythos_deposit.nonce))?;
+    assert_deposit_nonce_increased(&pre_bythos_deposit, &post_bythos_deposit)?;
+    let post_second_deposit_height = scenario.current_nock_height()?;
+    if post_second_deposit_height < bythos_phase {
+        bail!(
+            "second bridge multisig deposit was not post-Bythos: post-deposit nock height {post_second_deposit_height}, bythos phase {bythos_phase}"
+        );
+    }
+
+    scenario.request_withdrawal_after_mint_amount(E2E_MIXED_INPUT_WITHDRAWAL_AMOUNT_NOCK)?;
+    scenario.wait_for_withdrawal_execution()?;
+    scenario.assert_withdrawal_build_selected_input_count(2)?;
+    let status = scenario.wait_for_status(Duration::from_secs(120))?;
+    assert_cluster_available(&status)?;
+    assert_sequencer_idle(&status)?;
+    scenario.assert_no_stop_conditions_in_logs()?;
     Ok(())
 }
 
@@ -1690,6 +1910,24 @@ fn assert_processes_not_running(status: &str, component_names: &[&str]) -> Resul
     Ok(())
 }
 
+fn parse_status_nock_height(status: &str) -> Result<u64> {
+    status
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            if !line.starts_with("bridge-0") {
+                return None;
+            }
+            parse_line_u64_field(line, "nock_height=")
+        })
+        .ok_or_else(|| anyhow!("status output did not include bridge-0 nock_height:\n{status}"))
+}
+
+fn parse_line_u64_field(line: &str, field: &str) -> Option<u64> {
+    let (_, rest) = line.split_once(field)?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
 fn bridge_stream_line(status: &str, node_id: usize) -> Option<&str> {
     let prefix = format!("bridge-{node_id} ");
     status
@@ -2113,4 +2351,24 @@ fn redact(value: &str) -> String {
             redacted.replace(secret, "<redacted>")
         }
     })
+}
+
+fn strip_ansi_codes(value: &str) -> String {
+    let mut stripped = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\x1b' {
+            stripped.push(ch);
+            continue;
+        }
+        if chars.next_if_eq(&'[').is_none() {
+            continue;
+        }
+        for code in chars.by_ref() {
+            if code.is_ascii_alphabetic() {
+                break;
+            }
+        }
+    }
+    stripped
 }

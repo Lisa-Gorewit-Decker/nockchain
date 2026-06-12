@@ -1095,7 +1095,6 @@
           [%set-blockchain-constants constants=blockchain-constants:t]
           [%base-blocks raw-base-blocks]
           [%base-block-withdrawals-committed ack=base-block-commit-ack]
-          [%repair-pending-base-block-commit ack=base-block-commit-ack]
           [%nockchain-block nockchain-block]
           [%create-withdrawal-tx create-withdrawal-tx]
           [%sign-tx withdrawal-proposal]

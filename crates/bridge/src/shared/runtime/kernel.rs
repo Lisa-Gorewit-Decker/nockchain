@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::fmt;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -18,7 +19,7 @@ use tracing::{debug, error, info, warn};
 use crate::core::ports::KernelStatePort;
 use crate::deposit::types::{BaseDepositSettlementEntry, NockDepositRequestKernelData};
 use crate::observability::metrics;
-use crate::shared::errors::BridgeError;
+use crate::shared::errors::{BridgeError, BridgeRuntimeTransportErrorKind};
 use crate::shared::types::{
     keccak256, BaseBlockCommitAck, BaseBlockRef, BaseEvent, BoolPeek, BridgeCause,
     BridgeCauseVariant, BridgeState, CountPeek, HeightPeek, HoldInfo, HoldPeek,
@@ -29,7 +30,17 @@ use crate::shared::types::{
 use crate::withdrawal::types::{BaseWithdrawalEntry, NockWithdrawalRequestKernelData};
 
 const MAX_PENDING_EVENTS: usize = 1024;
-const BASE_BLOCK_COMMIT_ACK_TIMEOUT: Duration = Duration::from_secs(30);
+const BLOCKING_POKE_ACK_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+fn runtime_transport_error<E: fmt::Display>(
+    kind: BridgeRuntimeTransportErrorKind,
+    err: E,
+) -> BridgeError {
+    BridgeError::RuntimeTransport {
+        kind,
+        detail: err.to_string(),
+    }
+}
 
 fn since_height_path_slab(tag: &str, start_height: u64) -> NounSlab<NockJammer> {
     let mut slab: NounSlab<NockJammer> = NounSlab::new();
@@ -704,48 +715,76 @@ impl BridgeRuntimeHandle {
                 respond_to,
             })
             .await
-            .map_err(|e| BridgeError::Runtime(format!("peek channel closed: {}", e)))?;
-        response
-            .await
-            .map_err(|e| BridgeError::Runtime(format!("peek response dropped: {}", e)))?
+            .map_err(|e| {
+                runtime_transport_error(BridgeRuntimeTransportErrorKind::PeekChannelClosed, e)
+            })?;
+        response.await.map_err(|e| {
+            runtime_transport_error(BridgeRuntimeTransportErrorKind::PeekResponseDropped, e)
+        })?
     }
 
     /// Send a poke directly to the kernel.
     /// This is used by the ingress service to forward validated peer proposals
     /// to the kernel.
     pub async fn send_poke(&self, poke: BridgePoke) -> Result<(), BridgeError> {
-        self.channels
-            .poke_tx
-            .send(poke)
-            .await
-            .map_err(|e| BridgeError::Runtime(format!("poke channel closed: {}", e)))
+        self.channels.poke_tx.send(poke).await.map_err(|e| {
+            runtime_transport_error(BridgeRuntimeTransportErrorKind::PokeChannelClosed, e)
+        })
     }
 
-    pub async fn poke_blocking_timeout(
+    pub async fn poke_blocking(
         &self,
         wire: WireRepr,
         slab: NounSlab<NockJammer>,
-        timeout: Duration,
     ) -> Result<(), BridgeError> {
-        let (respond_to, response) = oneshot::channel();
-        tokio::time::timeout(
-            timeout,
-            self.channels
-                .poke_tx
-                .send(BridgePoke::blocking(wire, slab, timeout, respond_to)),
-        )
-        .await
-        .map_err(|_| BridgeError::Runtime("timed out enqueueing bridge kernel poke".into()))?
-        .map_err(|e| BridgeError::Runtime(format!("poke channel closed: {}", e)))?;
-
-        tokio::time::timeout(timeout, response)
+        self.poke_blocking_with_heartbeat_interval(wire, slab, BLOCKING_POKE_ACK_HEARTBEAT_INTERVAL)
             .await
-            .map_err(|_| {
-                BridgeError::Runtime("timed out waiting for bridge kernel poke ack".into())
-            })?
+    }
+
+    async fn poke_blocking_with_heartbeat_interval(
+        &self,
+        wire: WireRepr,
+        slab: NounSlab<NockJammer>,
+        heartbeat_interval: Duration,
+    ) -> Result<(), BridgeError> {
+        debug_assert!(!heartbeat_interval.is_zero());
+        let wire_path = wire.tags_as_csv();
+        let (respond_to, response) = oneshot::channel();
+        self.channels
+            .poke_tx
+            .send(BridgePoke::blocking(wire, slab, respond_to))
+            .await
             .map_err(|e| {
-                BridgeError::Runtime(format!("bridge kernel poke response dropped: {}", e))
-            })??;
+                runtime_transport_error(BridgeRuntimeTransportErrorKind::PokeChannelClosed, e)
+            })?;
+
+        let started_at = Instant::now();
+        let mut response = response;
+        let mut heartbeat = tokio::time::interval_at(
+            tokio::time::Instant::now() + heartbeat_interval,
+            heartbeat_interval,
+        );
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        let ack = loop {
+            tokio::select! {
+                result = &mut response => {
+                    break result.map_err(|e| {
+                        runtime_transport_error(BridgeRuntimeTransportErrorKind::PokeResponseDropped, e)
+                    })?;
+                }
+                _ = heartbeat.tick() => {
+                    warn!(
+                        target: "bridge.runtime",
+                        wire=%wire_path,
+                        elapsed_secs=started_at.elapsed().as_secs(),
+                        heartbeat_interval_secs=heartbeat_interval.as_secs(),
+                        "blocking bridge kernel poke is still waiting for ack",
+                    );
+                }
+            }
+        };
+        ack?;
         Ok(())
     }
 
@@ -776,21 +815,7 @@ impl BridgeRuntimeHandle {
         let noun = cause.to_noun(&mut slab);
         slab.set_root(noun);
         let wire = OnePunchWire::Poke.to_wire();
-        self.poke_blocking_timeout(wire, slab, BASE_BLOCK_COMMIT_ACK_TIMEOUT)
-            .await
-    }
-
-    pub async fn send_repair_pending_base_block_commit(
-        &self,
-        ack: BaseBlockCommitAck,
-    ) -> Result<(), BridgeError> {
-        let cause = BridgeCause::repair_pending_base_block_commit(ack);
-        let mut slab: NounSlab<NockJammer> = NounSlab::new();
-        let noun = cause.to_noun(&mut slab);
-        slab.set_root(noun);
-        let wire = OnePunchWire::Poke.to_wire();
-        self.poke_blocking_timeout(wire, slab, BASE_BLOCK_COMMIT_ACK_TIMEOUT)
-            .await
+        self.poke_blocking(wire, slab).await
     }
 }
 
@@ -906,7 +931,6 @@ pub struct BridgePoke {
     pub wire: WireRepr,
     pub slab: NounSlab<NockJammer>,
     respond_to: Option<oneshot::Sender<Result<(), BridgeError>>>,
-    timeout: Option<Duration>,
 }
 
 impl BridgePoke {
@@ -915,21 +939,18 @@ impl BridgePoke {
             wire,
             slab,
             respond_to: None,
-            timeout: None,
         }
     }
 
     fn blocking(
         wire: WireRepr,
         slab: NounSlab<NockJammer>,
-        timeout: Duration,
         respond_to: oneshot::Sender<Result<(), BridgeError>>,
     ) -> Self {
         Self {
             wire,
             slab,
             respond_to: Some(respond_to),
-            timeout: Some(timeout),
         }
     }
 }
@@ -1015,12 +1036,8 @@ impl BridgeRuntime {
                                 wire,
                                 slab,
                                 respond_to,
-                                timeout,
                             } = poke;
-                            let result = match timeout {
-                                Some(timeout) => handle.poke_timeout(wire, slab, timeout).await,
-                                None => handle.poke(wire, slab).await,
-                            };
+                            let result = handle.poke(wire, slab).await;
                             let result = match result {
                                 Ok(PokeResult::Ack) => Ok(()),
                                 Ok(PokeResult::Nack) => Err(BridgeError::Runtime(
@@ -1939,7 +1956,6 @@ mod tests {
 
         let responder = tokio::spawn(async move {
             let poke = poke_rx.recv().await.expect("blocking poke");
-            assert_eq!(poke.timeout, Some(BASE_BLOCK_COMMIT_ACK_TIMEOUT));
             let cause = decode_bridge_cause_slab(&poke.slab);
             match cause.1 {
                 BridgeCauseVariant::BaseBlockWithdrawalsCommitted(decoded) => {
@@ -1977,12 +1993,17 @@ mod tests {
         let mut slab: NounSlab<NockJammer> = NounSlab::new();
         slab.set_root(nockvm::noun::D(0));
         let err = handle
-            .poke_blocking_timeout(OnePunchWire::Poke.to_wire(), slab, Duration::from_secs(1))
+            .poke_blocking(OnePunchWire::Poke.to_wire(), slab)
             .await
             .expect_err("dropped response should fail");
         assert!(
-            err.to_string()
-                .contains("bridge kernel poke response dropped"),
+            matches!(
+                err,
+                BridgeError::RuntimeTransport {
+                    kind: BridgeRuntimeTransportErrorKind::PokeResponseDropped,
+                    ..
+                }
+            ),
             "unexpected error: {err}"
         );
         responder.await.expect("responder task failed");
@@ -2013,7 +2034,7 @@ mod tests {
         let mut slab: NounSlab<NockJammer> = NounSlab::new();
         slab.set_root(nockvm::noun::D(0));
         let err = handle
-            .poke_blocking_timeout(OnePunchWire::Poke.to_wire(), slab, Duration::from_secs(1))
+            .poke_blocking(OnePunchWire::Poke.to_wire(), slab)
             .await
             .expect_err("nack response should fail");
         assert!(
@@ -2034,33 +2055,103 @@ mod tests {
         let mut slab: NounSlab<NockJammer> = NounSlab::new();
         slab.set_root(nockvm::noun::D(0));
         let err = handle
-            .poke_blocking_timeout(OnePunchWire::Poke.to_wire(), slab, Duration::from_secs(1))
+            .poke_blocking(OnePunchWire::Poke.to_wire(), slab)
             .await
             .expect_err("closed poke channel should fail");
         assert!(
-            err.to_string().contains("poke channel closed"),
+            matches!(
+                err,
+                BridgeError::RuntimeTransport {
+                    kind: BridgeRuntimeTransportErrorKind::PokeChannelClosed,
+                    ..
+                }
+            ),
             "unexpected error: {err}"
         );
     }
 
     #[tokio::test]
-    async fn blocking_poke_times_out_waiting_for_ack() {
+    async fn blocking_poke_waits_until_ack_without_internal_timeout() {
         let builder = Arc::new(RecordingBuilder {
             events: Arc::new(Mutex::new(Vec::new())),
         });
-        let (_runtime, handle) = BridgeRuntime::new(builder);
+        let (mut runtime, handle) = BridgeRuntime::new(builder);
+        let mut poke_rx = runtime
+            .channels
+            .poke_rx
+            .take()
+            .expect("poke receiver missing");
+
+        let responder = tokio::spawn(async move {
+            let poke = poke_rx.recv().await.expect("blocking poke");
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            poke.respond_to
+                .expect("blocking poke response channel")
+                .send(Ok(()))
+                .expect("send blocking poke ack");
+        });
 
         let mut slab: NounSlab<NockJammer> = NounSlab::new();
         slab.set_root(nockvm::noun::D(0));
-        let err = handle
-            .poke_blocking_timeout(OnePunchWire::Poke.to_wire(), slab, Duration::from_millis(1))
-            .await
-            .expect_err("missing ack should time out");
-        assert!(
-            err.to_string()
-                .contains("timed out waiting for bridge kernel poke ack"),
-            "unexpected error: {err}"
-        );
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            handle.poke_blocking(OnePunchWire::Poke.to_wire(), slab),
+        )
+        .await
+        .expect("blocking poke should resolve when ack arrives")
+        .expect("blocking poke ack should succeed");
+        responder.await.expect("responder task failed");
+    }
+
+    #[tokio::test]
+    async fn base_block_commit_ack_heartbeat_keeps_waiting_for_ack() {
+        let builder = Arc::new(RecordingBuilder {
+            events: Arc::new(Mutex::new(Vec::new())),
+        });
+        let (mut runtime, handle) = BridgeRuntime::new(builder);
+        let mut poke_rx = runtime
+            .channels
+            .poke_rx
+            .take()
+            .expect("poke receiver missing");
+        let ack = BaseBlockCommitAck {
+            blocks_hash: Tip5Hash([Belt(1), Belt(2), Belt(3), Belt(4), Belt(5)]),
+            first_height: 40,
+            last_height: 41,
+        };
+        let expected_ack = ack.clone();
+
+        let responder = tokio::spawn(async move {
+            let poke = poke_rx.recv().await.expect("blocking poke");
+            let cause = decode_bridge_cause_slab(&poke.slab);
+            match cause.1 {
+                BridgeCauseVariant::BaseBlockWithdrawalsCommitted(decoded) => {
+                    assert_eq!(decoded, expected_ack);
+                }
+                _ => panic!("expected base block withdrawals committed cause"),
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            poke.respond_to
+                .expect("blocking poke response channel")
+                .send(Ok(()))
+                .expect("send blocking poke ack");
+        });
+
+        let mut slab: NounSlab<NockJammer> = NounSlab::new();
+        let noun = BridgeCause::base_block_withdrawals_committed(ack).to_noun(&mut slab);
+        slab.set_root(noun);
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            handle.poke_blocking_with_heartbeat_interval(
+                OnePunchWire::Poke.to_wire(),
+                slab,
+                Duration::from_millis(5),
+            ),
+        )
+        .await
+        .expect("blocking poke should resolve when ack arrives")
+        .expect("blocking poke ack should succeed");
+        responder.await.expect("responder task failed");
     }
 
     #[tokio::test]

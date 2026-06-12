@@ -1,7 +1,7 @@
 use nockapp::noun::slab::{NockJammer, NounSlab};
 use nockapp::{Bytes, NounAllocator};
+use nockapp_grpc::pb::common::v2::RawTransaction as PbRawTransaction;
 use nockchain_types::tx_engine::common::{Hash, Version};
-use nockchain_types::v1::{hash_leaf_atom, hash_pair, HashHashable};
 use noun_serde::{NounDecode, NounEncode};
 
 use crate::shared::errors::BridgeError;
@@ -83,36 +83,34 @@ impl TryFrom<&nockchain_types::v1::Transaction> for SubmittedRawTx {
             nockchain_types::v1::Transaction::V1(tx) => {
                 let version = Version::V1;
                 let spends = apply_witness_data_to_spends(&tx.spends, &tx.witness_data)?;
-                let id = raw_tx_id_from_version_and_spends(&version, &spends)?;
-                let tx_id_base58 = id.to_base58();
+                let id = Hash::from_limbs(&[0, 0, 0, 0, 0]);
+                let raw_tx = canonicalize_raw_tx_for_submission(nockchain_types::v1::RawTx {
+                    version,
+                    id,
+                    spends,
+                })?;
                 Ok(Self {
-                    tx_id_base58,
-                    raw_tx: nockchain_types::v1::RawTx {
-                        version,
-                        id,
-                        spends,
-                    },
+                    tx_id_base58: raw_tx.id.to_base58(),
+                    raw_tx,
                 })
             }
         }
     }
 }
 
-fn raw_tx_id_from_version_and_spends(
-    version: &Version,
-    spends: &nockchain_types::v1::Spends,
-) -> Result<Hash, BridgeError> {
-    if version != &Version::V1 {
-        return Err(BridgeError::Runtime(format!(
-            "withdrawal raw tx id hashing only supports v1 transactions, got {version:?}"
-        )));
-    }
-    let version = hash_leaf_atom(u32::from(version.clone()) as u64)
-        .map_err(|err| BridgeError::Runtime(format!("failed to hash raw tx version: {err}")))?;
-    let spends = spends
-        .hash_digest()
-        .map_err(|err| BridgeError::Runtime(format!("failed to hash raw tx spends: {err}")))?;
-    Ok(hash_pair(&version, &spends))
+fn canonicalize_raw_tx_for_submission(
+    raw_tx: nockchain_types::v1::RawTx,
+) -> Result<nockchain_types::v1::RawTx, BridgeError> {
+    let pb_raw_tx = PbRawTransaction::from(raw_tx);
+    let mut raw_tx = nockchain_types::v1::RawTx::try_from(pb_raw_tx).map_err(|err| {
+        BridgeError::Runtime(format!(
+            "failed to canonicalize withdrawal raw tx through protobuf conversion: {err}"
+        ))
+    })?;
+    raw_tx.id = raw_tx
+        .compute_id()
+        .map_err(|err| BridgeError::Runtime(format!("failed to compute raw tx id: {err}")))?;
+    Ok(raw_tx)
 }
 
 /// Applies the transaction's merged witness data back onto its spends so the
@@ -181,4 +179,64 @@ fn apply_witness_data_to_spends(
             .collect::<Result<Vec<_>, BridgeError>>()?,
     };
     Ok(nockchain_types::v1::Spends(spends))
+}
+
+#[cfg(test)]
+mod tests {
+    use nockchain_types::tx_engine::common::{Name, Nicks};
+    use nockchain_types::v1::{
+        LockMerkleProof, LockPrimitive, MerkleProof, Pkh, PkhSignature, Spend, Spend1,
+        SpendCondition, Spends, Witness,
+    };
+
+    use super::*;
+
+    fn sample_hash(seed: u64) -> Hash {
+        Hash::from_limbs(&[seed, seed + 1, seed + 2, seed + 3, seed + 4])
+    }
+
+    #[test]
+    fn canonicalize_raw_tx_for_submission_recomputes_embedded_id() {
+        let spend_condition = SpendCondition::new(vec![LockPrimitive::Pkh(Pkh::new(
+            1,
+            vec![sample_hash(10), sample_hash(20)],
+        ))]);
+        let raw_tx = nockchain_types::v1::RawTx {
+            version: Version::V1,
+            id: sample_hash(999),
+            spends: Spends(vec![(
+                Name::new(sample_hash(30), sample_hash(40)),
+                Spend::Witness(Spend1 {
+                    witness: Witness::new(
+                        LockMerkleProof::new_stub(
+                            spend_condition,
+                            1,
+                            MerkleProof {
+                                root: sample_hash(50),
+                                path: Vec::new(),
+                            },
+                        ),
+                        PkhSignature(Vec::new()),
+                        Vec::new(),
+                    ),
+                    seeds: nockchain_types::v1::Seeds(Vec::new()),
+                    fee: Nicks(7),
+                }),
+            )]),
+        };
+        assert_ne!(
+            raw_tx.id,
+            raw_tx.compute_id().expect("fixture raw tx should hash")
+        );
+
+        let canonical =
+            canonicalize_raw_tx_for_submission(raw_tx).expect("canonicalize raw tx for submit");
+
+        assert_eq!(
+            canonical.id,
+            canonical
+                .compute_id()
+                .expect("canonical raw tx should hash")
+        );
+    }
 }

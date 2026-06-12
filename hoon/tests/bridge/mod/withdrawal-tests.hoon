@@ -3,9 +3,12 @@
 /=  base-lib  /apps/bridge/base
 /=  bridge-ker  /apps/bridge/bridge
 /=  nock-lib  /apps/bridge/nock
+/=  dhel  /tests/dumb/helpers
 /=  hel  /tests/bridge/helpers
 /=  *  /apps/bridge/types
 /=  wt  /apps/wallet/lib/types
+/=  txb-lib  /apps/wallet/lib/tx-builder
+/=  wutils  /apps/wallet/lib/utils
 |%
 ++  make-withdrawal
   |=  [event-id=beid recipient=nock-lock-root amount=coins]
@@ -601,6 +604,114 @@
     !>(id.proposal)
   ::
     (expect !>(has-bridge-withdrawal-output))
+  ==
+::
+++  test-create-withdrawal-tx-accepts-mixed-stub-and-full-inputs
+  ^-  tang
+  =/  state=bridge-state  *bridge-state
+  =.  config.state  test-config:hel
+  =.  constants.state  (small-constants:hel 1 0 0)
+  =.  nockchain-constants.state  [~ bc-with-fees:dhel]
+  =/  selected-stub=selected-withdrawal-note
+    (create-selected-withdrawal-note-at-origin:hel config.state [0x91 0x92 0x93 0x94 0x95] 15.000.000 7)
+  =/  selected-full=selected-withdrawal-note
+    (create-selected-withdrawal-note-at-origin:hel config.state [0xa1 0xa2 0xa3 0xa4 0xa5] 15.000.000 17)
+  =/  id=withdrawal-id
+    [[0xb1 0xb2 0xb3 0xb4 0xb5] 10]
+  =/  request=create-withdrawal-tx
+    :*  id
+        [0xc1 0xc2 0xc3 0xc4 0xc5]
+        13.000.000
+        30.000.000
+        60
+        0
+        [25 [0xd1 0xd2 0xd3 0xd4 0xd5]]
+        0
+        ~[selected-stub selected-full]
+    ==
+  =/  names=(list nname:t)
+    ~[name.selected-stub name.selected-full]
+  =/  allowed=(z-set:zo hash:t)
+    %-  z-silt:zo
+    %+  turn  nodes.config.state
+    |=  node=node-info
+    nock-pkh.node
+  =/  input-lock=lock:t
+    [%pkh [m=min-signers.constants.state allowed]]~
+  =/  get-note=$-(nname:t nnote:t)
+    |=  wanted=nname:t
+    ?:  =(wanted name.selected-stub)
+      note.selected-stub
+    ?:  =(wanted name.selected-full)
+      note.selected-full
+    ~|('mixed withdrawal selected note missing' !!)
+  =/  order=order:wt
+    [%bridge-withdrawal base-event-id=base-event-id.id base-hash=as-of.id root=recipient.request base-batch-end=base-batch-end.request gift=amount.request]
+  =/  dry-run=transaction:wt
+    %:  ~(build txb-lib bc-with-fees:dhel)
+      names
+      ~[order]
+      0
+      %.y
+      ~[my-nock-key.config.state]
+      ~
+      get-note
+      [~ input-lock]
+      %.y
+      %asc
+      height.snapshot.request
+    ==
+  =/  wallet-utils  ~(. wutils %.y bc-with-fees:dhel)
+  =/  min-fee=coins:t
+    %:  spends:estimate-fee:wallet-utils
+      spends.dry-run
+      inputs.metadata.dry-run
+      height.snapshot.request
+    ==
+  =/  tight-request=create-withdrawal-tx
+    request(fee min-fee)
+  =/  brg  (brg:hel)
+  =/  bridge  (lod:hel state brg)
+  =/  [effects=(list effect) bridge]
+    (pok:hel 0 [%0 %create-withdrawal-tx tight-request] bridge)
+  ?~  effects
+    ~|('expected withdrawal-proposal-built effect for exact-min-fee mixed-input withdrawal' !!)
+  ?>  ?=([%0 %withdrawal-proposal-built *] i.effects)
+  =/  proposal=withdrawal-proposal  proposal.i.effects
+  =/  spend-entries=(list [nname:t spend:v1:t])
+    ~(tap z-by:zo spends.transaction.proposal)
+  =/  actual-fee=coins:t
+    (roll-fees:spends:t spends.transaction.proposal)
+  =/  counts=[full=@ stub=@]
+    %+  roll  spend-entries
+    |=  [[* sp=spend:v1:t] acc=[full=@ stub=@]]
+    ?>  ?=(%1 -.sp)
+    =/  sp1=spend-1:v1:t  +.sp
+    ?:  ?=([%full * * *] lmp.witness.sp1)
+      [+(full.acc) stub.acc]
+    [full.acc +(stub.acc)]
+  ;:  weld
+    %+  expect-eq
+      !>(names)
+    !>(selected-notes.proposal)
+  ::
+    (expect !>((gth min-fee 0)))
+  ::
+    %+  expect-eq
+      !>(min-fee)
+    !>(actual-fee)
+  ::
+    %+  expect-eq
+      !>(2)
+    !>((lent spend-entries))
+  ::
+    %+  expect-eq
+      !>(1)
+    !>(stub.counts)
+  ::
+    %+  expect-eq
+      !>(1)
+    !>(full.counts)
   ==
 ::
 ::  TODO: add a real sign-tx test that removes only the bridge signer from

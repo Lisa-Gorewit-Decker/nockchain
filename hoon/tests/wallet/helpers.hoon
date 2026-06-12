@@ -352,10 +352,18 @@
           signer=(unit schnorr-pubkey:t)
       ==
   ^-  [name=nname:t note=nnote-1:v1:t]
+  (build-v1-note-at-origin source-hash assets signer 0)
+::
+++  build-v1-note-at-origin
+  |=  $:  source-hash=hash:t
+          assets=coins:t
+          signer=(unit schnorr-pubkey:t)
+          origin-page=page-number:t
+      ==
+  ^-  [name=nname:t note=nnote-1:v1:t]
   =/  use-signer=schnorr-pubkey:t
     ?~  signer  default-signer-pubkey
     u.signer
-  =/  use-origin=@ud  0
   =/  [lock-root=hash:t sc=spend-condition:t *]
     (make-pkh-lock:v1:dhel 1 ~[use-signer])
   =/  nd=(z-map:zo @tas *)
@@ -365,7 +373,7 @@
   =/  note=nnote-1:v1:t
     %*  .  *nnote-1:v1:t
       version      %1
-      origin-page  use-origin
+      origin-page  origin-page
       name         name
       note-data    nd
       assets       assets

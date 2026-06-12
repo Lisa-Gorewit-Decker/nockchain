@@ -1284,8 +1284,7 @@ impl HashHashable for LockMerkleProof {
                 hash_hashable_tuple(&[version, spend_condition_hash, axis, merkle])
             }
             LockMerkleProof::Stub(_) => {
-                let head = hash_pair(&spend_condition_hash, &stub_sentinel);
-                hash_pair(&head, &merkle)
+                hash_hashable_tuple(&[spend_condition_hash, stub_sentinel, merkle])
             }
         })
     }
@@ -1429,10 +1428,11 @@ mod tests {
     use noun_serde::{NounDecode, NounEncode};
 
     use super::{
-        HashHashable, Hax, InputMetadata, LegacyLockMetadata, Lock, LockMerkleProof, LockMetadata,
-        LockPrimitive, LockTim, LockV2, LockV4, MerkleProof, Pkh, RawTx, Spend, Spend0,
-        SpendCondition, SpendConditionMap, Transaction, Version, VersionedLockMetadata, Witness,
-        WitnessData, WitnessMap,
+        hash_hashable_tuple, hash_pair, HashHashable, Hax, InputMetadata, LegacyLockMetadata, Lock,
+        LockMerkleProof, LockMetadata, LockPrimitive, LockTim, LockV2, LockV4, MerkleProof, Pkh,
+        RawTx, Spend, Spend0, SpendCondition, SpendConditionMap, Transaction, Version,
+        VersionedLockMetadata, Witness, WitnessData, WitnessMap,
+        LOCK_MERKLE_PROOF_STUB_SENTINEL_B58,
     };
     use crate::tx_engine::common::{
         BlockHeight, BlockHeightDelta, Hash, Name, Nicks, Signature, TimelockRangeAbsolute,
@@ -1829,6 +1829,38 @@ mod tests {
             LockMerkleProof::new_full(spend_condition.clone(), 1, merkle_proof.clone());
         let full_axis_7 = LockMerkleProof::new_full(spend_condition, 7, merkle_proof);
 
+        let stub_sentinel = Hash::from_base58(LOCK_MERKLE_PROOF_STUB_SENTINEL_B58)
+            .expect("stub sentinel should parse");
+        let stub_condition_hash = stub_axis_1
+            .spend_condition()
+            .hash()
+            .expect("stub spend condition should hash");
+        let stub_merkle_hash = stub_axis_1
+            .proof()
+            .hash_digest()
+            .expect("stub merkle proof should hash");
+        let right_associated_stub_hash = hash_hashable_tuple(&[
+            stub_condition_hash.clone(),
+            stub_sentinel.clone(),
+            stub_merkle_hash.clone(),
+        ]);
+        let left_associated_stub_hash = hash_pair(
+            &hash_pair(&stub_condition_hash, &stub_sentinel),
+            &stub_merkle_hash,
+        );
+
+        assert_eq!(
+            stub_axis_1
+                .hash_digest()
+                .expect("stub raw-tx hash should compute"),
+            right_associated_stub_hash
+        );
+        assert_ne!(
+            stub_axis_1
+                .hash_digest()
+                .expect("stub raw-tx hash should compute"),
+            left_associated_stub_hash
+        );
         assert_eq!(
             stub_axis_1
                 .hash_digest()

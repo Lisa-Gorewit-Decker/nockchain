@@ -109,33 +109,6 @@
     [~ state]
   ==
 ::
-++  repair-pending-base-block-commit
-  |=  ack=base-block-commit-ack
-  ^-  [(list effect) bridge-state]
-  =/  old-state  state
-  =/  stop-info  (get-stop-info old-state)
-  =/  maybe-pending=(unit pending-base-block-commit-data)
-    pending-base-block-commit.hash-state.state
-  ?~  maybe-pending
-    [~ old-state]
-  =/  pending=pending-base-block-commit-data  u.maybe-pending
-  =/  metadata=pending-base-block-withdrawals  metadata.pending
-  ?.  =(blocks-hash.ack blocks-hash.metadata)
-    [[%0 %stop 'base block pending repair ack hash mismatch' stop-info]~ old-state]
-  ?.  =(first-height.ack first-height.metadata)
-    [[%0 %stop 'base block pending repair ack first height mismatch' stop-info]~ old-state]
-  ?.  =(last-height.ack last-height.metadata)
-    [[%0 %stop 'base block pending repair ack last height mismatch' stop-info]~ old-state]
-  ?^  hold=(base-find-deposit-settlement-hold blocks.pending)
-    ?:  !=(~ nock-hold.hash-state.old-state)
-      [[%0 %stop 'pending base block repair would create both base and nock hold' stop-info]~ old-state]
-    =/  repaired=bridge-state  old-state
-    =.  pending-base-block-commit.hash-state.repaired  ~
-    [~ repaired(base-hold.hash-state `u.hold)]
-  =/  repaired=bridge-state  old-state
-  =.  pending-base-block-commit.hash-state.repaired  ~
-  [~ repaired]
-::
 ++  validate-base-blocks-sequence
   |=  blocks=base-blocks
   ^-  (unit @t)
