@@ -6,6 +6,11 @@ test-follower
 .nockchain_identity
 .nockchain_identity.peerid
 target
+bazel-bin
+bazel-out
+bazel-testlogs
+bazel-nockchain
+.bazelrc.local
 assets/*.jam
 !crates/nockapp/test-jams
 keys.export

@@ -15,7 +15,7 @@ use nockapp::NockAppError;
 use nockvm::noun::NounAllocator;
 use nockvm::noun::{Noun, NounSpace};
 use rand::prelude::SliceRandom;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 use crate::catch_up::{CatchUpSignal, ModeTransition};
 use crate::ip_block::PeerExclusions;
@@ -43,6 +43,12 @@ const ELDERS_REQUEST_COOLDOWN_CAP: usize = 8_192;
 /// every duplicate-block poke, which without damping turns into a burst of
 /// redundant outbound requests.
 pub(crate) const ELDERS_REQUEST_COOLDOWN: Duration = Duration::from_secs(5);
+/// Upper bound on how long an in-flight processing claim is honored. A
+/// kernel poke completes in milliseconds, so any claim older than this was
+/// leaked by a delivery path that never released it. Expiring stale claims
+/// turns such a leak into a short delivery delay instead of a permanent
+/// gate on that block or tx (and a frozen catch-up frontier).
+pub(crate) const PROCESSING_CLAIM_TTL: Duration = Duration::from_secs(60);
 const RESPONSE_SIZE_HINT_CAP: usize = 16_384;
 const DEFERRED_HEARD_BLOCK_TOTAL_CAP: usize = 65_536;
 pub(crate) const DEFERRED_HEARD_BLOCK_PER_PEER_CAP: usize = 4_096;
@@ -597,8 +603,8 @@ pub struct P2PState {
     pub seen_blocks: BTreeSet<String>,
     seen_block_order: VecDeque<String>,
     pub seen_txs: BTreeSet<String>,
-    processing_blocks: BTreeSet<String>,
-    processing_txs: BTreeSet<String>,
+    processing_blocks: BTreeMap<String, Instant>,
+    processing_txs: BTreeMap<String, Instant>,
     pub block_cache: BTreeMap<u64, NounSlab>,
     pub tx_cache: BTreeMap<String, NounSlab>,
     pub elders_cache: BTreeMap<String, NounSlab>,
@@ -710,8 +716,8 @@ impl P2PState {
             seen_blocks: BTreeSet::new(),
             seen_block_order: VecDeque::new(),
             seen_txs: BTreeSet::new(),
-            processing_blocks: BTreeSet::new(),
-            processing_txs: BTreeSet::new(),
+            processing_blocks: BTreeMap::new(),
+            processing_txs: BTreeMap::new(),
             block_cache: BTreeMap::new(),
             tx_cache: BTreeMap::new(),
             elders_cache: BTreeMap::new(),
@@ -2286,21 +2292,59 @@ impl P2PState {
         block_id: &str,
         allow_seen_replay: bool,
     ) -> bool {
-        if self.processing_blocks.contains(block_id) {
-            return false;
+        self.try_start_processing_block_with_seen_replay_at(
+            block_id,
+            allow_seen_replay,
+            Instant::now(),
+        )
+    }
+
+    pub(crate) fn try_start_processing_block_with_seen_replay_at(
+        &mut self,
+        block_id: &str,
+        allow_seen_replay: bool,
+        now: Instant,
+    ) -> bool {
+        if let Some(claimed_at) = self.processing_blocks.get(block_id) {
+            // A poke completes in milliseconds; a claim this old means some
+            // delivery path failed to release it (livenet wedges 2026-06-06
+            // and 2026-06-11 were exactly this). Expire it so the leak
+            // degrades into a short delay instead of a permanent gate.
+            if now.duration_since(*claimed_at) < PROCESSING_CLAIM_TTL {
+                return false;
+            }
+            warn!(
+                block_id,
+                "Expiring stale block processing claim; a delivery path leaked it"
+            );
         }
         if self.seen_blocks.contains(block_id) && !allow_seen_replay {
+            self.processing_blocks.remove(block_id);
             return false;
         }
-        self.processing_blocks.insert(block_id.to_owned());
+        self.processing_blocks.insert(block_id.to_owned(), now);
         true
     }
 
     pub fn try_start_processing_tx(&mut self, tx_id: &str) -> bool {
-        if self.seen_txs.contains(tx_id) || self.processing_txs.contains(tx_id) {
+        self.try_start_processing_tx_at(tx_id, Instant::now())
+    }
+
+    pub(crate) fn try_start_processing_tx_at(&mut self, tx_id: &str, now: Instant) -> bool {
+        if let Some(claimed_at) = self.processing_txs.get(tx_id) {
+            if now.duration_since(*claimed_at) < PROCESSING_CLAIM_TTL {
+                return false;
+            }
+            warn!(
+                tx_id,
+                "Expiring stale tx processing claim; a delivery path leaked it"
+            );
+        }
+        if self.seen_txs.contains(tx_id) {
+            self.processing_txs.remove(tx_id);
             return false;
         }
-        self.processing_txs.insert(tx_id.to_owned());
+        self.processing_txs.insert(tx_id.to_owned(), now);
         true
     }
 
@@ -2907,12 +2951,12 @@ impl P2PState {
 
     #[cfg(test)]
     pub fn is_processing_block(&self, block_id: &str) -> bool {
-        self.processing_blocks.contains(block_id)
+        self.processing_blocks.contains_key(block_id)
     }
 
     #[cfg(test)]
     pub fn is_processing_tx(&self, tx_id: &str) -> bool {
-        self.processing_txs.contains(tx_id)
+        self.processing_txs.contains_key(tx_id)
     }
 
     pub fn estimated_response_message_bytes(
@@ -3393,6 +3437,57 @@ mod tests {
                 cooldown
             ),
             "resend should re-arm the cooldown window"
+        );
+    }
+
+    #[test]
+    fn stale_processing_claims_expire() {
+        let metrics = isolated_test_metrics();
+        let mut state = P2PState::new(metrics, LIBP2P_CONFIG.seen_tx_clear_interval);
+        let start = Instant::now();
+        let block_id = "wedged-block";
+        let tx_id = "wedged-tx";
+
+        assert!(state.try_start_processing_block_with_seen_replay_at(block_id, false, start));
+        assert!(
+            !state.try_start_processing_block_with_seen_replay_at(
+                block_id,
+                false,
+                start + Duration::from_secs(1)
+            ),
+            "fresh claim should gate duplicates"
+        );
+        assert!(
+            state.try_start_processing_block_with_seen_replay_at(
+                block_id,
+                false,
+                start + PROCESSING_CLAIM_TTL + Duration::from_secs(1)
+            ),
+            "a leaked claim must expire so the block stays deliverable"
+        );
+
+        assert!(state.try_start_processing_tx_at(tx_id, start));
+        assert!(
+            !state.try_start_processing_tx_at(tx_id, start + Duration::from_secs(1)),
+            "fresh tx claim should gate duplicates"
+        );
+        assert!(
+            state.try_start_processing_tx_at(
+                tx_id,
+                start + PROCESSING_CLAIM_TTL + Duration::from_secs(1)
+            ),
+            "a leaked tx claim must expire so the tx stays deliverable"
+        );
+
+        // An expired claim on a seen item still defers to the seen cache.
+        state.finish_processing_block_seen(block_id);
+        assert!(
+            !state.try_start_processing_block_with_seen_replay_at(
+                block_id,
+                false,
+                start + (PROCESSING_CLAIM_TTL * 3)
+            ),
+            "seen blocks stay deduped after claim expiry without replay permission"
         );
     }
 

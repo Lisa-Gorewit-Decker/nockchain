@@ -70,6 +70,20 @@ build-nockchain-bridge-tui:
 test:
 	cargo test --release
 
+## Build the full workspace with Bazel. Run from the repository root, where
+## MODULE.bazel and Cargo.toml live; bazelisk reads the pinned version from
+## .bazelversion and rules_rust downloads the Rust toolchain.
+.PHONY: bazel-build
+bazel-build:
+	@test -f Cargo.toml || { echo "bazel-build must run at the workspace root (Cargo.toml not found here)." >&2; exit 1; }
+	bazel build //...
+
+## Run the full Bazel test suite (see bazel-build).
+.PHONY: bazel-test
+bazel-test:
+	@test -f Cargo.toml || { echo "bazel-test must run at the workspace root (Cargo.toml not found here)." >&2; exit 1; }
+	bazel test //...
+
 .PHONY: bench-nockchain-kernel
 bench-nockchain-kernel:
 	cargo run --release -p nockchain --bin bench_nockchain_kernel -- --skip-mining

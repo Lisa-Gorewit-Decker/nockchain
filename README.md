@@ -66,6 +66,23 @@ sudo sysctl --system
 sudo sysctl -p /etc/sysctl.d/99-overcommit.conf
 ```
 
+## Building with Bazel
+
+The repository also ships a Bazel build covering the Rust workspace and the
+Hoon kernel jams. [Bazelisk](https://github.com/bazelbuild/bazelisk) (invoked
+as `bazel`) picks the pinned Bazel version from `.bazelversion`; the Rust
+toolchain is downloaded by `rules_rust`, and crate dependencies resolve from
+the committed `Cargo.lock`, so no preinstalled Rust is required:
+
+```
+make bazel-build   # bazel build //...
+make bazel-test    # bazel test //...
+```
+
+Useful entry points: `//:nockchain`, `//:nockchain-wallet`, `//:hoonc`, and
+`//:kernels` (compiles all Hoon kernel jams with the in-tree `hoonc`).
+Opt-in lint pass: `bazel build --config=clippy //...`.
+
 ## Install Hoon Compiler
 
 Install `hoonc`, the Hoon compiler:
