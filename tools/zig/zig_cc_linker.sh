@@ -79,11 +79,25 @@ fi
 tmp_args_file="${TMPDIR:-/tmp}/zig_cc_linker_args.$$"
 : > "${tmp_args_file}"
 expect_target_value=0
+# --dynamic-linker is a link-time flag; zig cc rejects it on compile-only
+# (-c), preprocess-only (-E), or assemble-only (-S) invocations with
+# "object files cannot specify --dynamic-linker". aws-lc-sys drives this
+# wrapper (via AWS_LC_SYS_CC) for exactly those probe steps, so only inject
+# the dynamic linker on actual link steps.
+link_step=1
 for arg in "$@"; do
   if [ "${expect_target_value}" -eq 1 ]; then
     expect_target_value=0
     continue
   fi
+
+  case "${arg}" in
+    -c | -E | -S)
+      link_step=0
+      printf '%s\n' "${arg}" >> "${tmp_args_file}"
+      continue
+      ;;
+  esac
 
   case "${arg}" in
     --target | -target)
@@ -122,4 +136,7 @@ while IFS= read -r arg; do
   set -- "$@" "$arg"
 done < "${tmp_args_file}"
 
-exec "${zig_exe}" "${zig_driver}" -target "$target" -Wl,--dynamic-linker="$dynamic_linker" "$@"
+if [ "${link_step}" -eq 1 ]; then
+  exec "${zig_exe}" "${zig_driver}" -target "$target" -Wl,--dynamic-linker="$dynamic_linker" "$@"
+fi
+exec "${zig_exe}" "${zig_driver}" -target "$target" "$@"
