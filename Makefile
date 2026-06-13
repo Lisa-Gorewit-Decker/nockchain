@@ -11,7 +11,24 @@ export MINIMAL_LOG_FORMAT ?= true
 export MINING_PKH ?= 9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV
 export
 
+# ---------------------------------------------------------------------------
+# Cross-compilation (cargo-zigbuild) configuration.
+# See the "zig-build targets for cross-compilation" section near the bottom.
+# ---------------------------------------------------------------------------
+# Linux x86_64 release target. The .2.39 suffix is the glibc floor (modern
+# Ubuntu/Debian); override ZIGBUILD_TARGET for a different arch or glibc floor.
 ZIGBUILD_TARGET ?= x86_64-unknown-linux-gnu.2.39
+
+# aws-lc-sys and jemalloc cross-compile through these zig wrappers. aws-lc-sys
+# honors AWS_LC_SYS_CC; tikv-jemalloc-sys builds via its own autotools configure
+# which reads plain AR/RANLIB, so without the wrappers it falls back to the host
+# (e.g. macOS) ar and silently drops cross-compiled ELF objects -> empty
+# libjemalloc.a -> undefined mallocx/rallocx/sdallocx at link time.
+ZIGBUILD_AWS_LC_CC ?= $(CURDIR)/tools/zig/zig_cc_linker.sh
+ZIGBUILD_AR ?= $(CURDIR)/tools/zig/zig_ar.sh
+ZIGBUILD_RANLIB ?= $(CURDIR)/tools/zig/zig_ranlib.sh
+zigbuild_aws_lc_env = ZIG_TARGET=$(1) AWS_LC_SYS_CC=$(ZIGBUILD_AWS_LC_CC) AR=$(ZIGBUILD_AR) RANLIB=$(ZIGBUILD_RANLIB)
+
 DOCKER_IMAGE ?= nockchain-local
 DOCKER_MEM ?= 32g
 # DOCKER_MEM_SWAP ?= 32g
@@ -19,7 +36,7 @@ DOCKER_P2P_PORT ?= 30000
 DOCKER_DATA_DIR ?= $(CURDIR)/.data.nockchain
 DOCKER_NOCKCHAIN_ENVS ?=
 DOCKER_NOCKCHAIN_ARGS ?=
-DOCKER_METRICS_COMPOSE ?= docker-compose.metrics.yml
+DOCKER_METRICS_COMPOSE ?= docker/docker-compose.metrics.yml
 DOCKER_METRICS_NETWORK ?= nockchain-metrics
 INFLUXDB_VERSION ?= 2.7
 TELEGRAF_VERSION ?= 1.30
@@ -48,14 +65,6 @@ build-rust:
 .PHONY: contracts-deps
 contracts-deps: ## Install Solidity dependencies for bridge crate
 		$(MAKE) -C crates/bridge/contracts deps
-
-.PHONY: install-cargo-zigbuild
-install-cargo-zigbuild:
-	cargo install --locked cargo-zigbuild
-
-.PHONY: zig-build-bridge
-zig-build-bridge:
-	cargo zigbuild --release --target $(ZIGBUILD_TARGET) --bin bridge
 
 .PHONY: build-nockchain-jemalloc
 build-nockchain-jemalloc:
@@ -103,7 +112,7 @@ docker-nockchain-pma-persist: docker-nockchain-build
 
 .PHONY: docker-nockchain-build
 docker-nockchain-build:
-	docker build -t $(DOCKER_IMAGE) .
+	docker build -f docker/Dockerfile -t $(DOCKER_IMAGE) .
 # --checkpoint-mode stream \
 .PHONY: docker-nockchain-run
 docker-nockchain-run:
@@ -318,3 +327,51 @@ assets/roswell.jam: ensure-dirs hoon/apps/roswell/roswell.hoon $(HOON_SRCS)
 	rm -f assets/roswell.jam
 	$(HOONC) $(HOONC_FLAGS) $(call hoonc_data_flag,roswell) --output $(@F) hoon/apps/roswell/roswell.hoon hoon
 	mv $(@F) $@
+
+# ---------------------------------------------------------------------------
+# zig-build targets for cross-compilation
+# ---------------------------------------------------------------------------
+# Cross-compile Linux x86_64 release binaries from any host (notably macOS)
+# with cargo-zigbuild: https://github.com/rust-cross/cargo-zigbuild
+#
+# Install the toolchain once with `make install-cargo-zigbuild`. The zig
+# wrappers under tools/zig/ are wired in via zigbuild_aws_lc_env (defined near
+# the top of this file) so aws-lc-sys and jemalloc cross-compile correctly. The
+# wrappers resolve a Zig executable from $ZIG_EXE, then a Bazel-staged
+# hermetic Zig, then `zig` on PATH; cargo-zigbuild otherwise fetches its own.
+#
+# All targets build against ZIGBUILD_TARGET (glibc 2.39, the floor Ubuntu 24.04
+# LTS ships, matching the ubuntu:24.04 runtime Dockerfile).
+
+.PHONY: install-cargo-zigbuild
+install-cargo-zigbuild: ## Install cargo-zigbuild for cross-compilation
+	cargo install --locked cargo-zigbuild
+
+## Cross-compile the main release binaries (node, wallet, peek) for Linux x86_64.
+## nockchain is built with jemalloc.
+.PHONY: zig-build
+zig-build: ## Cross-compile nockchain (jemalloc), nockchain-wallet and nockchain-peek for Linux x86_64
+	$(call zigbuild_aws_lc_env,$(ZIGBUILD_TARGET)) cargo zigbuild --release --features jemalloc --target $(ZIGBUILD_TARGET) --bin nockchain
+	$(call zigbuild_aws_lc_env,$(ZIGBUILD_TARGET)) cargo zigbuild --release --target $(ZIGBUILD_TARGET) --bin nockchain-wallet
+	$(call zigbuild_aws_lc_env,$(ZIGBUILD_TARGET)) cargo zigbuild --release --target $(ZIGBUILD_TARGET) --bin nockchain-peek
+
+# nockchain-api uses jemalloc as its default global allocator on Linux: there is
+# no `jemalloc` feature to pass, it is only disabled by the `malloc`/
+# `tracing-heap` features or on Apple/Miri. So this plain cross-build is already
+# a jemalloc build.
+.PHONY: zig-build-nockchain-api
+zig-build-nockchain-api: ## Cross-compile nockchain-api (jemalloc) for Linux x86_64
+	$(call zigbuild_aws_lc_env,$(ZIGBUILD_TARGET)) cargo zigbuild --release -p nockchain-api --target $(ZIGBUILD_TARGET) --bin nockchain-api
+
+.PHONY: zig-build-nockchain-bridge-sequencer
+zig-build-nockchain-bridge-sequencer: ## Cross-compile the bridge sequencer binaries for Linux x86_64
+	$(call zigbuild_aws_lc_env,$(ZIGBUILD_TARGET)) cargo zigbuild --release -p nockchain-bridge-sequencer --target $(ZIGBUILD_TARGET) --bin nockchain-bridge-sequencer
+	$(call zigbuild_aws_lc_env,$(ZIGBUILD_TARGET)) cargo zigbuild --release -p nockchain-bridge-sequencer --target $(ZIGBUILD_TARGET) --bin nockchain-bridge-sequencer-ctl
+
+.PHONY: zig-build-bridge
+zig-build-bridge: ## Cross-compile the bridge for Linux x86_64
+	$(call zigbuild_aws_lc_env,$(ZIGBUILD_TARGET)) cargo zigbuild --release --target $(ZIGBUILD_TARGET) --bin bridge
+
+.PHONY: zig-build-roswell
+zig-build-roswell: ## Cross-compile roswell for Linux x86_64
+	$(call zigbuild_aws_lc_env,$(ZIGBUILD_TARGET)) cargo zigbuild --release --target $(ZIGBUILD_TARGET) --bin roswell
