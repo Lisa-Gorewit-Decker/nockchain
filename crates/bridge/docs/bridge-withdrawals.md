@@ -212,9 +212,13 @@ This spec focuses on:
       the sequencer advances the shared pre-canonical handoff on the same
       epoch and the next handoff owner may retry that same epoch
     - if a withdrawal is already `Prepared` when the timeout elapses, the
-      built but still provisional proposal is expired and the next epoch
-      leader may assemble a replacement candidate tx for the same withdrawal
-      id
+      built but still provisional local proposal is abandoned only after the
+      sequencer advances the shared pre-canonical handoff on that same epoch.
+      Bridge-local pending rows reconcile to the sequencer's pending epoch, and
+      prepared rows with a local-only epoch mismatch are reset to the
+      sequencer's pending epoch. Same-epoch stale prepared rows whose turn
+      started before the sequencer's current handoff turn are cleared before
+      proposing or validating peers.
 16. The sequencer durably records the authorization / submission /
     confirmation lifecycle and owns the global in-flight gate for withdrawals.
     Only one withdrawal may be

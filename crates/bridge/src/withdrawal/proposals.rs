@@ -495,6 +495,35 @@ impl WithdrawalProjectionStore {
             .await
     }
 
+    pub async fn reconcile_pending_epoch(
+        &self,
+        id: &WithdrawalId,
+        sequencer_epoch: u64,
+    ) -> Result<bool, BridgeError> {
+        let id = id.clone();
+        let updated_at = now_unix_secs()?;
+        self.with_conn(move |conn| reconcile_pending_epoch(conn, &id, sequencer_epoch, updated_at))
+            .await
+    }
+
+    pub async fn reconcile_prepared_with_pending_sequencer(
+        &self,
+        id: &WithdrawalId,
+        sequencer_epoch: u64,
+        sequencer_handoff_index: u64,
+        sequencer_turn_started_base_height: Option<u64>,
+    ) -> Result<bool, BridgeError> {
+        let id = id.clone();
+        let updated_at = now_unix_secs()?;
+        self.with_conn(move |conn| {
+            reconcile_prepared_with_pending_sequencer(
+                conn, &id, sequencer_epoch, sequencer_handoff_index,
+                sequencer_turn_started_base_height, updated_at,
+            )
+        })
+        .await
+    }
+
     async fn validate_and_stage_prepared(
         &self,
         proposal: WithdrawalProposalData,
@@ -923,6 +952,40 @@ impl WithdrawalProposalRegistry {
         epoch: u64,
     ) -> Result<bool, BridgeError> {
         self.store.release_stale_assembly_lock(id, epoch).await
+    }
+
+    pub async fn reconcile_pending_epoch(
+        &self,
+        id: &WithdrawalId,
+        sequencer_epoch: u64,
+    ) -> Result<bool, BridgeError> {
+        let changed = self
+            .store
+            .reconcile_pending_epoch(id, sequencer_epoch)
+            .await?;
+        if changed {
+            self.clear_cache();
+        }
+        Ok(changed)
+    }
+
+    pub async fn reconcile_prepared_with_pending_sequencer(
+        &self,
+        id: &WithdrawalId,
+        sequencer_epoch: u64,
+        sequencer_handoff_index: u64,
+        sequencer_turn_started_base_height: Option<u64>,
+    ) -> Result<bool, BridgeError> {
+        let changed = self
+            .store
+            .reconcile_prepared_with_pending_sequencer(
+                id, sequencer_epoch, sequencer_handoff_index, sequencer_turn_started_base_height,
+            )
+            .await?;
+        if changed {
+            self.clear_cache();
+        }
+        Ok(changed)
     }
 
     pub async fn mark_proposal_prepared(
@@ -1568,7 +1631,8 @@ fn validate_and_stage_prepared(
         let proposal_hash = proposal.proposal_hash()?;
         if matches!(
             state,
-            WithdrawalState::PeerCanonical
+            WithdrawalState::Prepared
+                | WithdrawalState::PeerCanonical
                 | WithdrawalState::Authorized
                 | WithdrawalState::MempoolAccepted
         ) && existing_hash != proposal_hash
@@ -1702,29 +1766,7 @@ fn mark_proposal_expired(
         )));
     }
     let updated_at = now_unix_secs()?;
-    let next_epoch = proposal.epoch.checked_add(1).ok_or_else(|| {
-        BridgeError::Runtime(format!(
-            "withdrawal epoch overflow while expiring proposal {:?} epoch {}",
-            proposal.id, proposal.epoch
-        ))
-    })?;
-    diesel::update(withdrawals::table.find(withdrawal.id))
-        .set((
-            withdrawals::current_epoch.eq(i64::try_from(next_epoch)
-                .map_err(|err| BridgeError::ValueConversion(format!("epoch too large: {err}")))?),
-            withdrawals::proposal_hash.eq::<Option<String>>(None),
-            withdrawals::peer_commit_certificate.eq::<Option<Vec<u8>>>(None),
-            withdrawals::state.eq(state_tag(WithdrawalState::Pending).to_string()),
-            withdrawals::turn_started_base_height.eq::<Option<i64>>(None),
-            withdrawals::submitted_tx_name.eq::<Option<String>>(None),
-            withdrawals::submitted_tx_hash.eq::<Option<String>>(None),
-            withdrawals::submitted_at.eq::<Option<i64>>(None),
-            withdrawals::confirmed_height.eq::<Option<i64>>(None),
-            withdrawals::confirmed_block_id.eq::<Option<Vec<u8>>>(None),
-            withdrawals::updated_at.eq(updated_at),
-        ))
-        .execute(conn)
-        .map_err(|err| BridgeError::Runtime(format!("withdrawal expired update failed: {err}")))?;
+    expire_prepared_row(conn, withdrawal.id, proposal.epoch, updated_at)?;
     Ok(())
 }
 
@@ -1862,6 +1904,116 @@ fn release_stale_assembly_lock(
             BridgeError::Runtime(format!("stale assembly lock release failed: {err}"))
         })?;
     Ok(true)
+}
+
+fn reconcile_pending_epoch(
+    conn: &mut SqliteConnection,
+    id: &WithdrawalId,
+    sequencer_epoch: u64,
+    updated_at: i64,
+) -> Result<bool, BridgeError> {
+    let Some(existing) = find_withdrawal_row(conn, id)? else {
+        return Ok(false);
+    };
+    if parse_state_tag(&existing.state)? != WithdrawalState::Pending {
+        return Ok(false);
+    }
+    let current_epoch = u64::try_from(existing.current_epoch)
+        .map_err(|err| BridgeError::ValueConversion(format!("current_epoch overflow: {err}")))?;
+    if current_epoch == sequencer_epoch {
+        return Ok(false);
+    }
+
+    diesel::update(withdrawals::table.find(existing.id))
+        .set((
+            withdrawals::current_epoch.eq(i64::try_from(sequencer_epoch)
+                .map_err(|err| BridgeError::ValueConversion(format!("epoch too large: {err}")))?),
+            withdrawals::proposal_hash.eq::<Option<String>>(None),
+            withdrawals::peer_commit_certificate.eq::<Option<Vec<u8>>>(None),
+            withdrawals::turn_started_base_height.eq::<Option<i64>>(None),
+            withdrawals::submitted_tx_name.eq::<Option<String>>(None),
+            withdrawals::submitted_tx_hash.eq::<Option<String>>(None),
+            withdrawals::submitted_at.eq::<Option<i64>>(None),
+            withdrawals::confirmed_height.eq::<Option<i64>>(None),
+            withdrawals::confirmed_block_id.eq::<Option<Vec<u8>>>(None),
+            withdrawals::updated_at.eq(updated_at),
+        ))
+        .execute(conn)
+        .map_err(|err| {
+            BridgeError::Runtime(format!(
+                "pending withdrawal epoch reconciliation failed: {err}"
+            ))
+        })?;
+    Ok(true)
+}
+
+fn reconcile_prepared_with_pending_sequencer(
+    conn: &mut SqliteConnection,
+    id: &WithdrawalId,
+    sequencer_epoch: u64,
+    sequencer_handoff_index: u64,
+    sequencer_turn_started_base_height: Option<u64>,
+    updated_at: i64,
+) -> Result<bool, BridgeError> {
+    let Some(existing) = find_withdrawal_row(conn, id)? else {
+        return Ok(false);
+    };
+    if parse_state_tag(&existing.state)? != WithdrawalState::Prepared {
+        return Ok(false);
+    }
+    let current_epoch = u64::try_from(existing.current_epoch)
+        .map_err(|err| BridgeError::ValueConversion(format!("current_epoch overflow: {err}")))?;
+    if current_epoch != sequencer_epoch {
+        expire_prepared_row(conn, existing.id, sequencer_epoch, updated_at)?;
+        return Ok(true);
+    }
+    let Some(sequencer_turn_started_base_height) = sequencer_turn_started_base_height else {
+        return Ok(false);
+    };
+    let handoff_advanced = match existing.turn_started_base_height {
+        Some(local_turn_started_base_height) => {
+            let local_turn_started_base_height = u64::try_from(local_turn_started_base_height)
+                .map_err(|err| {
+                    BridgeError::ValueConversion(format!(
+                        "turn_started_base_height overflow: {err}"
+                    ))
+                })?;
+            sequencer_turn_started_base_height > local_turn_started_base_height
+        }
+        None => sequencer_handoff_index > 0,
+    };
+    if !handoff_advanced {
+        return Ok(false);
+    }
+
+    expire_prepared_row(conn, existing.id, sequencer_epoch, updated_at)?;
+    Ok(true)
+}
+
+fn expire_prepared_row(
+    conn: &mut SqliteConnection,
+    row_id: i64,
+    epoch: u64,
+    updated_at: i64,
+) -> Result<(), BridgeError> {
+    diesel::update(withdrawals::table.find(row_id))
+        .set((
+            withdrawals::current_epoch.eq(i64::try_from(epoch)
+                .map_err(|err| BridgeError::ValueConversion(format!("epoch too large: {err}")))?),
+            withdrawals::proposal_hash.eq::<Option<String>>(None),
+            withdrawals::peer_commit_certificate.eq::<Option<Vec<u8>>>(None),
+            withdrawals::state.eq(state_tag(WithdrawalState::Pending).to_string()),
+            withdrawals::turn_started_base_height.eq::<Option<i64>>(None),
+            withdrawals::submitted_tx_name.eq::<Option<String>>(None),
+            withdrawals::submitted_tx_hash.eq::<Option<String>>(None),
+            withdrawals::submitted_at.eq::<Option<i64>>(None),
+            withdrawals::confirmed_height.eq::<Option<i64>>(None),
+            withdrawals::confirmed_block_id.eq::<Option<Vec<u8>>>(None),
+            withdrawals::updated_at.eq(updated_at),
+        ))
+        .execute(conn)
+        .map_err(|err| BridgeError::Runtime(format!("withdrawal expired update failed: {err}")))?;
+    Ok(())
 }
 
 fn update_withdrawal_state(
@@ -2618,6 +2770,104 @@ mod tests {
             .expect("row");
         assert_eq!(row.id, tracked.id);
         assert_eq!(row.state, WithdrawalState::Assembling);
+    }
+
+    #[tokio::test]
+    async fn prepared_hash_replacement_requires_sequencer_handoff_clear_after_restart() {
+        let (dir, registry) = open_registry().await;
+        let request = sample_request();
+        registry
+            .track_withdrawal_request(&request)
+            .await
+            .expect("track");
+        let proposal = sample_proposal(0);
+        let mut replacement = proposal.clone();
+        replacement.amount = replacement.amount.saturating_sub(1);
+        assert_ne!(
+            proposal.proposal_hash().expect("proposal hash"),
+            replacement.proposal_hash().expect("replacement hash")
+        );
+        registry
+            .acquire_withdrawal_assembly(&proposal.id, proposal.epoch, 10)
+            .await
+            .expect("acquire assembly");
+        registry
+            .validate_and_cache_prepared(&proposal)
+            .await
+            .expect("stage prepared proposal");
+
+        let reopened = Arc::new(
+            WithdrawalProjectionStore::open(dir.path().join("withdrawals.sqlite"))
+                .await
+                .expect("reopen"),
+        );
+        let reopened =
+            WithdrawalProposalRegistry::new_without_transaction_body_validator_for_tests(reopened);
+        let err = reopened
+            .validate_and_cache_prepared(&replacement)
+            .await
+            .expect_err("same-epoch replacement should be rejected while prepared is live");
+        assert!(matches!(
+            err,
+            WithdrawalProposalValidationError::SameEpochEquivocation { .. }
+        ));
+
+        assert!(reopened
+            .reconcile_prepared_with_pending_sequencer(&proposal.id, proposal.epoch, 1, Some(20))
+            .await
+            .expect("expire stale prepared handoff"));
+        assert_eq!(
+            reopened
+                .validate_and_cache_prepared(&replacement)
+                .await
+                .expect("stage replacement after handoff clear"),
+            WithdrawalProposalValidationOutcome::Inserted
+        );
+    }
+
+    #[tokio::test]
+    async fn prepared_epoch_mismatch_reconciles_to_pending_sequencer_epoch_after_restart() {
+        let (dir, registry) = open_registry().await;
+        let request = sample_request();
+        registry
+            .track_withdrawal_request(&request)
+            .await
+            .expect("track");
+        let drifted = sample_proposal(1);
+        registry
+            .acquire_withdrawal_assembly(&drifted.id, drifted.epoch, 10)
+            .await
+            .expect("acquire drifted assembly");
+        registry
+            .validate_and_cache_prepared(&drifted)
+            .await
+            .expect("stage drifted prepared proposal");
+
+        let reopened = Arc::new(
+            WithdrawalProjectionStore::open(dir.path().join("withdrawals.sqlite"))
+                .await
+                .expect("reopen"),
+        );
+        let reopened =
+            WithdrawalProposalRegistry::new_without_transaction_body_validator_for_tests(reopened);
+        assert!(reopened
+            .reconcile_prepared_with_pending_sequencer(&drifted.id, 0, 0, None)
+            .await
+            .expect("reconcile prepared epoch mismatch"));
+        assert_eq!(
+            reopened
+                .next_expected_epoch(&drifted.id)
+                .await
+                .expect("next expected epoch"),
+            0
+        );
+        assert_eq!(
+            reopened
+                .validate_and_cache_prepared(&sample_proposal(0))
+                .await
+                .expect("stage sequencer epoch replacement"),
+            WithdrawalProposalValidationOutcome::Inserted
+        );
     }
 
     #[tokio::test]

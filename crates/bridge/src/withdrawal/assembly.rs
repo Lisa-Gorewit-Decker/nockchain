@@ -876,16 +876,8 @@ pub async fn withdrawal_assembly_tick_once<K: WithdrawalKernelPort>(
     let request = stageable.tracked;
     let request_id = request.id.clone();
 
-    let local_epoch = context
-        .proposal_registry
-        .next_expected_epoch(&request_id)
-        .await?;
-    let epoch = local_epoch.max(stageable.sequencer_epoch);
-    let handoff_index = if epoch == stageable.sequencer_epoch {
-        stageable.sequencer_handoff_index
-    } else {
-        0
-    };
+    let epoch = stageable.sequencer_epoch;
+    let handoff_index = stageable.sequencer_handoff_index;
     if scheduled_assembler_turn_node_id(&request_id, epoch, handoff_index, &context.node_pkhs)?
         != context.local_node_id
     {
@@ -1055,20 +1047,58 @@ async fn expire_stale_live_attempts<K: WithdrawalKernelPort>(
                     context.fallback_policy.assembly_timeout_blocks,
                 ) =>
             {
-                let proposal = context
-                    .proposal_registry
-                    .fetch_cached_proposal(row.id.clone(), row.current_epoch)
-                    .await?
-                    .ok_or_else(|| {
+                let tracked = TrackedWithdrawalRequest::from_live_withdrawal(&row)?;
+                register_withdrawal_or_alert(
+                    context.sequencer.as_ref(),
+                    &context.bridge_status,
+                    &tracked,
+                )
+                .await?;
+                let status = context
+                    .sequencer
+                    .get_sequenced_withdrawal_status(&row.id)
+                    .await?;
+                if status.found && status.state == WithdrawalState::Pending.as_str() {
+                    if status.current_epoch != row.current_epoch {
+                        context
+                            .proposal_registry
+                            .reconcile_prepared_with_pending_sequencer(
+                                &row.id, status.current_epoch, status.handoff_index,
+                                status.turn_started_base_height,
+                            )
+                            .await?;
+                        continue;
+                    }
+                    let next_handoff_index = status.handoff_index.checked_add(1).ok_or_else(|| {
                         BridgeError::Runtime(format!(
-                            "missing cached proposal for stale prepared withdrawal {:?} epoch {}",
+                            "pre-canonical handoff index overflow for stale prepared withdrawal {:?} epoch {}",
                             row.id, row.current_epoch
                         ))
                     })?;
-                context
-                    .proposal_registry
-                    .mark_proposal_expired(&proposal)
-                    .await?;
+                    context
+                        .sequencer
+                        .advance_precanonical_handoff(
+                            &row.id, row.current_epoch, next_handoff_index, current_base_height,
+                        )
+                        .await?;
+                    let advanced_status = context
+                        .sequencer
+                        .get_sequenced_withdrawal_status(&row.id)
+                        .await?;
+                    if advanced_status.found
+                        && advanced_status.current_epoch == row.current_epoch
+                        && advanced_status.state == WithdrawalState::Pending.as_str()
+                    {
+                        context
+                            .proposal_registry
+                            .reconcile_prepared_with_pending_sequencer(
+                                &row.id, advanced_status.current_epoch,
+                                advanced_status.handoff_index,
+                                advanced_status.turn_started_base_height,
+                            )
+                            .await?;
+                    }
+                }
             }
             _ => {}
         }
@@ -1637,6 +1667,10 @@ async fn next_stageable_withdrawal_request<K: WithdrawalKernelPort>(
         if status.state != WithdrawalState::Pending.as_str() {
             return Ok(None);
         }
+        context
+            .proposal_registry
+            .reconcile_pending_epoch(&tracked.id, status.current_epoch)
+            .await?;
     } else {
         return Ok(None);
     }
@@ -4271,55 +4305,91 @@ mod tests {
             Tip5Hash([Belt(1), Belt(2), Belt(3), Belt(4), Belt(5)]),
             Tip5Hash([Belt(6), Belt(7), Belt(8), Belt(9), Belt(10)]),
         ];
-        let local_node_id = scheduled_assembler_node_id(&request.withdrawal_id(), 1, &node_pkhs)
-            .expect("scheduled epoch 1 assembler");
+        let stale_owner = scheduled_assembler_node_id(&request.withdrawal_id(), 0, &node_pkhs)
+            .expect("initial sequencer epoch assembler");
+        let next_owner =
+            scheduled_assembler_turn_node_id(&request.withdrawal_id(), 0, 1, &node_pkhs)
+                .expect("prepared handoff assembler");
+        assert_ne!(stale_owner, next_owner);
         let kernel = Arc::new(RecordingKernelPort::default());
         let mut planner = planner_config(bridge_lock_root);
         planner.base_fee = 0;
         planner.min_fee = 1;
         let sequencer = Arc::new(RecordingSequencerPort::default());
-        let context = WithdrawalAssemblyContext {
+        let stale_context = WithdrawalAssemblyContext {
+            kernel: kernel.clone(),
+            snapshot_service: snapshot_service.clone(),
+            sequencer: sequencer.clone(),
+            proposal_registry: registry.clone(),
+            bridge_status: sample_bridge_status(2),
+            planner: planner.clone(),
+            fallback_policy: WithdrawalFallbackPolicy {
+                assembly_timeout_blocks: 0,
+                submission_timeout_blocks: 30,
+            },
+            local_node_id: stale_owner,
+            node_pkhs: node_pkhs.clone(),
+        };
+
+        let outcome = withdrawal_assembly_tick_once(&stale_context)
+            .await
+            .expect("stale prepared owner tick");
+        assert_eq!(outcome, WithdrawalAssemblyTickOutcome::Idle);
+        let status = sequencer
+            .get_sequenced_withdrawal_status(&request.withdrawal_id())
+            .await
+            .expect("sequencer status after prepared handoff");
+        assert!(status.found);
+        assert_eq!(status.current_epoch, 0);
+        assert_eq!(status.state, WithdrawalState::Pending.as_str());
+        assert_eq!(status.handoff_index, 1);
+        assert_eq!(status.turn_started_base_height, Some(2));
+        assert!(registry
+            .fetch_live_withdrawal(&request.withdrawal_id())
+            .await
+            .expect("fetch live withdrawal after prepared handoff")
+            .is_none());
+
+        let next_context = WithdrawalAssemblyContext {
             kernel: kernel.clone(),
             snapshot_service,
-            sequencer: sequencer.clone(),
+            sequencer,
             proposal_registry: registry,
-            bridge_status: sample_bridge_status(1),
+            bridge_status: sample_bridge_status(2),
             planner,
             fallback_policy: WithdrawalFallbackPolicy {
                 assembly_timeout_blocks: 0,
                 submission_timeout_blocks: 30,
             },
-            local_node_id,
+            local_node_id: next_owner,
             node_pkhs,
         };
-
-        let outcome = withdrawal_assembly_tick_once(&context)
+        let next_outcome = withdrawal_assembly_tick_once(&next_context)
             .await
-            .expect("assembly tick");
+            .expect("prepared handoff owner tick");
         assert!(matches!(
-            outcome,
+            next_outcome,
             WithdrawalAssemblyTickOutcome::RequestedBuild {
                 id,
-                epoch: 1,
+                epoch: 0,
                 selected_inputs: 1,
             } if id == request.withdrawal_id()
         ));
 
-        let live = context
+        let live = next_context
             .proposal_registry
             .fetch_live_withdrawal(&request.withdrawal_id())
             .await
             .expect("fetch live withdrawal")
             .expect("reassembled withdrawal remains live");
         assert_eq!(live.state, WithdrawalState::Assembling);
-        assert_eq!(live.current_epoch, 1);
+        assert_eq!(live.current_epoch, 0);
         let requests = kernel.requests.lock().expect("requests lock");
         assert_eq!(requests.len(), 1);
     }
 
     #[tokio::test]
-    async fn withdrawal_assembly_tick_reassembles_after_expired_prepared_attempt_returns_to_pending(
-    ) {
+    async fn withdrawal_assembly_tick_reassembles_same_epoch_after_expired_prepared_attempt() {
         let (_dir, registry) = open_services().await;
         let request = sample_withdrawal_request();
         registry
@@ -4397,8 +4467,8 @@ mod tests {
             Tip5Hash([Belt(1), Belt(2), Belt(3), Belt(4), Belt(5)]),
             Tip5Hash([Belt(6), Belt(7), Belt(8), Belt(9), Belt(10)]),
         ];
-        let local_node_id = scheduled_assembler_node_id(&request.withdrawal_id(), 1, &node_pkhs)
-            .expect("scheduled epoch 1 assembler");
+        let local_node_id = scheduled_assembler_node_id(&request.withdrawal_id(), 0, &node_pkhs)
+            .expect("scheduled sequencer epoch assembler");
         let kernel = Arc::new(RecordingKernelPort::default());
         let mut planner = planner_config(bridge_lock_root);
         planner.base_fee = 0;
@@ -4426,7 +4496,7 @@ mod tests {
             outcome,
             WithdrawalAssemblyTickOutcome::RequestedBuild {
                 id,
-                epoch: 1,
+                epoch: 0,
                 selected_inputs: 1,
             } if id == request.withdrawal_id()
         ));
@@ -4438,9 +4508,225 @@ mod tests {
             .expect("fetch live withdrawal")
             .expect("reassembled withdrawal remains live");
         assert_eq!(live.state, WithdrawalState::Assembling);
-        assert_eq!(live.current_epoch, 1);
+        assert_eq!(live.current_epoch, 0);
         let requests = kernel.requests.lock().expect("requests lock");
         assert_eq!(requests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn withdrawal_assembly_tick_reconciles_stranded_prepared_epoch_to_sequencer() {
+        let (_dir, registry) = open_services().await;
+        let request = sample_withdrawal_request();
+        registry
+            .track_withdrawal_request(&request)
+            .await
+            .expect("track request");
+
+        let spend_condition = SpendCondition::simple_pkh(Tip5Hash([
+            Belt(500),
+            Belt(501),
+            Belt(502),
+            Belt(503),
+            Belt(504),
+        ]));
+        let bridge_lock = Lock::SpendCondition(spend_condition.clone());
+        let bridge_lock_root = bridge_lock.hash().expect("bridge lock root");
+        let spendable_name = Name::new(
+            spend_condition
+                .first_name()
+                .expect("first name")
+                .into_hash(),
+            Tip5Hash([Belt(701), Belt(702), Belt(703), Belt(704), Belt(705)]),
+        );
+        let pages = single_page_snapshot(vec![(
+            spendable_name.clone(),
+            note_for_lock(&bridge_lock, spendable_name.clone(), 20),
+        )]);
+        let snapshot_service = Arc::new(BridgeNoteSnapshotService::new(
+            Arc::new(StaticSnapshotSource { pages }),
+            BridgeOwnedNoteSelectors {
+                first_names: vec!["bridge-first".to_string()],
+            },
+            Duration::from_secs(60),
+        ));
+        snapshot_service.refresh().await.expect("refresh snapshot");
+
+        let drifted_proposal = WithdrawalProposalData {
+            id: request.withdrawal_id(),
+            recipient: request.recipient.clone(),
+            amount: request.amount.saturating_sub(1),
+            burned_amount: request.amount,
+            base_batch_end: request.base_batch_end,
+            epoch: 1,
+            snapshot: WithdrawalSnapshot {
+                height: 901,
+                block_id: Tip5Hash([Belt(91), Belt(92), Belt(93), Belt(94), Belt(96)]),
+            },
+            selected_inputs: vec![spendable_name.clone()],
+            transaction: sample_transaction(),
+        };
+        let acquired = registry
+            .acquire_withdrawal_assembly(&request.withdrawal_id(), 1, 1)
+            .await
+            .expect("acquire drifted epoch assembly");
+        assert_eq!(acquired, AcquireWithdrawalAssemblyOutcome::Acquired);
+        registry
+            .validate_and_cache_prepared(&drifted_proposal)
+            .await
+            .expect("persist drifted prepared proposal");
+        let drifted_live = registry
+            .fetch_live_withdrawal(&request.withdrawal_id())
+            .await
+            .expect("fetch drifted prepared withdrawal")
+            .expect("drifted prepared withdrawal remains live");
+        assert_eq!(drifted_live.state, WithdrawalState::Prepared);
+        assert_eq!(drifted_live.current_epoch, 1);
+
+        let node_pkhs = vec![
+            Tip5Hash([Belt(1), Belt(2), Belt(3), Belt(4), Belt(5)]),
+            Tip5Hash([Belt(6), Belt(7), Belt(8), Belt(9), Belt(10)]),
+        ];
+        let local_node_id = scheduled_assembler_node_id(&request.withdrawal_id(), 0, &node_pkhs)
+            .expect("scheduled sequencer epoch assembler");
+        let kernel = Arc::new(RecordingKernelPort::default());
+        let mut planner = planner_config(bridge_lock_root);
+        planner.base_fee = 0;
+        planner.min_fee = 1;
+        let sequencer = Arc::new(RecordingSequencerPort::default());
+        let context = WithdrawalAssemblyContext {
+            kernel: kernel.clone(),
+            snapshot_service,
+            sequencer,
+            proposal_registry: registry,
+            bridge_status: sample_bridge_status(2),
+            planner,
+            fallback_policy: WithdrawalFallbackPolicy {
+                assembly_timeout_blocks: 0,
+                submission_timeout_blocks: 30,
+            },
+            local_node_id,
+            node_pkhs,
+        };
+
+        let outcome = withdrawal_assembly_tick_once(&context)
+            .await
+            .expect("assembly tick after prepared epoch reconciliation");
+        assert!(matches!(
+            outcome,
+            WithdrawalAssemblyTickOutcome::RequestedBuild {
+                id,
+                epoch: 0,
+                selected_inputs: 1,
+            } if id == request.withdrawal_id()
+        ));
+
+        let live = context
+            .proposal_registry
+            .fetch_live_withdrawal(&request.withdrawal_id())
+            .await
+            .expect("fetch live withdrawal")
+            .expect("reconciled withdrawal should be assembling");
+        assert_eq!(live.state, WithdrawalState::Assembling);
+        assert_eq!(live.current_epoch, 0);
+        let requests = kernel.requests.lock().expect("requests lock");
+        assert_eq!(requests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn withdrawal_assembly_tick_reconciles_stranded_pending_epoch_to_sequencer() {
+        let (_dir, registry) = open_services().await;
+        let request = sample_withdrawal_request();
+        registry
+            .track_withdrawal_request(&request)
+            .await
+            .expect("track request");
+
+        let acquired = registry
+            .acquire_withdrawal_assembly(&request.withdrawal_id(), 1, 1)
+            .await
+            .expect("acquire stranded epoch assembly");
+        assert_eq!(acquired, AcquireWithdrawalAssemblyOutcome::Acquired);
+        registry
+            .release_assembly_lock(&request.withdrawal_id())
+            .await
+            .expect("release stranded epoch assembly");
+        assert_eq!(
+            registry
+                .next_expected_epoch(&request.withdrawal_id())
+                .await
+                .expect("local epoch after release"),
+            1
+        );
+
+        let spend_condition = SpendCondition::simple_pkh(Tip5Hash([
+            Belt(500),
+            Belt(501),
+            Belt(502),
+            Belt(503),
+            Belt(504),
+        ]));
+        let bridge_lock = Lock::SpendCondition(spend_condition.clone());
+        let bridge_lock_root = bridge_lock.hash().expect("bridge lock root");
+        let spendable_name = Name::new(
+            spend_condition
+                .first_name()
+                .expect("first name")
+                .into_hash(),
+            Tip5Hash([Belt(701), Belt(702), Belt(703), Belt(704), Belt(705)]),
+        );
+        let pages = single_page_snapshot(vec![(
+            spendable_name.clone(),
+            note_for_lock(&bridge_lock, spendable_name, 20),
+        )]);
+        let snapshot_service = Arc::new(BridgeNoteSnapshotService::new(
+            Arc::new(StaticSnapshotSource { pages }),
+            BridgeOwnedNoteSelectors {
+                first_names: vec!["bridge-first".to_string()],
+            },
+            Duration::from_secs(60),
+        ));
+        snapshot_service.refresh().await.expect("refresh snapshot");
+
+        let node_pkhs = vec![
+            Tip5Hash([Belt(1), Belt(2), Belt(3), Belt(4), Belt(5)]),
+            Tip5Hash([Belt(6), Belt(7), Belt(8), Belt(9), Belt(10)]),
+        ];
+        let local_node_id = scheduled_assembler_node_id(&request.withdrawal_id(), 0, &node_pkhs)
+            .expect("scheduled sequencer epoch assembler");
+        let kernel = Arc::new(RecordingKernelPort::default());
+        let sequencer = Arc::new(RecordingSequencerPort::default());
+        let mut planner = planner_config(bridge_lock_root);
+        planner.base_fee = 0;
+        planner.min_fee = 1;
+        let context = WithdrawalAssemblyContext {
+            kernel: kernel.clone(),
+            snapshot_service,
+            sequencer,
+            proposal_registry: registry.clone(),
+            bridge_status: sample_bridge_status(1),
+            planner,
+            fallback_policy: WithdrawalFallbackPolicy::default(),
+            local_node_id,
+            node_pkhs,
+        };
+
+        let outcome = withdrawal_assembly_tick_once(&context)
+            .await
+            .expect("assembly tick");
+        assert!(matches!(
+            outcome,
+            WithdrawalAssemblyTickOutcome::RequestedBuild {
+                id,
+                epoch: 0,
+                selected_inputs: 1,
+            } if id == request.withdrawal_id()
+        ));
+        let live = registry
+            .fetch_live_withdrawal(&request.withdrawal_id())
+            .await
+            .expect("fetch reconciled live withdrawal")
+            .expect("reconciled withdrawal should be assembling");
+        assert_eq!(live.current_epoch, 0);
     }
 
     #[tokio::test]

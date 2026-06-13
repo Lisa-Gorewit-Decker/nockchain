@@ -1014,6 +1014,8 @@ impl WithdrawalProposalTransport {
     where
         I: IntoIterator<Item = u64>,
     {
+        self.reconcile_pending_epoch_with_sequencer(&proposal.id)
+            .await?;
         let proposal_hash = proposal.proposal_hash()?;
         let expected_node_id = self.expected_assembler_node_id(proposal).await?;
         if sender_node_id != expected_node_id {
@@ -1077,6 +1079,27 @@ impl WithdrawalProposalTransport {
                 .await;
         }
         Ok((proposal_hash, outcome))
+    }
+
+    async fn reconcile_pending_epoch_with_sequencer(
+        &self,
+        id: &WithdrawalId,
+    ) -> Result<(), WithdrawalProposalValidationError> {
+        let Some(sequencer) = self.sequencer.as_ref() else {
+            return Ok(());
+        };
+        let status = sequencer.get_sequenced_withdrawal_status(id).await?;
+        if status.found && status.state == WithdrawalState::Pending.as_str() {
+            self.registry
+                .reconcile_prepared_with_pending_sequencer(
+                    id, status.current_epoch, status.handoff_index, status.turn_started_base_height,
+                )
+                .await?;
+            self.registry
+                .reconcile_pending_epoch(id, status.current_epoch)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn ensure_selected_inputs_safe(
@@ -1923,6 +1946,7 @@ mod tests {
     use crate::withdrawal::snapshot::{
         BridgeNoteSnapshotService, BridgeNoteSnapshotSource, BridgeOwnedNoteSelectors,
     };
+    use crate::withdrawal::state::AcquireWithdrawalAssemblyOutcome;
     use crate::withdrawal::submission::{
         NextPendingWithdrawalOrdering, WithdrawalSequencerCanonicalizationError,
         WithdrawalSequencerPort, WithdrawalSequencerSubmitOutcome,
@@ -3452,6 +3476,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn broadcast_to_peer_reconciles_pending_epoch_before_validation() {
+        let request = sample_request();
+        let proposal = sample_proposal(0);
+        let node_pkhs = sample_node_pkhs();
+        let broadcaster_node_id =
+            scheduled_assembler_node_id(&proposal.id, proposal.epoch, &node_pkhs)
+                .expect("scheduled assembler");
+        let peer_node_id = (broadcaster_node_id + 1) % (node_pkhs.len() as u64);
+        let (transport_a, state_store_a, runtime_task_a, _runtime_a, _dir_a) = open_transport(
+            broadcaster_node_id,
+            2,
+            node_pkhs.clone(),
+            WithdrawalFallbackPolicy::default(),
+        )
+        .await;
+        let (transport_b, state_store_b, runtime_task_b, _runtime_b, _dir_b) = open_transport(
+            peer_node_id,
+            2,
+            node_pkhs,
+            WithdrawalFallbackPolicy::default(),
+        )
+        .await;
+        transport_a
+            .registry()
+            .track_withdrawal_request(&request)
+            .await
+            .expect("track request on transport a");
+        transport_b
+            .registry()
+            .track_withdrawal_request(&request)
+            .await
+            .expect("track request on transport b");
+        register_request_ordering(&state_store_a, &request, 1).await;
+        register_request_ordering(&state_store_b, &request, 1).await;
+        assert_eq!(
+            transport_b
+                .registry()
+                .acquire_withdrawal_assembly(&request.withdrawal_id(), 1, 1)
+                .await
+                .expect("acquire stranded epoch assembly"),
+            AcquireWithdrawalAssemblyOutcome::Acquired
+        );
+        transport_b
+            .registry()
+            .release_assembly_lock(&request.withdrawal_id())
+            .await
+            .expect("release stranded epoch assembly");
+        assert_eq!(
+            transport_b
+                .registry()
+                .next_expected_epoch(&request.withdrawal_id())
+                .await
+                .expect("peer local epoch before broadcast"),
+            1
+        );
+
+        let fake_rpc = FakeWithdrawalPeerRpc {
+            peers: Arc::new(HashMap::from([(peer_node_id, transport_b.clone())])),
+        };
+        let outcome = transport_a
+            .broadcast_proposal_with_rpc(
+                &proposal,
+                &[PeerEndpoint {
+                    node_id: peer_node_id,
+                    address: "http://peer-2".to_string(),
+                }],
+                &fake_rpc,
+            )
+            .await
+            .expect("broadcast proposal");
+
+        assert!(outcome.accepted_node_ids.contains(&peer_node_id));
+        assert!(outcome.canonicalized);
+        let peer_live = transport_b
+            .registry()
+            .fetch_live_withdrawal(&request.withdrawal_id())
+            .await
+            .expect("fetch peer live withdrawal")
+            .expect("peer should store canonicalized proposal");
+        assert_eq!(peer_live.current_epoch, 0);
+
+        runtime_task_a.abort();
+        runtime_task_b.abort();
+    }
+
+    #[tokio::test]
     async fn broadcast_reaching_canonicalization_threshold_updates_broadcaster_sequencer_state() {
         let request = sample_request();
         let proposal = sample_proposal(0);
@@ -4815,6 +4925,145 @@ mod tests {
 
         assert!(response.accepted, "response: {response:?}");
         assert_ne!(response.status, "wrong_assembler");
+    }
+
+    #[tokio::test]
+    async fn accepts_replacement_proposal_after_sequencer_handoff_clears_stale_prepared() {
+        let request = sample_request();
+        let stale_proposal = sample_proposal(0);
+        let mut replacement = stale_proposal.clone();
+        replacement.amount = replacement.amount.saturating_sub(1);
+        assert_ne!(
+            stale_proposal.proposal_hash().expect("stale proposal hash"),
+            replacement
+                .proposal_hash()
+                .expect("replacement proposal hash")
+        );
+        let node_pkhs = sample_node_pkhs();
+        let original_sender =
+            scheduled_assembler_node_id(&stale_proposal.id, stale_proposal.epoch, &node_pkhs)
+                .expect("initial assembler");
+        let (handoff_index, handoff_sender) =
+            handoff_sender_distinct_from(&replacement, &node_pkhs, original_sender);
+        let local_node_id = (handoff_sender + 1) % (node_pkhs.len() as u64);
+
+        let (transport, withdrawal_state_store, runtime_task, _runtime, _dir) = open_transport(
+            local_node_id,
+            1,
+            node_pkhs,
+            WithdrawalFallbackPolicy::default(),
+        )
+        .await;
+        transport
+            .registry()
+            .track_withdrawal_request(&request)
+            .await
+            .expect("track request");
+        transport
+            .registry()
+            .acquire_withdrawal_assembly(&stale_proposal.id, stale_proposal.epoch, 10)
+            .await
+            .expect("acquire stale assembly");
+        transport
+            .registry()
+            .validate_and_cache_prepared(&stale_proposal)
+            .await
+            .expect("stage stale prepared proposal");
+        register_request_ordering(&withdrawal_state_store, &request, 1).await;
+        withdrawal_state_store
+            .record_precanonical_handoff_for_id(
+                &replacement.id, replacement.epoch, handoff_index, 20,
+            )
+            .await
+            .expect("record pre-canonical handoff");
+
+        let response = transport
+            .ingest_peer_proposal(handoff_sender, &replacement)
+            .await
+            .expect("ingest replacement proposal");
+
+        assert!(response.accepted, "response: {response:?}");
+        let live = transport
+            .registry()
+            .fetch_live_withdrawal(&replacement.id)
+            .await
+            .expect("fetch live withdrawal")
+            .expect("replacement should be prepared");
+        assert_eq!(live.state, WithdrawalState::Prepared);
+        assert_eq!(
+            live.proposal_hash.as_deref(),
+            Some(
+                replacement
+                    .proposal_hash()
+                    .expect("replacement proposal hash")
+                    .as_str()
+            )
+        );
+
+        runtime_task.abort();
+    }
+
+    #[tokio::test]
+    async fn accepts_sequencer_epoch_proposal_after_clearing_drifted_prepared_epoch() {
+        let request = sample_request();
+        let drifted = sample_proposal(1);
+        let sequencer_epoch_proposal = sample_proposal(0);
+        let node_pkhs = sample_node_pkhs();
+        let sender_node_id = scheduled_assembler_node_id(
+            &sequencer_epoch_proposal.id, sequencer_epoch_proposal.epoch, &node_pkhs,
+        )
+        .expect("sequencer epoch assembler");
+        let local_node_id = (sender_node_id + 1) % (node_pkhs.len() as u64);
+
+        let (transport, withdrawal_state_store, runtime_task, _runtime, _dir) = open_transport(
+            local_node_id,
+            1,
+            node_pkhs,
+            WithdrawalFallbackPolicy::default(),
+        )
+        .await;
+        transport
+            .registry()
+            .track_withdrawal_request(&request)
+            .await
+            .expect("track request");
+        transport
+            .registry()
+            .acquire_withdrawal_assembly(&drifted.id, drifted.epoch, 10)
+            .await
+            .expect("acquire drifted assembly");
+        transport
+            .registry()
+            .validate_and_cache_prepared(&drifted)
+            .await
+            .expect("stage drifted prepared proposal");
+        register_request_ordering(&withdrawal_state_store, &request, 1).await;
+
+        let response = transport
+            .ingest_peer_proposal(sender_node_id, &sequencer_epoch_proposal)
+            .await
+            .expect("ingest sequencer epoch proposal");
+
+        assert!(response.accepted, "response: {response:?}");
+        let live = transport
+            .registry()
+            .fetch_live_withdrawal(&sequencer_epoch_proposal.id)
+            .await
+            .expect("fetch live withdrawal")
+            .expect("sequencer epoch proposal should be prepared");
+        assert_eq!(live.state, WithdrawalState::Prepared);
+        assert_eq!(live.current_epoch, 0);
+        assert_eq!(
+            live.proposal_hash.as_deref(),
+            Some(
+                sequencer_epoch_proposal
+                    .proposal_hash()
+                    .expect("sequencer epoch proposal hash")
+                    .as_str()
+            )
+        );
+
+        runtime_task.abort();
     }
 
     #[tokio::test]
