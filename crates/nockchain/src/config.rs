@@ -146,10 +146,17 @@ pub struct NockchainCli {
     pub bind: Option<Vec<String>>,
     #[arg(
         long,
-        help = "Don't generate a new peer ID, keep the existing one",
+        help = "Deprecated / no-op: persisting the existing peer ID is now the default. Retained for backward compatibility; pass --new-peer-id to force a fresh identity instead.",
         default_value = "false"
     )]
     pub no_new_peer_id: bool,
+    #[arg(
+        long,
+        help = "Generate a fresh libp2p peer ID, discarding any existing identity. By default the existing peer ID is persisted across restarts so the node keeps a stable identity.",
+        default_value = "false",
+        conflicts_with = "no_new_peer_id"
+    )]
+    pub new_peer_id: bool,
     #[arg(
         long,
         help = "Override the path to the libp2p identity key (defaults to .nockchain_identity)"
@@ -337,6 +344,7 @@ mod tests {
             no_default_peers: false,
             bind: None,
             no_new_peer_id: false,
+            new_peer_id: false,
             identity_path: None,
             max_established_incoming: None,
             max_established_outgoing: None,

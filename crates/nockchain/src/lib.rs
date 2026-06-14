@@ -244,7 +244,14 @@ pub async fn init_with_kernel<J: Jammer + Send + 'static>(
         .identity_path
         .clone()
         .unwrap_or_else(|| PathBuf::from(config::IDENTITY_PATH));
-    let keypair = { load_keypair(identity_path.as_path(), cli.no_new_peer_id)? };
+    // Persist the existing libp2p identity across restarts by default so the node
+    // keeps a stable peer ID. A node that rerolls its peer ID every restart gets
+    // rejected by peers that still map its IP to the old ID (wrong-peer-id) and
+    // can be IP-banned, isolating it from the network. Only generate a fresh
+    // identity when explicitly requested via --new-peer-id. (`--no-new-peer-id`
+    // is retained for backward compatibility and now matches the default.)
+    let persist_identity = !cli.new_peer_id;
+    let keypair = { load_keypair(identity_path.as_path(), persist_identity)? };
     info!("allowed_peers_path: {:?}", cli.allowed_peers_path);
     let allowed = cli.allowed_peers_path.as_ref().map(|path| {
         let contents = fs::read_to_string(path).expect("failed to read allowed peers file: {}");
