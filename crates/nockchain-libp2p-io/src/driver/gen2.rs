@@ -162,7 +162,7 @@ pub(super) async fn send_outbound_request_now(
         .behaviour_mut()
         .request_response
         .send_request(&peer_id, request);
-    info!(
+    debug!(
         peer = %peer_id,
         request_id = %request_id,
         generation = ?request_context.generation,

@@ -14,7 +14,7 @@ use nockapp::wire::Wire;
 use nockapp::NockAppError;
 use nockvm::noun::NounAllocator;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 
 use crate::driver::gen2::*;
 use crate::driver::{
@@ -50,7 +50,7 @@ pub(super) async fn handle_inbound_request(
     if let NockchainRequest::BatchRequest { items, .. } = &request {
         metrics.gen2_batch_requests_received.increment();
         metrics.gen2_batch_items_received.fetch_add(items.len());
-        info!(
+        debug!(
             peer = %peer,
             item_count = items.len(),
             "Nous req-res inbound gen2 batch received"
@@ -632,7 +632,7 @@ pub(super) async fn handle_inbound_request(
                 } else {
                     response_bytes as f64 / response_cap_bytes as f64
                 };
-                info!(
+                debug!(
                     peer = %peer,
                     request_items = items.len(),
                     result_items,

@@ -1943,7 +1943,6 @@ async fn log_peer_status(
         .swap(peer_exclusions.active_address_cooldown_count() as f64);
 
     let connected_peer_count = {
-        info!("Logging current peer status...");
         let connected_peers: Vec<_> = swarm.connected_peers().cloned().collect();
         let peer_count = connected_peers.len();
 

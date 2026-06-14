@@ -5,7 +5,7 @@ use std::time::Instant;
 use libp2p::{request_response, PeerId};
 use nockapp::NockAppError;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::driver::gen2::*;
 use crate::driver::{
@@ -60,7 +60,7 @@ pub(super) async fn handle_outbound_response(
     };
     let response_composition = ResponseComposition::from_response(&response);
     if let Some(request_context) = request_context.as_ref() {
-        info!(
+        debug!(
             peer = %peer,
             request_id = %request_id,
             generation = ?request_context.generation,
