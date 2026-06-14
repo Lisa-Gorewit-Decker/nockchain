@@ -51,7 +51,7 @@ const MIN_PEERS: usize = 8;
 
 // Request/response constants
 const REQUEST_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
-const REQUEST_HIGH_THRESHOLD: u64 = 60;
+const REQUEST_HIGH_THRESHOLD: u64 = 256;
 const REQUEST_HIGH_RESET: Duration = Duration::from_secs(60);
 const REQUEST_REPLAY_CACHE_TTL: Duration = Duration::from_secs(300);
 const REQUEST_REPLAY_CACHE_MAX_PER_PEER: usize = 4096;
