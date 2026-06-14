@@ -2,10 +2,12 @@
 /=  dumb-transact  /common/tx-engine
 /=  *  /common/h-zoon
 ::
+~%  %dumb-derived  ..ut  ~
 |_  [d=derived-state:dk =blockchain-constants:dumb-transact]
 +*  t  ~(. dumb-transact blockchain-constants)
 ::  +update: update metadata derived from consensus state
 ++  update
+  ~/  %update
   |=  [c=consensus-state:dk pag=page:t]
   ^-  derived-state:dk
   ::  update highest height
@@ -34,6 +36,7 @@
     next-parent  ~(parent get:local-page:t (~(got h-by blocks.c) next-parent))
   ==
 ++  update-highest
+  ~/  %update-highest
   |=  height=page-number:t
   =/  new-highest
     ?~  highest-block-height.d  height
@@ -47,6 +50,7 @@
 ::  If the seal is not set, then we check the genesis block itself
 ::  If there is no genesis block, we return ~
 ++  is-mainnet
+  ~/  %is-mainnet
   |=  c=consensus-state:dk
   ^-  (unit ?)
   ?~  genesis-seal.c

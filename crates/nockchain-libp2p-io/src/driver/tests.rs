@@ -116,20 +116,23 @@ fn should_redial_initial_peers_requires_zero_connected_peers() {
             .expect("valid multiaddr"),
     ];
 
-    assert!(should_redial_initial_peers(0, &initial_peers, 3));
-    assert!(!should_redial_initial_peers(1, &initial_peers, 3));
+    assert!(should_redial_initial_peers(0, &initial_peers));
+    assert!(!should_redial_initial_peers(1, &initial_peers));
 }
 
 #[test]
-fn should_redial_initial_peers_requires_seed_peers_and_retry_budget() {
+fn should_redial_initial_peers_requires_seed_peers() {
     let initial_peers: Vec<Multiaddr> = vec![
         "/ip4/127.0.0.1/udp/30001/quic-v1/p2p/12D3KooWQb2uWwR7C3yFqKf4LxQ7s7rC5QZr9dA4zD4m6J7QfJ6A"
             .parse()
             .expect("valid multiaddr"),
     ];
 
-    assert!(!should_redial_initial_peers(0, &[], 3));
-    assert!(!should_redial_initial_peers(0, &initial_peers, 0));
+    // No seed peers: nothing to redial.
+    assert!(!should_redial_initial_peers(0, &[]));
+    // With seed peers and zero connected peers we redial regardless of how
+    // many attempts have already been made — we never give up.
+    assert!(should_redial_initial_peers(0, &initial_peers));
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

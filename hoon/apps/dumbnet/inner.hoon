@@ -17,6 +17,7 @@
 |%
 ++  moat  (keep kernel-state:dk)
 ++  inner
+  ~%  %dumb-inner  ..ut  ~
   |_  k=kernel-state:dk
   +*  min      ~(. dumb-miner m.k constants.k)
       der      ~(. dumb-derived d.k constants.k)
@@ -25,6 +26,7 @@
   ::
   ::  We should be calling the inner kernel load in case of update
   ++  load
+    ~/  %load
     ::  use the below for validation of new state upgrades
     ::  |=  untyped-arg=*
     ::  ~>  %slog.[0 leaf+"typing kernel state"]
@@ -382,6 +384,7 @@
   ::
   ::TODO make referentially transparent by requiring event number in the scry path
   ++  peek
+    ~/  %peek
     |=  arg=path
     ^-  (unit (unit *))
     |^
@@ -718,50 +721,55 @@
     --
   ::
   ++  poke
+    ~/  %poke
     |=  [wir=wire eny=@ our=@ux now=@da dat=*]
     ^-  [(list effect:dk) kernel-state:dk]
-    |^
-    =/  old-state  m.k
-    =/  cause  ((soft cause:dk) dat)
-    ?~  cause
-      ~>  %slog.[1 [%leaf "Error: badly formatted cause, should never occur."]]
-      ~&  ;;([thing=@t ver=@ type=@t] [-.dat +<.dat +>-.dat])
-      =/  peer-id  (get-peer-id wir)
-      ?~  peer-id
-        `k
-      ~>  %slog.[1 [leaf+"Peer-id found in wire of badly formatted cause, emitting %liar-peer"]]
-      [[%liar-peer u.peer-id %invalid-fact]~ k]
-    =/  cause  u.cause
-    ::~&  "inner dumbnet cause: {<[-.cause -.+.cause]>}"
-    =^  effs  k
-      ?+    wir  ~|("Unsupported wire: {<wir>}" !!)
-          [%poke src=?(%nc %timer %sys %miner %grpc) ver=@ *]
-        ?-  -.cause
-          %command  (handle-command now eny p.cause)
-          %fact     (handle-fact wir eny our now p.cause)
+    =<  $
+    ~%  %poke-helpers  ..ut  ~
+    |%
+    ++  $
+      =/  old-state  m.k
+      =/  cause  ((soft cause:dk) dat)
+      ?~  cause
+        ~>  %slog.[1 [%leaf "Error: badly formatted cause, should never occur."]]
+        ~&  ;;([thing=@t ver=@ type=@t] [-.dat +<.dat +>-.dat])
+        =/  peer-id  (get-peer-id wir)
+        ?~  peer-id
+          `k
+        ~>  %slog.[1 [leaf+"Peer-id found in wire of badly formatted cause, emitting %liar-peer"]]
+        [[%liar-peer u.peer-id %invalid-fact]~ k]
+      =/  cause  u.cause
+      ::~&  "inner dumbnet cause: {<[-.cause -.+.cause]>}"
+      =^  effs  k
+        ?+    wir  ~|("Unsupported wire: {<wir>}" !!)
+            [%poke src=?(%nc %timer %sys %miner %grpc) ver=@ *]
+          ?-  -.cause
+            %command  (handle-command now eny p.cause)
+            %fact     (handle-fact wir eny our now p.cause)
+          ==
+        ::
+           [%poke %libp2p ver=@ typ=?(%gossip %response) %peer-id =peer-id:dk *]
+          ?>  ?=(%fact -.cause)
+          (handle-fact wir eny our now p.cause)
         ==
-      ::
-         [%poke %libp2p ver=@ typ=?(%gossip %response) %peer-id =peer-id:dk *]
-        ?>  ?=(%fact -.cause)
-        (handle-fact wir eny our now p.cause)
+      ::  possibly update candidate block for mining
+      =^  candidate-changed  m.k  (update-candidate-block:min c.k now)
+      :_  k
+      ?.  candidate-changed  effs
+      :_  effs
+      =/  version=proof-version:sp
+        (height-to-proof-version:con ~(height get:page:t candidate-block.m.k))
+      =/  target  ~(target get:page:t candidate-block.m.k)
+      =/  commit  (block-commitment:page:t candidate-block.m.k)
+      ?-  version
+        %0  [%mine %0 commit target pow-len:t]
+        %1  [%mine %1 commit target pow-len:t]
+        %2  [%mine %2 commit target pow-len:t]
       ==
-    ::  possibly update candidate block for mining
-    =^  candidate-changed  m.k  (update-candidate-block:min c.k now)
-    :_  k
-    ?.  candidate-changed  effs
-    :_  effs
-    =/  version=proof-version:sp
-      (height-to-proof-version:con ~(height get:page:t candidate-block.m.k))
-    =/  target  ~(target get:page:t candidate-block.m.k)
-    =/  commit  (block-commitment:page:t candidate-block.m.k)
-    ?-  version
-      %0  [%mine %0 commit target pow-len:t]
-      %1  [%mine %1 commit target pow-len:t]
-      %2  [%mine %2 commit target pow-len:t]
-    ==
     ::
     ::  +heard-genesis-block: check if block is a genesis block and decide whether to keep it
     ++  heard-genesis-block
+      ~/  %heard-genesis-block
       |=  [wir=wire now=@da eny=@ pag=page:t]
       ^-  [(list effect:dk) kernel-state:dk]
       ?:  (check-duplicate-block ~(digest get:page:t pag))
@@ -781,6 +789,7 @@
       (accept-block now eny pag *tx-acc:t)
     ::
     ++  heard-block
+      ~/  %heard-block
       |=  [wir=wire now=@da pag=page:t eny=@]
       ^-  [(list effect:dk) kernel-state:dk]
       ?:  =(*page-number:t ~(height get:page:t pag))
@@ -896,6 +905,7 @@
     ::
     ::  +heard-elders: handle response to parent hashes request
     ++  heard-elders
+      ~/  %heard-elders
       |=  [wir=wire now=@da oldest=page-number:t ids=(list block-id:t)]
       ^-  [(list effect:dk) kernel-state:dk]
       ::  extract peer ID from wire
@@ -973,12 +983,14 @@
       [%request %block %by-height +(page-number.u.latest-known)]~
     ::
     ++  check-duplicate-block
+      ~/  %check-duplicate-block
       |=  digest=block-id:t
       ?|  (~(has h-by blocks.c.k) digest)
           (~(has h-by pending-blocks.c.k) digest)
       ==
     ::
     ++  check-genesis
+      ~/  %check-genesis
      |=  [pag=page:t btc-hash=(unit btc-hash:t) =genesis-seal:t]
      ^-  ?
      =/  check-digest  (check-digest:page:t pag)
@@ -1042,6 +1054,7 @@
          check-btc-hash
      ==
     ++  check-pow
+      ~/  %check-pow
       |=  pag=page:t
       ^-  ?
       ?.  check-pow-flag:t
@@ -1061,6 +1074,7 @@
       ==
     ::
     ++  check-pow-puzzle
+      ~/  %check-pow-puzzle
       |=  [pow=proof:sp pag=page:t]
       ^-  ?
       ?:  =((lent objects.pow) 0)
@@ -1073,6 +1087,7 @@
       ==
     ::
     ++  heard-tx
+      ~/  %heard-tx
       |=  [wir=wire now=@da raw=raw-tx:t eny=@]
       ^-  [(list effect:dk) kernel-state:dk]
       ~>  %slog.[0 'heard-tx: Received raw transaction']
@@ -1183,6 +1198,7 @@
     ::
     ::  +process-ready-blocks: process blocks no longer waitings on txs
     ++  process-ready-blocks
+      ~/  %process-ready-blocks
       |=  [now=@da eny=@ work=(list block-id:t) =raw-tx:t]
       ^-  [(list effect:dk) kernel-state:dk]
       ::  .work contains block-ids for blocks that no longer have any
@@ -1222,6 +1238,7 @@
     ::    only if the block is bad. If the block is good then ++accept-block
     ::    emits effects and bad-block-effs is ignored.
     ++  process-block-with-txs
+      ~/  %process-block-with-txs
       |=  [now=@da eny=@ pag=page:t bad-block-effs=(list effect:dk)]
       ^-  [(list effect:dk) kernel-state:dk]
       =/  digest-b58  (to-b58:hash:t ~(digest get:page:t pag))
@@ -1248,6 +1265,7 @@
     ::
     ::  +accept-block: update kernel state with new valid block.
     ++  accept-block
+      ~/  %accept-block
       |=  [now=@da eny=@ pag=page:t acc=tx-acc:t]
       ^-  [(list effect:dk) kernel-state:dk]
       ::
@@ -1363,6 +1381,7 @@
     ::    the miner module or +do-genesis. in this case we just emit a
     ::    warning and crash, since that means there's a bug.
     ++  liar-effect
+      ~/  %liar-effect
       |=  [wir=wire r=term]
       ^-  effect:dk
       ?+    wir  ~|("liar-effect: Bad wire for liar effect! {<wir>}" !!)
@@ -1390,6 +1409,7 @@
       ==
     ::
     ++  get-peer-id
+      ~/  %get-peer-id
       |=  wir=wire
       ^-  (unit @)
       =/  =(pole)  wir
@@ -1398,6 +1418,7 @@
       (some id.pole)
     ::
     ++  handle-command
+      ~/  %handle-command
       |=  [now=@da eny=@ =command:dk]
       ^-  [(list effect:dk) kernel-state:dk]
       ~>  %slog.[0 (cat 3 'handle-command: ' -.command)]
@@ -1638,6 +1659,7 @@
       --::+handle-command
     ::
     ++  handle-fact
+      ~/  %handle-fact
       |=  [wir=wire eny=@ our=@ux now=@da =fact:dk]
       ^-  [(list effect:dk) kernel-state:dk]
       ~>  %slog.[0 (cat 3 'handle-fact: ' +<.fact)]
@@ -1721,6 +1743,7 @@
     ::  only if mining: re-gossip transactions included in block when block is fully validated
     ::  precondition: all transactions for block are in raw-txs
     ++  regossip-block-txs-effects
+      ~/  %regossip-block-txs-effects
       |=  =page:t
       ^-  (list effect:dk)
       ?:  no-keys-set:min  ~

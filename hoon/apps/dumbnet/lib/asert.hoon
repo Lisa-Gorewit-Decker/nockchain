@@ -9,6 +9,7 @@
 ::    tied to rbits=16. changing rbits requires new polynomial coefficients,
 ::    so rbits is not a parameter.
 ::
+~%  %asert  ..ut  ~
 |%
 ++  asert-rbits  16
 ++  asert-radix  ^~((bex asert-rbits))
@@ -28,6 +29,7 @@
 ::    canonical aserti3-2d so published polynomial vectors reproduce exactly.
 ::    max error versus 2^x is under 0.13% on [0, 1).
 ++  poly-factor
+  ~/  %poly-factor
   |=  frac=@
   ^-  @
   ::  precondition: frac < radix (see +decompose-exponent). guard here so
@@ -49,6 +51,7 @@
 ::    anchor-time, i.e. (parent.height - anchor.height) = (blocks-since - 1)
 ::    ideal intervals under perfect schedule.
 ++  compute-exponent
+  ~/  %compute-exponent
   |=  $:  time-diff-sign=?
           time-diff-mag=@
           blocks-since-anchor=@
@@ -74,6 +77,7 @@
 ::                  frac = x - shifts*radix, always in [0, radix)
 ::    so for x = -5 with radix=4: shifts = -2, frac = 3.
 ++  decompose-exponent
+  ~/  %decompose-exponent
   |=  [exp-sign=? exp-mag=@]
   ^-  [shifts-sign=? shifts-mag=@ frac=@]
   =/  rem-mag  (mod exp-mag asert-radix)
@@ -95,6 +99,7 @@
 ::    anchor-target is an atom; callers on bignum can use +compute-target-bn.
 ::    result is clamped to [1, max-target-atom].
 ++  compute-target
+  ~/  %compute-target
   |=  $:  anchor-target=@
           anchor-min-timestamp=@
           anchor-height=@
@@ -147,6 +152,7 @@
 ::
 ::  +compute-target-bn: thin bignum wrapper over +compute-target
 ++  compute-target-bn
+  ~/  %compute-target-bn
   |=  $:  anchor-target=bignum:bignum
           anchor-min-timestamp=@
           anchor-height=@

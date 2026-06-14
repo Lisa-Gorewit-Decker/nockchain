@@ -7,6 +7,7 @@
 ::
 ::  this library is where _every_ update to the consensus state
 ::  occurs, no matter how minor.
+~%  %consensus  ..ut  ~
 |_  [c=consensus-state:dk =blockchain-constants:dumb-transact]
 +*  t  ~(. dumb-transact blockchain-constants)
 ::
@@ -35,6 +36,7 @@
 ::
 ::  repair a bad state
 ++  repair
+  ~/  %repair
   |=  reason=@tas
   ~&  [%repair reason]
   |-  ^-  consensus-state:dk
@@ -59,17 +61,20 @@
   $(c (repair u.reason))
 ::
 ++  has-raw-tx
+  ~/  %has-raw-tx
   |=  tid=tx-id:t
   ^-  ?
   (~(has h-by raw-txs.c) tid)
 ::
 ++  get-raw-tx
+  ~/  %get-raw-tx
   |=  tid=tx-id:t
   ^-  (unit raw-tx:t)
   =/  tx  (~(get h-by raw-txs.c) tid)
   ?~  tx  ~  `raw-tx.u.tx
 ::
 ++  got-raw-tx
+  ~/  %got-raw-tx
   |=  tid=tx-id:t
   ^-  raw-tx:t
   (need (get-raw-tx tid))
@@ -96,6 +101,7 @@
 ::
 ::  map a block heigh to a corresponding proof version
 ++  height-to-proof-version
+  ~/  %height-to-proof-version
   |=  height=page-number:t
   ^-  proof-version:sp
   ?:  (gte height proof-version-2-start)
@@ -110,6 +116,7 @@
 ::
 ::  +set-genesis-seal: set .genesis-seal
 ++  set-genesis-seal
+  ~/  %set-genesis-seal
   |=  [height=page-number:t msg-hash=@t]
   ^-  consensus-state:dk
   ~>  %slog.[0 'set-genesis-seal: Setting genesis seal']
@@ -117,6 +124,7 @@
   c(genesis-seal seal)
 ::
 ++  add-btc-data
+  ~/  %add-btc-data
   |=  btc-hash=(unit btc-hash:t)
   ^-  consensus-state:dk
   ?:  =(~ btc-hash)
@@ -126,11 +134,13 @@
   c(btc-data `btc-hash)
 ::
 ++  inputs-in-heaviest-balance
+  ~/  %inputs-in-heaviest-balance
   |=  raw=raw-tx:t
   ^-  ?
   (inputs-in-balance raw get-cur-balance-names)
 ::
 ++  inputs-in-balance
+  ~/  %inputs-in-balance
   |=  [raw=raw-tx:t balance=(h-set nname:t)]
   ^-  ?
   ::  set of inputs required by tx that are not in balance
@@ -175,6 +185,7 @@
 ::    backwards, where e.g. an epoch that takes 2x as long as the
 ::    desired duration results in doubling the target.
 ++  compute-target
+  ~/  %compute-target
   |=  [bid=block-id:t prev-target=bignum:bignum:t]
   ^-  bignum:bignum:t
   (compute-target-raw (compute-epoch-duration bid) prev-target)
@@ -186,6 +197,7 @@
 ::    being necessary. once consensus logic starts being run
 ::    in the zkvm, we will need to change to bignum arithmetic.
 ++  compute-target-raw
+  ~/  %compute-target-raw
   |=  [epoch-dur=@ prev-target-bn=bignum:bignum:t]
   ^-  bignum:bignum:t
   =/  prev-target-atom=@  (merge:bignum:t prev-target-bn)
@@ -219,6 +231,7 @@
 ::    holds. used both to validate an accepted page and to compute the
 ::    target for a candidate block still being constructed.
 ++  compute-target-asert
+  ~/  %compute-target-asert
   |=  [child-height=@ parent-digest=block-id:t]
   ^-  bignum:bignum:t
   =/  parent-min-ts=@
@@ -255,6 +268,7 @@
 ::    of the first block of the next epoch and the first block of the current
 ::    epoch.
 ++  compute-epoch-duration
+  ~/  %compute-epoch-duration
   |=  last-block=block-id:t
   ^-  @
   =/  prev-last-block=block-id:t
@@ -268,6 +282,7 @@
 ::
 ::  +check-size: check on page size, requires all raw-tx
 ++  check-size
+  ~/  %check-size
   |=  pag=page:t
   ^-  ?
   %+  lte
@@ -277,6 +292,7 @@
   max-block-size:t
 ::
 ++  accept-page
+  ~/  %accept-page
   |=  [pag=page:t acc=tx-acc:t now=@da]
   ^-  consensus-state:dk
   ::  update balance
@@ -359,6 +375,7 @@
 ::
 ::  +validate-page-without-txs-da: helper for urbit time
 ++  validate-page-without-txs-da
+  ~/  %validate-page-without-txs-da
   |=  [pag=page:t now=@da]
   (validate-page-without-txs pag (time-in-secs:page:t now))
 ::
@@ -370,6 +387,7 @@
 ::    genesis block, which has its own check. this check should
 ::    be performed before adding a block to pending state.
 ++  validate-page-without-txs
+  ~/  %validate-page-without-txs
   |=  [pag=page:t now-secs=@]
   ^-  (reason:dk ~)
   =/  version  (height-to-proof-version ~(height get:page:t pag))
@@ -474,6 +492,7 @@
 ::    a $tx-acc otherwise, which is the datum needed to add the
 ::    page to consensus state.
 ++  validate-page-with-txs
+  ~/  %validate-page-with-txs
   |=  pag=page:t
   ^-  (reason:dk tx-acc:t)
   =/  digest-b58=cord  (to-b58:hash:t ~(digest get:page:t pag))
@@ -560,6 +579,7 @@
 ::
 ::  +update-heaviest: set new heaviest block if it is so
 ++  update-heaviest
+  ~/  %update-heaviest
   |=  pag=page:t
   ^-  consensus-state:dk
   =/  digest-b58=cord  (to-b58:hash:t ~(digest get:page:t pag))
@@ -618,6 +638,7 @@
 ::    *absent*, with all fees flowing to miner-side outputs. See
 ::    docs/2026-05-01-MR2545-EMISSIONS-REVIEW.md P1 #2.
 ++  check-fund-split
+  ~/  %check-fund-split
   |=  [cb=coinbase-split:t emission=coins:t]
   ^-  ?
   ?.  ?=([%1 *] cb)  %.n
@@ -632,6 +653,7 @@
 ::  +get-elders: get list of ancestor block IDs up to 24 deep
 ::  (ordered newest->oldest)
 ++  get-elders
+  ~/  %get-elders
   |=  [d=derived-state:dk bid=block-id:t]
   ^-  (unit [page-number:t (list block-id:t)])
   =/  block  (~(get h-by blocks.c) bid)
@@ -661,6 +683,7 @@
 ::  +update-min-timestamps: sets min timestamp of children of .id
 ::
 ++  update-min-timestamps
+  ~/  %update-min-timestamps
   |=  [now=@da pag=page:t]
   ^-  (h-map block-id:t @)
   =/  min-timestamp=@
@@ -689,6 +712,7 @@
 ::
 ::  Accept a block which has been fully validated and is not pending
 ++  accept-block
+  ~/  %accept-block
   |=  pag=page:t
   ^-  consensus-state:dk
   ?<  (~(has h-by blocks.c) ~(digest get:page:t pag))
@@ -704,6 +728,7 @@
 ::  If we have all transactions, a null set will be returned and
 ::  state will not be changed
 ++  add-pending-block
+  ~/  %add-pending-block
   |=  pag=page:t
   ^-  [(list tx-id:t) consensus-state:dk]
   ?<  (~(has h-by blocks.c) ~(digest get:page:t pag))
@@ -727,6 +752,7 @@
 ::
 ::  reject a pending block
 ++  reject-pending-block
+  ~/  %reject-pending-block
   |=  =block-id:t
   ^-  consensus-state:dk
   ::  block must be pending
@@ -761,6 +787,7 @@
 ::
 ::  move a block from pending-blocks to blocks
 ++  accept-pending-block
+  ~/  %accept-pending-block
   |=  =block-id:t
   ^-  consensus-state:dk
   ::  block must be pending
@@ -772,6 +799,7 @@
 ::
 ::  list of pending blocks which are lower than the minimum retention height
 ++  dropable-pending-blocks
+  ~/  %dropable-pending-blocks
   |=  retain=(unit @)
   ^-  (list block-id:t)
   ?~  retain
@@ -790,6 +818,7 @@
 ::
 ::  drop all dropable blocks
 ++  drop-dropable-blocks
+  ~/  %drop-dropable-blocks
   |=  retain=(unit @)
   %+  roll  (dropable-pending-blocks retain)
   |=  [=block-id:t con=_c]
@@ -798,6 +827,7 @@
 ::
 ::  Are the inputs already spent by another transaction we know of?
 ++  inputs-spent
+  ~/  %inputs-spent
   |=  =raw-tx:t
   ^-  ?
   =/  input-names=(h-set nname:t)
@@ -807,12 +837,14 @@
 ::
 ::  Is the transaction needed by a block?
 ++  needed-by-block
+  ~/  %needed-by-block
   |=  =tx-id:t
   ^-  ?
   (~(has h-by blocks-needed-by.c) tx-id)
 ::
 ::  add an already-validated raw transaction, producing a list of blocks ready to validate
 ++  add-raw-tx
+  ~/  %add-raw-tx
   |=  =raw-tx:t
   ^-  [(list block-id:t) consensus-state:dk]
   =/  =tx-id:t  ~(id get:raw-tx:t raw-tx)
@@ -848,6 +880,7 @@
 ::
 ::  drop a transaction. This will crash if any block needs the transaction
 ++  drop-tx
+  ~/  %drop-tx
   |=  =tx-id:t
   ^-  consensus-state:dk
   ?<  (~(has h-by blocks-needed-by.c) tx-id)
@@ -863,6 +896,7 @@
 ::
 ::  transactions which may be dropped (excluded and lower than minimum retention height)
 ++  dropable-txs
+  ~/  %dropable-txs
   |=  retain=(unit @)
   ^-  (h-set tx-id:t)
   ?~  heaviest-block.c  *(h-set tx-id:t)
@@ -896,6 +930,7 @@
 ::
 ::  drop all dropable transactions
 ++  drop-dropable-txs
+  ~/  %drop-dropable-txs
   |=  retain=(unit @)
   ^-  consensus-state:dk
   %-  ~(rep h-in (dropable-txs retain))
@@ -905,6 +940,7 @@
 ::
 ::  garbage-collect state
 ++  garbage-collect
+  ~/  %garbage-collect
   |=  retain=(unit @)
   ^-  consensus-state:dk
   ::  Excluded txs are GC'd on a much shorter window than pending blocks

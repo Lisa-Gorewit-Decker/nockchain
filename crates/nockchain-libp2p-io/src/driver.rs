@@ -197,32 +197,23 @@ fn request_effect_trace_summary(noun_slab: &NounSlab) -> String {
     format!("request block {block_head}")
 }
 
-fn should_redial_initial_peers(
-    connected_peer_count: usize,
-    initial_peers: &[Multiaddr],
-    initial_peer_retries_remaining: u32,
-) -> bool {
-    connected_peer_count == 0 && !initial_peers.is_empty() && initial_peer_retries_remaining > 0
+fn should_redial_initial_peers(connected_peer_count: usize, initial_peers: &[Multiaddr]) -> bool {
+    connected_peer_count == 0 && !initial_peers.is_empty()
 }
 
 fn redial_initial_peers(
     swarm: &mut Swarm<NockchainBehaviour>,
     initial_peers: &[Multiaddr],
-    initial_peer_retries_remaining: &mut u32,
     reason: &'static str,
 ) -> Result<bool, NockAppError> {
     let connected_peer_count = swarm.connected_peers().count();
-    if !should_redial_initial_peers(
-        connected_peer_count, initial_peers, *initial_peer_retries_remaining,
-    ) {
+    if !should_redial_initial_peers(connected_peer_count, initial_peers) {
         return Ok(false);
     }
 
-    *initial_peer_retries_remaining -= 1;
     info!(
         reason,
         connected_peer_count,
-        retries_remaining = *initial_peer_retries_remaining,
         initial_peer_count = initial_peers.len(),
         "Redialing initial peers while disconnected"
     );
@@ -231,6 +222,10 @@ fn redial_initial_peers(
 }
 
 const INITIAL_PEER_REDIAL_INTERVAL: Duration = Duration::from_secs(5);
+/// Upper bound for the exponential backoff between initial-peer redial attempts.
+/// We never give up: once the backoff reaches this value we keep redialing at
+/// this cadence (hourly) for as long as we have zero connected peers.
+const INITIAL_PEER_REDIAL_MAX_INTERVAL: Duration = Duration::from_secs(3600);
 const PREFETCH_TARGET_RESPONSE_NUMERATOR: usize = 31;
 const PREFETCH_TARGET_RESPONSE_DENOMINATOR: usize = 32;
 const PREFETCH_COLD_BLOCK_BUNDLE_ESTIMATE_BYTES: usize = 128 * 1024;
@@ -474,7 +469,6 @@ pub fn make_libp2p_driver(
             let kademlia_bootstrap_interval = libp2p_config.kademlia_bootstrap_interval();
             let force_peer_dial_interval = libp2p_config.force_peer_dial_interval();
             let request_high_reset = libp2p_config.request_high_reset();
-            let initial_peer_retries = libp2p_config.initial_peer_retries;
             let request_high_threshold = libp2p_config.request_high_threshold;
             let gen2_batch_coalesce_window = libp2p_config.gen2_batch_coalesce_window();
             let req_res_limits = gen2::ReqResRuntimeLimits {
@@ -583,7 +577,7 @@ pub fn make_libp2p_driver(
                 traffic_handle, &mut join_set, low_priority_peek_timeout,
             );
 
-            let mut initial_peer_retries_remaining = initial_peer_retries;
+            let mut initial_peer_redial_backoff = INITIAL_PEER_REDIAL_INTERVAL;
             let mut pending_gen2_batches = BTreeMap::<PeerId, gen2::PendingGen2Batch>::new();
             let mut peer_gen2_inbound = BTreeMap::<PeerId, bool>::new();
             gen2::update_pending_batch_metrics(&metrics, &pending_gen2_batches);
@@ -907,12 +901,9 @@ pub fn make_libp2p_driver(
                             if redial_initial_peers(
                                 &mut swarm,
                                 &initial_peers,
-                                &mut initial_peer_retries_remaining,
                                 "kademlia_bootstrap_no_known_peers",
                             )? {
                                 info!("Failed to bootstrap: {}", NoKnownPeers());
-                            } else if !initial_peers.is_empty() && initial_peer_retries_remaining == 0 {
-                                warn!("Failed to bootstrap after {} retries, will not attempt to redial initial peers.", initial_peer_retries);
                             }
                         }
                     },
@@ -920,10 +911,24 @@ pub fn make_libp2p_driver(
                         if redial_initial_peers(
                             &mut swarm,
                             &initial_peers,
-                            &mut initial_peer_retries_remaining,
                             "startup_zero_peer_window",
                         )? {
-                            debug!("Initial peer redial tick fired while disconnected");
+                            // Still disconnected: grow the backoff up to the cap and keep
+                            // retrying forever. reset_after must be called every tick to
+                            // hold the backoff cadence (the interval's own period would
+                            // otherwise resume at INITIAL_PEER_REDIAL_INTERVAL).
+                            initial_peer_redial_backoff =
+                                (initial_peer_redial_backoff * 2).min(INITIAL_PEER_REDIAL_MAX_INTERVAL);
+                            initial_peer_redial.reset_after(initial_peer_redial_backoff);
+                            debug!(
+                                backoff_secs = initial_peer_redial_backoff.as_secs(),
+                                "Initial peer redial tick fired while disconnected"
+                            );
+                        } else if initial_peer_redial_backoff != INITIAL_PEER_REDIAL_INTERVAL {
+                            // Connected (or nothing to dial): reset the backoff so a future
+                            // disconnect starts retrying promptly again.
+                            initial_peer_redial_backoff = INITIAL_PEER_REDIAL_INTERVAL;
+                            initial_peer_redial.reset_after(INITIAL_PEER_REDIAL_INTERVAL);
                         }
                     },
                     _ = force_peer_dial.tick() => {

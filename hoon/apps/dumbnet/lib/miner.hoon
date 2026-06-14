@@ -6,16 +6,19 @@
 ::
 :: everything to do with mining and mining state
 ::
+~%  %dumb-miner  ..ut  ~
 |_  [m=mining-state:dk =blockchain-constants:dumb-transact]
 +*  t  ~(. dumb-transact blockchain-constants)
 +|  %admin
 ::  +set-mining: set .mining
 ++  set-mining
+  ~/  %set-mining
   |=  mine=?
   ^-  mining-state:dk
   m(mining mine)
 ::  +set-v0-shares: validate and set .v0-shares
 ++  set-v0-shares
+  ~/  %set-v0-shares
   |=  shr=(list [sig:v0:t @])
   =/  s=shares:v0:t  (~(gas z-by *(z-map sig:v0:t @)) shr)
   ?.  (validate:shares:v0:t s)
@@ -23,6 +26,7 @@
   m(v0-shares s)
 :: set-shares: validate and set .shares
 ++  set-shares
+  ~/  %set-shares
   |=  shr=(list [hash:t @])
   =/  s=shares:t  (~(gas z-by *(z-map hash:t @)) shr)
   ?.  (validate:shares:t s)
@@ -34,6 +38,7 @@
 ::
 +|  %candidate-block
 ++  set-pow
+  ~/  %set-pow
   |=  prf=proof:sp
   ^-  mining-state:dk
   ?^  -.candidate-block.m  m(pow.candidate-block (some prf))
@@ -55,6 +60,7 @@
 ::  from the current heaviest balance. we rely on the logic inside
 ::  of process:tx-acc to catch these txs and reject them.
 ++  candidate-txs
+  ~/  %candidate-txs
   |=  c=consensus-state:dk
   ^-  (h-map tx-id:t raw-tx:t)
   |^
@@ -89,6 +95,7 @@
 ::  every time we get a poke.
 ::
 ++  update-candidate-block
+  ~/  %update-candidate-block
   |=  [c=consensus-state:dk now=@da]
   ^-  [? mining-state:dk]
   ?:  ?|  =(*page:t candidate-block.m)
@@ -113,6 +120,7 @@
   (add-txs-to-candidate c)
 ::
 ++  add-txs-to-candidate
+  ~/  %add-txs-to-candidate
   |=  c=consensus-state:dk
   ^-  mining-state:dk
   ::  if the mining pubkey is not set, do nothing
@@ -125,6 +133,7 @@
 ::
 ::  +heard-new-tx: potentially changes candidate block in reaction to a raw-tx
 ++  heard-new-tx
+  ~/  %heard-new-tx
   |=  raw=raw-tx:t
   ^-  mining-state:dk
   =/  =tx-id:t  ~(id get:raw-tx:t raw)
@@ -237,6 +246,7 @@
 ::    over any transactions we had previously been attempting to include that werent
 ::    included in the most recent block.
 ++  heard-new-block
+  ~/  %heard-new-block
   |=  [c=consensus-state:dk now=@da]
   ^-  mining-state:dk
   ::
