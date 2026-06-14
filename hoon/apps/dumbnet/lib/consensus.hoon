@@ -137,18 +137,23 @@
   ~/  %inputs-in-heaviest-balance
   |=  raw=raw-tx:t
   ^-  ?
-  (inputs-in-balance raw get-cur-balance-names)
+  (inputs-in-balance raw get-cur-balance)
 ::
 ++  inputs-in-balance
   ~/  %inputs-in-balance
-  |=  [raw=raw-tx:t balance=(h-set nname:t)]
+  |=  [raw=raw-tx:t balance=(h-map nname:t nnote:t)]
   ^-  ?
-  ::  set of inputs required by tx that are not in balance
-  =/  in-balance=(h-set nname:t)
-    (~(dif h-in (zh-silt ~(input-names get:raw-tx:t raw))) balance)
-  ::  %.y: all inputs in .raw are in balance
-  ::  %.n: input(s) in .raw not in balance
-  =(*(h-set nname:t) in-balance)
+  ::  %.y: every input named by .raw is present in .balance
+  ::  %.n: at least one input named by .raw is absent from .balance
+  ::
+  ::  probe the balance map directly for each of the tx's (few) inputs
+  ::  (O(k log n)) rather than materializing the entire balance key-set and
+  ::  diffing against it (O(n log n) plus n allocations). the input-set is
+  ::  tiny; .balance is the full UTXO set, so the old key-set form did work
+  ::  proportional to the whole chain's notes on every single transaction.
+  %-  ~(all z-in ~(input-names get:raw-tx:t raw))
+  |=  =nname:t
+  (~(has h-by balance) nname)
 ::
 ++  get-cur-height
   ^-  page-number:t
@@ -167,11 +172,6 @@
     ~|  'get-cur-balance: Missing balance for non-genesis heaviest block'
     !!
   u.balance
-::
-++  get-cur-balance-names
-  ^-  (h-set nname:t)
-  ~(key h-by get-cur-balance)
-::
 ::
 ::  +compute-target: find the new target
 ::
@@ -903,19 +903,20 @@
   ?:  =(*(h-set tx-id:t) excluded-txs.c)
     *(h-set tx-id:t)
   =/  height  ~(height get:local-page:t (~(got h-by blocks.c) u.heaviest-block.c))
-  ::  Hoist the heaviest-balance name-set out of the per-tx fold: it is
+  ::  Hoist the heaviest balance map out of the per-tx fold: it is
   ::  loop-invariant (depends only on balance.c / heaviest-block.c, neither
-  ::  mutated here), so computing it once turns the spent-fold from
-  ::  O(|excluded-txs| * |balance|) into O(|balance| + |excluded-txs|).
-  ::  Equivalent to the old per-tx (inputs-in-heaviest-balance raw), which
-  ::  is defined as (inputs-in-balance raw get-cur-balance-names).
-  =/  cur-balance-names=(h-set nname:t)  get-cur-balance-names
+  ::  mutated here). Each tx then probes the map directly for its handful of
+  ::  inputs, so the spent-fold is O(|excluded-txs| * k * log |balance|) with
+  ::  k tiny -- and, crucially, we never materialize the full balance key-set
+  ::  (no O(|balance|) per-GC allocation). |excluded-txs| is also typically
+  ::  tiny. Same predicate as the per-tx (inputs-in-heaviest-balance raw).
+  =/  cur-balance=(h-map nname:t nnote:t)  get-cur-balance
   =/  spent=(h-set tx-id:t)
     %-  ~(rep h-in excluded-txs.c)
     |=  [=tx-id:t spent=(h-set tx-id:t)]
     ^-  (h-set tx-id:t)
     =/  raw-tx  raw-tx:(~(got h-by raw-txs.c) tx-id)
-    ?.  (inputs-in-balance raw-tx cur-balance-names)
+    ?.  (inputs-in-balance raw-tx cur-balance)
       (~(put h-in spent) tx-id)
     spent
   ?~  retain  spent
