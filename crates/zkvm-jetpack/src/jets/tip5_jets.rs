@@ -1,14 +1,19 @@
+use either::{Left, Right};
 use ibig::UBig;
 use nockvm::interpreter::Context;
 use nockvm::jets::util::{slot, BAIL_FAIL};
 use nockvm::jets::JetErr;
 use nockvm::mem::NockStack;
-use nockvm::noun::{Atom, Noun, NounSpace, D, T};
+use nockvm::noun::{Atom, IndirectAtom, Noun, NounSpace, D, T};
 use nockvm_macros::tas;
 
 use crate::form::belt::{mont_reduction, montify, montiply, Belt};
+use crate::form::felt::Felt;
+use crate::form::handle::{finalize_mary, new_handle_mut_mary};
+use crate::form::mary::{MarySlice, MarySliceMut};
 use crate::form::math::tip5;
-use crate::form::noun_ext::NounMathExt;
+use crate::form::merk::{build_merk_heap, merk_heap_size};
+use crate::form::noun_ext::{AtomMathExt, NounMathExt};
 use crate::form::structs::HoonList;
 use crate::jets::bp_jets::bpoly_to_list;
 use crate::jets::mary_jets::{change_step, get_mary_fields};
@@ -44,6 +49,42 @@ fn require_default_num_rounds(subject: Noun, space: &NounSpace) -> Result<(), Je
         return Err(JetErr::Punt);
     }
     Ok(())
+}
+
+pub fn do_init_mary_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    let sam = slot(subject, 6, &space)?;
+    let step = slot(sam, 2, &space)?.as_atom()?.as_u32()?;
+    let poly = slot(sam, 3, &space)?;
+
+    let list: Vec<Noun> = HoonList::try_from(poly, &space)?.into_iter().collect();
+    let list_len = list.len();
+
+    let (res, res_mary): (IndirectAtom, MarySliceMut) =
+        new_handle_mut_mary(&mut context.stack, step as usize, list_len);
+
+    let step_usize = step as usize;
+    for (j, p) in list.iter().enumerate() {
+        let atom = p.in_space(&space).as_atom()?;
+        match atom.as_either() {
+            Left(direct) => {
+                res_mary.dat[step_usize * j] = direct.data();
+            }
+            Right(_) => {
+                for (dst, chunk) in res_mary.dat[(step_usize * j)..(step_usize * (j + 1))]
+                    .iter_mut()
+                    .zip(atom.as_ne_bytes().chunks_exact(8))
+                {
+                    let word = <[u8; 8]>::try_from(chunk).expect("word-sized atom chunk");
+                    *dst = u64::from_ne_bytes(word);
+                }
+            }
+        }
+    }
+
+    Ok(finalize_mary(
+        &mut context.stack, step as usize, list_len, res,
+    ))
 }
 
 pub fn hoon_list_to_sponge(
@@ -157,6 +198,22 @@ pub fn hash_belts_list_jet(context: &mut Context, subject: Noun) -> Result<Noun,
     tip5::hash::hash_belts_list(stack, input, &space)
 }
 
+pub fn hash_belts_mary_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    require_default_num_rounds(subject, &space)?;
+    let ma = slot(subject, 6, &space)?;
+    let Ok(mary) = MarySlice::try_from(ma, &space) else {
+        return Err(BAIL_FAIL);
+    };
+    if mary.step != 1 {
+        return Err(BAIL_FAIL);
+    }
+
+    let mut input: Vec<Belt> = mary.dat.iter().copied().map(Belt).collect();
+    let digest = tip5::hash::hash_varlen(&mut input);
+    Ok(digest_to_noundigest(&mut context.stack, digest))
+}
+
 pub fn digest_to_noundigest(stack: &mut NockStack, digest: [u64; 5]) -> Noun {
     let n0 = belt_as_noun(stack, Belt(digest[0]));
     let n1 = belt_as_noun(stack, Belt(digest[1]));
@@ -178,6 +235,144 @@ pub fn hash_10_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr>
     let digest = tip5::hash::hash_10(&mut input_vec);
 
     Ok(vec_to_hoon_list(stack, &digest))
+}
+
+pub fn hash_felt_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    require_default_num_rounds(subject, &space)?;
+    let sam = slot(subject, 6, &space)?;
+    let Ok(felt) = sam.as_felt(&space) else {
+        return Err(BAIL_FAIL);
+    };
+
+    let digest = hash_felt_digest(felt);
+    Ok(digest_to_noundigest(&mut context.stack, digest))
+}
+
+pub fn hash_felts_list_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    require_default_num_rounds(subject, &space)?;
+    let felts = slot(subject, 6, &space)?;
+    let list = HoonList::try_from(felts, &space)?;
+    let len = list.count();
+    let mut mary_dat = vec![0; len * 3];
+
+    for (i, e) in list.into_iter().enumerate() {
+        let felt = e.as_felt(&space)?;
+        let n = 3 * i;
+        mary_dat[n] = felt[0].0;
+        mary_dat[n + 1] = felt[1].0;
+        mary_dat[n + 2] = felt[2].0;
+    }
+
+    let mary = MarySlice {
+        step: 3,
+        len: len as u32,
+        dat: &mary_dat,
+    };
+    let digest = hash_felts_mary_digest(&mary)?;
+    Ok(digest_to_noundigest(&mut context.stack, digest))
+}
+
+pub fn hash_felts_mary_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    require_default_num_rounds(subject, &space)?;
+    let ma = slot(subject, 6, &space)?;
+    let Ok(mary) = MarySlice::try_from(ma, &space) else {
+        return Err(BAIL_FAIL);
+    };
+    if mary.step != 3 {
+        return Err(BAIL_FAIL);
+    }
+
+    let digest = hash_felts_mary_digest(&mary)?;
+    Ok(digest_to_noundigest(&mut context.stack, digest))
+}
+
+pub fn build_merk_heap_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    let ma = slot(subject, 6, &space)?;
+    let Ok(mary) = MarySlice::try_from(ma, &space) else {
+        return Err(BAIL_FAIL);
+    };
+    let total_size = merk_heap_size(mary.len).map_err(|_| BAIL_FAIL)?;
+
+    let (res, mut res_mary): (IndirectAtom, MarySliceMut) =
+        new_handle_mut_mary(&mut context.stack, tip5::DIGEST_LENGTH, total_size as usize);
+    build_merk_heap(&mary, &mut res_mary).map_err(|_| BAIL_FAIL)?;
+
+    let root_digest: [u64; tip5::DIGEST_LENGTH] = res_mary.dat[0..tip5::DIGEST_LENGTH]
+        .try_into()
+        .map_err(|_| BAIL_FAIL)?;
+    let heap_mary = finalize_mary(
+        &mut context.stack,
+        tip5::DIGEST_LENGTH,
+        total_size as usize,
+        res,
+    );
+    let root_hash = digest_to_noundigest(&mut context.stack, root_digest);
+    let depth = mary.len.ilog2() + 1;
+
+    Ok(T(
+        &mut context.stack,
+        &[D(depth as u64), root_hash, heap_mary],
+    ))
+}
+
+fn hash_felt_digest(input: &Felt) -> [u64; 5] {
+    let mut leaf = [0; tip5::RATE];
+    leaf[0] = input[0].0;
+    leaf[1] = input[1].0;
+    leaf[2] = input[2].0;
+    tip5::hash::hash_ten_cell(leaf)
+}
+
+fn hash_ten_belts(input: &[u64]) -> Result<[u64; 5], JetErr> {
+    if input.len() != tip5::RATE {
+        return Err(BAIL_FAIL);
+    }
+    let pair: [u64; tip5::RATE] = input.try_into().map_err(|_| BAIL_FAIL)?;
+    Ok(tip5::hash::hash_ten_cell(pair))
+}
+
+fn hash_felts_mary_digest(mary: &MarySlice<'_>) -> Result<[u64; 5], JetErr> {
+    if mary.step != 3 || mary.len == 0 {
+        return Err(BAIL_FAIL);
+    }
+
+    let mut curr = vec![0; mary.len as usize * 5];
+    for (felt_words, out) in mary.dat.chunks_exact(3).zip(curr.chunks_mut(5)) {
+        let digest = hash_felt_digest(&Felt::from([
+            Belt(felt_words[0]),
+            Belt(felt_words[1]),
+            Belt(felt_words[2]),
+        ]));
+        out.copy_from_slice(&digest);
+    }
+
+    let mut size = mary.len as usize;
+    let mut next = vec![0; curr.len()];
+    while size > 1 {
+        let curr_layer = &curr[..size * 5];
+        let next_size = size.div_ceil(2);
+        next.fill(0);
+
+        for (chunk, out) in curr_layer
+            .chunks(10)
+            .zip(next[..next_size * 5].chunks_mut(5))
+        {
+            if chunk.len() < 10 {
+                out.copy_from_slice(chunk);
+            } else {
+                out.copy_from_slice(&hash_ten_belts(chunk)?);
+            }
+        }
+
+        curr[..next_size * 5].copy_from_slice(&next[..next_size * 5]);
+        size = next_size;
+    }
+
+    curr[0..5].try_into().map_err(|_| BAIL_FAIL)
 }
 
 pub fn hash_pairs_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
@@ -232,15 +427,16 @@ fn hash_ten_cell(stack: &mut NockStack, ten_cell: Noun, space: &NounSpace) -> Re
     // leaf_sequence(ten-cell)
     let mut leaf: Vec<u64> = Vec::<u64>::new();
     crate::form::shape::do_leaf_sequence(ten_cell, &mut leaf, space)?;
-    let mut leaf_belt = leaf.into_iter().map(Belt).collect();
+    let leaf: [u64; tip5::RATE] = leaf.try_into().map_err(|_| BAIL_FAIL)?;
 
     // list-to-tuple hash10
-    let digest = tip5::hash::hash_10(&mut leaf_belt);
+    let digest = tip5::hash::hash_ten_cell(leaf);
     Ok(digest_to_noundigest(stack, digest))
 }
 
 pub fn hash_noun_varlen_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
+    require_default_num_rounds(subject, &space)?;
     let stack = &mut context.stack;
     let n = slot(subject, 6, &space)?;
     tip5::hash::hash_noun_varlen(stack, n, &space)
@@ -248,6 +444,7 @@ pub fn hash_noun_varlen_jet(context: &mut Context, subject: Noun) -> Result<Noun
 
 pub fn hash_hashable_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
+    require_default_num_rounds(subject, &space)?;
     let stack = &mut context.stack;
     let h = slot(subject, 6, &space)?;
 
@@ -537,5 +734,29 @@ mod tests {
             require_default_num_rounds(subj, &space),
             Err(JetErr::Punt)
         ));
+    }
+
+    #[test]
+    fn door_hash_wrappers_punt_on_non_default_rounds() {
+        let c = &mut init_context();
+        let pay = T(&mut c.stack, &[D(0), D(5), D(0)]);
+        let subj = T(&mut c.stack, &[D(0), D(0), pay]);
+        assert!(matches!(hash_noun_varlen_jet(c, subj), Err(JetErr::Punt)));
+
+        let c = &mut init_context();
+        let pay = T(&mut c.stack, &[D(0), D(5), D(0)]);
+        let subj = T(&mut c.stack, &[D(0), D(0), pay]);
+        assert!(matches!(hash_hashable_jet(c, subj), Err(JetErr::Punt)));
+    }
+
+    #[test]
+    fn hash_felts_mary_digest_rejects_empty_input_without_panicking() {
+        let mary = MarySlice {
+            step: 3,
+            len: 0,
+            dat: &[],
+        };
+
+        assert!(hash_felts_mary_digest(&mary).is_err());
     }
 }

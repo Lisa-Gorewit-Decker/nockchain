@@ -123,8 +123,8 @@ impl OwnedBasedNoun {
 
     /// Counts the number of atom leaves in the noun tree.
     ///
-    /// Tip5 `hash-noun-varlen` prefixes the flattened leaf stream with this
-    /// count, so we cache it by traversal when producing the input belt list.
+    /// Tip5 `hash-noun-varlen` starts the flattened leaf stream with this count,
+    /// so we cache it by traversal when producing the input belt list.
     pub fn leaf_count(&self) -> usize {
         match self {
             Self::Atom(_) => 1,
@@ -214,13 +214,14 @@ pub fn hash_owned_based_noun_varlen(noun: &OwnedBasedNoun) -> [u64; 5] {
 }
 
 fn hash_leaf_belt(belt: Belt) -> [u64; 5] {
-    let mut input = vec![Belt(1), belt];
-    tip5::hash::hash_varlen(&mut input)
+    tip5::hash::hash_belts_slice(&[1, belt.0])
 }
 
 fn hash_hashable_pair(left: [u64; 5], right: [u64; 5]) -> [u64; 5] {
-    let mut input = left.into_iter().chain(right).map(Belt).collect::<Vec<_>>();
-    tip5::hash::hash_10(&mut input)
+    let mut input = [0; 10];
+    input[..5].copy_from_slice(&left);
+    input[5..].copy_from_slice(&right);
+    tip5::hash::hash_ten_cell(input)
 }
 
 #[cfg(test)]

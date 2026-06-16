@@ -1,13 +1,11 @@
 use nockvm::interpreter::Context;
-use nockvm::jets::bits::rep;
 use nockvm::jets::bits::util::{lsh, rip};
-use nockvm::jets::list::util::{lent, reap, snip, weld, zing};
+use nockvm::jets::list::util::{lent, reap, snip};
 use nockvm::jets::math::util::add;
 use nockvm::jets::util::{bite_to_word, chop, slot, BAIL_FAIL};
 use nockvm::jets::JetErr;
 use nockvm::mem::NockStack;
 use nockvm::noun::{Atom, IndirectAtom, Noun, NounSpace, D, NO, T, YES};
-use nockvm_macros::tas;
 use tracing::{debug, error};
 
 use crate::form::belt::*;
@@ -15,13 +13,13 @@ use crate::form::handle::{
     finalize_mary, finalize_poly, new_handle_mut_mary, new_handle_mut_slice,
 };
 use crate::form::mary::*;
+use crate::form::merk::{bp_build_merk_heap, merk_heap_size};
 use crate::form::noun_ext::{AtomMathExt, NounMathExt};
-use crate::form::shape::leaf_sequence;
 use crate::form::structs::HoonList;
 use crate::form::tip5::DIGEST_LENGTH;
 use crate::jets::base_jets::{levy_based, rip_correct};
 use crate::jets::bp_jets::init_bpoly;
-use crate::jets::tip5_jets::{digest_to_noundigest, hash_hashable, hash_pairs};
+use crate::jets::tip5_jets::digest_to_noundigest;
 use crate::utils::vecnoun_to_hoon_list;
 
 pub fn mary_swag_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
@@ -88,6 +86,61 @@ pub fn mary_weld_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetEr
 
     mary_weld(mary1, mary2, res_poly);
     let res_cell = finalize_mary(&mut context.stack, step as usize, res_len as usize, res);
+    Ok(res_cell)
+}
+
+pub fn mary_weld_step_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    let door = slot(subject, 7, &space)?;
+    let ma = slot(door, 6, &space)?;
+    let ma2 = slot(subject, 6, &space)?;
+
+    let (Ok(mary1), Ok(mary2)) = (
+        MarySlice::try_from(ma, &space),
+        MarySlice::try_from(ma2, &space),
+    ) else {
+        debug!("mary1 or mary2 is not a mary");
+        return Err(BAIL_FAIL);
+    };
+    if mary1.len != mary2.len {
+        debug!("can only weld-step marys of same len");
+        return Err(BAIL_FAIL);
+    }
+
+    let res_step = mary1.step + mary2.step;
+    let res_len = mary1.len;
+    let (res, res_poly): (IndirectAtom, MarySliceMut) =
+        new_handle_mut_mary(&mut context.stack, res_step as usize, res_len as usize);
+
+    mary_weld_step(mary1, mary2, res_poly);
+    let res_cell = finalize_mary(&mut context.stack, res_step as usize, res_len as usize, res);
+    Ok(res_cell)
+}
+
+pub fn mary_zero_extend_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    let door = slot(subject, 7, &space)?;
+    let ma = slot(door, 6, &space)?;
+    let n = slot(subject, 6, &space)?;
+
+    let (Ok(mary), Ok(n_atom)) = (
+        MarySlice::try_from(ma, &space),
+        n.in_space(&space).as_atom(),
+    ) else {
+        debug!("ma is not a mary or n is not an atom");
+        return Err(BAIL_FAIL);
+    };
+
+    let n_32 = n_atom.as_u64()? as u32;
+    let res_len = mary.len + n_32;
+    let (res, res_poly): (IndirectAtom, MarySliceMut) =
+        new_handle_mut_mary(&mut context.stack, mary.step as usize, res_len as usize);
+
+    mary_zero_extend(mary, res_poly);
+    let res_cell = finalize_mary(
+        &mut context.stack, mary.step as usize, res_len as usize, res,
+    );
+
     Ok(res_cell)
 }
 
@@ -295,6 +348,27 @@ pub fn snag_as_bpoly_jet(context: &mut Context, subject: Noun) -> Result<Noun, J
     snag_as_bpoly(stack, mary_noun, i, &space)
 }
 
+pub fn snag_as_bpoly_pair_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    let sam = slot(subject, 6, &space)?;
+    let ma = slot(sam, 2, &space)?;
+    let i = slot(sam, 3, &space)?;
+
+    let (Ok(mary), Ok(i)) = (
+        MarySlice::try_from(ma, &space),
+        i.in_space(&space).as_atom()?.as_u64(),
+    ) else {
+        debug!("mary arg is not a mary or i is not an atom");
+        return Err(BAIL_FAIL);
+    };
+
+    let (res, res_poly): (IndirectAtom, &mut [Belt]) =
+        new_handle_mut_slice(&mut context.stack, Some(mary.step as usize));
+    res_poly.copy_from_slice(crate::form::mary::snag_as_bpoly(mary, i as usize));
+
+    Ok(finalize_poly(&mut context.stack, Some(res_poly.len()), res))
+}
+
 pub fn snag_as_bpoly(
     stack: &mut NockStack,
     mary_noun: Noun,
@@ -352,70 +426,33 @@ pub fn change_step(
 
 pub fn bp_build_merk_heap_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
-    let stack = &mut context.stack;
     let mary_noun = slot(subject, 6, &space)?;
 
-    let (_ma_step, ma_array_len, _ma_array_dat) = get_mary_fields(mary_noun, &space)?;
-    let heap_mary = heapify_mary(stack, mary_noun, &space)?;
-    let xeb_m = simple_xeb(ma_array_len.in_space(&space).as_u64()? as usize);
+    let Ok(mary) = MarySlice::try_from(mary_noun, &space) else {
+        debug!("ma not a mary");
+        return Err(BAIL_FAIL);
+    };
+    let total_size = merk_heap_size(mary.len).map_err(|_| BAIL_FAIL)?;
 
-    let snag_digest = snag_as_digest(stack, heap_mary, 0, &space)?;
+    let (res, mut res_mary): (IndirectAtom, MarySliceMut) =
+        new_handle_mut_mary(&mut context.stack, DIGEST_LENGTH, total_size as usize);
+    bp_build_merk_heap(&mary, &mut res_mary).map_err(|_| BAIL_FAIL)?;
 
-    let res1 = T(stack, &[snag_digest, heap_mary]);
-    let res = T(stack, &[D(xeb_m as u64), res1]);
+    let root_digest: [u64; DIGEST_LENGTH] = res_mary.dat[0..DIGEST_LENGTH]
+        .try_into()
+        .map_err(|_| BAIL_FAIL)?;
+    let heap_mary = finalize_mary(&mut context.stack, DIGEST_LENGTH, total_size as usize, res);
+    let root_hash = digest_to_noundigest(&mut context.stack, root_digest);
+    let depth = mary.len.ilog2() + 1;
+
+    let res = T(&mut context.stack, &[D(depth as u64), root_hash, heap_mary]);
     Ok(res)
-}
-
-fn simple_xeb(n: usize) -> usize {
-    if n == 0 {
-        0
-    } else {
-        (64 - n.leading_zeros()) as usize
-    }
 }
 
 pub fn get_mary_fields(p: Noun, space: &NounSpace) -> Result<(Atom, Atom, Noun), JetErr> {
     let [ma_step, ma_array] = p.uncell(space)?; // +$  mary  [step=@ =array]
     let [ma_array_len, ma_array_dat] = ma_array.uncell(space)?; // +$  array  [len=@ dat=@ux]
     Ok((ma_step.as_atom()?, ma_array_len.as_atom()?, ma_array_dat))
-}
-
-fn heapify_mary(stack: &mut NockStack, m_noun: Noun, space: &NounSpace) -> Result<Noun, JetErr> {
-    let (_ma_step, ma_array_len, _ma_array_dat) = get_mary_fields(m_noun, space)?;
-    let size = bex(simple_xeb(ma_array_len.in_space(space).as_u64()? as usize)) - 1;
-
-    // calc high-bit
-    let high_bit = lsh(stack, 6, size * 5, D(1).as_atom()?, space)?.as_atom()?;
-
-    // make leaves
-    let mut res_vec: Vec<Noun> = Vec::new();
-    for i in 0..ma_array_len.in_space(space).as_u64()? {
-        let t = snag_as_bpoly(stack, m_noun, i as usize, space)?;
-        let hashable_bpoly = T(stack, &[D(tas!(b"mary")), D(1), t]);
-        let hash = hash_hashable(stack, hashable_bpoly, space)?;
-        let leafs = leaf_sequence(stack, hash, space)?;
-        res_vec.push(leafs);
-    }
-    let mut res = vecnoun_to_hoon_list(stack, res_vec.as_slice(), space);
-
-    let mut curr = res;
-    loop {
-        let lent_curr = lent(curr, space)?;
-        if lent_curr == 1 {
-            break;
-        } else {
-            let pairs = hash_pairs(stack, curr, space)?;
-            res = weld(stack, pairs, res, space)?;
-            curr = pairs;
-        }
-    }
-
-    let a = zing(stack, res)?;
-    let b = rep(stack, D(6), a, space)?;
-    let c = add(stack, high_bit, b.as_atom()?, space);
-    let res = T(stack, &[D(5), D(size as u64), c.as_noun()]);
-
-    Ok(res)
 }
 
 pub fn snag_as_digest_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
@@ -509,4 +546,36 @@ pub fn mary_to_list_fields(
     }
 
     Ok(vecnoun_to_hoon_list(stack, res_turn.as_slice(), space))
+}
+
+#[cfg(test)]
+mod tests {
+    use nockvm::jets::util::test::{assert_noun_eq, init_context};
+    use nockvm::noun::{D, T};
+    use noun_serde::NounEncode;
+
+    use super::*;
+    use crate::form::mary::Mary;
+
+    #[test]
+    fn snag_as_bpoly_pair_jet_uses_pair_shaped_sample() {
+        let mut context = init_context();
+        let mary = Mary {
+            step: 3,
+            len: 2,
+            dat: vec![10, 11, 12, 20, 21, 22],
+        };
+        let mary_noun = mary.to_noun(&mut context.stack);
+        let sam = T(&mut context.stack, &[mary_noun, D(1)]);
+        let subject = T(&mut context.stack, &[D(0), sam, D(0)]);
+
+        let got = snag_as_bpoly_pair_jet(&mut context, subject).expect("jet should succeed");
+
+        let (res, res_poly): (IndirectAtom, &mut [Belt]) =
+            new_handle_mut_slice(&mut context.stack, Some(3));
+        res_poly.copy_from_slice(&[Belt(20), Belt(21), Belt(22)]);
+        let expected = finalize_poly(&mut context.stack, Some(3), res);
+
+        assert_noun_eq(&mut context.stack, got, expected);
+    }
 }

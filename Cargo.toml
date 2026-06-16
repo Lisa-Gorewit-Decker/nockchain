@@ -21,6 +21,15 @@ warnings = { level = "deny", priority = -1 }
 [workspace.lints.clippy]
 unwrap_used = "deny"
 missing_safety_doc = "allow"
+# Allowed for the nightly-2026-04-03 toolchain bump: the newer clippy newly flags these on
+# pre-existing code across the tree (nockapp, nockup, the verifier crates, ...). Deferred to a
+# dedicated cleanup pass; kept in sync with the `-A` clippy flags in `.bazelrc`.
+result_large_err = "allow"
+unnecessary_cast = "allow"
+unnecessary_sort_by = "allow"
+collapsible_match = "allow"
+manual_checked_ops = "allow"
+while_let_loop = "allow"
 
 [workspace.dependencies]
 aes = { version = "0.8.3", default-features = false }

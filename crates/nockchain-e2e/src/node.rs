@@ -1583,8 +1583,8 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use anyhow::Result;
-    use tokio::time::Duration;
+    use anyhow::{Context, Result};
+    use tokio::time::{timeout, Duration};
 
     #[test]
     fn persist_log_bytes_writes_stdout_and_stderr() {
@@ -1889,7 +1889,13 @@ mod tests {
             .arg("-c")
             .arg("exit 0")
             .spawn()?;
-        let _status = child.wait().await?;
+        let status = timeout(Duration::from_secs(2), child.wait())
+            .await
+            .context("dead-process test child did not exit")??;
+        assert!(
+            status.success(),
+            "dead-process test child should exit cleanly"
+        );
         let mut manager = crate::node::NodeManager {
             mode: crate::node::NodeMode::Process,
             configs: HashMap::from([(String::from("node-a"), config)]),

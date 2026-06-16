@@ -67,14 +67,14 @@ pub enum ProofVersion {
     V2,
 }
 
-#[derive(Clone, PartialEq, NounEncode, NounDecode)]
+#[derive(Debug, Clone, PartialEq, NounEncode, NounDecode)]
 pub struct MerkHeap {
     pub height: u32,
     pub root: [u64; 5],
     pub m: Mary,
 }
 
-#[derive(Clone, PartialEq, NounEncode, NounDecode)]
+#[derive(Debug, Clone, PartialEq, NounEncode, NounDecode)]
 pub struct CodewordCommitment {
     pub polys: Vec<Mary>,
     pub codewords: Mary,
@@ -92,7 +92,7 @@ pub struct TableHeader {
     pub num_randomizers: u32,
 }
 
-#[derive(Clone, PartialEq, NounEncode, NounDecode)]
+#[derive(Debug, Clone, PartialEq, NounEncode, NounDecode)]
 pub struct TableMary {
     pub header: TableHeader,
     pub mary: Mary,
@@ -909,7 +909,7 @@ impl<'a> ProofStream<'a> {
         }
     }
 
-    pub(crate) fn transcript_rng(&mut self) -> Result<crate::form::tog::Tog, JetErr> {
+    pub fn transcript_rng(&mut self) -> Result<crate::form::tog::Tog, JetErr> {
         self.commit_consumed();
         crate::form::tog::verifier_fiat_shamir(self.proof)
     }

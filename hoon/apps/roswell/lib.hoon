@@ -48,6 +48,19 @@
     ==
   (snapshot:prv in)
 ::
+::  +proof-snapshot-for: make-proof-snapshot for a caller-supplied input instead of the
+::  hardcoded test puzzle. Same prover work (snapshot:prv); only the prover-input differs.
+++  proof-snapshot-for
+  |=  [v=proof-version header=noun-digest:tip5 nonce=noun-digest:tip5 len=@]
+  ^-  proof-snapshot:sp
+  =/  in=prover-input:sp
+    ?-  v
+      %0  [%0 header nonce len]
+      %1  [%1 header nonce len]
+      %2  [%2 header nonce len]
+    ==
+  (snapshot:prv in)
+::
 ++  make-proof-stream-window
   |=  [v=proof-version len=@ range=proof-stream-range:sp override=(unit (list term))]
   ^-  proof-stream-window-result:sp

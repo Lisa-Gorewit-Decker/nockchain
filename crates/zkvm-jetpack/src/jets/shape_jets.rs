@@ -1,7 +1,7 @@
 use nockvm::interpreter::Context;
 use nockvm::jets::util::slot;
 use nockvm::jets::JetErr;
-use nockvm::noun::Noun;
+use nockvm::noun::{Atom, Noun, D};
 
 use crate::form::shape::{dyck, leaf_sequence};
 
@@ -16,6 +16,36 @@ pub fn dyck_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let stack = &mut context.stack;
     let t = slot(subject, 6, &space)?;
     dyck(stack, t, &space)
+}
+
+pub fn num_of_leaves_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    let tuple = slot(subject, 6, &space)?;
+
+    if tuple.is_atom() {
+        return Ok(D(1));
+    }
+
+    let tuple = tuple.in_space(&space).as_cell()?;
+    let mut num_leaves = 0;
+    let mut next = vec![tuple];
+
+    while let Some(curr) = next.pop() {
+        let (head, tail) = (curr.head(), curr.tail());
+        if head.is_atom() {
+            num_leaves += 1;
+        } else {
+            next.push(head.as_cell()?);
+        }
+
+        if tail.is_atom() {
+            num_leaves += 1;
+        } else {
+            next.push(tail.as_cell()?);
+        }
+    }
+
+    Ok(Atom::new(&mut context.stack, num_leaves as u64).as_noun())
 }
 
 #[cfg(test)]

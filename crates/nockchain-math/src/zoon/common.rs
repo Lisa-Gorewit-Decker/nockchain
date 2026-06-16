@@ -1,10 +1,8 @@
-use nockvm::jets::util::BAIL_FAIL;
 use nockvm::jets::JetErr;
 use nockvm::mem::{NockStack, NOCK_STACK_SIZE_TINY};
 use nockvm::noun::{Noun, NounAllocator, NounSpace, D, T};
-use noun_serde::{NounDecode, NounDecodeError, NounEncode};
+use noun_serde::{NounDecodeError, NounEncode};
 
-use crate::belt::Belt;
 use crate::owned_based_noun::{
     hash_owned_based_noun_varlen, owned_based_noun_decode_error, OwnedBasedNoun,
     OwnedBasedNounError,
@@ -28,17 +26,10 @@ impl TipHasher for DefaultTipHasher {
         noun: Noun,
     ) -> Result<[u64; 5], JetErr> {
         let input_space = stack.noun_space();
-        let noun_res = crate::tip5::hash::hash_noun_varlen(stack, noun, &input_space)?;
-        let output_space = stack.noun_space();
-        let digest = <[u64; 5]>::from_noun(&noun_res, &output_space)?;
-        Ok(digest)
+        crate::tip5::hash::hash_noun_varlen_digest(stack, noun, &input_space)
     }
     fn hash_ten_cell(&self, ten: [u64; 10]) -> Result<[u64; 5], JetErr> {
-        let mut input: Vec<Belt> = ten.iter().map(|x| Belt(*x)).collect();
-        if input.len() != 10 {
-            return Err(BAIL_FAIL);
-        }
-        Ok(crate::tip5::hash::hash_10(&mut input))
+        Ok(crate::tip5::hash::hash_ten_cell(ten))
     }
 }
 
@@ -147,8 +138,7 @@ pub(crate) fn owned_zoon_decode_error(err: OwnedZoonError) -> NounDecodeError {
 }
 
 fn hash_ten_limbs(ten: [u64; 10]) -> [u64; 5] {
-    let mut input: Vec<Belt> = ten.into_iter().map(Belt).collect();
-    tip5::hash::hash_10(&mut input)
+    tip5::hash::hash_ten_cell(ten)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

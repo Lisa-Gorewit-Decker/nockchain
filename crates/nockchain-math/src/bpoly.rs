@@ -1,6 +1,7 @@
 use std::vec;
 
 use crate::belt::{bpow, Belt, FieldError};
+use crate::felt::Felt;
 use crate::poly::*;
 
 pub fn bpadd(a: &[Belt], b: &[Belt], res: &mut [Belt]) {
@@ -212,6 +213,19 @@ pub fn bp_fft(bp: &[Belt]) -> Result<Vec<Belt>, FieldError> {
     Ok(bp_ntt(bp, &root))
 }
 
+#[inline(always)]
+pub fn bp_ifft(bp: &[Belt]) -> Result<Vec<Belt>, FieldError> {
+    let order = Belt(bp.len() as u64);
+    let root = order.ordered_root()?.inv();
+    let scale_factor = order.inv();
+
+    let ntt_result = bp_ntt(bp, &root);
+    let mut res = vec![Belt(0); order.0 as usize];
+
+    bpscal(scale_factor, ntt_result.as_slice(), res.as_mut_slice());
+    Ok(res)
+}
+
 pub fn bp_ntt(bp: &[Belt], root: &Belt) -> Vec<Belt> {
     let n = bp.len() as u32;
 
@@ -278,11 +292,69 @@ pub fn bp_coseword(bp: &[Belt], offset: &Belt, order: u32, root: &Belt) -> Vec<B
 }
 
 #[inline(always)]
+pub fn bp_intercosate(offset: &Belt, order: u32, values: &[Belt]) -> Result<Vec<Belt>, FieldError> {
+    let len = values.len();
+    if order == 0 || !order.is_power_of_two() || len != order as usize {
+        return Err(FieldError::OrderedRootError);
+    }
+
+    let mut res = vec![Belt::zero(); len];
+    let ifft_res = bp_ifft(values)?;
+
+    bp_shift(&ifft_res, &offset.inv(), &mut res);
+
+    Ok(res)
+}
+
+#[inline(always)]
+pub fn bpeval_lift(bpoly: &[Belt], x: &Felt, res: &mut Felt) {
+    if bpoly.is_zero() {
+        *res = Felt::zero();
+        return;
+    }
+
+    if bpoly.len() == 1 {
+        *res = Felt::lift(bpoly[0]);
+        return;
+    }
+
+    for i in (0..bpoly.len()).rev() {
+        *res = *res * *x + Felt::lift(bpoly[i]);
+    }
+}
+
+#[inline(always)]
+pub fn bpeval_lift_(bpoly: &[Belt], x: &Felt) -> Felt {
+    let mut res = Felt::zero();
+    bpeval_lift(bpoly, x, &mut res);
+    res
+}
+
+#[inline(always)]
 pub fn bpoly_zero_extend(a: &[Belt], res: &mut [Belt]) {
     let a_len = a.len();
     let res_len = res.len();
     res[0..a_len].copy_from_slice(a);
     res[a_len..res_len].fill(Belt::zero());
+}
+
+#[inline(always)]
+pub fn bpdiv(a: &[Belt], b: &[Belt]) -> Vec<Belt> {
+    let a_deg = a.degree() as usize;
+    let b_deg = b.degree() as usize;
+
+    if a_deg < b_deg {
+        return vec![Belt(0)];
+    }
+
+    let q_deg = a_deg.saturating_sub(b_deg);
+    let mut q = vec![Belt(0); q_deg + 1];
+
+    // Remainder is intentionally discarded by this quotient-only helper.
+    let mut r = vec![Belt(0); b_deg + 1];
+
+    bpdvr(a, b, &mut q, &mut r);
+    q
 }
 
 #[inline(always)]
@@ -323,6 +395,50 @@ pub fn bpdvr(a: &[Belt], b: &[Belt], q: &mut [Belt], res: &mut [Belt]) {
             break;
         }
         i -= 1;
+    }
+
+    let r_len = deg_r + 1;
+    res[0..(r_len as usize)].copy_from_slice(&r[0..(r_len as usize)]);
+}
+
+#[inline(always)]
+pub fn bpdvr_small(a: &[Belt], b: &[Belt], q: &mut [Belt], res: &mut [Belt]) {
+    if a.is_zero() {
+        q.fill(Belt(0));
+        res.fill(Belt(0));
+        return;
+    } else if b.is_zero() {
+        panic!("divide by zero\r");
+    };
+
+    q.fill(Belt(0));
+    res.fill(Belt(0));
+
+    let a_len = a.len();
+    let mut r: smallvec::SmallVec<[Belt; 3]> = smallvec::SmallVec::from_slice(a);
+
+    let deg_b = b.degree();
+
+    let mut i = a_len;
+    let end_b = deg_b as usize;
+    let mut deg_r = a.degree();
+    let mut q_index = deg_r.saturating_sub(deg_b);
+
+    while deg_r >= deg_b {
+        i -= 1;
+        let coeff = r[i] / b[end_b];
+        q[q_index as usize] = coeff;
+        for k in 0..(deg_b + 1) {
+            let index = k as usize;
+            if k < a_len as u32 && k < b.len() as u32 && k <= (i as u32) {
+                r[i - index] = r[i - index] - coeff * b[end_b - index];
+            }
+        }
+        deg_r = deg_r.saturating_sub(1);
+        q_index = q_index.saturating_sub(1);
+        if deg_r == 0 && r[0] == 0 {
+            break;
+        }
     }
 
     let r_len = deg_r + 1;
@@ -424,5 +540,43 @@ pub fn normalize_bpoly(a: &mut Vec<Belt>) {
         } else {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bp_intercosate_rejects_order_mismatch_without_panicking() {
+        let values = [Belt(1), Belt(2)];
+        assert!(matches!(
+            bp_intercosate(&Belt(1), 4, &values),
+            Err(FieldError::OrderedRootError)
+        ));
+    }
+
+    #[test]
+    fn bpdiv_returns_quotient_and_discards_remainder() {
+        let dividend = [Belt(1), Belt(3), Belt(2)];
+        let divisor = [Belt(1), Belt(1)];
+
+        assert_eq!(bpdiv(&dividend, &divisor), vec![Belt(1), Belt(2)]);
+    }
+
+    #[test]
+    fn bpdvr_small_matches_regular_division() {
+        let dividend = [Belt(5), Belt(7), Belt(9)];
+        let divisor = [Belt(2), Belt(3)];
+        let mut q = [Belt::zero(); 2];
+        let mut r = [Belt::zero(); 2];
+        let mut small_q = [Belt::zero(); 2];
+        let mut small_r = [Belt::zero(); 2];
+
+        bpdvr(&dividend, &divisor, &mut q, &mut r);
+        bpdvr_small(&dividend, &divisor, &mut small_q, &mut small_r);
+
+        assert_eq!(small_q, q);
+        assert_eq!(small_r, r);
     }
 }

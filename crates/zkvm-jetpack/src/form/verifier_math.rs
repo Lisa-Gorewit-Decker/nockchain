@@ -8,7 +8,7 @@ use crate::form::poly::{BPolySlice, FPolySlice};
 use crate::form::proof::{CountMap, MPUltraSlice, ProofMap};
 
 #[inline(always)]
-pub(crate) fn bpeval_lift_(bpoly: &[Belt], x: &Felt) -> Felt {
+pub fn bpeval_lift_(bpoly: &[Belt], x: &Felt) -> Felt {
     let mut res = Felt::zero();
     for coeff in bpoly.iter().rev() {
         res = fadd_(&Felt::lift(*coeff), &fmul_(&res, x));

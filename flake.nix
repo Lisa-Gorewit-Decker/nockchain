@@ -52,11 +52,11 @@
         };
         lib = pkgs.lib;
 
-        # Use the specific nightly date from rust-toolchain.toml (nightly-2025-11-26)
+        # Use the specific nightly date from rust-toolchain.toml (nightly-2026-04-03)
         rustToolchainManifest = {
           channel = "nightly";
-          date = "2025-11-26";
-          sha256 = "sha256-bYq1DZv2iwLeZAQwA1nqJQgx7p1M/srnZyr1FYJ3+GU=";
+          date = "2026-04-03";
+          sha256 = "sha256-WAg39aJqFUa71UYBIAPxIX9uriD11P6uGKAPNmxSNMo=";
         };
         rustToolchainBase = (fenix.packages.${system}.toolchainOf rustToolchainManifest).withComponents [
           "cargo"

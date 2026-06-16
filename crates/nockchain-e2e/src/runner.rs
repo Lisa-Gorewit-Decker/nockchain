@@ -474,7 +474,7 @@ async fn run_steps(
                     );
                     match validation {
                         Ok(()) => break,
-                        Err(err) if retryable && attempt + 1 < WALLET_OUTPUT_RETRY_ATTEMPTS => {
+                        Err(_err) if retryable && attempt + 1 < WALLET_OUTPUT_RETRY_ATTEMPTS => {
                             attempt += 1;
                             sleep(WALLET_OUTPUT_RETRY_DELAY).await;
                         }

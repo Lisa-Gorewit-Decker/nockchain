@@ -146,7 +146,7 @@ pub fn preprocess_for(version: &ProofVersion) -> &'static PreprocessData {
     }
 }
 
-pub(crate) struct ProcessedDegreesPair<'a> {
+pub struct ProcessedDegreesPair<'a> {
     pub base: ProcessedDegrees<'a>,
     pub extra: ProcessedDegrees<'a>,
 }
@@ -165,7 +165,7 @@ fn processed_degrees_cache_for(version: &ProofVersion) -> &'static ProcessedDegr
     }
 }
 
-pub(crate) fn preprocess_degrees(
+pub fn preprocess_degrees(
     version: &ProofVersion,
     heights: &[u64],
 ) -> Arc<ProcessedDegreesPair<'static>> {

@@ -11,8 +11,8 @@ use crate::form::felt::*;
 use crate::form::handle::new_handle_mut_felt;
 use crate::form::noun_ext::{AtomMathExt, NounMathExt, NounMathExtHandle};
 use crate::form::poly::{BPolySlice, Element, FPolySlice, Poly};
+use crate::form::proof::ProofMap;
 use crate::form::structs::{HoonList, HoonMapIter};
-use crate::jets::proof_gen_jets::{MPUltra, ProofMap};
 pub struct IndexFeltMap(pub ProofMap<usize, Felt>);
 pub struct IndexBeltMap(pub ProofMap<usize, Belt>);
 
@@ -482,34 +482,4 @@ fn mpeval<F: Fops>(
 
         Ok(acc + (coeff * res))
     })
-}
-
-pub fn mpeval_ultra_felt(
-    mp: &MPUltra,
-    args: &[Felt],
-    chals: &[Belt],
-    dyns: &[Belt],
-    space: &NounSpace,
-) -> Result<Vec<Felt>, JetErr> {
-    match mp {
-        MPUltra::Mega(mp_mega) => {
-            let mut vec: Vec<Felt> = Vec::new();
-            let eval = mpeval::<Felt>(*mp_mega, args, chals, dyns, None, space)?;
-            vec.push(eval);
-            Ok(vec)
-        }
-        MPUltra::Comp(mp_comp) => {
-            let mut deps = ProofMap::new();
-            for (i, dep) in mp_comp.dep.iter().enumerate() {
-                let eval = mpeval::<Felt>(*dep, args, chals, dyns, None, space)?;
-                deps.insert(i, eval);
-            }
-
-            mp_comp
-                .com
-                .iter()
-                .map(|com| mpeval::<Felt>(*com, args, chals, dyns, Some(&deps), space))
-                .collect()
-        }
-    }
 }

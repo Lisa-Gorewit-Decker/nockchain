@@ -28,7 +28,7 @@ bazel_dep(name = "rules_rust", version = "0.67.0")
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
-    versions = ["nightly/2025-11-26"],
+    versions = ["nightly/2026-04-03"],
 )
 use_repo(rust, "rust_toolchains")
 
@@ -159,6 +159,19 @@ register_toolchains(
 # Cargo.toml / Cargo.lock pair.
 #
 crates = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crates.annotation(
+    crate = "aws-lc-sys",
+    patch_args = ["-p1"],
+    patches = ["//third_party/patches:aws-lc-sys-macos-cflags-version-min.patch"],
+    version = "0.41.0",
+)
+crates.annotation(
+    build_script_data_glob = ["tracy/**"],
+    crate = "tracy-client-sys",
+    patch_args = ["-p1"],
+    patches = ["//third_party/patches:tracy-client-sys-cargo-manifest-dir.patch"],
+    version = "0.28.0",
+)
 crates.from_cargo(
     name = "crates",
     cargo_lockfile = "//:Cargo.lock",

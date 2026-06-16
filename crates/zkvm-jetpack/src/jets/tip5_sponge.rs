@@ -5,7 +5,6 @@ use nockvm::jets::JetErr;
 use nockvm::mem::NockStack;
 use nockvm::noun::{Cell, Noun, NounSpace, T};
 
-use crate::form::belt::mont_reduction;
 use crate::form::tip5;
 use crate::jets::tip5_jets::*;
 use crate::utils::*;
@@ -58,14 +57,30 @@ fn door_edit(
     Ok(res)
 }
 
+fn require_default_sponge_num_rounds(sponge_door: Noun, space: &NounSpace) -> Result<(), JetErr> {
+    let tip5_door = slot(sponge_door, 7, space).map_err(|_| JetErr::Punt)?;
+    let num_rounds = slot(tip5_door, 6, space)
+        .map_err(|_| JetErr::Punt)?
+        .in_space(space)
+        .as_atom()
+        .map_err(|_| JetErr::Punt)?
+        .as_u64()
+        .map_err(|_| JetErr::Punt)?;
+    if num_rounds != tip5::NUM_ROUNDS as u64 {
+        return Err(JetErr::Punt);
+    }
+    Ok(())
+}
+
 pub fn sponge_absorb_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
     let stack = &mut context.stack;
     let input_noun = slot(subject, 6, &space)?;
-    let door = slot(subject, 7, &space)?;
-    let sponge_noun = slot(door, 6, &space)?;
+    let sponge_door = slot(subject, 7, &space)?;
+    require_default_sponge_num_rounds(sponge_door, &space)?;
+    let sponge_noun = slot(sponge_door, 6, &space)?;
 
-    let mut input_vec = hoon_list_to_vecbelt(input_noun, &space)?;
+    let input_vec = hoon_list_to_vecbelt(input_noun, &space)?;
     let mut sponge = hoon_list_to_sponge(sponge_noun, &space)?;
 
     // require that input is made of base field elements; return a deterministic
@@ -77,19 +92,12 @@ pub fn sponge_absorb_jet(context: &mut Context, subject: Noun) -> Result<Noun, J
         return Err(BAIL_FAIL);
     }
 
-    // pad input with ~[1 0 ... 0] to be a multiple of rate
-    let (q, r) = tip5::hash::tip5_calc_q_r(&input_vec);
-    tip5::hash::tip5_pad_vecbelt(&mut input_vec, r);
-
-    // bring input into montgomery space
-    tip5::hash::tip5_montify_vecbelt(&mut input_vec);
-
-    // process input in batches of size RATE
-    tip5::hash::tip5_absorb_input(&mut input_vec, &mut sponge, q);
+    let input = input_vec.iter().map(|belt| belt.0).collect::<Vec<_>>();
+    tip5::hash::absorb(&mut sponge, &input);
 
     // update sponge in door
     let new_sponge = vec_to_hoon_list(stack, &sponge);
-    let edit = door_edit(stack, 6, new_sponge, door, &space)?;
+    let edit = door_edit(stack, 6, new_sponge, sponge_door, &space)?;
 
     Ok(edit)
 }
@@ -117,22 +125,54 @@ pub fn sponge_absorb_jet(context: &mut Context, subject: Noun) -> Result<Noun, J
 pub fn sponge_squeeze_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
     let stack = &mut context.stack;
-    let door = slot(subject, 3, &space)?;
-    let sponge_noun = slot(door, 6, &space)?;
+    let sponge_door = slot(subject, 3, &space)?;
+    require_default_sponge_num_rounds(sponge_door, &space)?;
+    let sponge_noun = slot(sponge_door, 6, &space)?;
     let mut sponge = hoon_list_to_sponge(sponge_noun, &space)?;
 
-    let mut output = [0u64; tip5::RATE];
-    for i in 0..tip5::RATE {
-        output[i] = mont_reduction(sponge[i] as u128);
-    }
-
-    tip5::permute(&mut sponge);
+    let output = tip5::hash::squeeze(&mut sponge);
 
     // update sponge in door
     let new_sponge = vec_to_hoon_list(stack, &sponge);
-    let edit = door_edit(stack, 6, new_sponge, door, &space)?;
+    let edit = door_edit(stack, 6, new_sponge, sponge_door, &space)?;
 
     let output_noun = vec_to_hoon_list(stack, &output);
     let res = T(stack, &[output_noun, edit]);
     Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use nockvm::jets::util::test::init_context;
+    use nockvm::noun::{D, T};
+
+    use super::*;
+
+    fn sponge_door(stack: &mut NockStack, num_rounds: u64) -> Noun {
+        let sponge = vec_to_hoon_list(stack, &[0; tip5::STATE_SIZE]);
+        let tip5_door = T(stack, &[D(0), D(num_rounds), D(0)]);
+        T(stack, &[D(0), sponge, tip5_door])
+    }
+
+    #[test]
+    fn sponge_absorb_punts_on_five_round_varlen_vector_path() {
+        let c = &mut init_context();
+        // The Hoon crypto KATs call `(~(hash-varlen tip5 5) ~)`. The top-level
+        // hash jet punts on num-rounds=5, and this sponge arm must also punt so
+        // the 5-round vector stays on the interpreted Hoon path.
+        let input = D(0);
+        let door = sponge_door(&mut c.stack, 5);
+        let subject = T(&mut c.stack, &[D(0), input, door]);
+
+        assert!(matches!(sponge_absorb_jet(c, subject), Err(JetErr::Punt)));
+    }
+
+    #[test]
+    fn sponge_squeeze_punts_on_five_round_varlen_vector_path() {
+        let c = &mut init_context();
+        let door = sponge_door(&mut c.stack, 5);
+        let subject = T(&mut c.stack, &[D(0), door]);
+
+        assert!(matches!(sponge_squeeze_jet(c, subject), Err(JetErr::Punt)));
+    }
 }

@@ -283,15 +283,11 @@ use nockvm::noun::{Atom, Noun, NounAllocator, NounSpace, D, T};
 #[derive(Debug)]
 pub struct VerifyArgs {
     pub proof: Proof,
+    // Legacy debugging hook from zkvm bring-up for table-scoped bisects.
+    // Production native verification passes `None`; this is kept for compatibility with older
+    // table-debug workflows.
+    pub table_override: Option<Vec<Term>>,
     pub verifier_eny: u64,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum VerifyBackend {
-    Auto,
-    Baseline,
-    Optimized,
-    Avx512,
 }
 
 #[derive(Debug)]
@@ -381,23 +377,9 @@ impl From<FriError> for VerifyError {
 }
 
 pub fn verify(args: VerifyArgs) -> Result<VerifyResult, VerifyError> {
-    verify_with_backend(args, VerifyBackend::Auto)
-}
-
-pub fn verify_with_backend(
-    args: VerifyArgs,
-    backend: VerifyBackend,
-) -> Result<VerifyResult, VerifyError> {
-    verify_with_backend_mode(args, backend, false)
-}
-
-pub(crate) fn verify_with_backend_mode(
-    args: VerifyArgs,
-    backend: VerifyBackend,
-    test_mode: bool,
-) -> Result<VerifyResult, VerifyError> {
     let VerifyArgs {
         mut proof,
+        table_override,
         verifier_eny,
     } = args;
 
@@ -413,7 +395,8 @@ pub(crate) fn verify_with_backend_mode(
     ensure_digest_based(&puzzle.nonce, "puzzle nonce contains non-based elements")?;
     validate_puzzle_metadata(&puzzle)?;
 
-    let mut table_names: Vec<Term> = core_table_names(&version).to_vec();
+    let mut table_names: Vec<Term> =
+        table_override.unwrap_or_else(|| core_table_names(&version).to_vec());
     if table_names.is_empty() {
         return Err(VerifyError::Invalid("no tables configured for verifier"));
     }
@@ -525,10 +508,8 @@ pub(crate) fn verify_with_backend_mode(
         .collect();
     let augmented_slice: BPolySlice<'_> = PolySlice(augmented_chals.as_slice());
     let degrees = preprocess_degrees(&version, &heights);
-    let eval_backend = resolve_backend(&version, backend)?;
 
-    let extra_composition_eval = eval_composition_with_backend(
-        eval_backend,
+    let extra_composition_eval = eval_composition(
         &PolySlice(extra_trace_evaluations.as_slice()),
         &heights,
         &degrees.extra,
@@ -580,8 +561,7 @@ pub(crate) fn verify_with_backend_mode(
 
     let mut rng = stream.transcript_rng()?;
 
-    let composition_eval = eval_composition_with_backend(
-        eval_backend,
+    let composition_eval = eval_composition(
         &PolySlice(trace_evaluations.as_slice()),
         &heights,
         &degrees.base,
@@ -689,7 +669,7 @@ pub(crate) fn verify_with_backend_mode(
         });
     }
 
-    if !test_mode && !verify_merk_proofs(&merks, verifier_eny) {
+    if !verify_merk_proofs(&merks, verifier_eny) {
         return Err(VerifyError::Invalid("failed to verify merkle proofs"));
     }
 
@@ -724,29 +704,8 @@ pub(crate) fn verify_with_backend_mode(
     })
 }
 
-#[derive(Clone, Copy)]
-enum ResolvedBackend {
-    Baseline,
-}
-
-fn resolve_backend(
-    _version: &ProofVersion,
-    backend: VerifyBackend,
-) -> Result<ResolvedBackend, VerifyError> {
-    match backend {
-        VerifyBackend::Auto | VerifyBackend::Baseline => Ok(ResolvedBackend::Baseline),
-        VerifyBackend::Optimized => Err(VerifyError::Invalid(
-            "optimized verifier backend is not available in open zkvm-jetpack",
-        )),
-        VerifyBackend::Avx512 => Err(VerifyError::Invalid(
-            "avx512 verifier backend is not available in open zkvm-jetpack",
-        )),
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
-fn eval_composition_with_backend(
-    _backend: ResolvedBackend,
+fn eval_composition(
     trace_evaluations: &FPolySlice<'_>,
     heights: &[u64],
     processed_degrees: &ProcessedDegrees<'_>,
@@ -1449,6 +1408,7 @@ mod tests {
         let proof = decode_proof(bytes);
         let result = verify(VerifyArgs {
             proof,
+            table_override: None,
             verifier_eny: 0,
         })
         .expect("public proof fixture should verify");
@@ -1484,6 +1444,7 @@ mod tests {
         }
         let result = verify(VerifyArgs {
             proof,
+            table_override: None,
             verifier_eny: 0,
         });
         assert!(result.is_err());
@@ -1501,6 +1462,7 @@ mod tests {
 
         let result = verify(VerifyArgs {
             proof,
+            table_override: None,
             verifier_eny: 0,
         });
         assert!(matches!(
@@ -1523,6 +1485,7 @@ mod tests {
 
         let result = verify(VerifyArgs {
             proof,
+            table_override: None,
             verifier_eny: 0,
         });
         assert!(matches!(

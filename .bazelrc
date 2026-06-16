@@ -62,6 +62,15 @@ build:clippy --output_groups=+clippy_checks
 common:clippy --@rules_rust//rust/settings:extra_rustc_flag=-Dwarnings
 common:clippy --@rules_rust//rust/settings:clippy_flag=-Dclippy::unwrap_used
 common:clippy --@rules_rust//rust/settings:clippy_flag=-Aclippy::missing_safety_doc
+# Allowed for the nightly-2026-04-03 toolchain bump: lints the newer clippy newly
+# flags on pre-existing code (deferred to a dedicated cleanup; mirrors the root
+# .bazelrc and [workspace.lints.clippy] in the generated Cargo.toml).
+common:clippy --@rules_rust//rust/settings:clippy_flag=-Aclippy::result_large_err
+common:clippy --@rules_rust//rust/settings:clippy_flag=-Aclippy::unnecessary_cast
+common:clippy --@rules_rust//rust/settings:clippy_flag=-Aclippy::unnecessary_sort_by
+common:clippy --@rules_rust//rust/settings:clippy_flag=-Aclippy::collapsible_match
+common:clippy --@rules_rust//rust/settings:clippy_flag=-Aclippy::manual_checked_ops
+common:clippy --@rules_rust//rust/settings:clippy_flag=-Aclippy::while_let_loop
 
 # Miri configuration for the *_miri test targets (tagged manual):
 #   bazel test --config=miri //crates/...:<name>_miri

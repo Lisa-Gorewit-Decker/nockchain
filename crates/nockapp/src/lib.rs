@@ -1,5 +1,4 @@
 #![feature(negative_impls)]
-#![feature(slice_pattern)]
 // Allow unwrap in test code - standard practice for test assertions
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 

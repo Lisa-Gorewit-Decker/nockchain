@@ -2,32 +2,12 @@ use std::cmp;
 
 use nockvm::noun::NounSpace;
 
-use crate::form::belt::*;
-use crate::form::bpoly::{bp_fft, bpoly_zero_extend};
 use crate::form::felt::{fpow, Felt};
 use crate::form::fpoly::*;
 use crate::form::mary::{snag_as_bpoly, MarySlice};
 use crate::form::poly::*;
 use crate::form::proof::{ConstraintDataSlice, ConstraintsSlice, MPUltraSlice, ProofMap};
 use crate::form::structs::HoonList;
-
-pub fn precompute_ntts(
-    polys: MarySlice,
-    height: usize,
-    max_ntt_len: usize,
-    res: &mut [Belt],
-) -> Result<(), FieldError> {
-    let new_len = height * max_ntt_len;
-
-    for i in 0..polys.len as usize {
-        let bp = snag_as_bpoly(polys, i);
-        let mut extended = vec![Belt::zero(); new_len];
-        bpoly_zero_extend(bp, &mut extended);
-        let fft = bp_fft(&extended)?;
-        res[i * new_len..(i + 1) * new_len].copy_from_slice(&fft);
-    }
-    Ok(())
-}
 
 #[allow(clippy::too_many_arguments)]
 pub fn compute_deep(
@@ -40,31 +20,21 @@ pub fn compute_deep(
     deep_challenge: &Felt,
     comp_eval_point: &Felt,
     space: &NounSpace,
-) -> Vec<Felt> {
-    let composition_pieces = composition_pieces
-        .into_iter()
-        .map(|x| {
-            FPolySlice::try_from(x, space)
-                .unwrap_or_else(|err| {
-                    panic!(
-                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                        file!(),
-                        line!(),
-                        option_env!("GIT_SHA")
-                    )
-                })
-                .0
-        })
-        .collect::<Vec<&[Felt]>>();
+) -> Result<Vec<Felt>, ComputeDeepError> {
+    let mut composition_pieces_vec: Vec<&[Felt]> = Vec::new();
+    for (idx, x) in composition_pieces.into_iter().enumerate() {
+        let slice = FPolySlice::try_from(x, space)
+            .map_err(|_| ComputeDeepError::InvalidCompositionPiece { index: idx })?;
+        composition_pieces_vec.push(slice.0);
+    }
 
     let mut acc_trace = vec![Felt::zero()];
     let mut curr = 0;
 
     let mut fps: Vec<(Vec<Vec<Felt>>, &Felt)> = vec![];
-    for (trace_poly, omicron) in trace_polys.into_iter().zip(omicrons.iter()) {
-        let Ok(trace_poly) = MarySlice::try_from(trace_poly, space) else {
-            panic!("trace_poly in trace_polys is not a valid FPolySlice");
-        };
+    for (idx, (trace_poly, omicron)) in trace_polys.into_iter().zip(omicrons.iter()).enumerate() {
+        let trace_poly = MarySlice::try_from(trace_poly, space)
+            .map_err(|_| ComputeDeepError::InvalidTracePoly { index: idx })?;
 
         let mut fp_list =
             vec![vec![Felt::zero(); trace_poly.step as usize]; trace_poly.len as usize];
@@ -74,6 +44,26 @@ pub fn compute_deep(
         }
 
         fps.push((fp_list, omicron));
+    }
+
+    let ptr_widths: Vec<usize> = fps.iter().map(|(fp, _)| fp.len()).collect();
+    let total_ptr_widths: usize = ptr_widths.iter().sum();
+    let needed_openings = 4 * total_ptr_widths;
+    let needed_weights = needed_openings + composition_pieces_vec.len();
+
+    if trace_openings.len() < needed_openings {
+        return Err(ComputeDeepError::TraceOpeningsTooShort {
+            have: trace_openings.len(),
+            need: needed_openings,
+            trace_poly_count: fps.len(),
+            ptr_widths,
+        });
+    }
+    if weights.len() < needed_weights {
+        return Err(ComputeDeepError::WeightsTooShort {
+            have: weights.len(),
+            need: needed_weights,
+        });
     }
 
     for (fp_list, omicron) in &fps {
@@ -149,18 +139,71 @@ pub fn compute_deep(
 
     fpow(
         deep_challenge,
-        composition_pieces.len() as u64,
+        composition_pieces_vec.len() as u64,
         &mut piece_eval,
     );
 
     let pieces = weighted_linear_combo(
-        &composition_pieces,
+        &composition_pieces_vec,
         composition_piece_openings,
         &[piece_eval],
         &weights[curr..],
     );
 
-    fpadd_(&acc_trace, &pieces)
+    Ok(fpadd_(&acc_trace, &pieces))
+}
+
+#[derive(Debug)]
+pub enum ComputeDeepError {
+    TraceOpeningsTooShort {
+        have: usize,
+        need: usize,
+        trace_poly_count: usize,
+        ptr_widths: Vec<usize>,
+    },
+    WeightsTooShort {
+        have: usize,
+        need: usize,
+    },
+    InvalidTracePoly {
+        index: usize,
+    },
+    InvalidCompositionPiece {
+        index: usize,
+    },
+}
+
+impl std::fmt::Display for ComputeDeepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TraceOpeningsTooShort {
+                have,
+                need,
+                trace_poly_count,
+                ptr_widths,
+            } => write!(
+                f,
+                "compute_deep: trace_openings too short: have {have}, need {need} \
+                 (trace_poly_count={trace_poly_count}, ptr_widths={ptr_widths:?})"
+            ),
+            Self::WeightsTooShort { have, need } => {
+                write!(
+                    f,
+                    "compute_deep: weights too short: have {have}, need {need}"
+                )
+            }
+            Self::InvalidTracePoly { index } => {
+                write!(
+                    f,
+                    "compute_deep: trace_poly at index {index} is not a valid MarySlice"
+                )
+            }
+            Self::InvalidCompositionPiece { index } => write!(
+                f,
+                "compute_deep: composition_piece at index {index} is not a valid FPolySlice"
+            ),
+        }
+    }
 }
 
 fn weighted_linear_combo(
@@ -189,22 +232,22 @@ fn weighted_linear_combo(
     acc
 }
 
-pub(crate) struct PolyWithDegreeFudges<'a> {
-    pub(crate) degrees: Vec<u64>,
-    pub(crate) poly: &'a MPUltraSlice<'a>,
+pub struct PolyWithDegreeFudges<'a> {
+    pub degrees: Vec<u64>,
+    pub poly: &'a MPUltraSlice<'a>,
 }
 
-pub(crate) struct ConstraintsWDegree<'a> {
-    pub(crate) boundary: Vec<PolyWithDegreeFudges<'a>>,
-    pub(crate) row: Vec<PolyWithDegreeFudges<'a>>,
-    pub(crate) transition: Vec<PolyWithDegreeFudges<'a>>,
-    pub(crate) terminal: Vec<PolyWithDegreeFudges<'a>>,
-    pub(crate) extra: Vec<PolyWithDegreeFudges<'a>>,
+pub struct ConstraintsWDegree<'a> {
+    pub boundary: Vec<PolyWithDegreeFudges<'a>>,
+    pub row: Vec<PolyWithDegreeFudges<'a>>,
+    pub transition: Vec<PolyWithDegreeFudges<'a>>,
+    pub terminal: Vec<PolyWithDegreeFudges<'a>>,
+    pub extra: Vec<PolyWithDegreeFudges<'a>>,
 }
 
-pub(crate) struct ProcessedDegrees<'a> {
-    pub(crate) fri_degree_bound: u64,
-    pub(crate) constraints: ProofMap<usize, ConstraintsWDegree<'a>>,
+pub struct ProcessedDegrees<'a> {
+    pub fri_degree_bound: u64,
+    pub constraints: ProofMap<usize, ConstraintsWDegree<'a>>,
 }
 
 struct DegreeData<'a> {

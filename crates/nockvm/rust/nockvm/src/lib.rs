@@ -1,4 +1,3 @@
-#![feature(cold_path)]
 #![allow(dead_code)]
 #![allow(clippy::needless_return)]
 #![allow(clippy::should_implement_trait)]

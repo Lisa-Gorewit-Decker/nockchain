@@ -41,7 +41,9 @@ use std::collections::HashMap;
 use nockchain_math::belt::Belt;
 use nockchain_math::noun_ext::NounMathExt;
 use nockchain_math::tip5::hash::{hash_10, hash_noun_varlen_digest};
-use nockchain_math::zoon::common::{dor_tip, lth_tip};
+use nockchain_math::zoon::common::{dor_tip, lth_tip, DefaultTipHasher};
+use nockchain_math::zoon::zmap::{z_map_put, z_map_rep};
+use nockchain_math::zoon::zset::{z_set_bif, z_set_dif, z_set_put};
 use nockvm::interpreter::Context;
 use nockvm::jets::util::{slot, BAIL_FAIL};
 use nockvm::jets::JetErr;
@@ -57,6 +59,52 @@ const DOUBLE_TIP_CACHE_TAG: u64 = tas!(b"zndtip");
 const PARALLEL_SORT_THRESHOLD: usize = 4096;
 const SMALL_HASHED_KEY_LIMIT: usize = 2;
 const Z_DIFF_ROTATION_ENTRY_LIMIT: usize = 512;
+
+pub fn z_map_put_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    let door = slot(subject, 7, &space)?;
+    let a = slot(door, 6, &space)?;
+    let mut b = slot(subject, 12, &space)?;
+    let mut c = slot(subject, 13, &space)?;
+
+    z_map_put(&mut context.stack, &a, &mut b, &mut c, &DefaultTipHasher)
+}
+
+pub fn z_map_rep_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    let door = slot(subject, 7, &space)?;
+    let map = slot(door, 6, &space)?;
+    let mut gate = slot(subject, 6, &space)?;
+
+    z_map_rep(context, &map, &mut gate)
+}
+
+pub fn z_set_put_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    let door = slot(subject, 7, &space)?;
+    let a = slot(door, 6, &space)?;
+    let mut b = slot(subject, 6, &space)?;
+
+    z_set_put(&mut context.stack, &a, &mut b, &DefaultTipHasher)
+}
+
+pub fn z_set_dif_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    let door = slot(subject, 7, &space)?;
+    let mut a = slot(door, 6, &space)?;
+    let mut b = slot(subject, 6, &space)?;
+
+    z_set_dif(&mut context.stack, &mut a, &mut b, &DefaultTipHasher)
+}
+
+pub fn z_set_bif_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    let door = slot(subject, 7, &space)?;
+    let mut a = slot(door, 6, &space)?;
+    let mut b = slot(subject, 6, &space)?;
+
+    z_set_bif(&mut context.stack, &mut a, &mut b, &DefaultTipHasher)
+}
 
 pub fn dor_tip_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();

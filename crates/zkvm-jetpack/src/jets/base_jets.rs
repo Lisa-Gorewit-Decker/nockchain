@@ -67,6 +67,18 @@ pub fn bneg_jet(context: &mut Context, subject: Noun) -> Result {
     Ok(Atom::new(&mut context.stack, (-a_belt).into()).as_noun())
 }
 
+pub fn binv_jet(context: &mut Context, subject: Noun) -> Result {
+    let space = context.stack.noun_space();
+    let x = slot(subject, 6, &space)?;
+    let Ok(x_atom) = x.as_atom() else {
+        debug!("x was not an atom");
+        return Err(BAIL_FAIL);
+    };
+    let x_belt: Belt = x_atom.in_space(&space).as_u64()?.into();
+
+    Ok(Atom::new(&mut context.stack, x_belt.inv().into()).as_noun())
+}
+
 pub fn bmul_jet(context: &mut Context, subject: Noun) -> Result {
     let space = context.stack.noun_space();
     let sam = slot(subject, 6, &space)?;
@@ -83,6 +95,24 @@ pub fn bmul_jet(context: &mut Context, subject: Noun) -> Result {
     );
 
     Ok(Atom::new(&mut context.stack, (a_belt * b_belt).into()).as_noun())
+}
+
+pub fn bdiv_jet(context: &mut Context, subject: Noun) -> Result {
+    let space = context.stack.noun_space();
+    let sam = slot(subject, 6, &space)?;
+    let a = slot(sam, 2, &space)?;
+    let b = slot(sam, 3, &space)?;
+
+    let (Ok(a_atom), Ok(b_atom)) = (a.as_atom(), b.as_atom()) else {
+        debug!("a or b was not an atom");
+        return Err(BAIL_FAIL);
+    };
+    let (a_belt, b_belt): (Belt, Belt) = (
+        a_atom.in_space(&space).as_u64()?.into(),
+        b_atom.in_space(&space).as_u64()?.into(),
+    );
+
+    Ok(Atom::new(&mut context.stack, (a_belt / b_belt).into()).as_noun())
 }
 
 pub fn ordered_root_jet(context: &mut Context, subject: Noun) -> Result {

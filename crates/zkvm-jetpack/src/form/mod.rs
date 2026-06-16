@@ -1,13 +1,13 @@
-pub(crate) mod challenges;
+pub mod challenges;
 pub mod config;
 pub mod math;
 pub mod mega;
-pub(crate) mod merk;
-pub(crate) mod preprocess;
+pub mod merk;
+pub mod preprocess;
 pub mod proof;
 pub mod term;
-pub(crate) mod tog;
-pub(crate) mod verifier_math;
+pub mod tog;
+pub mod verifier_math;
 pub mod verify;
 
 pub use math::*;

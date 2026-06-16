@@ -61,6 +61,12 @@
           filename=(unit @t)
           override=(unit (list term))
       ==
+      $:  %proof-snapshot-for
+          v=proof-version:z
+          header=digest
+          nonce=digest
+          len=@
+      ==
       $:  %make-proof-stream-window
           v=proof-version:z
           n=@
@@ -324,6 +330,12 @@
     :~  [%file %write filename (jam res)]
         [%exit %.y]
     ==
+  ::
+      %proof-snapshot-for
+    =/  res=proof-snapshot:sp
+      ~>(%bout (proof-snapshot-for:lib v.c header.c nonce.c len.c))
+    :_  k(snapshot `res)
+    [%exit %.y]~
   ::
       %make-proof-stream-window
     ~&  >>>  make-proof-stream-window+[len=n.c range=range.c filename=filename.c]

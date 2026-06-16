@@ -1,9 +1,10 @@
-use nockchain_math::belt::{mont_reduction, Belt};
+use nockchain_math::belt::Belt;
 use nockchain_math::mary::MarySlice;
 use nockchain_math::tip5::hash::{
-    hash_10, hash_varlen, tip5_absorb_rate, tip5_calc_q_r, tip5_montify_vecbelt, tip5_pad_vecbelt,
+    absorb as tip5_absorb, hash_belts_slice, hash_ten_cell as tip5_hash_ten_cell,
+    squeeze as tip5_squeeze,
 };
-use nockchain_math::tip5::{permute, DIGEST_LENGTH, RATE, STATE_SIZE};
+use nockchain_math::tip5::{DIGEST_LENGTH, RATE, STATE_SIZE};
 use nockvm::jets::JetErr;
 
 use crate::based;
@@ -15,13 +16,11 @@ pub struct Tog {
 }
 
 fn hash_ten_cell(input: [u64; RATE]) -> [u64; DIGEST_LENGTH] {
-    let mut belts = input.into_iter().map(Belt).collect::<Vec<_>>();
-    hash_10(&mut belts)
+    tip5_hash_ten_cell(input)
 }
 
 fn hash_belts_list(input: &[u64]) -> [u64; DIGEST_LENGTH] {
-    let mut belts = input.iter().copied().map(Belt).collect::<Vec<_>>();
-    hash_varlen(&mut belts)
+    hash_belts_slice(input)
 }
 
 fn hash_u64(value: u64) -> [u64; DIGEST_LENGTH] {
@@ -55,23 +54,12 @@ fn hash_mary(mary: MarySlice<'_>) -> [u64; DIGEST_LENGTH] {
     hash_ten_cell(step_len_ten_cell)
 }
 
-pub(crate) fn absorb(sponge: &mut [u64; STATE_SIZE], input: &[u64]) {
-    let mut belts = input.iter().copied().map(Belt).collect::<Vec<_>>();
-    let (_, r) = tip5_calc_q_r(&belts);
-    tip5_pad_vecbelt(&mut belts, r);
-    tip5_montify_vecbelt(&mut belts);
-    for chunk in belts.chunks(RATE) {
-        tip5_absorb_rate(sponge, chunk);
-    }
+pub fn absorb(sponge: &mut [u64; STATE_SIZE], input: &[u64]) {
+    tip5_absorb(sponge, input);
 }
 
 fn squeeze(sponge: &mut [u64; STATE_SIZE]) -> [u64; RATE] {
-    let mut output = [0; RATE];
-    for i in 0..RATE {
-        output[i] = mont_reduction(sponge[i] as u128);
-    }
-    permute(sponge);
-    output
+    tip5_squeeze(sponge)
 }
 
 pub fn verifier_fiat_shamir(proof: &Proof) -> Result<Tog, JetErr> {

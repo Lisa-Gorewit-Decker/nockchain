@@ -19,6 +19,7 @@ once_cell.workspace = true
 quickcheck.workspace = true
 rkyv.workspace = true
 serde = { workspace = true, features = ["derive"] }
+smallvec.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
