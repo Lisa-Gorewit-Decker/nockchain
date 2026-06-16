@@ -8,6 +8,7 @@
 #![allow(clippy::vec_init_then_push)]
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod backbone;
 pub mod config;
 pub mod mining;
 pub mod setup;
@@ -322,27 +323,31 @@ pub async fn init_with_kernel<J: Jammer + Send + 'static>(
         }
     };
 
-    let default_backbone_peers = if cli.fakenet {
+    // Full backbone pool. The libp2p driver dials a rotating round-robin window
+    // of these on each attempt rather than all of them at once, so we hand it
+    // the whole set (empty when the user opts out or on fakenet).
+    let default_backbone_peers: &[&str] = if cli.fakenet {
         config::TESTNET_BACKBONE_NODES
     } else {
-        config::REALNET_BACKBONE_NODES
+        backbone::BACKBONE_NODES
     };
 
-    let backbone_peers = default_backbone_peers
-        .iter()
-        .map(|multiaddr_str| {
-            multiaddr_str
-                .parse()
-                .expect("could not parse multiaddr from built-in string")
-        })
-        .collect();
-
-    // Set up initial peer addresses to connect to
-    let mut initial_peer_multiaddrs: Vec<Multiaddr> = if cli.no_default_peers {
+    let backbone_peers: Vec<Multiaddr> = if cli.no_default_peers {
         Vec::new()
     } else {
-        backbone_peers
+        default_backbone_peers
+            .iter()
+            .map(|multiaddr_str| {
+                multiaddr_str
+                    .parse()
+                    .expect("could not parse multiaddr from built-in string")
+            })
+            .collect()
     };
+
+    // Set up initial peer addresses to connect to. Backbone peers are dialed
+    // separately (round-robin) by the driver, so they are not folded in here.
+    let mut initial_peer_multiaddrs: Vec<Multiaddr> = Vec::new();
 
     let v: Vec<Multiaddr> = cli
         .peer
@@ -525,6 +530,8 @@ pub async fn init_with_kernel<J: Jammer + Send + 'static>(
         limits,
         memory_limits,
         &initial_peer_multiaddrs,
+        &backbone_peers,
+        backbone::DEFAULT_BACKBONE_PEER_COUNT,
         &force_peers,
         prune_inbound,
         equix_builder,

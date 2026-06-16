@@ -116,8 +116,8 @@ fn should_redial_initial_peers_requires_zero_connected_peers() {
             .expect("valid multiaddr"),
     ];
 
-    assert!(should_redial_initial_peers(0, &initial_peers));
-    assert!(!should_redial_initial_peers(1, &initial_peers));
+    assert!(should_redial_initial_peers(0, &initial_peers, &[]));
+    assert!(!should_redial_initial_peers(1, &initial_peers, &[]));
 }
 
 #[test]
@@ -128,11 +128,53 @@ fn should_redial_initial_peers_requires_seed_peers() {
             .expect("valid multiaddr"),
     ];
 
-    // No seed peers: nothing to redial.
-    assert!(!should_redial_initial_peers(0, &[]));
+    // No seed or backbone peers: nothing to redial.
+    assert!(!should_redial_initial_peers(0, &[], &[]));
     // With seed peers and zero connected peers we redial regardless of how
     // many attempts have already been made — we never give up.
-    assert!(should_redial_initial_peers(0, &initial_peers));
+    assert!(should_redial_initial_peers(0, &initial_peers, &[]));
+    // Backbone peers alone are enough to trigger a redial.
+    assert!(should_redial_initial_peers(0, &[], &initial_peers));
+}
+
+#[test]
+fn next_backbone_window_rotates_round_robin() {
+    let pool: Vec<Multiaddr> = (0..5)
+        .map(|i| {
+            format!("/ip4/127.0.0.1/udp/{}/quic-v1", 30000 + i)
+                .parse()
+                .expect("valid multiaddr")
+        })
+        .collect();
+
+    let mut cursor = 0usize;
+    // First window: indices 0,1,2.
+    assert_eq!(
+        next_backbone_window(&pool, &mut cursor, 3),
+        vec![pool[0].clone(), pool[1].clone(), pool[2].clone()]
+    );
+    // Second window advances past the first and wraps: indices 3,4,0.
+    assert_eq!(
+        next_backbone_window(&pool, &mut cursor, 3),
+        vec![pool[3].clone(), pool[4].clone(), pool[0].clone()]
+    );
+    // Third window continues from index 1: 1,2,3.
+    assert_eq!(
+        next_backbone_window(&pool, &mut cursor, 3),
+        vec![pool[1].clone(), pool[2].clone(), pool[3].clone()]
+    );
+}
+
+#[test]
+fn next_backbone_window_handles_empty_and_small_pools() {
+    let mut cursor = 0usize;
+    assert!(next_backbone_window(&[], &mut cursor, 3).is_empty());
+
+    let pool: Vec<Multiaddr> = vec!["/ip4/127.0.0.1/udp/30000/quic-v1"
+        .parse()
+        .expect("valid multiaddr")];
+    // Count larger than the pool returns the whole pool without duplicating.
+    assert_eq!(next_backbone_window(&pool, &mut cursor, 3), pool);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

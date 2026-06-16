@@ -85,12 +85,12 @@ Can be used for:
 
 ### Connecting to a Nockchain API server
 
-The wallet talks to the gRPC APIs exposed by a running nockchain instance. You can target either the **public** API (default) or the **private** API that is typically bound to `localhost`. You must run a nockchain instance to connect to the private API. Zorp runs its own public Nockchain API server at `https://nockchain-api.zorp.io`, and the wallet connects to it by default.
+The wallet talks to the gRPC APIs exposed by a running nockchain instance. You can target either the **public** API (default) or the **private** API that is typically bound to `localhost`. You must run a nockchain instance to connect to the private API. The wallet connects to a public Nockchain API server at `23.252.122.18:5556` by default.
 
 #### Public API (default)
 
 ```bash
-# Use the default public endpoint (https://nockchain-api.zorp.io)
+# Use the default public endpoint (23.252.122.18:5556)
 nockchain-wallet list-notes
 
 # Or point at a different remote public listener

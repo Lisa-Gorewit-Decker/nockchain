@@ -23,11 +23,8 @@ pub const PEER_ID_FILE_EXTENSION: &str = "peerid";
 /** Backbone nodes for our testnet */
 pub const TESTNET_BACKBONE_NODES: &[&str] = &[];
 
-// Libp2p multiaddrs don't support const construction, so we have to put strings literals and parse them at startup
-// TODO: feature flag testnet/realnet
-/** Backbone nodes for our realnet */
-#[allow(dead_code)]
-pub const REALNET_BACKBONE_NODES: &[&str] = &["/dnsaddr/nockchain-backbone.zorp.io"];
+// Realnet backbone peers now live in `crate::backbone`, which selects a
+// round-robin subset of them at startup instead of dialing a single default.
 
 /** How often we should affirmatively ask other nodes for their heaviest chain */
 pub const CHAIN_INTERVAL: Duration = Duration::from_secs(20);

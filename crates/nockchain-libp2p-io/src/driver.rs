@@ -28,6 +28,7 @@ use nockvm::noun::{NounAllocator, D, T};
 use nockvm_macros::tas;
 use rand::rng;
 use rand::seq::SliceRandom;
+use rand::Rng;
 use serde_bytes::ByteBuf;
 use tokio::sync::{mpsc, Mutex, MutexGuard};
 use tokio::time::{Duration, Instant, MissedTickBehavior};
@@ -197,27 +198,62 @@ fn request_effect_trace_summary(noun_slab: &NounSlab) -> String {
     format!("request block {block_head}")
 }
 
-fn should_redial_initial_peers(connected_peer_count: usize, initial_peers: &[Multiaddr]) -> bool {
-    connected_peer_count == 0 && !initial_peers.is_empty()
+fn should_redial_initial_peers(
+    connected_peer_count: usize,
+    initial_peers: &[Multiaddr],
+    backbone_peers: &[Multiaddr],
+) -> bool {
+    connected_peer_count == 0 && !(initial_peers.is_empty() && backbone_peers.is_empty())
+}
+
+/// Returns the next round-robin window of up to `count` peers from `pool`,
+/// starting at `*cursor` and wrapping around, then advances `*cursor` past the
+/// window so the following call dials a different subset. An empty pool yields
+/// an empty window.
+fn next_backbone_window(
+    pool: &[Multiaddr],
+    cursor: &mut usize,
+    count: usize,
+) -> Vec<Multiaddr> {
+    if pool.is_empty() {
+        return Vec::new();
+    }
+    let take = count.min(pool.len());
+    let start = *cursor % pool.len();
+    let window = (0..take)
+        .map(|i| pool[(start + i) % pool.len()].clone())
+        .collect();
+    *cursor = (start + take) % pool.len();
+    window
 }
 
 fn redial_initial_peers(
     swarm: &mut Swarm<NockchainBehaviour>,
     initial_peers: &[Multiaddr],
+    backbone_peers: &[Multiaddr],
+    backbone_cursor: &mut usize,
+    backbone_dial_count: usize,
     reason: &'static str,
 ) -> Result<bool, NockAppError> {
     let connected_peer_count = swarm.connected_peers().count();
-    if !should_redial_initial_peers(connected_peer_count, initial_peers) {
+    if !should_redial_initial_peers(connected_peer_count, initial_peers, backbone_peers) {
         return Ok(false);
     }
 
+    let backbone_window = next_backbone_window(backbone_peers, backbone_cursor, backbone_dial_count);
     info!(
         reason,
         connected_peer_count,
         initial_peer_count = initial_peers.len(),
+        backbone_dialed = backbone_window.len(),
         "Redialing initial peers while disconnected"
     );
-    dial_peers(swarm, initial_peers)?;
+    if !initial_peers.is_empty() {
+        dial_peers(swarm, initial_peers)?;
+    }
+    if !backbone_window.is_empty() {
+        dial_peers(swarm, &backbone_window)?;
+    }
     Ok(true)
 }
 
@@ -440,6 +476,8 @@ pub fn make_libp2p_driver(
     limits: connection_limits::ConnectionLimits,
     memory_limits: Option<memory_connection_limits::Behaviour>,
     initial_peers: &[Multiaddr],
+    backbone_peers: &[Multiaddr],
+    backbone_dial_count: usize,
     force_peers: &[Multiaddr],
     prune_inbound_size: Option<usize>,
     mut equix_builder: equix::EquiXBuilder,
@@ -447,6 +485,7 @@ pub fn make_libp2p_driver(
     init_complete_tx: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> IODriverFn {
     let initial_peers = Vec::from(initial_peers);
+    let backbone_peers = Vec::from(backbone_peers);
     let force_peers = Vec::from(force_peers);
     Box::new(move |handle| {
         let metrics = Arc::new(
@@ -581,7 +620,21 @@ pub fn make_libp2p_driver(
             let mut pending_gen2_batches = BTreeMap::<PeerId, gen2::PendingGen2Batch>::new();
             let mut peer_gen2_inbound = BTreeMap::<PeerId, bool>::new();
             gen2::update_pending_batch_metrics(&metrics, &pending_gen2_batches);
-            dial_peers(&mut swarm, &initial_peers)?;
+            // Start the round-robin at a random offset so nodes don't all dial
+            // the same backbone subset first; each dial then advances the window.
+            let mut backbone_cursor: usize = if backbone_peers.is_empty() {
+                0
+            } else {
+                rand::rng().random_range(0..backbone_peers.len())
+            };
+            if !initial_peers.is_empty() {
+                dial_peers(&mut swarm, &initial_peers)?;
+            }
+            let initial_backbone_window =
+                next_backbone_window(&backbone_peers, &mut backbone_cursor, backbone_dial_count);
+            if !initial_backbone_window.is_empty() {
+                dial_peers(&mut swarm, &initial_backbone_window)?;
+            }
             if let Some(tx) = init_complete_tx {
                 let _ = tx.send(());
                 debug!("libp2p driver initialization complete signal sent");
@@ -901,6 +954,9 @@ pub fn make_libp2p_driver(
                             if redial_initial_peers(
                                 &mut swarm,
                                 &initial_peers,
+                                &backbone_peers,
+                                &mut backbone_cursor,
+                                backbone_dial_count,
                                 "kademlia_bootstrap_no_known_peers",
                             )? {
                                 info!("Failed to bootstrap: {}", NoKnownPeers());
@@ -911,6 +967,9 @@ pub fn make_libp2p_driver(
                         if redial_initial_peers(
                             &mut swarm,
                             &initial_peers,
+                            &backbone_peers,
+                            &mut backbone_cursor,
+                            backbone_dial_count,
                             "startup_zero_peer_window",
                         )? {
                             // Still disconnected: grow the backoff up to the cap and keep
