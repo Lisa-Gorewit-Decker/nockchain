@@ -26,9 +26,8 @@ use nockapp::wire::{Wire, WireRepr};
 use nockapp::NockAppError;
 use nockvm::noun::{NounAllocator, D, T};
 use nockvm_macros::tas;
-use rand::rng;
 use rand::seq::SliceRandom;
-use rand::Rng;
+use rand::{rng, Rng};
 use serde_bytes::ByteBuf;
 use tokio::sync::{mpsc, Mutex, MutexGuard};
 use tokio::time::{Duration, Instant, MissedTickBehavior};
@@ -210,11 +209,7 @@ fn should_redial_initial_peers(
 /// starting at `*cursor` and wrapping around, then advances `*cursor` past the
 /// window so the following call dials a different subset. An empty pool yields
 /// an empty window.
-fn next_backbone_window(
-    pool: &[Multiaddr],
-    cursor: &mut usize,
-    count: usize,
-) -> Vec<Multiaddr> {
+fn next_backbone_window(pool: &[Multiaddr], cursor: &mut usize, count: usize) -> Vec<Multiaddr> {
     if pool.is_empty() {
         return Vec::new();
     }
@@ -240,7 +235,8 @@ fn redial_initial_peers(
         return Ok(false);
     }
 
-    let backbone_window = next_backbone_window(backbone_peers, backbone_cursor, backbone_dial_count);
+    let backbone_window =
+        next_backbone_window(backbone_peers, backbone_cursor, backbone_dial_count);
     info!(
         reason,
         connected_peer_count,

@@ -176,6 +176,16 @@ clippy: contracts-deps ## Run clippy with the same flags as the upstream repo
 lint-local: contracts-deps ## Run local cargo clippy with warnings denied
 	cargo clippy --all-targets -- -Dclippy::unwrap_used -Aclippy::missing_safety_doc -Dwarnings
 
+.PHONY: clippy-fix
+clippy-fix: contracts-deps ## Apply clippy autofixes (same flags as `clippy`)
+	@echo "Applying clippy autofixes..."
+	cargo clippy --fix --all-targets --allow-dirty --allow-staged -- -Dclippy::unwrap_used -Aclippy::missing_safety_doc
+
+.PHONY: install-hooks
+install-hooks: ## Install git pre-commit hooks (cargo fmt + clippy) from .githooks
+	git config core.hooksPath .githooks
+	@echo "Installed git hooks: core.hooksPath -> .githooks"
+
 .PHONY: docs-check
 docs-check:
 	./scripts/docs/check_docs_metadata.sh

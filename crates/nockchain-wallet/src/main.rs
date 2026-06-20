@@ -1141,12 +1141,7 @@ impl Wallet {
     fn watch_multisig(m: u64, pubkeys_str: &str) -> CommandNoun<NounSlab> {
         let mut slab = NounSlab::new();
         let args = Self::build_multisig_args(m, pubkeys_str, &mut slab)?;
-        Self::wallet(
-            "watch-address-multisig",
-            &args,
-            Operation::Poke,
-            &mut slab,
-        )
+        Self::wallet("watch-address-multisig", &args, Operation::Poke, &mut slab)
     }
 
     /// Builds the `[m pubkeys]` argument pair shared by every multisig command
@@ -1158,9 +1153,7 @@ impl Wallet {
         slab: &mut NounSlab,
     ) -> Result<[Noun; 2], NockAppError> {
         if m == 0 {
-            return Err(
-                CrownError::Unknown("m must be greater than 0 for multisig".into()).into(),
-            );
+            return Err(CrownError::Unknown("m must be greater than 0 for multisig".into()).into());
         }
 
         let pubkey_hashes = Self::parse_pubkey_hashes(pubkeys_str)?;
