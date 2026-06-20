@@ -391,6 +391,20 @@ pub enum Commands {
         address: String,
     },
 
+    /// List notes in an already-watched multisig in CSV format
+    ListNotesByMultisigCsv {
+        /// Base58 first-name of the watched multisig (printed by `watch multisig`)
+        #[arg(value_name = "first-name")]
+        first_name: String,
+    },
+
+    /// Show the aggregate balance of an already-watched multisig
+    ShowBalanceMultisig {
+        /// Base58 first-name of the watched multisig (printed by `watch multisig`)
+        #[arg(value_name = "first-name")]
+        first_name: String,
+    },
+
     /// Create a transaction from a transaction file
     SendTx {
         /// Transaction file to create transaction from
@@ -635,6 +649,8 @@ impl Commands {
             Commands::ListNotes => "list-notes",
             Commands::ListNotesByAddress { .. } => "list-notes-by-address",
             Commands::ListNotesByAddressCsv { .. } => "list-notes-by-address-csv",
+            Commands::ListNotesByMultisigCsv { .. } => "list-notes-by-multisig-csv",
+            Commands::ShowBalanceMultisig { .. } => "show-balance-multisig",
             Commands::SetActiveMasterAddress { .. } => "set-active-master-address",
             Commands::CreateTx { .. } => "create-tx",
             Commands::MigrateV0Notes { .. } => "migrate-v0-notes",

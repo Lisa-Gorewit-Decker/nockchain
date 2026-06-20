@@ -377,6 +377,17 @@
       %-  some
       [name.meta lock.meta]
     ::
+    ::  Resolve a base58 first-name to its watched first-name entry (a multisig
+    ::  lock imported via `watch multisig`). Returns ~ if not currently watched.
+    ++  watch-first-name-by-b58
+      |=  first-name-b58=@t
+      ^-  (unit [name=hash:transact lock=(unit lock:transact)])
+      =/  =trek  (welp watch-path ~[t/first-name-b58])
+      =/  meta=(unit meta:wt)  (~(get of keys.state) trek)
+      ?~  meta  ~
+      ?.  ?=(%first-name -.u.meta)  ~
+      `[name.u.meta lock.u.meta]
+    ::
     ++  watch-first-names
       ^-  (list @t)
       =+  subtree=(~(kids of keys.state) watch-path)

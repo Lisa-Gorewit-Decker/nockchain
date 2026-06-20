@@ -405,6 +405,10 @@ async fn main() -> Result<(), NockAppError> {
             }
         }
         Commands::ListNotesByAddressCsv { address } => Wallet::list_notes_by_address_csv(address),
+        Commands::ListNotesByMultisigCsv { first_name } => {
+            Wallet::list_notes_by_multisig_csv(first_name)
+        }
+        Commands::ShowBalanceMultisig { first_name } => Wallet::show_balance_multisig(first_name),
         Commands::CreateTx { .. } => {
             // Planner-backed create-tx runs after sync once we have a fresh snapshot.
             Wallet::show_balance()
@@ -1135,9 +1139,27 @@ impl Wallet {
     /// * `m` - The M value of the multisig.
     /// * `pubkeys_str` - Comma-separated list of base58 pubkey hashes.
     fn watch_multisig(m: u64, pubkeys_str: &str) -> CommandNoun<NounSlab> {
+        let mut slab = NounSlab::new();
+        let args = Self::build_multisig_args(m, pubkeys_str, &mut slab)?;
+        Self::wallet(
+            "watch-address-multisig",
+            &args,
+            Operation::Poke,
+            &mut slab,
+        )
+    }
+
+    /// Builds the `[m pubkeys]` argument pair shared by every multisig command
+    /// (watch, csv listing, balance) from a threshold and comma-separated
+    /// base58 pubkey hashes, validating `0 < m <= pubkeys.len()`.
+    fn build_multisig_args(
+        m: u64,
+        pubkeys_str: &str,
+        slab: &mut NounSlab,
+    ) -> Result<[Noun; 2], NockAppError> {
         if m == 0 {
             return Err(
-                CrownError::Unknown("m must be greater than 0 for multisig watch".into()).into(),
+                CrownError::Unknown("m must be greater than 0 for multisig".into()).into(),
             );
         }
 
@@ -1152,17 +1174,43 @@ impl Wallet {
             .into());
         }
 
-        let mut slab = NounSlab::new();
         let m_noun = D(m);
         let pubkeys_noun = pubkey_hashes.into_iter().rev().fold(D(0), |acc, hash| {
             let hash_b58 = hash.to_base58();
-            let hash_noun = make_tas(&mut slab, &hash_b58).as_noun();
-            Cell::new(&mut slab, hash_noun, acc).as_noun()
+            let hash_noun = make_tas(slab, &hash_b58).as_noun();
+            Cell::new(slab, hash_noun, acc).as_noun()
         });
 
+        Ok([m_noun, pubkeys_noun])
+    }
+
+    /// Lists notes in an already-watched multisig in CSV format.
+    ///
+    /// # Arguments
+    ///
+    /// * `first_name` - Base58 first-name of the watched multisig.
+    fn list_notes_by_multisig_csv(first_name: &str) -> CommandNoun<NounSlab> {
+        let mut slab = NounSlab::new();
+        let first_name_noun = make_tas(&mut slab, first_name).as_noun();
         Self::wallet(
-            "watch-address-multisig",
-            &[m_noun, pubkeys_noun],
+            "list-notes-by-multisig-csv",
+            &[first_name_noun],
+            Operation::Poke,
+            &mut slab,
+        )
+    }
+
+    /// Shows the aggregate balance of an already-watched multisig.
+    ///
+    /// # Arguments
+    ///
+    /// * `first_name` - Base58 first-name of the watched multisig.
+    fn show_balance_multisig(first_name: &str) -> CommandNoun<NounSlab> {
+        let mut slab = NounSlab::new();
+        let first_name_noun = make_tas(&mut slab, first_name).as_noun();
+        Self::wallet(
+            "show-balance-multisig",
+            &[first_name_noun],
             Operation::Poke,
             &mut slab,
         )

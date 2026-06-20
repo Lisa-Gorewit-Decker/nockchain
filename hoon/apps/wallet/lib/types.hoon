@@ -490,6 +490,8 @@
         [%verify-hash hash-b58=@t sig=@ pk-b58=@t]
         [%list-notes-by-address address=@t]                 ::  base58-encoded address
         [%list-notes-by-address-csv address=@t]             ::  base58-encoded address, CSV format
+        [%list-notes-by-multisig-csv first-name=@t]  ::  base58 first-name of a watched multisig, CSV format
+        [%show-balance-multisig first-name=@t]        ::  base58 first-name of a watched multisig
         [%create-tx =create-tx-cause]
         [%create-tx-batch requests=(list create-tx-cause)]
         [%list-active-addresses ~]

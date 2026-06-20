@@ -346,6 +346,8 @@
         %list-notes            (do-list-notes cause)
         %list-notes-by-address  (do-list-notes-by-address cause)
         %list-notes-by-address-csv  (do-list-notes-by-address-csv cause)
+        %list-notes-by-multisig-csv  (do-list-notes-by-multisig-csv cause)
+        %show-balance-multisig  (do-show-balance-multisig cause)
         %create-tx             (do-create-tx cause)
         %create-tx-batch       (do-create-tx-batch cause)
         %sign-multisig-tx      (do-sign-multisig-tx cause)
@@ -560,40 +562,42 @@
   ::      [%exit 0]
   ::  ==
   ::
+  ::  +multisig-first-name: rebuild an m-of-n pkh lock from base58 participant
+  ::  hashes and derive the note first-name used to watch/list/total it.
+  ::  Returns the (markdown) error message on invalid input. Kept as a single
+  ::  helper so watch, csv listing, and balance all derive identical names.
+  ++  multisig-first-name
+    |=  [m=@ participants=(list @t)]
+    ^-  (each [first-name=hash:transact =lock:transact] @t)
+    =/  participant-count=@ud  (lent participants)
+    ?:  =(0 participant-count)
+      [%| 'No pubkeys were provided for the multisig request.']
+    ?:  ?|((lte m 0) (gth m participant-count))
+      :-  %|
+      %-  crip
+      "Invalid m value: {<m>}. Must be > 0 and <= number of participant addresses ({<participant-count>})."
+    =/  address-hash-set=(z-set:zo hash:transact)
+      %+  roll  participants
+      |=  [b58=@t acc=(z-set:zo hash:transact)]
+      (~(put z-in:zo acc) (from-b58:hash:transact b58))
+    =/  =lock:transact
+      [%pkh m=m address-hash-set]~
+    =/  first-name=hash:transact
+      (first:nname:transact (hash:lock:transact lock))
+    [%& first-name lock]
+  ::
   ++  do-watch-address-multisig
     |=  =cause:wt
     ?>  ?=(%watch-address-multisig -.cause)
-    =/  participant-count=@ud  (lent participants.cause)
-    ?:  =(0 participant-count)
+    =/  res  (multisig-first-name m.cause participants.cause)
+    ?:  ?=(%| -.res)
       :_  state
-      :~  :-  %markdown
-          %-  crip
-          """
-          No pubkeys were provided for the multisig watch request.
-          """
+      :~  [%markdown p.res]
           [%exit 0]
       ==
-    ?:  ?|  (lte m.cause 0)
-            (gth m.cause participant-count)
-        ==
-      :_  state
-      :~  :-  %markdown
-          %-  crip
-          """
-          Invalid m value: {<m.cause>}. Must be > 0 and <= number of participant addresses ({<participant-count>}).
-          """
-          [%exit 0]
-      ==
-    =/  address-hash-set=(z-set:zo hash:transact)
-      %+  roll  participants.cause
-      |=  [b58=@t acc=(z-set:zo hash:transact)]
-      (~(put z-in:zo acc) (from-b58:hash:transact b58))
-    =/  multisig=lock:transact
-      [%pkh m=m.cause address-hash-set]~
-    =/  first-name=hash:transact
-      (first:nname:transact (hash:lock:transact multisig))
+    =/  first-name=hash:transact  first-name.p.res
     =/  first-name-b58=@t  (to-b58:hash:transact first-name)
-    =.  keys.state  (watch-first-name:put:v first-name `multisig)
+    =.  keys.state  (watch-first-name:put:v first-name `lock.p.res)
     =/  keys=tape
       %-  zing
       %+  join  "\0a    "
@@ -1438,6 +1442,116 @@
     :_  state
     :~  [%file %write filename (crip csv-content)]
         [%markdown (crip markdown)]
+        [%exit 0]
+    ==
+  ::
+  ::  +resolve-watched-multisig: look up a base58 first-name among the wallet's
+  ::  watched multisigs. Errors (as markdown) if it is not currently watched, so
+  ::  listing/balance only ever works for a multisig added via `watch multisig`.
+  ++  resolve-watched-multisig
+    |=  first-name-b58=@t
+    ^-  (each [first-name=hash:transact lock=(unit lock:transact)] @t)
+    =/  entry  (watch-first-name-by-b58:get:v first-name-b58)
+    ?~  entry
+      :-  %|
+      %-  crip
+      """
+      No watched multisig found for first name {(trip first-name-b58)}.
+      Add it first with `nockchain-wallet watch multisig`, then sync.
+      """
+    [%& name.u.entry lock.u.entry]
+  ::
+  ++  do-list-notes-by-multisig-csv
+    |=  =cause:wt
+    ?>  ?=(%list-notes-by-multisig-csv -.cause)
+    =/  res  (resolve-watched-multisig first-name.cause)
+    ?:  ?=(%| -.res)
+      :_  state
+      :~  [%markdown p.res]
+          [%exit 0]
+      ==
+    =/  first-name=hash:transact  first-name.p.res
+    =/  first-name-b58=@t  (to-b58:hash:transact first-name)
+    =/  matching-notes=(list [name=nname:transact note=nnote:transact])
+      %+  skim  ~(tap z-by:zo notes.balance.state)
+      |=  [name=nname:transact note=nnote:transact]
+      =(first-name ~(first-name get:nnote:transact note))
+    =/  csv-header=tape
+      "version,name_first,name_last,assets,block_height,source_hash"
+    =/  csv-rows=(list tape)
+      %+  turn  matching-notes
+      |=  [name=nname:transact note=nnote:transact]
+      ?^  -.note
+        ::  v0 note
+        =+  version=0
+        =/  name-b58=[first=@t last=@t]  (to-b58:nname:transact name)
+        =/  source-hash-b58=@t  (to-b58:hash:transact p.source.note)
+        """
+        {(ui-to-tape:utils version)},{(trip first.name-b58)},{(trip last.name-b58)},{(ui-to-tape:utils assets.note)},{(ui-to-tape:utils origin-page.note)},{(trip source-hash-b58)}
+        """
+      ::  v1 note
+      =+  version=1
+      =/  name-b58=[first=@t last=@t]  (to-b58:nname:transact name)
+      =/  source-hash-b58=@t  'N/A'
+      """
+      {(ui-to-tape:utils version)},{(trip first.name-b58)},{(trip last.name-b58)},{(ui-to-tape:utils assets.note)},{(ui-to-tape:utils origin-page.note)},{(trip source-hash-b58)}
+      """
+    =/  csv-content=tape
+      %+  welp  csv-header
+      %+  welp  "\0a"
+      %-  zing
+      %+  turn  csv-rows
+      |=  row=tape
+      "{row}\0a"
+    =/  filename=@t
+      %-  crip
+      "notes-multisig-{(trip first-name-b58)}.csv"
+    =/  markdown=tape
+      """
+      ## Result
+      Output csv written to {(trip filename)} in current working directory
+      """
+    :_  state
+    :~  [%file %write filename (crip csv-content)]
+        [%markdown (crip markdown)]
+        [%exit 0]
+    ==
+  ::
+  ++  do-show-balance-multisig
+    |=  =cause:wt
+    ?>  ?=(%show-balance-multisig -.cause)
+    =/  res  (resolve-watched-multisig first-name.cause)
+    ?:  ?=(%| -.res)
+      :_  state
+      :~  [%markdown p.res]
+          [%exit 0]
+      ==
+    =/  first-name=hash:transact  first-name.p.res
+    =/  first-name-b58=@t  (to-b58:hash:transact first-name)
+    =/  matching-notes=(list nnote:transact)
+      %+  skim  ~(val z-by:zo notes.balance.state)
+      |=  note=nnote:transact
+      =(first-name ~(first-name get:nnote:transact note))
+    =/  [total-notes=@ total-nicks=coins:transact]
+      %+  roll  matching-notes
+      |=  [note=nnote:transact [len=@ acc=coins:transact]]
+      [+(len) (add acc assets.note)]
+    =/  block-b58=@t  (to-b58:hash:transact block-id.balance.state)
+    =/  lock-line=tape
+      ?~  lock.p.res  ""
+      "\0a- Lock: {(trip (lock:v1:display:utils u.lock.p.res))}"
+    :_  state
+    :~  :-  %markdown
+        %-  crip
+        %+  welp
+          """
+          ## Multisig Balance
+          Balance for watch-only multisig (first name {(trip first-name-b58)})
+          - Wallet balance from block {(trip block-b58)} at height {(trip (format-ui:common:display:utils height.balance.state))}
+          - Number of Notes: {(trip (format-ui:common:display:utils total-notes))}
+          - Balance: {(trip (format-ui:common:display:utils total-nicks))} nicks
+          """
+        lock-line
         [%exit 0]
     ==
   ::
