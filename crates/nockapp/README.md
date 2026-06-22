@@ -13,7 +13,7 @@ NockApps are pure-functional state machines with automatic persistence and modul
 
 The NockApp framework is built around two core crates, `nockapp` and `nockvm`:
 1. `nockapp` provides a minimal Rust interface to a Nock kernel.
-2. [`nockvm`](https://github.com/zorp-corp/nockvm) is a modern Nock runtime that achieves durable execution.
+2. [`nockvm`](https://github.com/nockchain/nockvm) is a modern Nock runtime that achieves durable execution.
 
 ## Canonical Scope
 
