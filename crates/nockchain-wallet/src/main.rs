@@ -54,8 +54,8 @@ use nockvm::noun::{Atom, Cell, IndirectAtom, Noun, NounAllocator, D, NO, SIG, T,
 use noun_serde::prelude::*;
 use noun_serde::NounDecodeError;
 use recipient::{
-    planner_recipient_outputs, planner_refund_output_template, recipient_tokens_to_specs,
-    RecipientSpec,
+    multisig_lock_from_participants, multisig_refund_output_template, planner_recipient_outputs,
+    planner_refund_output_template, recipient_tokens_to_specs, MultisigLockContext, RecipientSpec,
 };
 use termimad::MadSkin;
 use tokio::fs as tokio_fs;
@@ -64,7 +64,7 @@ use wallet_tx_builder::adapter::{
     normalize_balance_pages, NormalizeSnapshotError, NormalizedSnapshot, SnapshotConsistencyError,
 };
 use wallet_tx_builder::lock_resolver::{
-    LockMatcher, LockResolution, LockResolutionSource, ResolveLockRequest,
+    LockMatcher, LockResolution, LockResolutionSource, LockRootLockMatcher, ResolveLockRequest,
 };
 use wallet_tx_builder::planner::{plan_create_tx, PlanError};
 use wallet_tx_builder::types::{
@@ -413,6 +413,10 @@ async fn main() -> Result<(), NockAppError> {
             // Planner-backed create-tx runs after sync once we have a fresh snapshot.
             Wallet::show_balance()
         }
+        Commands::CreateMultisigTx { .. } => {
+            // Planner-backed create-multisig-tx runs after sync once we have a fresh snapshot.
+            Wallet::show_balance()
+        }
         Commands::MigrateV0Notes { .. } => {
             // Planner-backed v0 migration runs after sync once we have a fresh snapshot.
             Wallet::show_balance()
@@ -580,6 +584,49 @@ async fn main() -> Result<(), NockAppError> {
                 *include_data,
                 *save_raw_tx,
                 *note_selection_strategy,
+                None,
+            )
+            .await?;
+    }
+
+    if let Commands::CreateMultisigTx {
+        threshold,
+        participants,
+        names,
+        recipients,
+        fee,
+        allow_low_fee,
+        refund_pkh,
+        index,
+        hardened,
+        include_data,
+        sign_keys,
+        save_raw_tx,
+        note_selection_strategy,
+    } = &cli.command
+    {
+        let multisig_lock = multisig_lock_from_participants(*threshold, participants)?;
+        info!(
+            "create-multisig-tx reconstructed multisig lock-root={} ({}-of-{})",
+            multisig_lock.lock_root.to_base58(),
+            multisig_lock.threshold,
+            multisig_lock.participants.len()
+        );
+        let recipient_specs = recipient_tokens_to_specs(recipients.clone())?;
+        let signing_keys = Wallet::collect_signing_keys(*index, *hardened, sign_keys)?;
+        poke = wallet
+            .create_tx_with_planner(
+                synced_snapshot_for_planner.take(),
+                names.clone(),
+                *fee,
+                recipient_specs,
+                *allow_low_fee,
+                refund_pkh.clone(),
+                signing_keys,
+                *include_data,
+                *save_raw_tx,
+                *note_selection_strategy,
+                Some(multisig_lock),
             )
             .await?;
     }

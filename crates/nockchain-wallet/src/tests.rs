@@ -1668,6 +1668,7 @@ async fn create_tx_with_planner_accepts_manual_all_v0_notes() -> Result<(), Nock
             true,
             false,
             NoteSelectionStrategyCli::Ascending,
+            None,
         )
         .await?;
     let result = wallet.app.poke(OnePunchWire::Poke.to_wire(), noun).await?;
@@ -1849,6 +1850,7 @@ async fn create_tx_planner_accepts_child_sign_key_for_lock_reconstruction(
             true,
             false,
             NoteSelectionStrategyCli::Ascending,
+            None,
         )
         .await?;
 
@@ -1906,6 +1908,7 @@ async fn keygen_create_tx_uses_tracked_signing_keys() -> Result<(), NockAppError
             true,
             false,
             NoteSelectionStrategyCli::Ascending,
+            None,
         )
         .await?;
 

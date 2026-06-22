@@ -1622,6 +1622,16 @@
       %+  turn  u.sign-keys.cause
       |=  key-info=[child-index=@ud hardened=?]
       (sign-key:get:v [~ key-info])
+    ::  For multisig spends the note-data omits the lock, so reconstruct the
+    ::  m-of-n input lock from the supplied participants (same construction as
+    ::  `watch multisig`) and hand it to the builder as the input lock.
+    =/  supplied-input-lock=(unit lock:transact)
+      ?~  multisig.cause
+        ~
+      =/  res  (multisig-first-name m.u.multisig.cause participants.u.multisig.cause)
+      ?:  ?=(%| -.res)
+        ~|(p.res !!)
+      `lock.p.res
     =/  =transaction:wt
       %:  ~(build tx-builder bc.state)
         names
@@ -1631,7 +1641,7 @@
         sign-keys
         refund-pkh.cause
         get-note:v
-        ~
+        supplied-input-lock
         include-data.cause
         selection-strategy.cause
         height.balance.state

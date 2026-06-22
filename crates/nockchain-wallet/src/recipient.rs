@@ -236,6 +236,99 @@ fn pkh_lock(threshold: u64, addresses: &[Hash]) -> Lock {
     ))]))
 }
 
+/// Reconstructed m-of-n multisig lock used when spending multisig notes.
+///
+/// Carries both the canonical `SpendCondition` (needed to plan/seed the lock
+/// matcher and, in the robust path, to supply the input lock to the kernel) and
+/// the derived `lock_root` (whose first-name identifies the multisig's notes).
+#[derive(Debug, Clone)]
+pub struct MultisigLockContext {
+    pub spend_condition: SpendCondition,
+    pub lock_root: Hash,
+    pub threshold: u64,
+    pub participants: Vec<Hash>,
+}
+
+/// Parses `--threshold` plus a comma-separated list of base58 participant pubkey
+/// hashes into a canonical multisig spend-condition and its lock root.
+///
+/// Validation mirrors the multisig recipient rules: threshold must be non-zero,
+/// at least one participant is required, participants must be unique, and the
+/// threshold cannot exceed the number of participants. The participant order is
+/// irrelevant to the resulting lock root because the underlying `Pkh` stores the
+/// hashes in a canonical `ZSet`.
+pub fn multisig_lock_from_participants(
+    threshold: u64,
+    participants_csv: &str,
+) -> Result<MultisigLockContext, NockAppError> {
+    if threshold == 0 {
+        return Err(
+            CrownError::Unknown("Multisig threshold must be greater than zero".into()).into(),
+        );
+    }
+    let mut unique = BTreeSet::new();
+    let mut participants = Vec::new();
+    for raw in participants_csv.split(',') {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let pkh = Hash::from_base58(trimmed).map_err(|err| {
+            NockAppError::from(CrownError::Unknown(format!(
+                "Invalid multisig participant '{trimmed}': {err}"
+            )))
+        })?;
+        if !unique.insert(pkh.to_array()) {
+            return Err(CrownError::Unknown(format!(
+                "Multisig participants cannot include duplicate address '{trimmed}'"
+            ))
+            .into());
+        }
+        participants.push(pkh);
+    }
+    if participants.is_empty() {
+        return Err(CrownError::Unknown(
+            "Multisig spend requires at least one --participants address".into(),
+        )
+        .into());
+    }
+    if threshold as usize > participants.len() {
+        return Err(CrownError::Unknown(format!(
+            "Multisig threshold ({threshold}) cannot exceed the number of participants ({})",
+            participants.len()
+        ))
+        .into());
+    }
+    let spend_condition = SpendCondition::new(vec![LockPrimitive::Pkh(Pkh::new(
+        threshold,
+        participants.clone(),
+    ))]);
+    let lock = Lock::SpendCondition(spend_condition.clone());
+    let lock_root = lock_root(&lock)?;
+    Ok(MultisigLockContext {
+        spend_condition,
+        lock_root,
+        threshold,
+        participants,
+    })
+}
+
+/// Builds the planner refund output that returns change to the multisig itself.
+///
+/// This mirrors the tx-builder's default refund behavior (`refund-lock` falls
+/// back to the multisig lock when no explicit refund pubkey hash is supplied),
+/// so the fee estimate accounts for a multisig change note that carries its own
+/// lock data.
+pub fn multisig_refund_output_template(ctx: &MultisigLockContext) -> PlannedOutput {
+    PlannedOutput {
+        lock_root: ctx.lock_root.clone(),
+        amount: 0,
+        note_data: vec![RawNoteDataEntry::from_lock(Lock::SpendCondition(
+            ctx.spend_condition.clone(),
+        ))],
+    }
+}
+
 fn lock_root(lock: &Lock) -> Result<Hash, NockAppError> {
     lock.hash()
         .map_err(|err| CrownError::Unknown(format!("unable to derive lock root: {err}")).into())
@@ -505,6 +598,60 @@ mod tests {
     fn recipient_tokens_to_specs_rejects_empty() {
         let err = recipient_tokens_to_specs(vec![]).expect_err("missing recipients");
         assert!(format!("{err}").contains("At least one --recipient"));
+    }
+
+    #[test]
+    fn multisig_lock_from_participants_matches_canonical_pkh_lock() {
+        let csv = format!("{SAMPLE_P2PKH},{SAMPLE_P2PKH_ALT}");
+        let ctx = multisig_lock_from_participants(2, &csv).expect("multisig lock");
+        assert_eq!(ctx.threshold, 2);
+        assert_eq!(ctx.participants.len(), 2);
+
+        // The reconstructed lock root must equal the canonical pkh_lock path that
+        // builds multisig *outputs*, so a note sent to this multisig is spendable
+        // by this context (identical lock root => identical note first-name).
+        let addresses = vec![
+            Hash::from_base58(SAMPLE_P2PKH).expect("p2pkh hash"),
+            Hash::from_base58(SAMPLE_P2PKH_ALT).expect("alt hash"),
+        ];
+        let expected_root = lock_root(&pkh_lock(2, &addresses)).expect("canonical lock root");
+        assert_eq!(ctx.lock_root, expected_root);
+
+        // The carried spend-condition must hash to the same lock root.
+        let sc_root = Lock::SpendCondition(ctx.spend_condition.clone())
+            .hash()
+            .expect("spend-condition lock root");
+        assert_eq!(ctx.lock_root, sc_root);
+    }
+
+    #[test]
+    fn multisig_lock_from_participants_is_participant_order_independent() {
+        let a = multisig_lock_from_participants(2, &format!("{SAMPLE_P2PKH},{SAMPLE_P2PKH_ALT}"))
+            .expect("order a");
+        let b = multisig_lock_from_participants(2, &format!("{SAMPLE_P2PKH_ALT},{SAMPLE_P2PKH}"))
+            .expect("order b");
+        assert_eq!(a.lock_root, b.lock_root);
+    }
+
+    #[test]
+    fn multisig_lock_from_participants_validates_inputs() {
+        assert!(
+            multisig_lock_from_participants(0, SAMPLE_P2PKH).is_err(),
+            "zero threshold must be rejected"
+        );
+        assert!(
+            multisig_lock_from_participants(1, "   ,  ").is_err(),
+            "empty participant set must be rejected"
+        );
+        assert!(
+            multisig_lock_from_participants(3, &format!("{SAMPLE_P2PKH},{SAMPLE_P2PKH_ALT}"))
+                .is_err(),
+            "threshold greater than participant count must be rejected"
+        );
+        assert!(
+            multisig_lock_from_participants(1, &format!("{SAMPLE_P2PKH},{SAMPLE_P2PKH}")).is_err(),
+            "duplicate participants must be rejected"
+        );
     }
 
     #[test]

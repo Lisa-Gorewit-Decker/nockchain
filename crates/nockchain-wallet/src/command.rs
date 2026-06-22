@@ -479,6 +479,63 @@ pub enum Commands {
         note_selection_strategy: NoteSelectionStrategyCli,
     },
 
+    #[command(
+        name = "create-multisig-tx",
+        override_usage = "nockchain-wallet create-multisig-tx --threshold <M> --participants <PKH,...> [--names <NAMES>] --recipient <RECIPIENT>... [--fee <FEE>] [--refund-pkh <REFUND_PKH>] [--include-data <BOOL>]\n\n# Spends v1 m-of-n multisig notes. --threshold and --participants describe the SAME multisig lock used with `watch multisig`; they are used to reconstruct the input lock so the planner can select and spend the multisig notes.\n# NOTE: if --names is omitted, the planner auto-selects spendable notes that belong to this multisig lock. If provided, names are treated as a manual selection set (and must all belong to the multisig).\n# NOTE: change returns to the multisig lock by default; pass --refund-pkh to send change to a single-signer address instead.\n# NOTE: this command produces an unsigned-or-partially-signed transaction file under ./txs; collect the remaining signatures with `sign-multisig-tx` before `send-tx`."
+    )]
+    CreateMultisigTx {
+        /// Threshold (m) value for the m-of-n multisig being spent.
+        #[arg(short = 't', long = "threshold")]
+        threshold: u64,
+        /// Comma-separated list of base58 pubkey hashes that define the multisig lock.
+        #[arg(long)]
+        participants: String,
+        /// Optional names of notes to spend (comma-separated) for manual selection.
+        #[arg(long)]
+        names: Option<String>,
+        /// Recipient specifications (repeat --recipient for each output)
+        #[arg(
+            long = "recipient",
+            value_name = "RECIPIENT",
+            value_parser = parse_recipient_arg,
+            action = ArgAction::Append
+        )]
+        recipients: Vec<RecipientSpecToken>,
+        /// Optional transaction fee override.
+        #[arg(long)]
+        fee: Option<u64>,
+        /// Allow fees below the estimated minimum (unsafe, testing only)
+        #[arg(long, default_value = "false")]
+        allow_low_fee: bool,
+        /// Optional refund recipient pubkey hash (base58). When omitted, change returns to the multisig lock.
+        #[arg(long = "refund-pkh", value_name = "REFUND_PKH")]
+        refund_pkh: Option<String>,
+        /// Optional key index to use for the initial signature [0, 2^31), if not provided, we use the master key
+        #[arg(short, long, value_parser = clap::value_parser!(u64).range(0..2 << 31))]
+        index: Option<u64>,
+        /// Hardened or unhardened child key
+        #[arg(long, default_value = "false")]
+        hardened: bool,
+        /// Include note data in output note
+        #[arg(
+            long,
+            action = ArgAction::Set,
+            value_parser = BoolishValueParser::new(),
+            default_value_t = true
+        )]
+        include_data: bool,
+        /// Additional signing keys. Accepts `index` or `index:hardened`.
+        #[arg(long = "sign-key", value_name = "INDEX[:HARDENED]", action = ArgAction::Append)]
+        sign_keys: Vec<String>,
+        /// For debugging purposes. If true, the raw-tx jam will be saved in the
+        /// txs-debug folder in the current working directory.
+        #[arg(long, default_value = "false")]
+        save_raw_tx: bool,
+        /// Note selection strategy (ascending selects smallest notes first)
+        #[arg(long = "note-selection", value_enum, default_value = "ascending")]
+        note_selection_strategy: NoteSelectionStrategyCli,
+    },
+
     /// Sweep all spendable legacy v0 notes into one v1 destination address.
     #[command(name = "migrate-v0-notes")]
     MigrateV0Notes {
@@ -653,6 +710,7 @@ impl Commands {
             Commands::ShowBalanceMultisig { .. } => "show-balance-multisig",
             Commands::SetActiveMasterAddress { .. } => "set-active-master-address",
             Commands::CreateTx { .. } => "create-tx",
+            Commands::CreateMultisigTx { .. } => "create-tx",
             Commands::MigrateV0Notes { .. } => "migrate-v0-notes",
             Commands::SignMultisigTx { .. } => "sign-multisig-tx",
             Commands::SendTx { .. } => "send-tx",

@@ -180,6 +180,18 @@ struct CreateTxRequest {
     include_data: bool,
     save_raw_tx: bool,
     note_selection: NoteSelectionStrategyCli,
+    /// When set, the kernel reconstructs the m-of-n input lock from these
+    /// participants and supplies it as the input lock so multisig notes (whose
+    /// note-data omits the lock) can be spent.
+    multisig: Option<MultisigCausePayload>,
+}
+
+#[derive(Debug, Clone)]
+/// Threshold + base58 participant pubkey hashes forwarded to the kernel so it can
+/// rebuild the multisig input lock for a multisig spend.
+struct MultisigCausePayload {
+    threshold: u64,
+    participants_b58: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1073,6 +1085,7 @@ impl Wallet {
         include_data: bool,
         save_raw_tx: bool,
         note_selection: NoteSelectionStrategyCli,
+        multisig_lock: Option<MultisigLockContext>,
     ) -> CommandNoun<NounSlab> {
         let planner_error = |reason: String| -> CommandNoun<NounSlab> {
             Err(CrownError::Unknown(format!("create-tx planner failed: {}", reason)).into())
@@ -1240,16 +1253,25 @@ impl Wallet {
                 );
             }
         };
-        let refund_output_template = match planner_refund_output_template(
-            parsed_refund_pkh.as_ref(),
-            refund_default_pkh,
-            include_data,
-        ) {
-            Ok(output) => output,
-            Err(err) => {
-                return planner_error(format!(
-                    "unable to derive planner refund output template from signer/refund context: {err}"
-                ));
+        let refund_output_template = if let (Some(ctx), None) =
+            (multisig_lock.as_ref(), parsed_refund_pkh.as_ref())
+        {
+            // Default multisig refund: change returns to the multisig lock itself,
+            // matching the tx-builder's `refund-lock` fallback when no explicit
+            // refund pubkey hash is supplied.
+            multisig_refund_output_template(ctx)
+        } else {
+            match planner_refund_output_template(
+                parsed_refund_pkh.as_ref(),
+                refund_default_pkh,
+                include_data,
+            ) {
+                Ok(output) => output,
+                Err(err) => {
+                    return planner_error(format!(
+                        "unable to derive planner refund output template from signer/refund context: {err}"
+                    ));
+                }
             }
         };
         let planner_constants = match self.peek_planner_blockchain_constants().await {
@@ -1301,15 +1323,35 @@ impl Wallet {
             v0_migration_signer_pubkeys: legacy_signer_pubkeys,
         };
 
-        let matcher = SigningKeyLockMatcher::from_signer_keys(&matcher_signer_keys);
-        let plan = match plan_create_tx(&request, &matcher) {
-            Ok(found_plan) => {
-                info!(
-                    "create-tx planner using {} tracked signer keys for lock spendability checks",
-                    matcher_signer_keys.len()
-                );
-                found_plan
-            }
+        let plan_result = if let Some(ctx) = multisig_lock.as_ref() {
+            // Multisig spend: resolve inputs by the multisig lock-root's first-name
+            // and carry the reconstructed spend-condition for fee/witness planning.
+            let matcher = match LockRootLockMatcher::from_lock_root(&ctx.lock_root) {
+                Ok(matcher) => matcher.with_spend_condition(ctx.spend_condition.clone()),
+                Err(err) => {
+                    return planner_error(format!(
+                        "unable to build multisig lock matcher from lock root {}: {err}",
+                        ctx.lock_root.to_base58()
+                    ));
+                }
+            };
+            info!(
+                "create-multisig-tx planner using multisig lock-root={} threshold={} participants={}",
+                ctx.lock_root.to_base58(),
+                ctx.threshold,
+                ctx.participants.len()
+            );
+            plan_create_tx(&request, &matcher)
+        } else {
+            let matcher = SigningKeyLockMatcher::from_signer_keys(&matcher_signer_keys);
+            info!(
+                "create-tx planner using {} tracked signer keys for lock spendability checks",
+                matcher_signer_keys.len()
+            );
+            plan_create_tx(&request, &matcher)
+        };
+        let plan = match plan_result {
+            Ok(found_plan) => found_plan,
             Err(err @ PlanError::CandidateVersionDisabled { .. }) => {
                 return Err(CrownError::Unknown(format!(
                     "create-tx planner rejected the manual note set because it does not match the selected note version policy ({})",
@@ -1357,6 +1399,11 @@ impl Wallet {
             planned_fee
         };
 
+        let multisig = multisig_lock.as_ref().map(|ctx| MultisigCausePayload {
+            threshold: ctx.threshold,
+            participants_b58: ctx.participants.iter().map(Hash::to_base58).collect(),
+        });
+
         Self::create_tx(CreateTxRequest {
             names: planned_names_arg,
             recipients,
@@ -1367,6 +1414,7 @@ impl Wallet {
             include_data,
             save_raw_tx,
             note_selection,
+            multisig,
         })
     }
 
@@ -1602,6 +1650,7 @@ impl Wallet {
                             include_data: true,
                             save_raw_tx: false,
                             note_selection: NoteSelectionStrategyCli::Ascending,
+                            multisig: None,
                         },
                     });
                 }
@@ -1728,11 +1777,29 @@ impl Wallet {
         let save_raw_tx_noun = request.save_raw_tx.to_noun(slab);
         let note_selection_noun = make_tas(slab, request.note_selection.tas_label()).as_noun();
 
+        // `multisig=(unit [m=@ participants=(list @t)])`
+        let multisig_noun = if let Some(multisig) = request.multisig.as_ref() {
+            let participants_noun =
+                multisig
+                    .participants_b58
+                    .iter()
+                    .rev()
+                    .fold(D(0), |acc, participant| {
+                        let participant_noun = make_tas(slab, participant).as_noun();
+                        Cell::new(slab, participant_noun, acc).as_noun()
+                    });
+            let m_noun = D(multisig.threshold);
+            let payload = T(slab, &[m_noun, participants_noun]);
+            T(slab, &[SIG, payload])
+        } else {
+            SIG
+        };
+
         Ok(T(
             slab,
             &[
                 names_noun, order_noun, fee_noun, allow_low_fee_noun, sign_key_noun, refund_noun,
-                include_data_noun, save_raw_tx_noun, note_selection_noun,
+                include_data_noun, save_raw_tx_noun, note_selection_noun, multisig_noun,
             ],
         ))
     }
@@ -1787,6 +1854,7 @@ impl Wallet {
             include_data,
             save_raw_tx,
             note_selection,
+            multisig: None,
         })
     }
 
