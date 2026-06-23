@@ -3850,4 +3850,114 @@
   ~?  ?=(%.n -.res)  [%unexpected-failure p.res]
   %+  expect-eq  !>(%.y)
   !>(-.res)
+::
+::  Protocol-fund recovery (+check-multisig-lock) mechanism tests.
+::
+::    The fund coinbase notes committed an unsatisfiable %pkh-wrapped lock
+::    (see +fund-note-firstname). +check:check-context special-cases their
+::    first-name and routes to +check-multisig-lock, which binds the witness-
+::    revealed spend-condition to a target lock-root by hash and then checks
+::    its m-of-n primitive. We cannot hold the four production fund seckeys, so
+::    these exercise the generic arm with non-production keys (a 2-of-3 standing
+::    in for the 3-of-4); the real constants are pinned by +test-fund-note-
+::    firstname and +test-fund-address-is-3-of-4-multisig in coinbase-split.
+::
+::  +test-fund-multisig-spend-valid: a correctly-revealed multisig with enough
+::    valid signatures over the spend's sig-hash is accepted.
+++  test-fund-multisig-spend-valid
+  =/  pk1=schnorr-pubkey:t  (head ~(tap z-in pubkeys.p:default-keys-1:h))
+  =/  pk2=schnorr-pubkey:t  (head ~(tap z-in pubkeys.p:default-keys-2:h))
+  =/  pk3=schnorr-pubkey:t  (head ~(tap z-in pubkeys.p:default-keys-3:h))
+  =/  [root=hash:t sc=spend-condition:v1:t *]
+    (make-pkh-lock:v1:h 2 ~[pk1 pk2 pk3])
+  =/  sp=spend-1:v1:t
+    %*  .  *spend-1:v1:t
+      witness  *witness:v1:t
+      seeds    *(z-set seed:v1:t)
+      fee      0
+    ==
+  =/  sig-ha=hash:t  (sig-hash:spend-1:v1:t sp)
+  =/  wit=witness:t
+    %:  make-pkh-witness:v1:h
+      root
+      sc
+      sig-ha
+      ~[[s:default-keys-1:h pk1] [s:default-keys-2:h pk2]]
+    ==
+  =/  ctx=check-context:t
+    :*  now=1
+        since=0
+        sig-hash=sig-ha
+        witness=wit
+        bythos-phase=bythos-phase.constants
+    ==
+  %+  expect-eq  !>(%.y)
+  !>  (check-multisig-lock:check-context:t root ctx)
+::
+::  +test-fund-multisig-spend-insufficient-sigs: fewer than m signatures is
+::    rejected (check:pkh requires exactly m).
+++  test-fund-multisig-spend-insufficient-sigs
+  =/  pk1=schnorr-pubkey:t  (head ~(tap z-in pubkeys.p:default-keys-1:h))
+  =/  pk2=schnorr-pubkey:t  (head ~(tap z-in pubkeys.p:default-keys-2:h))
+  =/  pk3=schnorr-pubkey:t  (head ~(tap z-in pubkeys.p:default-keys-3:h))
+  =/  [root=hash:t sc=spend-condition:v1:t *]
+    (make-pkh-lock:v1:h 2 ~[pk1 pk2 pk3])
+  =/  sp=spend-1:v1:t
+    %*  .  *spend-1:v1:t
+      witness  *witness:v1:t
+      seeds    *(z-set seed:v1:t)
+      fee      0
+    ==
+  =/  sig-ha=hash:t  (sig-hash:spend-1:v1:t sp)
+  =/  wit=witness:t
+    %:  make-pkh-witness:v1:h
+      root
+      sc
+      sig-ha
+      ~[[s:default-keys-1:h pk1]]
+    ==
+  =/  ctx=check-context:t
+    :*  now=1
+        since=0
+        sig-hash=sig-ha
+        witness=wit
+        bythos-phase=bythos-phase.constants
+    ==
+  %+  expect-eq  !>(%.n)
+  !>  (check-multisig-lock:check-context:t root ctx)
+::
+::  +test-fund-multisig-spend-wrong-target: a valid multisig witness whose
+::    revealed spend-condition does NOT hash to the target is rejected (the
+::    binding to the pinned lock-root is what prevents substituting a multisig
+::    the attacker controls).
+++  test-fund-multisig-spend-wrong-target
+  =/  pk1=schnorr-pubkey:t  (head ~(tap z-in pubkeys.p:default-keys-1:h))
+  =/  pk2=schnorr-pubkey:t  (head ~(tap z-in pubkeys.p:default-keys-2:h))
+  =/  pk3=schnorr-pubkey:t  (head ~(tap z-in pubkeys.p:default-keys-3:h))
+  =/  [root=hash:t sc=spend-condition:v1:t *]
+    (make-pkh-lock:v1:h 2 ~[pk1 pk2 pk3])
+  =/  sp=spend-1:v1:t
+    %*  .  *spend-1:v1:t
+      witness  *witness:v1:t
+      seeds    *(z-set seed:v1:t)
+      fee      0
+    ==
+  =/  sig-ha=hash:t  (sig-hash:spend-1:v1:t sp)
+  =/  wit=witness:t
+    %:  make-pkh-witness:v1:h
+      root
+      sc
+      sig-ha
+      ~[[s:default-keys-1:h pk1] [s:default-keys-2:h pk2]]
+    ==
+  =/  ctx=check-context:t
+    :*  now=1
+        since=0
+        sig-hash=sig-ha
+        witness=wit
+        bythos-phase=bythos-phase.constants
+    ==
+  ::  target is the zero hash, not (hash:lock sc) -> binding fails
+  %+  expect-eq  !>(%.n)
+  !>  (check-multisig-lock:check-context:t *hash:t ctx)
 --

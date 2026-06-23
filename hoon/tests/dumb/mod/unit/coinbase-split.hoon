@@ -250,4 +250,44 @@
     (expect-eq !>(%.y) !>(!=(*hash:t fund-address:t)))
   ==
 ::
+::  +test-fund-note-firstname: pin fund-note-firstname:t to the on-chain
+::    first-name (-.name) shared by every protocol-fund coinbase note.
+::    Reconstructs the wrapped coinbase note lock exactly as
+::    +make-name:coinbase does -- the single %pkh primitive over {fund-address}
+::    plus the coinbase timelock -- takes (first:nname (hash:lock ...)), and
+::    asserts it matches the pinned literal in +fund-note-firstname. This is
+::    the value +check:check-context special-cases to recover spendability;
+::    drift in the participant set, the threshold, the lock structure, the
+::    +hash:lock / +first:nname formulas, or coinbase-timelock-min would all
+::    move it. Mirrors /scripts/generate-fund-note-name.hoon.
+++  test-fund-note-firstname  ^-  tang
+  =/  pkhs=(list hash:t)
+    :~  (from-b58:hash:t '7pGXggKU1AWk3d3wqX2kpKUatTqT68Cv8SQfGzGRQvJvYnQBvagSSjT')
+        (from-b58:hash:t '8Mc1U7kdujhPoEwog1BfNsFDtRp8St8UQCHk84iaLdhP4cX9a2CT1MU')
+        (from-b58:hash:t 'DAvp9ffoyNTBqAudZN29qc6s8GZfvvvAGvAfEFrqQsCVgSSSkg1SaSm')
+        (from-b58:hash:t '9LK7wEcQsmRpEot4qFaV9bwjSE9ZD6tB1kWbgNsFkDa2LEpvBV9WGY3')
+    ==
+  =/  participants=(z-set hash:t)  (z-silt pkhs)
+  =/  fund-addr=hash:t  (hash:lock:t [%pkh [m=3 participants]]~)
+  ::  reconstruct the wrapped coinbase note lock (mirrors +make-name:coinbase)
+  =/  fund-pkh-set=(z-set hash:t)  (z-silt ~[fund-addr])
+  =/  pkh-prim=lock-primitive:t  [%pkh [m=1 fund-pkh-set]]
+  =/  tim-prim=lock-primitive:t
+    [%tim [rel=[min=`coinbase-timelock-min.constants max=~] abs=[min=~ max=~]]]
+  =/  note-lock=lock:t  ~[pkh-prim tim-prim]
+  =/  expected=hash:t  (first:nname:t (hash:lock:t note-lock))
+  ;:  weld
+    (expect-eq !>(expected) !>(fund-note-firstname:t))
+    (expect-eq !>(%.y) !>(!=(*hash:t fund-note-firstname:t)))
+  ==
+::
+::  +test-fund-multisig-lock-binds-fund-address: the 3-of-4 multisig
+::    spend-condition exposed for the wallet (+fund-multisig-lock) must hash to
+::    +fund-address. This is the bind +check-multisig-lock enforces, so a fund
+::    spend that reveals +fund-multisig-lock is accepted by consensus. Catches
+::    drift between the participant pkhs / threshold listed in
+::    +fund-multisig-lock and the pinned +fund-address.
+++  test-fund-multisig-lock-binds-fund-address  ^-  tang
+  (expect-eq !>(fund-address:t) !>((hash:lock:t fund-multisig-lock:t)))
+::
 --

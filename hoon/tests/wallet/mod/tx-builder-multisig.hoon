@@ -6,9 +6,49 @@
 /=  wt  /apps/wallet/lib/types
 /=  hel  /tests/wallet/helpers
 /=  t  /common/tx-engine
+/=  wu  /apps/wallet/lib/utils
 ::
 ::  tiscom to avoid hoon-139 shadowing
 |%
+::
+::  +test-fund-note-pull-resolves-multisig: the protocol-fund recovery on the
+::    wallet side. A note carrying the protocol-fund first-name
+::    (+fund-note-firstname) must resolve, via +pull:locks:utils, to the real
+::    3-of-4 multisig spend-condition -- NOT the unsatisfiable wrapped %pkh the
+::    normal path would reject. This is what lets the wallet require, and sign
+::    with, the protocol-fund multisig keys. We do not hold the four production
+::    seckeys, so this asserts the resolved required-key set IS exactly the four
+::    participant pkhs at threshold 3 (so any participant key passes the wallet's
+::    signable check and a non-participant fails), and that the resolved
+::    spend-condition binds to +fund-address (so consensus +check-multisig-lock
+::    accepts a spend revealing it). The schnorr signing itself is the generic,
+::    already-tested multisig path.
+++  test-fund-note-pull-resolves-multisig
+  ^-  tang
+  =/  fund-note-name=nname:t  [fund-note-firstname:t *hash:t ~]
+  =/  resolved=(unit spend-condition:t)
+    (pull:locks:wu [*note-data:v1:t fund-note-name `*hash:t])
+  ?~  resolved
+    (expect !>(?=(^ resolved)))
+  =/  ml=spend-condition:t  fund-multisig-lock:t
+  ?>  ?=(^ ml)
+  ?>  ?=(%pkh -.i.ml)
+  =/  pkh-payload  +.i.ml
+  =/  a-participant=hash:t
+    (from-b58:hash:t '7pGXggKU1AWk3d3wqX2kpKUatTqT68Cv8SQfGzGRQvJvYnQBvagSSjT')
+  ;:  weld
+    ::  pull resolves the fund note to the real multisig, not the wrapped pkh
+    (expect-eq !>(fund-multisig-lock:t) !>(u.resolved))
+    ::  the multisig binds to the consensus fund-address (so a spend is accepted)
+    (expect-eq !>(fund-address:t) !>((hash:lock:t fund-multisig-lock:t)))
+    ::  threshold 3, four signers
+    (expect-eq !>(3) !>(m.pkh-payload))
+    (expect-eq !>(4) !>(~(wyt z-in:zo h.pkh-payload)))
+    ::  a participant key satisfies the wallet's signable membership check...
+    (expect-eq !>(%.y) !>((~(has z-in:zo h.pkh-payload) a-participant)))
+    ::  ...and a non-participant key does not
+    (expect-eq !>(%.n) !>((~(has z-in:zo h.pkh-payload) *hash:t)))
+  ==
 ::
 ++  test-multisig-1-of-1
   ::  single signer, single pubkey (degenerate case)

@@ -37,6 +37,43 @@
   ^-  hash
   (from-b58:hash '9EhcJiGhAPcWLYrR9DL4ZPjU2Z9XT6FT2ZFkEEwmSQv7ES2TMC7p6Up')
 ::
+::  $fund-note-firstname: the on-chain first-name (-.name) shared by every
+::  protocol-fund coinbase note. +make-name:coinbase wraps the coinbase-split
+::  key (here +fund-address, itself a 3-of-4 multisig lock-root) as a single
+::  %pkh primitive plus the coinbase timelock, then takes the nname:
+::
+::    note-lock      = ~[[%pkh m=1 {fund-address}] coinbase-tim-lp]
+::    note-lock-root = (hash:lock note-lock)
+::    first-name     = (first:nname note-lock-root)
+::
+::  Because the wrapped %pkh value is a lock-root (not the hash of any pubkey),
+::  the literal lock is unsatisfiable. +check:check-context special-cases this
+::  first-name and routes spends to the real 3-of-4 multisig instead. The
+::  value is parent-block-independent, so it is the same constant for every
+::  fund note. Computed by /scripts/generate-fund-note-name.hoon; pinned by
+::  test-fund-note-firstname in /tests/dumb/mod/unit/coinbase-split.
+++  fund-note-firstname
+  ^-  hash
+  (from-b58:hash '8TvVfU7sbFoY8qV53ffUdBag7Kcqw8LXjsnYgY71nQ1biWE6giRYzkn')
+::
+::  $fund-multisig-lock: the real 3-of-4 multisig spend-condition that
+::  +fund-address is the lock-root of -- i.e. the preimage a fund spend must
+::  reveal so +check-multisig-lock's bind ((hash:lock sc) == fund-address)
+::  passes. Listed here as the single source of truth for the four
+::  participant pkhs so the wallet can construct the spend (it cannot recover
+::  the participant set from the +fund-address hash alone). Invariant:
+::  (hash:lock fund-multisig-lock) == fund-address, pinned by
+::  test-fund-multisig-lock-binds-fund-address in coinbase-split.
+++  fund-multisig-lock
+  ^-  spend-condition
+  =/  pkhs=(list hash)
+    :~  (from-b58:hash '7pGXggKU1AWk3d3wqX2kpKUatTqT68Cv8SQfGzGRQvJvYnQBvagSSjT')
+        (from-b58:hash '8Mc1U7kdujhPoEwog1BfNsFDtRp8St8UQCHk84iaLdhP4cX9a2CT1MU')
+        (from-b58:hash 'DAvp9ffoyNTBqAudZN29qc6s8GZfvvvAGvAfEFrqQsCVgSSSkg1SaSm')
+        (from-b58:hash '9LK7wEcQsmRpEot4qFaV9bwjSE9ZD6tB1kWbgNsFkDa2LEpvBV9WGY3')
+    ==
+  [%pkh [m=3 (z-silt pkhs)]]~
+::
 ::  +post-asert-activation: 014-aletheia activation predicate, 2-arg form.
 ::    Returns %.y when `height` is at or past the asert-phase boundary.
 ::    The 1-arg wrappers in /common/tx-engine close over the kernel's
@@ -1955,6 +1992,15 @@
   ++  check
     |=  [=form lock=hash]
     ^-  ?
+    ::  Protocol-fund notes (014-aletheia) committed an unsatisfiable lock:
+    ::  +make-name:coinbase wrapped +fund-address (itself the lock-root of a
+    ::  3-of-4 multisig) as a single %pkh value, so the literal on-chain lock
+    ::  demands a signature from a key whose hash equals a *lock-root* -- which
+    ::  no one holds. Every such note shares one first-name (+fund-note-
+    ::  firstname); recover spendability by routing it to the true multisig
+    ::  check. See /scripts/generate-fund-note-name.hoon.
+    ?:  =(lock fund-note-firstname)
+      (check-multisig-lock fund-address form)
     =/  bythos-ok=?
       ?:  ?=([%full * * *] lmp.witness.form)
         (gte now.form bythos-phase.form)
@@ -1978,6 +2024,41 @@
         %tim  (check:tim +.p form)
         %hax  (check:hax +.p form)
         %pkh  (check:pkh +.p form)
+        %brn  %|
+      ==
+    ==
+  ::
+  ::  +check-multisig-lock: spend rule for a note whose committed lock is an
+  ::  unsatisfiable %pkh wrapper around a lock-root (the protocol-fund case --
+  ::  see +fund-note-firstname). Rather than the note's own (broken) merkle
+  ::  root, trust is re-derived from `target`: the spender reveals, via the
+  ::  witness LMP's spend-condition field, the real spend-condition whose
+  ::  +hash:lock equals `target`. Collision resistance means only the exact
+  ::  intended spend-condition passes that bind; we then require its primitives
+  ::  (the m-of-n %pkh) to be satisfied by the witness over the spend's
+  ::  sig-hash. The merkle proof is deliberately bypassed. Generic over
+  ::  `target` so the spend mechanism is testable with non-production keys;
+  ::  production passes +fund-address.
+  ++  check-multisig-lock
+    |=  [target=hash =form]
+    ^-  ?
+    =/  sc=spend-condition
+      ?:  ?=([%full * * *] lmp.witness.form)
+        =+  [ver msc ax mp]=lmp.witness.form
+        msc
+      =+  [msc ax mp]=lmp.witness.form
+      msc
+    ?&
+    ::  the revealed spend-condition must BE the spend-condition `target` commits
+      =(target (hash:lock sc))
+    ::  ...and the witness must satisfy it (e.g. 3 of the 4 fund signatures)
+      %+  levy  sc
+      |=  p=lock-primitive
+      ^-  ?
+      ?-  -.p
+        %pkh  (check:pkh +.p form)
+        %tim  (check:tim +.p form)
+        %hax  (check:hax +.p form)
         %brn  %|
       ==
     ==

@@ -85,6 +85,14 @@
 ::  $fund-address: lock-script hash receiving the 20% protocol-fund
 ::  share of every post-asert-activation coinbase. See tx-engine-1.hoon.
 ++  fund-address  fund-address:v1
+::  $fund-note-firstname: on-chain first-name of every protocol-fund coinbase
+::  note; +check:check-context routes it to the multisig recovery. See
+::  tx-engine-1.hoon.
+++  fund-note-firstname  fund-note-firstname:v1
+::  $fund-multisig-lock: the 3-of-4 multisig spend-condition behind
+::  +fund-address; the wallet reveals it to spend fund notes. See
+::  tx-engine-1.hoon.
+++  fund-multisig-lock  fund-multisig-lock:v1
 ++  local-page
   =<  form
   |%
