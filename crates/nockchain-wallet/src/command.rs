@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use clap::builder::BoolishValueParser;
@@ -430,13 +431,16 @@ pub enum Commands {
     /// Create a transaction (use --refund-pkh when spending legacy v0 notes)
     #[command(
         name = "create-tx",
-        override_usage = "nockchain-wallet create-tx [--names <NAMES>] --recipient <RECIPIENT>... [--fee <FEE>] [--refund-pkh <REFUND_PKH>] [--include-data <BOOL>]\n\n# NOTE: --refund-pkh is required when spending from legacy v0 notes. For v1 notes, the refund defaults to the note owner. --include-data defaults to true (pass 'false' to exclude note data).\n# NOTE: if --names is omitted, the planner auto-selects spendable v1 notes. If provided, names are treated as a manual selection set.\n# NOTE: manual selection may spend either an all-v1 set or an all-v0 set; mixed-version manual sets are rejected.\n# NOTE: --fee is optional. If omitted, the planner computes a fee. If provided, it overrides the planner fee (subject to --allow-low-fee).\n# RECIPIENT accepts either legacy '<p2pkh>:<amount>' strings or JSON objects like '{\"kind\":\"multisig\",\"threshold\":2,\"addresses\":[\"pkh-a\",\"pkh-b\"],\"amount\":9000}'.\n\nExamples:\n  # Auto-select spendable v1 notes and compute fee\n  nockchain-wallet create-tx \\\n    --recipient '{\"kind\":\"p2pkh\",\"address\":\"<p2pkh-b58>\",\"amount\":10000}'\n\n  # Manually pin notes and optionally override fee\n  nockchain-wallet create-tx \\\n    --names \"[first1 last1],[first2 last2]\" \\\n    --recipient '{\"kind\":\"p2pkh\",\"address\":\"<p2pkh-b58>\",\"amount\":10000}' \\\n    --fee 10"
+        override_usage = "nockchain-wallet create-tx [--names <NAMES>] --recipient <RECIPIENT>... [--fee <FEE>] [--refund-pkh <REFUND_PKH>] [--include-data <BOOL>]\n\n# NOTE: --refund-pkh is required when spending from legacy v0 notes. For v1 notes, the refund defaults to the note owner. --include-data defaults to true (pass 'false' to exclude note data).\n# NOTE: if --names is omitted, the planner auto-selects spendable v1 notes. If provided, names are treated as a manual selection set.\n# NOTE: manual selection may spend either an all-v1 set or an all-v0 set; mixed-version manual sets are rejected.\n# NOTE: --fee is optional. If omitted, the planner computes a fee. If provided, it overrides the planner fee (subject to --allow-low-fee).\n# NOTE: --notes-csv reads candidate notes from a notes CSV (as written by 'list-notes-by-address-csv') instead of downloading the balance, and removes the spent notes from that CSV after the tx is created. Requires a prior sync so the wallet still holds the note data.\n# RECIPIENT accepts a legacy '<p2pkh>:<amount>' string or a JSON object. Supported JSON kinds:\n#   p2pkh:          {\"kind\":\"p2pkh\",\"address\":\"<pkh-b58>\",\"amount\":<nicks>}\n#   multisig:       {\"kind\":\"multisig\",\"threshold\":2,\"addresses\":[\"<pkh-a>\",\"<pkh-b>\"],\"amount\":<nicks>}\n#   bridge-deposit: {\"kind\":\"bridge-deposit\",\"evm-address\":\"0x<40-hex-chars>\",\"amount\":<nicks>}  (optional \"root\":\"<lock-root-b58>\")\n# BRIDGE DEPOSIT: to move NOCK onto the EVM bridge, add a 'bridge-deposit' recipient whose 'evm-address' is the 0x-prefixed 20-byte (40 hex char) destination on the EVM side; 'amount' is in nicks. The output is locked to the canonical bridge lock root by default, so only pass 'root' if directed to a non-default bridge lock. It is built like any other create-tx output, so broadcast it afterward with 'send-tx'.\n\nExamples:\n  # Auto-select spendable v1 notes and compute fee\n  nockchain-wallet create-tx \\\n    --recipient '{\"kind\":\"p2pkh\",\"address\":\"<p2pkh-b58>\",\"amount\":10000}'\n\n  # Manually pin notes and optionally override fee\n  nockchain-wallet create-tx \\\n    --names \"[first1 last1],[first2 last2]\" \\\n    --recipient '{\"kind\":\"p2pkh\",\"address\":\"<p2pkh-b58>\",\"amount\":10000}' \\\n    --fee 10\n\n  # Deposit 10000 nicks onto the EVM bridge (evm-address receives the bridged funds)\n  nockchain-wallet create-tx \\\n    --recipient '{\"kind\":\"bridge-deposit\",\"evm-address\":\"0xabcdef0123456789abcdef0123456789abcdef01\",\"amount\":10000}'\n\n  # Reuse a downloaded notes CSV instead of re-syncing; spent notes are pruned from it\n  nockchain-wallet create-tx \\\n    --notes-csv notes-<p2pkh-b58>.csv \\\n    --recipient '{\"kind\":\"p2pkh\",\"address\":\"<p2pkh-b58>\",\"amount\":10000}'"
     )]
     CreateTx {
         /// Optional names of notes to spend (comma-separated) for manual selection.
         #[arg(long)]
         names: Option<String>,
-        /// Recipient specifications (repeat --recipient for each output)
+        /// Output(s); repeat --recipient per output. Accepts '<p2pkh>:<amount>'
+        /// or a JSON object whose "kind" is "p2pkh", "multisig", or
+        /// "bridge-deposit" (use bridge-deposit to move funds onto the EVM
+        /// bridge; see this command's help for formats and examples).
         #[arg(
             long = "recipient",
             value_name = "RECIPIENT",
@@ -477,11 +481,18 @@ pub enum Commands {
         /// Note selection strategy (ascending selects smallest notes first)
         #[arg(long = "note-selection", value_enum, default_value = "ascending")]
         note_selection_strategy: NoteSelectionStrategyCli,
+        /// Select candidate notes from a notes CSV (as written by
+        /// `list-notes-by-address-csv`) instead of downloading the balance. The
+        /// wallet must already hold the listed notes from a prior sync, since
+        /// the note data needed to build the spend comes from local state. The
+        /// notes actually spent are removed from the CSV once the tx is created.
+        #[arg(long = "notes-csv", value_name = "PATH")]
+        notes_csv: Option<PathBuf>,
     },
 
     #[command(
         name = "create-multisig-tx",
-        override_usage = "nockchain-wallet create-multisig-tx --threshold <M> --participants <PKH,...> [--names <NAMES>] --recipient <RECIPIENT>... [--fee <FEE>] [--refund-pkh <REFUND_PKH>] [--include-data <BOOL>]\n\n# Spends v1 m-of-n multisig notes. --threshold and --participants describe the SAME multisig lock used with `watch multisig`; they are used to reconstruct the input lock so the planner can select and spend the multisig notes.\n# NOTE: if --names is omitted, the planner auto-selects spendable notes that belong to this multisig lock. If provided, names are treated as a manual selection set (and must all belong to the multisig).\n# NOTE: change returns to the multisig lock by default; pass --refund-pkh to send change to a single-signer address instead.\n# NOTE: this command produces an unsigned-or-partially-signed transaction file under ./txs; collect the remaining signatures with `sign-multisig-tx` before `send-tx`."
+        override_usage = "nockchain-wallet create-multisig-tx --threshold <M> --participants <PKH,...> [--names <NAMES>] --recipient <RECIPIENT>... [--fee <FEE>] [--refund-pkh <REFUND_PKH>] [--include-data <BOOL>]\n\n# Spends v1 m-of-n multisig notes. --threshold and --participants describe the SAME multisig lock used with `watch multisig`; they are used to reconstruct the input lock so the planner can select and spend the multisig notes.\n# NOTE: if --names is omitted, the planner auto-selects spendable notes that belong to this multisig lock. If provided, names are treated as a manual selection set (and must all belong to the multisig).\n# NOTE: change returns to the multisig lock by default; pass --refund-pkh to send change to a single-signer address instead.\n# NOTE: this command produces an unsigned-or-partially-signed transaction file under ./txs; collect the remaining signatures with `sign-multisig-tx` before `send-tx`.\n# NOTE: --notes-csv reads candidate notes from a notes CSV (as written by 'list-notes-by-multisig-csv') instead of downloading the balance, and removes the spent notes from that CSV after the tx is created. Requires a prior sync so the wallet still holds the note data.\n# RECIPIENT accepts the same forms as create-tx: a legacy '<p2pkh>:<amount>' string or a JSON object with \"kind\" of \"p2pkh\", \"multisig\", or \"bridge-deposit\" (e.g. '{\"kind\":\"bridge-deposit\",\"evm-address\":\"0x<40-hex-chars>\",\"amount\":<nicks>}' to deposit onto the EVM bridge)."
     )]
     CreateMultisigTx {
         /// Threshold (m) value for the m-of-n multisig being spent.
@@ -493,7 +504,10 @@ pub enum Commands {
         /// Optional names of notes to spend (comma-separated) for manual selection.
         #[arg(long)]
         names: Option<String>,
-        /// Recipient specifications (repeat --recipient for each output)
+        /// Output(s); repeat --recipient per output. Accepts '<p2pkh>:<amount>'
+        /// or a JSON object whose "kind" is "p2pkh", "multisig", or
+        /// "bridge-deposit" (use bridge-deposit to move funds onto the EVM
+        /// bridge; see this command's help for formats and examples).
         #[arg(
             long = "recipient",
             value_name = "RECIPIENT",
@@ -534,6 +548,13 @@ pub enum Commands {
         /// Note selection strategy (ascending selects smallest notes first)
         #[arg(long = "note-selection", value_enum, default_value = "ascending")]
         note_selection_strategy: NoteSelectionStrategyCli,
+        /// Select candidate notes from a notes CSV (as written by
+        /// `list-notes-by-multisig-csv`) instead of downloading the balance. The
+        /// wallet must already hold the listed notes from a prior sync, since
+        /// the note data needed to build the spend comes from local state. The
+        /// notes actually spent are removed from the CSV once the tx is created.
+        #[arg(long = "notes-csv", value_name = "PATH")]
+        notes_csv: Option<PathBuf>,
     },
 
     /// Sweep all spendable legacy v0 notes into one v1 destination address.

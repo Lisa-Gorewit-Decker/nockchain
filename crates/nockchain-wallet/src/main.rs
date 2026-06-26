@@ -121,6 +121,9 @@ async fn main() -> Result<(), NockAppError> {
 
     let mut wallet = Wallet::new(kernel);
     let mut synced_snapshot_for_planner: Option<NormalizedSnapshot> = None;
+    // Set by a notes-CSV-backed create-tx run so spent notes are removed from
+    // the CSV after the transaction is successfully created.
+    let mut csv_reservation: Option<create_tx::CsvNoteReservation> = None;
 
     if cli.fakenet {
         wallet
@@ -225,6 +228,16 @@ async fn main() -> Result<(), NockAppError> {
         | Commands::SignMultisigTx { .. }
         | Commands::Watch { .. }
         | Commands::TxAccepted { .. } => false,
+
+        // Creating a tx from a notes CSV deliberately skips the network
+        // download: candidate selection comes from the CSV and the note data
+        // comes from the wallet's already-synced local state.
+        Commands::CreateTx {
+            notes_csv: Some(_), ..
+        }
+        | Commands::CreateMultisigTx {
+            notes_csv: Some(_), ..
+        } => false,
 
         // All other commands DO need sync
         _ => true,
@@ -568,6 +581,7 @@ async fn main() -> Result<(), NockAppError> {
         sign_keys,
         save_raw_tx,
         note_selection_strategy,
+        notes_csv,
     } = &cli.command
     {
         let recipient_specs = recipient_tokens_to_specs(recipients.clone())?;
@@ -585,6 +599,8 @@ async fn main() -> Result<(), NockAppError> {
                 *save_raw_tx,
                 *note_selection_strategy,
                 None,
+                notes_csv.clone(),
+                &mut csv_reservation,
             )
             .await?;
     }
@@ -603,6 +619,7 @@ async fn main() -> Result<(), NockAppError> {
         sign_keys,
         save_raw_tx,
         note_selection_strategy,
+        notes_csv,
     } = &cli.command
     {
         let multisig_lock = multisig_lock_from_participants(*threshold, participants)?;
@@ -627,6 +644,8 @@ async fn main() -> Result<(), NockAppError> {
                 *save_raw_tx,
                 *note_selection_strategy,
                 Some(multisig_lock),
+                notes_csv.clone(),
+                &mut csv_reservation,
             )
             .await?;
     }
@@ -642,6 +661,17 @@ async fn main() -> Result<(), NockAppError> {
     match wallet.app.run().await {
         Ok(_) => {
             info!("Command executed successfully");
+            // The transaction was created: drop the spent notes from the notes
+            // CSV so they are not reselected on a later create-tx run.
+            if let Some(reservation) = csv_reservation {
+                let removed =
+                    create_tx::remove_notes_from_csv(&reservation.path, &reservation.selected)?;
+                println!(
+                    "Removed {} spent note(s) from {}",
+                    removed,
+                    reservation.path.display()
+                );
+            }
             Ok(())
         }
         Err(e) => {

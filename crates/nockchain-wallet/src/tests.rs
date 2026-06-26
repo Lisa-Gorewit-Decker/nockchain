@@ -1201,6 +1201,7 @@ async fn fakenet_create_tx_accepts_discounted_fee_schedule() -> Result<(), NockA
         sign_keys: Vec::new(),
         save_raw_tx: false,
         note_selection_strategy: NoteSelectionStrategyCli::Ascending,
+        notes_csv: None,
     })
     .to_wire();
 
@@ -1669,6 +1670,8 @@ async fn create_tx_with_planner_accepts_manual_all_v0_notes() -> Result<(), Nock
             false,
             NoteSelectionStrategyCli::Ascending,
             None,
+            None,
+            &mut None,
         )
         .await?;
     let result = wallet.app.poke(OnePunchWire::Poke.to_wire(), noun).await?;
@@ -1851,6 +1854,8 @@ async fn create_tx_planner_accepts_child_sign_key_for_lock_reconstruction(
             false,
             NoteSelectionStrategyCli::Ascending,
             None,
+            None,
+            &mut None,
         )
         .await?;
 
@@ -1909,6 +1914,8 @@ async fn keygen_create_tx_uses_tracked_signing_keys() -> Result<(), NockAppError
             false,
             NoteSelectionStrategyCli::Ascending,
             None,
+            None,
+            &mut None,
         )
         .await?;
 
