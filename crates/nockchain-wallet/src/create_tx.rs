@@ -1516,11 +1516,25 @@ impl Wallet {
         let plan_result = if let Some(ctx) = multisig_lock.as_ref() {
             // Multisig spend: resolve inputs by the multisig lock-root's first-name
             // and carry the reconstructed spend-condition for fee/witness planning.
+            // Also accept protocol-fund coinbase notes, whose committed lock wraps
+            // the multisig lock-root in `[%pkh m=1 {lock_root}]` plus the coinbase
+            // relative timelock before the first-name is taken (the on-chain notes
+            // share `+fund-note-firstname`, not `from_lock_root(lock_root)`). This
+            // mirrors the `+check:check-context` routing to `+check-multisig-lock`.
             let matcher = match LockRootLockMatcher::from_lock_root(&ctx.lock_root) {
                 Ok(matcher) => matcher.with_spend_condition(ctx.spend_condition.clone()),
                 Err(err) => {
                     return planner_error(format!(
                         "unable to build multisig lock matcher from lock root {}: {err}",
+                        ctx.lock_root.to_base58()
+                    ));
+                }
+            };
+            let matcher = match matcher.with_coinbase_fund_notes(coinbase_relative_min) {
+                Ok(matcher) => matcher,
+                Err(err) => {
+                    return planner_error(format!(
+                        "unable to derive coinbase fund first-name for multisig lock root {}: {err}",
                         ctx.lock_root.to_base58()
                     ));
                 }

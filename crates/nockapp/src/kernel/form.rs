@@ -3056,7 +3056,7 @@ impl Serf {
             ));
         }
         let event_num = self.event_num.load(Ordering::SeqCst);
-        info!(
+        debug!(
             event_num,
             path = %pma.path().display(),
             "shutdown PMA flush start"
@@ -3065,7 +3065,7 @@ impl Serf {
         pma.sync_all()?;
         self.sync_pma_data_strict(pma, "shutdown_pma_fdatasync")?;
         self.persist_pma_metadata_strict(pma)?;
-        info!(
+        debug!(
             event_num,
             path = %pma.path().display(),
             "shutdown PMA flush done"

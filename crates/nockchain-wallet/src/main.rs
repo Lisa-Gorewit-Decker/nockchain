@@ -153,7 +153,6 @@ async fn main() -> Result<(), NockAppError> {
                     "Imported {} multisig watch entries from {}",
                     imported_count, manifest
                 );
-                info!("Command executed successfully");
                 return Ok(());
             }
             Err(e) => {
@@ -198,7 +197,6 @@ async fn main() -> Result<(), NockAppError> {
                 .map_err(|e| CrownError::Unknown(format!("Failed to flush stdout: {}", e)))?;
         }
 
-        info!("Command executed successfully");
         return Ok(());
     }
 
@@ -559,7 +557,6 @@ async fn main() -> Result<(), NockAppError> {
                 let markdown = Wallet::format_migrate_v0_notes_summary(&summary);
                 let skin = MadSkin::default_dark();
                 println!("{}", skin.term_text(&markdown));
-                info!("Command executed successfully");
             }
             Err(e) => {
                 error!("Command failed: {}", e);
@@ -660,7 +657,6 @@ async fn main() -> Result<(), NockAppError> {
 
     match wallet.app.run().await {
         Ok(_) => {
-            info!("Command executed successfully");
             // The transaction was created: drop the spent notes from the notes
             // CSV so they are not reselected on a later create-tx run.
             if let Some(reservation) = csv_reservation {
