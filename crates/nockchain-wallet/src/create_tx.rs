@@ -5,7 +5,7 @@ use nockchain_math::noun_ext::NounMathExtHandle;
 use nockchain_math::zoon::zmap::ZMap;
 use nockchain_types::tx_engine::common::Signature;
 use nockvm::noun::NounSpace;
-use wallet_tx_builder::types::{CandidateNote, CreateTxPlanningMode};
+use wallet_tx_builder::types::{CandidateNote, CreateTxPlanningMode, PlanResult};
 
 use super::*;
 
@@ -180,6 +180,51 @@ pub(crate) fn remove_notes_from_csv(path: &Path, removed: &[Name]) -> Result<usi
     })?;
 
     Ok(removed_count)
+}
+
+/// Network default `max-block-size` in bits. The on-chain block-inclusion check
+/// (`candidate-block-below-max-size`, miner.hoon) rejects blocks larger than
+/// this (8,000,000 bits ~= 1 MB on mainnet), so a transaction that cannot fit in
+/// a block can never be mined.
+const MAX_BLOCK_SIZE_BITS: u64 = 8_000_000;
+
+/// Returns a human-readable reason when `plan` would build a transaction too
+/// large to be mined, or `None` when it is within budget.
+///
+/// The estimate is intentionally conservative and word-count based so it scales
+/// with lock complexity: multisig inputs carry a large m-of-n witness, so the
+/// planner's `witness_words` already reflects per-input cost. We add a small
+/// per-input framing allowance (input first/last name + spend wrapper) not
+/// captured by the seed/witness word counts, convert words (64-bit field
+/// leaves) to bits, and compare against the block-size budget after reserving
+/// headroom for the block's PoW proof (~720k bits) and coinbase/header overhead.
+fn oversized_plan_reason(plan: &PlanResult) -> Option<String> {
+    const BITS_PER_WORD: u64 = 64;
+    const PER_INPUT_FRAMING_WORDS: u64 = 16;
+    /// Block budget for the transaction itself, reserving ~1,000,000 bits for the
+    /// PoW proof and coinbase/header overhead that share the block.
+    const TX_SIZE_BUDGET_BITS: u64 = MAX_BLOCK_SIZE_BITS - 1_000_000;
+
+    let input_count = plan.selected.len() as u64;
+    let estimated_words = plan
+        .word_counts
+        .seed_words
+        .saturating_add(plan.word_counts.witness_words)
+        .saturating_add(input_count.saturating_mul(PER_INPUT_FRAMING_WORDS));
+    let estimated_bits = estimated_words.saturating_mul(BITS_PER_WORD);
+    if estimated_bits <= TX_SIZE_BUDGET_BITS {
+        return None;
+    }
+    Some(format!(
+        "planned transaction is too large to mine: {input_count} inputs, ~{est_kb} KB estimated \
+         (budget ~{budget_kb} KB within the {max_kb} KB / {max_bits}-bit max block size). Large \
+         multisig spends over many small notes exceed the block-size limit and take many minutes \
+         to build. Reduce the amount or restrict --notes-csv to fewer notes, then send in batches.",
+        est_kb = estimated_bits / 8 / 1024,
+        budget_kb = TX_SIZE_BUDGET_BITS / 8 / 1024,
+        max_kb = MAX_BLOCK_SIZE_BITS / 8 / 1024,
+        max_bits = MAX_BLOCK_SIZE_BITS,
+    ))
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode)]
@@ -1104,6 +1149,20 @@ impl Wallet {
         Ok(changed)
     }
 
+    /// Returns true when any `.tx` file in `after` is new or changed relative to
+    /// `before`. Used to confirm a create-tx poke actually produced a
+    /// transaction (the kernel writes `./txs/<name>.tx` via `save-transaction`)
+    /// before committing side effects such as the notes-CSV reservation.
+    pub(crate) fn tx_files_changed(before: &WrittenTxSnapshot, after: &WrittenTxSnapshot) -> bool {
+        after
+            .0
+            .iter()
+            .any(|(path, metadata)| match before.0.get(path) {
+                Some(previous) => previous != metadata,
+                None => true,
+            })
+    }
+
     fn decode_transaction_spends_from_bytes(tx_bytes: &[u8]) -> Result<v1::Spends, NockAppError> {
         let mut slab: NounSlab = NounSlab::new();
         let transaction_noun = slab.cue_into(Bytes::copy_from_slice(tx_bytes))?;
@@ -1567,6 +1626,18 @@ impl Wallet {
                 return planner_error(format!("planner returned an error: {err}"));
             }
         };
+
+        // Fail-fast guard: refuse a plan that cannot fit in a block before the
+        // kernel spends minutes building and signing it. The on-chain
+        // block-inclusion check (`candidate-block-below-max-size` in miner.hoon)
+        // rejects blocks over `max-block-size` (8,000,000 bits ~= 1 MB on
+        // mainnet), so a larger transaction can never be mined. Multisig inputs
+        // are large (each carries the full m-of-n witness), so a high-value spend
+        // over a fund of tiny notes selects thousands of inputs and yields a
+        // multi-MB, unmineable transaction that takes many minutes to build.
+        if let Some(reason) = oversized_plan_reason(&plan) {
+            return planner_error(reason);
+        }
 
         for trace in &plan.debug_trace {
             info!("create-tx planner trace: {}", trace);
@@ -2428,6 +2499,78 @@ mod tests {
             },
             timelock: None,
         })
+    }
+
+    fn tx_snapshot(entries: &[(&str, u64, u64)]) -> WrittenTxSnapshot {
+        let mut map = std::collections::BTreeMap::new();
+        for (path, secs, len) in entries {
+            map.insert(
+                std::path::PathBuf::from(path),
+                TxFileSnapshot {
+                    modified: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(*secs)),
+                    len: *len,
+                },
+            );
+        }
+        WrittenTxSnapshot(map)
+    }
+
+    fn plan_result_with(input_count: u64, seed_words: u64, witness_words: u64) -> PlanResult {
+        let selected = (0..input_count)
+            .map(|i| CandidateIdentity {
+                name: name(i, i),
+                origin_page: BlockHeight(Belt(1)),
+            })
+            .collect();
+        PlanResult {
+            selected,
+            selected_total: 0,
+            outputs: Vec::new(),
+            final_fee: 0,
+            word_counts: wallet_tx_builder::types::WordCountBreakdown {
+                seed_words,
+                witness_words,
+            },
+            debug_trace: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn oversized_plan_reason_flags_block_busting_multisig_plans() {
+        // The real failing case: ~2,500 three-of-four multisig inputs at ~144
+        // witness words each -> multi-MB, unmineable.
+        let huge = plan_result_with(2_500, 44, 2_500 * 144);
+        let reason = oversized_plan_reason(&huge).expect("oversized plan must be rejected");
+        assert!(reason.contains("2500 inputs"), "reason: {reason}");
+        assert!(reason.contains("too large to mine"), "reason: {reason}");
+
+        // A modest multisig batch (~200 inputs) is within budget.
+        assert!(oversized_plan_reason(&plan_result_with(200, 44, 200 * 144)).is_none());
+
+        // A normal single-sig spend with a handful of inputs is unaffected.
+        assert!(oversized_plan_reason(&plan_result_with(50, 13, 50 * 35)).is_none());
+    }
+
+    #[test]
+    fn tx_files_changed_detects_new_modified_and_no_change() {
+        let before = tx_snapshot(&[("txs/a.tx", 100, 10)]);
+
+        // No change at all -> a create-tx that wrote nothing (kernel rejected the
+        // poke). Reservation must NOT be committed.
+        assert!(!Wallet::tx_files_changed(&before, &before));
+
+        // A brand-new tx file appeared.
+        let with_new = tx_snapshot(&[("txs/a.tx", 100, 10), ("txs/b.tx", 200, 20)]);
+        assert!(Wallet::tx_files_changed(&before, &with_new));
+
+        // Same path rewritten (mtime/len changed) -> a tx was produced.
+        let rewritten = tx_snapshot(&[("txs/a.tx", 101, 12)]);
+        assert!(Wallet::tx_files_changed(&before, &rewritten));
+
+        // Writing from an empty starting dir.
+        let empty = tx_snapshot(&[]);
+        assert!(Wallet::tx_files_changed(&empty, &before));
+        assert!(!Wallet::tx_files_changed(&empty, &empty));
     }
 
     fn candidate_v1(first: u64, last: u64) -> CandidateNote {

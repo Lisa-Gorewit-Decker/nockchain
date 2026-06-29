@@ -647,6 +647,20 @@ async fn main() -> Result<(), NockAppError> {
             .await?;
     }
 
+    // When a notes-CSV reservation is pending, snapshot the tx output directory
+    // up front so we can confirm a transaction file was actually written before
+    // committing the reservation. A create-tx poke that `!!`s in the kernel
+    // (e.g. the planner under-selected and the builder hits "insufficient funds
+    // to pay fee and gift") nacks and writes no tx file, yet the NockApp run loop
+    // can still exit cleanly — so gating note removal on `run()` returning `Ok`
+    // alone silently drops notes that were never spent. Mirror the migrate-v0
+    // path and gate on an actual written transaction (`./txs/<name>.tx`).
+    let tx_dir = Path::new("txs");
+    let txs_before = match &csv_reservation {
+        Some(_) => Some(Wallet::snapshot_written_txs(tx_dir).await?),
+        None => None,
+    };
+
     wallet
         .app
         .add_io_driver(one_punch_driver(poke.0, poke.1))
@@ -657,16 +671,31 @@ async fn main() -> Result<(), NockAppError> {
 
     match wallet.app.run().await {
         Ok(_) => {
-            // The transaction was created: drop the spent notes from the notes
-            // CSV so they are not reselected on a later create-tx run.
-            if let Some(reservation) = csv_reservation {
-                let removed =
-                    create_tx::remove_notes_from_csv(&reservation.path, &reservation.selected)?;
-                println!(
-                    "Removed {} spent note(s) from {}",
-                    removed,
-                    reservation.path.display()
-                );
+            if let (Some(reservation), Some(before)) = (csv_reservation, txs_before) {
+                let after = Wallet::snapshot_written_txs(tx_dir).await?;
+                if Wallet::tx_files_changed(&before, &after) {
+                    // A transaction file was written: the spend really happened,
+                    // so drop the spent notes from the CSV to avoid reselection.
+                    let removed =
+                        create_tx::remove_notes_from_csv(&reservation.path, &reservation.selected)?;
+                    println!(
+                        "Removed {} spent note(s) from {}",
+                        removed,
+                        reservation.path.display()
+                    );
+                } else {
+                    // No tx file appeared: the kernel rejected the create-tx poke
+                    // (no transaction was produced). Leave the notes CSV untouched
+                    // and surface the failure rather than reporting success.
+                    error!(
+                        "create-tx produced no transaction (kernel rejected the poke); \
+                         notes CSV {} left unchanged",
+                        reservation.path.display()
+                    );
+                    return Err(NockAppError::from(CrownError::Unknown(
+                        "create-tx failed: the wallet kernel did not produce a transaction (see trace above); notes CSV left unchanged".to_string(),
+                    )));
+                }
             }
             Ok(())
         }
