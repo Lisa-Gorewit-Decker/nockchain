@@ -6,6 +6,7 @@
 /=  *   /common/zose
 /=  *  /common/zeke
 /=  wt  /apps/wallet/lib/types
+~%  %wallet-utils  ..ut  ~
 |_  [bug=? bc=blockchain-constants:transact]
 +*  t  ~(. transact bc)
 ::
@@ -251,6 +252,7 @@
   --
 ::
 ++  vault
+  ~%  %wvault  ..vault  ~
   |_  =state:wt
   ::
   ++  base-path  ^-  trek
@@ -480,6 +482,7 @@
     --
   ::
   ++  get-note
+    ~/  %get-note
     |=  name=nname:transact
     ^-  nnote:transact
     ?:  (~(has z-by:zo notes.balance.state) name)
@@ -583,6 +586,7 @@
   -- ::vault
   ::
   ++  display
+    ~%  %wdisp  ..display  ~
     |%
     ++  common
       |%
@@ -590,6 +594,18 @@
           |=  @
           ^-  @t
           (rsh [3 2] (scot %ui +<))
+        ::  render a nick amount in nocks (whole nocks + remainder nicks),
+        ::  on cords only -- 1 nock = 2^16 nicks.
+        ++  format-nocks
+          |=  nicks=@
+          ^-  @t
+          =/  d  (dvr nicks 65.536)
+          %+  rap  3
+          :~  (format-ui p.d)
+              ' nocks '
+              (format-ui q.d)
+              ' nicks'
+          ==
         ++  format-ux
           |=  @ux
           ^-  @t
@@ -712,6 +728,7 @@
       ::
       --  ::  +v0
     ++  v1
+      ~%  %wdisp-v1  ..v1  ~
       |%
       ++  name
         |=  name=nname:transact
@@ -720,6 +737,7 @@
         :((cury cat 3) '[' first ' ' last ']')
       ::
       ++  lock
+        ~/  %disp-lock
         |=  lk=lock:transact
         ^-  @t
         =/  cond=(unit spend-condition:transact)
@@ -786,6 +804,7 @@
         ==
       ::
       ++  spend-condition
+        ~/  %disp-sc
         |=  cond=spend-condition:transact
         ^-  @t
         %+  roll  cond
@@ -796,6 +815,7 @@
         ==
       ::
       ++  lock-data
+        ~/  %disp-lockdata
         |=  data=note-data:v1:transact
         ^-  @t
         ?~  lock-data=(~(get z-by:zo data) %lock)
@@ -881,6 +901,7 @@
         (^note note (lock-data note-data.note) %.n)
     ::
       ++  note-from-output
+        ~/  %disp-nfo
         |=  $:  note=nnote-1:v1:transact
                 metadata=(unit lock-metadata:wt)
             ==
@@ -892,6 +913,7 @@
         (^note note lock-info %.y)
     ::
       ++  note-from-input
+        ~/  %disp-nfi
         |=  $:  note=nnote-1:v1:transact
                 sc=spend-condition:transact
             ==
@@ -902,6 +924,7 @@
       ::  +note: display note. Sometimes lock data is not included in note, it can be passed in
       ::    separately in the output-lock-map which is accumulated in the tx-builder.
       ++  note
+        ~/  %disp-note
         |=  $:  note=nnote-1:v1:transact
                 lock-info=@t
                 output=?
@@ -917,8 +940,8 @@
            (name name.note)
            '\0a- Version: '
            (format-ui:common 1)
-           '\0a- Assets (nicks): '
-           (format-ui:common assets.note)
+           '\0a- Assets: '
+           (format-nocks:common assets.note)
            '\0a- Block Height: '
            ?:  output
              'N/A (output note has not been submitted yet)'
@@ -928,6 +951,7 @@
          ==
     ::
       ++  witness-data
+        ~/  %disp-wd
         |=  wd=witness-data:wt
         ^-  @t
         =;  signers=(set @t)
@@ -982,6 +1006,7 @@
     ::
     ::  show-tx should require sync now
       ++  transaction
+        ~/  %disp-tx
         |=  $:  name=@t
                 outs=outputs:v1:transact
                 fees=@
@@ -990,26 +1015,30 @@
                 wd=(unit witness-data:wt)
             ==
         ^-  @t
-        =/  input-notes=tape
+        ::  Build the markdown report entirely on cords (cat/rap, bloq 3) with no
+        ::  {} interpolation and no +trip. Interpolating the large input/output
+        ::  note cords with {} dominated create-tx time (~22s at 100 inputs);
+        ::  cord concatenation is linear.
+        =/  input-notes=@t
           ?:  ?=(%0 -.inputs.metadata)
-            %-  zing
+            %+  rap  3
             %+  turn
-            ~(tap z-in:zo ~(key z-by:zo p.inputs.metadata))
+              ~(tap z-in:zo ~(key z-by:zo p.inputs.metadata))
             |=  =nname:transact
             =+  note=(get-note nname)
             ?@  -.note
               ~|  %expected-v0-note-but-got-v1-note  !!
-            "\0a{(trip (note:v0 note))}"
-          %-  zing
+            (cat 3 '\0a' (note:v0 note))
+          %+  rap  3
           %+  turn
             ~(tap z-by:zo p.inputs.metadata)
           |=  [name=nname:transact sc=spend-condition:transact]
           =/  out-note=nnote:transact  (get-note name)
           ?^  -.out-note
             ~|  %expected-v1-note-but-got-v0-note  !!
-          "\0a{(trip (note-from-input out-note sc))}"
-        =/  output-notes=tape
-          %-  zing
+          (cat 3 '\0a' (note-from-input out-note sc))
+        =/  output-notes=@t
+          %+  rap  3
           %+  turn
             ~(tap z-in:zo outs)
           |=  out=output:v1:transact
@@ -1017,26 +1046,21 @@
           =+  fn=~(first-name get:nnote:transact out-note)
           =+  out-metadata=(~(get z-by:zo outputs.metadata) fn)
           ?^  -.out-note
-            "\0a{(trip (note:v0 out-note))}"
-          "\0a{(trip (note-from-output out-note out-metadata))}"
-        %-  crip
-        """
-
-        ### Transaction Information
-        - Name: {(trip name)}
-        - Fee: {(trip (format-ui:common fees))}
-
-        ### Input Notes
-        {input-notes}
-
-        ### Output Notes
-        {output-notes}
-
-        ### Witness Data
-        {(trip ?~(wd 'N/A' (witness-data u.wd)))}
-        ---
-
-        """
+            (cat 3 '\0a' (note:v0 out-note))
+          (cat 3 '\0a' (note-from-output out-note out-metadata))
+        %+  rap  3
+        :~  '\0a### Transaction Information\0a- Name: '
+            name
+            '\0a- Fee: '
+            (format-nocks:common fees)
+            '\0a\0a### Input Notes\0a'
+            input-notes
+            '\0a\0a### Output Notes\0a'
+            output-notes
+            '\0a\0a### Witness Data\0a'
+            ?~(wd 'N/A' (witness-data u.wd))
+            '\0a---\0a\0a'
+        ==
       --  ::  +v1
     --  ::  +display
   ::
