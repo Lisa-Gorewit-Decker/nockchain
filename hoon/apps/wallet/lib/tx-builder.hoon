@@ -238,8 +238,21 @@
       wd       [%1 ~]
       metadata  [[%1 ~] ~]
     ==
+  ::  Spread the fee evenly across the input notes so that every spent note
+  ::  retains value for at least one output seed. A consensus spend requires
+  ::  >=1 seed (validate-basic:spend-1), so a note whose entire value would go
+  ::  to fee cannot be represented and was previously dropped uncredited --
+  ::  leaving the fee unpaid (remaining-fee != 0) and the spend rejected. Charging
+  ::  ~ceil(fee/n) per note keeps each note's fee-portion below its value.
+  =/  num-notes=@  (lent notes)
+  =/  fee-per-note=@
+    ?:  =(0 num-notes)  0
+    =/  base=@  (div fee num-notes)
+    ?:  =(0 (mod fee num-notes))  base  +(base)
   =/  final-state
-    (process-spends-1 notes initial-state sender-pkh refund-lock supplied-input-lock)
+    %:  process-spends-1
+      notes  initial-state  fee-per-note  sender-pkh  refund-lock  supplied-input-lock
+    ==
   =+  remaining-orders=orders.final-state
   =+  remaining-fee=fee.final-state
   ?.  ?&  =(~ remaining-orders)
@@ -251,6 +264,7 @@
 ++  process-spends-1
   |=  $:  notes=(list nnote-1:v1:transact)
           state=spend-build-state:wt
+          fee-per-note=@
           sender-pkh=hash:transact
           refund-lock=lock:transact
           supplied-input-lock=(unit lock:transact)
@@ -295,18 +309,21 @@
         ==
     !!
   =/  input-lock=lock:transact  u.resolved-lock
-  =/  allocation  (allocate-orders orders.state assets.note)
-  =/  [pending-orders=(list order:wt) specs=(list order:wt) remainder=@]
-    allocation
-  =/  fee-portion=@  (min fee.state remainder)
+  ::  Take this note's even share of the fee first, capped to leave at least one
+  ::  nick for an output seed (a v1 spend must carry >=1 seed). The gift is then
+  ::  drawn from what remains and any leftover becomes change. This keeps every
+  ::  spent note representable instead of stranding a fee-only note (which was
+  ::  previously dropped uncredited, leaving the fee unpaid and the tx rejected).
+  =/  fee-portion=@  (min fee.state (min fee-per-note (dec assets.note)))
   =/  new-fee=@  (sub fee.state fee-portion)
-  =/  refund=@  (sub remainder fee-portion)
+  =/  after-fee=@  (sub assets.note fee-portion)
+  =/  allocation  (allocate-orders orders.state after-fee)
+  =/  [pending-orders=(list order:wt) specs=(list order:wt) refund=@]
+    allocation
   =/  specs-with-refund=(list order:wt)
     ?:  =(refund 0)
       specs
     [(build-refund-order refund refund-lock) specs]
-  ?:  =(~ specs-with-refund)
-    $(notes t.notes)
   =/  [=seeds:v1:transact output-map=output-lock-map:wt]
     (seeds-from-specs specs-with-refund note fee-portion)
   ?~  seeds

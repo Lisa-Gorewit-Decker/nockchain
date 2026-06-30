@@ -565,11 +565,7 @@
     %+  expect-eq
       !>(gift)
     !>(total-gift)
-  ::
-    %+  expect-eq
-      !>(0)
-    !>(fee.spend2)
-  ::
+  ::  note2 carries no recipient gift (its value is fee + change)
     %+  expect-eq
       !>(~)
     !>(gift-seeds2)
@@ -577,6 +573,12 @@
     %+  expect-eq
       !>(note2-assets)
     !>(total-refund)
+  ::
+    (check-conservation:hel notes spends)
+  ::
+    %+  expect-eq
+      !>(fee)
+    !>((roll-fees:spends:t spends))
   ==
 ::
 ++  test-multisig-second-note-fee-with-refund
@@ -632,13 +634,7 @@
       !>(fee)
     !>(total-fee)
   ::
-    %+  expect-eq
-      !>(fee)
-    !>(fee.spend2)
-  ::
-    %+  expect-eq
-      !>(1)
-    !>(seeds2-count)
+    (check-conservation:hel notes spends)
   ==
 ::
 ++  test-multisig-three-notes-complex

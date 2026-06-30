@@ -340,18 +340,16 @@
     %+  expect-eq
       !>(gift)
     !>(total-gift)
-  ::
-    %+  expect-eq
-      !>(0)
-    !>(fee.spend2)
-  ::
+  ::  note2 carries no recipient gift (its value is fee + change)
     %+  expect-eq
       !>(~)
     !>(gift-seeds2)
   ::
+    (check-conservation:hel notes spends)
+  ::
     %+  expect-eq
-      !>(note2-assets)
-    !>(refund-total2)
+      !>(fee)
+    !>((roll-fees:spends:t spends))
   ==
 ::
 ++  test-v1-second-note-fee-with-small-refund
@@ -405,13 +403,7 @@
       !>(fee)
     !>(total-fee)
   ::
-    %+  expect-eq
-      !>(fee)
-    !>(fee.spend2)
-  ::
-    %+  expect-eq
-      !>(1)
-    !>(seeds2-count)
+    (check-conservation:hel notes spends)
   ==
 ::
 ++  test-v0-three-notes-complex-split
@@ -633,7 +625,11 @@
   ==
 
  ++  test-v1-second-note-pure-fee
-    ::  v1 version: first note satisfies gift, second note perfectly satisfies fee
+    ::  v1: note1 == gift, note2 == fee exactly (inputs == gift + fee, zero
+    ::  margin). The fee is spread across both notes so each retains a seed and
+    ::  the spend builds. Previously this failed spuriously because the second
+    ::  note, entirely consumed by fee, was dropped uncredited (leaving the fee
+    ::  unpaid).
     ::
     ^-  tang
     =/  source1=hash:t  (hash:schnorr-pubkey:t default-a-pt-2:dhel)
@@ -653,9 +649,19 @@
     =/  order=order:wt  (pkh-order:hel recipient-hash gift)
     =/  orders=(list order:wt)  ~[order]
     =/  get-note  (get-note-from:hel notes)
-    %+  expect-fail
-      |.((txb:hel names orders fee default-sign-keys:hel ~ get-note %.y %desc))
-    `"Insufficient funds to pay fee and gift"
+    =/  spends=spends:t
+      (txb:hel names orders fee default-sign-keys:hel ~ get-note %.y %desc)
+    =/  validation=(reason:t ~)
+      (validate-with-notes:hel [notes spends 10])
+    =/  total-gift=coins:t
+      (sum-gifts-for-lock:hel spends (recipient-lock-root:hel recipient-hash))
+    =/  total-fees=coins:t  (roll-fees:spends:t spends)
+    ;:  weld
+      (expect-eq !>(%.y) !>(-.validation))
+      (check-conservation:hel notes spends)
+      (expect-eq !>(fee) !>(total-fees))
+      (expect-eq !>(gift) !>(total-gift))
+    ==
 ::
   ++  test-v0-second-note-pure-fee
      ::  v0 version: first note satisfies gift, second note perfectly satisfies fee

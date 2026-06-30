@@ -258,18 +258,16 @@
     %+  expect-eq
       !>(900.000.000)
     !>(total-gift)
-  ::
-    %+  expect-eq
-      !>(0)
-    !>(fee.spend1)
-  ::
-    %+  expect-eq
-      !>(60.000.000)
-    !>(fee.spend2)
-  ::
+  ::  note2 still carries the change; the fee is now spread across both notes
     %+  expect-eq
       !>(40.000.000)
     !>(refund-total2)
+  ::
+    (check-conservation:hel notes spends)
+  ::
+    %+  expect-eq
+      !>(fee)
+    !>((roll-fees:spends:t spends))
   ==
 ::
 ++  test-fee-equals-minimum

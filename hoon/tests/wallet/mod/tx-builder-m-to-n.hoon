@@ -154,10 +154,11 @@
   ==
 ::
 ++  test-v1-fanout-fee-gap-detected
-  ::  First note covers all gifts, second note tries to pay part of the fee
-  ::  but produces no seeds, and the third note has just enough for the intended
-  ::  remainder plus a refund. We expect the builder to fail with an
-  ::  insufficient-fee error once the second note is skipped.
+  ::  note1 covers all gifts; the fee then falls on notes that, under the old
+  ::  greedy gift-first split, were entirely consumed by fee (no seed) and got
+  ::  dropped uncredited. Inputs (780M) cover gift (600M) + fee (150M), so
+  ::  spreading the fee across the notes lets every note keep a seed and the
+  ::  spend builds.
   ::
   ^-  tang
   =/  rec-a=hash:t  (hash:schnorr-pubkey:t default-a-pt-1:dhel)
@@ -171,9 +172,15 @@
   =/  notes=(z-map:zo nname:t nnote:t)  (build-notes-map:hel notes-data)
   =/  names=(list nname:t)  (names-from:hel notes-data)
   =/  get-note  (get-note-from:hel notes)
-    %+  expect-fail
-      |.((txb:hel names orders fee default-sign-keys:hel ~ get-note %.y %desc))
-  `"Insufficient funds to pay fee and gift"
+  =/  spends=spends:t
+    (txb:hel names orders fee default-sign-keys:hel ~ get-note %.y %desc)
+  =/  validation=(reason:t ~)
+    (validate-with-notes:hel notes spends 10)
+  ;:  weld
+    (expect-eq !>(%.y) !>(-.validation))
+    (check-conservation:hel notes spends)
+    (expect-eq !>(fee) !>((roll-fees:spends:t spends)))
+  ==
 ::
 ++  test-v0-fanout-fee-gap-detected
   ::  Same test as above, except for v0
