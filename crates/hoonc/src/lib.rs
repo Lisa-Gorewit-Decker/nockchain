@@ -29,7 +29,7 @@ pub static PREWARM_STATE_JAM: &[u8] = include_bytes!("../bootstrap/hoonc-prewarm
 pub static HOON_TXT: &[u8] = include_bytes!("../hoon/hoon-138.hoon");
 
 #[derive(Clone, Parser, Debug)]
-#[command(about = "Tests various poke types for the kernel", author = "zorp", version, color = ColorChoice::Auto)]
+#[command(about = "Tests various poke types for the kernel", version, color = ColorChoice::Auto)]
 pub struct HoonCli {
     #[command(flatten)]
     pub boot: BootCli,

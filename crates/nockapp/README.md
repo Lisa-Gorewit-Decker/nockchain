@@ -7,8 +7,6 @@ Canonical/Legacy: Canonical (Tier 1 scoped authority for NockApp runtime interfa
 
 ***DEVELOPER ALPHA***
 
-<img align="right" src="https://zorp.io/img/nockapp.png" height="150px" alt="NockApp">
-
 NockApps are pure-functional state machines with automatic persistence and modular IO.
 
 The NockApp framework is built around two core crates, `nockapp` and `nockvm`:

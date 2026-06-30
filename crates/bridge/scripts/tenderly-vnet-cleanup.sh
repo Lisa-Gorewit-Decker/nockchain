@@ -35,7 +35,7 @@ DO_OLD="false"
 ENV_FILE="$DEFAULT_ENV_FILE"
 EXPLICIT_TARGETS=()
 
-export TENDERLY_ACCOUNT_ID="${TENDERLY_ACCOUNT_ID:-zorp}"
+export TENDERLY_ACCOUNT_ID="${TENDERLY_ACCOUNT_ID:-nockchain}"
 export TENDERLY_PROJECT_SLUG="${TENDERLY_PROJECT_SLUG:-bridge}"
 
 usage() {
@@ -60,7 +60,7 @@ Required env:
   TENDERLY_ACCESS_KEY
 
 Optional env:
-  TENDERLY_ACCOUNT_ID    Default: zorp
+  TENDERLY_ACCOUNT_ID    Default: nockchain
   TENDERLY_PROJECT_SLUG  Default: bridge
   TENDERLY_VNET_ID       Used by --current if already exported
 EOF

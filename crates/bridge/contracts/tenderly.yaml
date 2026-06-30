@@ -8,7 +8,7 @@ compiler:
 
 # Project settings
 project_slug: "bridge"
-account_id: "zorp"
+account_id: "nockchain"
 
 # Networks configuration
 networks:

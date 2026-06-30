@@ -176,8 +176,8 @@ sync-to-staging:
 
         echo "https://bitemyapp:${GITHUB_NOCKCHAIN_STAGING_TOKEN}@github.com" > ~/.git-credentials
         git config --global credential.helper store
-        git config --global user.name "Zorp CI"
-        git config --global user.email "ci@zorp.corp"
+        git config --global user.name "Nockchain CI"
+        git config --global user.email "ci@nockchain.org"
 
         bash ./tools/sync_to_staging/sync_to_staging.sh
       '

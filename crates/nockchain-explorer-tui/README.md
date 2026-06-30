@@ -14,7 +14,7 @@ A terminal user interface for exploring the Nockchain blockchain via the gRPC Bl
 ## OK you made it this far
 
 - There is no public instance for this to connect to.
-- No, not Zorp's public API instance that the wallet uses either.
+- No, not the public API instance that the wallet uses either.
 - You must run your own instance. We will not help you. Ask the community and they may have time to help you. We do not.
 - If the state gets hinky, just restart the TUI app
 - This is mostly for enabling systems integrators to debug the gRPC blocks and transactions endpoints

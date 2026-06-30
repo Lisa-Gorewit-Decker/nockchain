@@ -9,9 +9,9 @@
 /// Full set of realnet backbone peers, as libp2p multiaddr strings.
 pub const BACKBONE_NODES: &[&str] = &[
     "/ip4/216.158.74.98/udp/33000/quic-v1", "/ip4/23.252.122.178/udp/33000/quic-v1",
-    "/ip4/173.231.48.98/udp/33000/quic-v1", "/dnsaddr/zorp.nockchain-backbone.zorp.io",
-    "/dnsaddr/nockchain-backbone.nockbox.org", "/dnsaddr/public.nockblocks.com",
-    "/ip4/23.252.122.18/udp/33000/quic-v1", "/ip4/34.150.94.224/udp/3006/quic-v1",
+    "/ip4/173.231.48.98/udp/33000/quic-v1", "/dnsaddr/nockchain-backbone.nockbox.org",
+    "/dnsaddr/public.nockblocks.com", "/ip4/23.252.122.18/udp/33000/quic-v1",
+    "/ip4/34.150.94.224/udp/3006/quic-v1",
 ];
 
 /// How many backbone peers to dial per attempt.

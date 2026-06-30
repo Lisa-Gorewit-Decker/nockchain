@@ -1065,11 +1065,11 @@ fn test_production_operator_addresses() {
     // Real production operator data - must match bridge-conf.sepolia.toml and bridge-conf.mainnet.toml
     let operators: [(&str, &str, &str); 5] = [
         (
-            "Zorp #1", "0x091f5A663Dba081547D60bf0aa50D0a56F1e0964",
+            "Operator #1", "0x091f5A663Dba081547D60bf0aa50D0a56F1e0964",
             "AD6Mw1QUnPUrnVpyj2gW2jT6Jd6WsuZQmPn79XpZoFEocuvV12iDkvh",
         ),
         (
-            "Zorp #2", "0xcadEEee25c168b8Cf054f290f97dbF568a853F64",
+            "Operator #2", "0xcadEEee25c168b8Cf054f290f97dbF568a853F64",
             "6KrZT5hHLY1fva9AUDeGtZu5Jznm4RDLYfjcGjuU49nWoNym5ZeX5X5",
         ),
         (

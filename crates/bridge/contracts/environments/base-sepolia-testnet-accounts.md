@@ -87,7 +87,7 @@ cd crates/bridge
 | MessageInbox (Implementation) | `0x7627Db3A99596668c9d42693efa352Ca69F089e3` | https://sepolia.basescan.org/address/0x7627Db3A99596668c9d42693efa352Ca69F089e3#code |
 | Nock Token                    | `0xA9cd4087D9B050D8B35727AAf810296CA957c7B3` | https://sepolia.basescan.org/address/0xA9cd4087D9B050D8B35727AAf810296CA957c7B3#code |
 
-Tenderly dashboard: https://dashboard.tenderly.co/zorp/bridge/contracts
+Tenderly dashboard: https://dashboard.tenderly.co/nockchain/bridge/contracts
 
 ## Verification
 
