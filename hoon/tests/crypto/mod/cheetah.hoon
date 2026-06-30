@@ -37,6 +37,21 @@
       .=  [(list-to-f6lt:cheetah prodx.tv) (list-to-f6lt:cheetah prody.tv) %.n]
       (ch-scal:affine:curve:cheetah scalar.tv a-gen:curve:cheetah)
   ==
+::
+::  +sign:affine:schnorr is deterministic; these vectors pin its exact
+::  [chal sig] output so the Rust jet can be proven byte-identical. Each
+::  scalar is expressed as its (rip 5) 32-bit-belt limbs, matching the jet's
+::  sk-as-32-bit-belts argument.
+++  test-cheetah-sign
+  %+  expect-eq  !>(%.y)
+  !>
+  %+  roll  cheetah-sign-kats
+  |=  [tv=cheetah-sign-tv acc=?]
+  ?&  acc
+    ::
+      .=  [chal.tv sig.tv]
+      (sign:affine:schnorr:cheetah (rip 5 sk.tv) m.tv)
+  ==
 --
 ::
 |%
@@ -62,6 +77,13 @@
 ::  then these test vectors have the property that sG = R, where G is the Cheetah generator.
 ::  The vectors are defined in this file under the name cheetah-fixbase-mul-kats
 +$  cheetah-fixbase-mul-tv  [scalar=@ prodx=(list @) prody=(list @)]
+
+:: The cheetah-sign-tv type pins deterministic Schnorr signatures. Let
+::    * sk be the secret scalar (signed as its (rip 5) 32-bit-belt limbs)
+::    * m be the message digest
+::  then (sign:affine:schnorr sk-limbs m) = [chal sig].
+::  The vectors are defined under the name cheetah-sign-kats.
++$  cheetah-sign-tv  [sk=@ m=noun-digest:tip5 chal=@ux sig=@ux]
 
 ++  cheetah-add-kats
   ^-  (list cheetah-add-tv)
@@ -2374,5 +2396,26 @@
         ~[15.450.368.690.389.317.437 966.569.536.863.384.280 14.937.570.970.723.151.764 9.483.610.697.947.724.768 10.830.186.240.584.231.849 12.804.352.602.051.918.511]
         ~[7.493.949.359.737.799.250 5.254.865.638.129.923.960 10.262.857.145.368.673.294 8.376.929.223.894.569.105 17.930.728.909.422.431.423 8.682.532.431.045.574.836]
       ==
+  ==
+::
+++  cheetah-sign-kats
+  ^-  (list cheetah-sign-tv)
+  :~
+    :*  0x1  [0 0 0 0 0]
+        0x4a25.11e6.5527.2950.2867.c400.116d.40bc.6c59.b7e7.7eac.956f.7e52.1ad9.8322.0c32
+        0x4395.8490.73d2.f7e8.38f7.4abd.4166.1f7a.b09e.f5f6.356f.fe27.b326.6e24.f8b9.6ce6
+    ==
+    :*  0x8  [1 2 3 4 5]
+        0x30f.a095.2251.12a7.5f24.c26a.fd1d.32c6.bd65.5eab.4272.d5a9.b83f.973c.45b4.1193
+        0x77f.c160.4219.900a.f333.0a21.dd38.8a63.8f78.80ad.498e.f6e3.dd44.21ae.eb99.4ee4
+    ==
+    :*  (dec g-order:curve:cheetah)  [8 9 10 11 12]
+        0x3d17.7aee.f732.1eba.9896.b144.17b1.ed17.ea02.80e2.c82f.c0f7.19be.7739.9be3.36f9
+        0x31d5.dee5.feb4.ca7d.f850.51d7.f56b.2a12.1bf8.097c.2bc6.6880.4d24.6fea.5065.6402
+    ==
+    :*  0x1234.5678.9abc.def0.fedc.ba98.7654.3210.abcd.ef12  [100 200 300 400 500]
+        0x9e.b985.344b.4bae.bed3.b6bd.3ef8.c0b3.e503.6c36.b34d.c9e1.c4d4.9b76.9b07.4585
+        0x5cbe.e971.45fa.b06e.427a.971e.0190.f7d8.3ac4.dab6.af4a.ad8b.687d.8eea.03a4.0771
+    ==
   ==
 --

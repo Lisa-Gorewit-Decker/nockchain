@@ -3,7 +3,7 @@ use nockvm::interpreter::Context;
 use nockvm::jets::util::{slot, BAIL_FAIL};
 use nockvm::jets::JetErr;
 use nockvm::mem::NockStack;
-use nockvm::noun::Noun;
+use nockvm::noun::{Atom, Noun, T};
 use noun_serde::{NounDecode, NounEncode};
 
 use crate::form::belt::*;
@@ -199,6 +199,128 @@ pub fn belt_schnorr_batch_verify_jet(context: &mut Context, subject: Noun) -> Re
         .collect::<Result<Vec<ValidateArgs>, JetErr>>()?;
 
     levy_verify_affine(&args, &mut context.stack)
+}
+
+/// Jet for `+sign:affine:schnorr:cheetah` (open/hoon/common/ztd/three.hoon).
+/// This is the deterministic Schnorr signing arm on the per-input v1
+/// transaction signing hot path. The Hoon:
+///
+/// ```hoon
+/// =/  m-list  (leaf-sequence:shape m)
+/// ?>  (levy sk-as-32-bit-belts |=(n=@ (lth n (bex 32))))
+/// =/  sk      (rep 5 sk-as-32-bit-belts)
+/// ?<  =(sk 0)
+/// ?>  (lth sk g-order:curve)
+/// =/  pubkey  (ch-scal:affine:curve sk a-gen:curve)
+/// =/  nonce
+///   (trunc-g-order (hash-varlen:tip5 (zing [x.pubkey y.pubkey m-list sk-belts ~])))
+/// ?<  =(nonce 0)
+/// =/  scalar  (ch-scal:affine:curve nonce a-gen:curve)
+/// =/  chal
+///   (trunc-g-order (hash-varlen:tip5 (zing [x.scalar y.scalar x.pubkey y.pubkey m-list])))
+/// ?<  =(chal 0)
+/// =/  sig  (mod (add nonce (mul chal sk)) g-order:curve)
+/// ?<  =(sig 0)
+/// [chal sig]
+/// ```
+///
+/// `rep 5` packs each limb into a fixed 2^32-wide block, so a limb `>= 2^32`
+/// would change the reconstruction; the Hoon `?>` rejects that, and every
+/// `?>`/`?<` guard the Hoon would crash or short-circuit on (limb out of range,
+/// degenerate `sk`/`nonce`/`chal`/`sig`) is surfaced here as `None` so the jet
+/// Punts and the authoritative Hoon runs rather than the jet diverging.
+/// `Some((chal, sig))` is the canonical, byte-identical signature.
+pub fn sign_affine(sk_belts: &[u64], m: &[Belt; 5]) -> Result<Option<(UBig, UBig)>, JetErr> {
+    let two_32: u64 = 1 << 32;
+    //  ?>  (levy sk-as-32-bit-belts |=(n=@ (lth n (bex 32))))
+    if sk_belts.iter().any(|&limb| limb >= two_32) {
+        return Ok(None);
+    }
+    //  sk = (rep 5 sk-as-32-bit-belts): little-endian base-2^32 reconstruction
+    //  with fixed-width 32-bit blocks (NOT `rap 5`; limbs are guaranteed < 2^32).
+    let mut sk = UBig::from(0u32);
+    for (index, &limb) in sk_belts.iter().enumerate() {
+        sk += UBig::from(limb) << (32 * index);
+    }
+    let zero = UBig::from(0u32);
+    //  ?<  =(sk 0)  /  ?>  (lth sk g-order:curve)
+    if sk == zero || sk >= *G_ORDER {
+        return Ok(None);
+    }
+    //  pubkey = sk * G
+    let pubkey = ch_scal_big(&sk, &A_GEN)?;
+
+    //  nonce = trunc-g-order(hash-varlen(zing [x.pubkey y.pubkey m-list sk-belts]))
+    let mut nonce_pre: Vec<Belt> = Vec::with_capacity(6 + 6 + 5 + sk_belts.len());
+    nonce_pre.extend_from_slice(&pubkey.x.0);
+    nonce_pre.extend_from_slice(&pubkey.y.0);
+    nonce_pre.extend_from_slice(m);
+    nonce_pre.extend(sk_belts.iter().map(|&limb| Belt(limb)));
+    let nonce = trunc_g_order(&tip5::hash::hash_varlen(&mut nonce_pre));
+    //  ?<  =(nonce 0)
+    if nonce == zero {
+        return Ok(None);
+    }
+    //  scalar = nonce * G
+    let scalar = ch_scal_big(&nonce, &A_GEN)?;
+
+    //  chal = trunc-g-order(hash-varlen(zing [x.scalar y.scalar x.pubkey y.pubkey m-list]))
+    let mut chal_pre: Vec<Belt> = Vec::with_capacity(6 * 4 + 5);
+    chal_pre.extend_from_slice(&scalar.x.0);
+    chal_pre.extend_from_slice(&scalar.y.0);
+    chal_pre.extend_from_slice(&pubkey.x.0);
+    chal_pre.extend_from_slice(&pubkey.y.0);
+    chal_pre.extend_from_slice(m);
+    let chal = trunc_g_order(&tip5::hash::hash_varlen(&mut chal_pre));
+    //  ?<  =(chal 0)
+    if chal == zero {
+        return Ok(None);
+    }
+    //  sig = (nonce + chal*sk) mod g-order
+    let product = &chal * &sk;
+    let sum = &nonce + &product;
+    let sig = sum % &*G_ORDER;
+    //  ?<  =(sig 0)
+    if sig == zero {
+        return Ok(None);
+    }
+    Ok(Some((chal, sig)))
+}
+
+/// Jet wrapper for `+sign:affine:schnorr:cheetah`. Sample is
+/// `[sk-as-32-bit-belts=(list belt) m=noun-digest:tip5]`; result is `[c=@ux s=@ux]`.
+/// Any input the jet does not model (a non-atom limb, an `m` that is not a
+/// 5-tuple of belts, or any `?>`/`?<` guard the Hoon would crash on) Punts so
+/// the runtime re-runs the authoritative Hoon.
+pub fn sign_affine_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let space = context.stack.noun_space();
+    let sam = slot(subject, 6, &space)?;
+    let sk_list = slot(sam, 2, &space)?;
+    let m_noun = slot(sam, 3, &space)?;
+
+    let m = <[Belt; 5]>::from_noun(&m_noun, &space).map_err(|_| JetErr::Punt)?;
+    //  Decode the `(list belt)` of 32-bit limbs. A limb that is not an atom, or
+    //  is too wide to be a `@` that `rep 5` would treat as a single block we
+    //  model, Punts to the Hoon.
+    let sk_belts = sk_list
+        .in_space(&space)
+        .list_iter()
+        .map(|limb| {
+            limb.as_atom()
+                .map_err(|_| JetErr::Punt)?
+                .as_u64()
+                .map_err(|_| JetErr::Punt)
+        })
+        .collect::<Result<Vec<u64>, JetErr>>()?;
+
+    match sign_affine(&sk_belts, &m)? {
+        Some((chal, sig)) => {
+            let chal_noun = Atom::from_ubig(&mut context.stack, &chal).as_noun();
+            let sig_noun = Atom::from_ubig(&mut context.stack, &sig).as_noun();
+            Ok(T(&mut context.stack, &[chal_noun, sig_noun]))
+        }
+        None => Err(JetErr::Punt),
+    }
 }
 
 #[cfg(test)]
@@ -694,5 +816,146 @@ mod tests {
         let bad_sample = T(&mut context.stack, &[elem, bad_elem, D(0)]);
         assert_jet(&mut context, belt_schnorr_batch_verify_jet, bad_sample, NO);
         Ok(())
+    }
+
+    /// Decompose a scalar into little-endian fixed-width 2^32 blocks, i.e. the
+    /// `sk-as-32-bit-belts` list whose `(rep 5 _)` reconstructs the scalar.
+    fn ubig_to_rep5_limbs(n: &UBig) -> Vec<u64> {
+        let radix = UBig::from(1u64 << 32);
+        let zero = UBig::from(0u32);
+        let mut limbs = Vec::new();
+        let mut x = n.clone();
+        while x > zero {
+            limbs.push(u64::try_from(&(&x % &radix)).unwrap());
+            x /= &radix;
+        }
+        if limbs.is_empty() {
+            limbs.push(0);
+        }
+        limbs
+    }
+
+    fn hex(s: &str) -> UBig {
+        UBig::from_str_radix(s, 16).expect("valid hex")
+    }
+
+    //  The four signature vectors `+test-cheetah-sign` (hoon/tests/crypto/mod/
+    //  cheetah.hoon) pins against the pure Hoon `+sign:affine:schnorr`. This is
+    //  the byte-identical KAT for `sign_affine`: same inputs, same `[chal sig]`.
+    fn sign_kats() -> Vec<(UBig, [Belt; 5], UBig, UBig)> {
+        vec![
+            (
+                UBig::from(1u32),
+                [Belt(0); 5],
+                hex("4a2511e6552729502867c400116d40bc6c59b7e77eac956f7e521ad983220c32"),
+                hex("4395849073d2f7e838f74abd41661f7ab09ef5f6356ffe27b3266e24f8b96ce6"),
+            ),
+            (
+                UBig::from(8u32),
+                [Belt(1), Belt(2), Belt(3), Belt(4), Belt(5)],
+                hex("30fa095225112a75f24c26afd1d32c6bd655eab4272d5a9b83f973c45b41193"),
+                hex("77fc1604219900af3330a21dd388a638f7880ad498ef6e3dd4421aeeb994ee4"),
+            ),
+            (
+                &*G_ORDER - UBig::from(1u32),
+                [Belt(8), Belt(9), Belt(10), Belt(11), Belt(12)],
+                hex("3d177aeef7321eba9896b14417b1ed17ea0280e2c82fc0f719be77399be336f9"),
+                hex("31d5dee5feb4ca7df85051d7f56b2a121bf8097c2bc668804d246fea50656402"),
+            ),
+            (
+                hex("123456789abcdef0fedcba9876543210abcdef12"),
+                [Belt(100), Belt(200), Belt(300), Belt(400), Belt(500)],
+                hex("9eb985344b4baebed3b6bd3ef8c0b3e5036c36b34dc9e1c4d49b769b074585"),
+                hex("5cbee97145fab06e427a971e0190f7d83ac4dab6af4aad8b687d8eea03a40771"),
+            ),
+        ]
+    }
+
+    #[test]
+    fn test_sign_affine_matches_hoon_vectors() {
+        for (sk, m, exp_chal, exp_sig) in sign_kats() {
+            let limbs = ubig_to_rep5_limbs(&sk);
+            let (chal, sig) = sign_affine(&limbs, &m)
+                .expect("no jet error")
+                .expect("non-degenerate signature");
+            assert_eq!(chal, exp_chal, "chal mismatch for sk={sk}");
+            assert_eq!(sig, exp_sig, "sig mismatch for sk={sk}");
+        }
+    }
+
+    //  Every produced signature must verify under the byte-identical
+    //  `verify_affine` — independent corroboration that the deterministic output
+    //  is a valid signature, across small/dense/multi-limb keys and varied msgs.
+    #[test]
+    fn test_sign_then_verify_roundtrip() -> Result<(), JetErr> {
+        let g_minus = &*G_ORDER - UBig::from(1u32);
+        let scalars = [
+            UBig::from(1u32),
+            UBig::from(2u32),
+            UBig::from(8u32),
+            UBig::from(0xdead_beef_u64),
+            UBig::from(1u64 << 40),
+            g_minus.clone(),
+            &g_minus / UBig::from(2u32),
+        ];
+        for (i, sk) in scalars.iter().enumerate() {
+            let limbs = ubig_to_rep5_limbs(sk);
+            let m = [
+                Belt(i as u64),
+                Belt(i as u64 + 7),
+                Belt(0xffff_ffff_ffff_ffff - i as u64),
+                Belt(42),
+                Belt(i as u64 * 1000),
+            ];
+            let (chal, sig) = sign_affine(&limbs, &m)?.expect("non-degenerate");
+            let pubkey = ch_scal_big(sk, &A_GEN)?;
+            assert!(
+                verify_affine(&pubkey, &m, &chal, &sig)?,
+                "signature for sk={sk} did not verify"
+            );
+        }
+        Ok(())
+    }
+
+    //  Guards the Hoon `?>`/`?<` arms surface as `None` (the jet Punts to Hoon).
+    #[test]
+    fn test_sign_affine_punts_on_guard_violations() -> Result<(), JetErr> {
+        let m = [Belt(1), Belt(2), Belt(3), Belt(4), Belt(5)];
+        // a limb >= 2^32 is rejected by `?> (levy ... (lth n (bex 32)))`
+        assert!(sign_affine(&[1u64 << 32], &m)?.is_none());
+        assert!(sign_affine(&[5, 1u64 << 33, 7], &m)?.is_none());
+        // sk == 0 is rejected by `?< =(sk 0)`
+        assert!(sign_affine(&[0], &m)?.is_none());
+        assert!(sign_affine(&[0, 0], &m)?.is_none());
+        assert!(sign_affine(&[], &m)?.is_none());
+        // sk >= g-order is rejected by `?> (lth sk g-order)`
+        let g_limbs = ubig_to_rep5_limbs(&G_ORDER);
+        assert!(sign_affine(&g_limbs, &m)?.is_none());
+        Ok(())
+    }
+
+    //  The jet wrapper end-to-end: decode `[sk-list m]`, produce `[chal sig]`.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_sign_affine_jet() {
+        let mut context = init_context();
+        // sk = 8 -> sk-list ~[8]; m = [1 2 3 4 5]
+        let sk_list = T(&mut context.stack, &[D(8), D(0)]);
+        let m = [Belt(1), Belt(2), Belt(3), Belt(4), Belt(5)];
+        let m_noun = m.to_noun(&mut context.stack);
+        let sample = T(&mut context.stack, &[sk_list, m_noun]);
+
+        let chal = Atom::from_ubig(
+            &mut context.stack,
+            &hex("30fa095225112a75f24c26afd1d32c6bd655eab4272d5a9b83f973c45b41193"),
+        )
+        .as_noun();
+        let sig = Atom::from_ubig(
+            &mut context.stack,
+            &hex("77fc1604219900af3330a21dd388a638f7880ad498ef6e3dd4421aeeb994ee4"),
+        )
+        .as_noun();
+        let expected = T(&mut context.stack, &[chal, sig]);
+        assert_jet(&mut context, sign_affine_jet, sample, expected);
     }
 }
