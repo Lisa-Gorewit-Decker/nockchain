@@ -29,6 +29,8 @@ It is an implementation map for this crate, not chain-level protocol authority.
 | Interfaces | `src/ingress.rs`, `nockapp_grpc::driver::grpc_listener_driver` | gRPC entry points for peer coordination plus a listener driver for kernel `%grpc` effects.                                                    | Rust     |
 | Signing    | `src/signing.rs`, `main.rs::run_signing_cursor_loop`           | Computes proposal hashes from the deposit log, signs them locally, and gossips signatures to peers.                                          | Rust     |
 
+The deployed Base (mainnet) wrapped-NOCK ERC-20 token — the `Nock.sol` contract above — is at [`0x9B5E262cF9bb04869ab40b19AF91D2dc85761722`](https://basescan.org/address/0x9B5E262cF9bb04869ab40b19AF91D2dc85761722); a bridge deposit mints this token on Base. Wallet-side deposits are built via `create-tx --bridge-deposit <nocks> --to-evm-address <0x...>` (see the [wallet README](../../nockchain-wallet/README.md#bridge-deposits)). The bridge enforces a minimum deposit of 100,000 nocks (6,553,600,000 nicks) and charges a 0.3% fee on the deposited amount.
+
 ## Runtime Inbound Pipeline
 
 `BridgeRuntime` currently accepts only chain events (`BridgeEvent::Chain`):

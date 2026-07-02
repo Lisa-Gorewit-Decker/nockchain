@@ -223,6 +223,32 @@ Displays the aggregate wallet balance, including the total number of notes and t
 
 We support transactions with any amount of input notes going to any number of recipients.
 
+For the common case — paying one or more single-signer p2pkh addresses — you can skip the JSON entirely and pass paired `--to`/`--amount` flags, where **amounts are in nocks**:
+
+```bash
+# Ergonomic: send 100 nocks to a p2pkh address (amount is in whole NOCKS, not nicks).
+# The wallet prints the saved ./txs/<name>.tx path and the exact send-tx command.
+nockchain-wallet create-tx --to <p2pkh-b58> --amount 100
+
+# Fan out to several p2pkh recipients; each --to is paired with one --amount.
+# Amounts are whole nocks only (no decimals). --fee is a fee override in nocks.
+nockchain-wallet create-tx \
+  --to <p2pkh-a> --amount 100 \
+  --to <p2pkh-b> --amount 5 \
+  --fee 1
+
+# Prefer raw nicks? Use --amount-nicks / --fee-nicks instead (nicks, not nocks).
+nockchain-wallet create-tx --to <p2pkh-b58> --amount-nicks 6553600 --fee-nicks 65536
+
+# Deposit onto the Base bridge: --bridge-deposit (nocks) paired with --to-evm-address.
+# Minimum deposit is 100,000 nocks; the bridge also charges a 0.3% fee.
+nockchain-wallet create-tx --bridge-deposit 100000 --to-evm-address 0x0c8d9cf278d4f3e23b00ea0a16bba2d05c07a7b6
+```
+
+`--to A --amount 100` is exactly equivalent to `--recipient '{"kind":"p2pkh","address":"A","amount":6553600}'` (100 × 65536 nicks). Amounts are whole nocks only — there is no decimal input. `--to`/`--amount` and `--recipient` may be combined in one command. Use `--amount-nicks` to give a `--to` amount in raw nicks (mutually exclusive with `--amount`), `--fee` for a fee override in nocks, and `--fee-nicks` for a fee override in nicks (mutually exclusive with `--fee`). To move funds onto the Base bridge instead of paying a p2pkh, pass `--bridge-deposit <nocks> --to-evm-address <0x...>` (only one bridge deposit is allowed per transaction).
+
+The full JSON form is still available for multisig and bridge outputs, and for entering amounts directly in nicks:
+
 ```bash
 # Auto-select spendable notes and compute fee
 nockchain-wallet create-tx \
@@ -232,25 +258,27 @@ nockchain-wallet create-tx \
 nockchain-wallet create-tx \
   --names "[first1 last1],[first2 last2]" \
   --recipient '{"kind":"p2pkh","address":"<p2pkh-b58>","amount":10000}' \
-  --fee 10
+  --fee-nicks 10
 
 # Send to a multisig recipient
 nockchain-wallet create-tx \
   --names "[first1 last1],[first2 last2]" \
   --recipient '{"kind":"multisig","threshold":2,"addresses":["<pkh-a>","<pkh-b>","<pkh-c>"],"amount":9000}' \
-  --fee 10
+  --fee-nicks 10
 ```
 
-Gifts and fees are denominated in nicks (65536 nicks = 1 nock).
+`--recipient` gifts are denominated in nicks (65536 nicks = 1 nock); the ergonomic `--amount` and `--fee` are denominated in whole nocks, while `--amount-nicks` and `--fee-nicks` are in nicks.
 
 #### Common Parameters
 
 - The optional `names` argument is a list of `[first-name last-name]` pairs for manual note selection; omit it to auto-select spendable notes
 - Auto-selection remains v1-only
 - Manual `--names` selection may spend either an all-v1 set or an all-v0 set; mixed-version manual sets are rejected
-- The optional `fee` argument overrides the planner-computed fee (in nicks, 65536 nicks to 1 nock)
-- Provide multiple `--recipient` flags to fan out to several outputs
+- The optional `--fee` argument overrides the planner-computed fee, denominated in whole nocks (65536 nicks = 1 nock); `--fee-nicks` is the same override in nicks (mutually exclusive with `--fee`)
+- Provide multiple `--recipient` flags (or multiple paired `--to`/`--amount` flags) to fan out to several outputs
 - Each `--recipient` is either a JSON object (preferred) or a legacy `<p2pkh>:<amount>` string
+- `--to <p2pkh-b58> --amount <nocks>` is a shorthand for a p2pkh `--recipient`; amounts are whole nocks (use `--amount-nicks` for raw nicks), and each `--to` must be paired with exactly one `--amount`/`--amount-nicks`
+- `--bridge-deposit <nocks> --to-evm-address <0x...>` is a shorthand for a Base bridge deposit output (one per transaction); see [Bridge Deposits](#bridge-deposits)
 - `address`/`addresses` fields expect base58-encoded pay-to-pubkey-hash values
 - Provide `--sign-key <index[:hardened]>` multiple times to explicitly choose signing keys. If omitted, the wallet uses the master key or the `--index/--hardened` pair.
 - `--refund-pkh` is required when manually spending legacy v0 notes. For v1 notes, refund defaults to the note owner.
@@ -335,13 +363,13 @@ Rules for manual legacy spends:
 ```json
 {"kind":"p2pkh","address":"<base58-pkh>","amount":10000}
 {"kind":"multisig","threshold":2,"addresses":["<pkh-a>","<pkh-b>","<pkh-c>"],"amount":9000}
-{"kind":"bridge-deposit","evm-address":"0x0123abcd...","amount":500000000}
+{"kind":"bridge-deposit","evm-address":"0x0123abcd...","amount":6553600000}
 ```
 
 - `kind` must be `p2pkh`, `multisig`, or `bridge-deposit`
 - `amount` is specified in nicks
 - Multisig objects also require a `threshold` (m) and at least one `addresses` entry
-- Bridge deposits route funds to the Base bridge; `evm-address` expects a 20-byte hex string (40 hex chars, case-insensitive) with or without the `0x` prefix. Only one `%bridge-deposit` output is allowed per transaction, and the bridge enforces a protocol-level minimum gift size.
+- Bridge deposits route funds to the Base bridge; `evm-address` expects a 20-byte hex string (40 hex chars, case-insensitive) with or without the `0x` prefix. Only one `%bridge-deposit` output is allowed per transaction. The bridge enforces a minimum deposit of **100,000 nocks** (6,553,600,000 nicks) and charges a **0.3% fee** on the deposited amount.
 
 Provide multiple `--recipient` flags to fan out to several recipients in one transaction.
 
@@ -359,24 +387,37 @@ Multisig outputs are expressed via the JSON form. Supply each output as:
 
 ### Bridge Deposits
 
-Send Nockchain assets to Base by targeting the on-chain bridge lock root:
+Send Nockchain assets to the **Base** bridge. The Nockchain-side output is locked to the canonical bridge lock root by default; the deposit mints the wrapped-NOCK ERC-20 token on Base, whose contract is at [`0x9B5E262cF9bb04869ab40b19AF91D2dc85761722`](https://basescan.org/address/0x9B5E262cF9bb04869ab40b19AF91D2dc85761722).
+
+The bridge enforces a **minimum deposit of 100,000 nocks** (6,553,600,000 nicks) and charges a **0.3% fee** on the deposited amount, so keep every deposit at or above the minimum.
+
+The ergonomic form is a `--bridge-deposit`/`--to-evm-address` pair (amount in whole nocks):
+
+```bash
+# Deposit 100,000 nocks (the minimum) onto the Base bridge, credited to the given Base address.
+nockchain-wallet create-tx \
+  --bridge-deposit 100000 \
+  --to-evm-address 0x0c8d9cf278d4f3e23b00ea0a16bba2d05c07a7b6
+```
+
+The equivalent explicit JSON form (amount in nicks) also works:
 
 ```bash
 nockchain-wallet create-tx \
   --names "[first1 last1]" \
-  --recipient '{"kind":"bridge-deposit","evm-address":"0x0c8d9cf278d4f3e23b00ea0a16bba2d05c07a7b6","amount":100000000}' \
-  --fee 60000000
+  --recipient '{"kind":"bridge-deposit","evm-address":"0x0c8d9cf278d4f3e23b00ea0a16bba2d05c07a7b6","amount":6553600000}' \
+  --fee-nicks 60000000
 ```
 
-- The `evm-address` is the Base/ETH recipient; provide exactly 20 bytes of hex (`0x` prefix optional).
+- The `--to-evm-address` / `evm-address` is the Base recipient; provide exactly 20 bytes of hex (`0x` prefix optional). The deposit is credited as the wrapped-NOCK ERC-20 token on Base (contract `0x9B5E262cF9bb04869ab40b19AF91D2dc85761722`).
 - Only a single bridge deposit output is allowed per transaction.
-- The bridge kernel enforces a minimum deposit amount; treat [`PROTOCOL.md`](../../PROTOCOL.md) as protocol authority, and use [`crates/bridge/docs/README.md`](../bridge/docs/README.md) for current bridge operations.
+- The bridge enforces a minimum deposit of **100,000 nocks** (6,553,600,000 nicks) and takes a **0.3% fee** on the deposited amount; treat [`PROTOCOL.md`](../../PROTOCOL.md) as protocol authority, and use [`crates/bridge/docs/README.md`](../bridge/docs/README.md) for current bridge operations.
 
 ```bash
 nockchain-wallet create-tx \
   --names "[first1 last1],[first2 last2]" \
   --recipient '{"kind":"multisig","threshold":2,"addresses":["<pkh-a>","<pkh-b>","<pkh-c>"],"amount":750000000}' \
-  --fee 60000000
+  --fee-nicks 60000000
 ```
 
 - `--sign-key` is optional and lets you pick which derived keys sign the bundle when the command runs. Each entry is `index:hardened` (for example, `5:true` signs with hardened child 5). If omitted, the active master key provides the initial signature.

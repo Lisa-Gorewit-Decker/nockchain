@@ -54,8 +54,9 @@ use nockvm::noun::{Atom, Cell, IndirectAtom, Noun, NounAllocator, D, NO, SIG, T,
 use noun_serde::prelude::*;
 use noun_serde::NounDecodeError;
 use recipient::{
-    multisig_lock_from_participants, multisig_refund_output_template, planner_recipient_outputs,
-    planner_refund_output_template, recipient_tokens_to_specs, MultisigLockContext, RecipientSpec,
+    multisig_lock_from_participants, multisig_refund_output_template, nocks_to_nicks,
+    planner_recipient_outputs, planner_refund_output_template, recipient_tokens_to_specs,
+    to_amount_pairs_to_tokens, MultisigLockContext, RecipientSpec, RecipientSpecToken,
 };
 use termimad::MadSkin;
 use tokio::fs as tokio_fs;
@@ -89,6 +90,78 @@ fn multisig_batch_driver(pokes: Vec<NounSlab>) -> IODriverFn {
         handle.exit.exit(0).await?;
         Ok(())
     })
+}
+
+/// Merges the ergonomic `--to` recipient pairs into the explicit `--recipient`
+/// tokens and resolves the effective fee to nicks.
+///
+/// Each `--to` pairs with one amount, given either as `--amount` (whole nocks)
+/// or `--amount-nicks` (raw nicks); the two are mutually exclusive (clap-
+/// enforced). Amounts are resolved to nicks and built into p2pkh recipient
+/// tokens identical to the `--recipient` JSON form, appended after any explicit
+/// `--recipient` outputs so output order is preserved. The fee is `--fee`
+/// (converted from whole nocks) when present, otherwise the raw `--fee-nicks`
+/// value; those two are likewise mutually exclusive.
+fn resolve_ergonomic_outputs_and_fee(
+    recipients: &[RecipientSpecToken],
+    to: &[String],
+    amounts_nocks: &[u64],
+    amounts_nicks: &[u64],
+    bridge_deposit_nocks: Option<u64>,
+    to_evm_address: Option<&str>,
+    fee_nocks: Option<u64>,
+    fee_nicks: Option<u64>,
+) -> Result<(Vec<RecipientSpec>, Option<u64>), NockAppError> {
+    // Resolve the paired --to amounts to nicks. --amount (nocks) and
+    // --amount-nicks (nicks) are mutually exclusive; convert whichever was
+    // supplied. When neither is present, the empty vec drives the pairing check
+    // in to_amount_pairs_to_tokens (which errors if --to was given without an
+    // amount).
+    let amounts_in_nicks: Vec<u64> = if !amounts_nicks.is_empty() {
+        amounts_nicks.to_vec()
+    } else {
+        amounts_nocks
+            .iter()
+            .map(|&n| nocks_to_nicks(n))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NockAppError::from(CrownError::Unknown(e)))?
+    };
+
+    let mut tokens = recipients.to_vec();
+    let ergonomic = to_amount_pairs_to_tokens(to, &amounts_in_nicks)
+        .map_err(|e| NockAppError::from(CrownError::Unknown(e)))?;
+    tokens.extend(ergonomic);
+
+    // Ergonomic bridge deposit: --bridge-deposit <nocks> paired with
+    // --to-evm-address builds a single bridge-deposit output at the canonical
+    // bridge lock root (clap enforces the two flags are used together).
+    match (bridge_deposit_nocks, to_evm_address) {
+        (Some(nocks), Some(evm_address)) => {
+            let amount =
+                nocks_to_nicks(nocks).map_err(|e| NockAppError::from(CrownError::Unknown(e)))?;
+            tokens.push(RecipientSpecToken::BridgeDeposit {
+                root: None,
+                evm_address: evm_address.to_string(),
+                amount,
+            });
+        }
+        (None, None) => {}
+        _ => {
+            return Err(NockAppError::from(CrownError::Unknown(
+                "--bridge-deposit and --to-evm-address must be used together".into(),
+            )));
+        }
+    }
+
+    let recipient_specs = recipient_tokens_to_specs(tokens)?;
+
+    let effective_fee = match fee_nocks {
+        Some(nocks) => {
+            Some(nocks_to_nicks(nocks).map_err(|e| NockAppError::from(CrownError::Unknown(e)))?)
+        }
+        None => fee_nicks,
+    };
+    Ok((recipient_specs, effective_fee))
 }
 
 #[tokio::main]
@@ -569,7 +642,13 @@ async fn main() -> Result<(), NockAppError> {
     if let Commands::CreateTx {
         names,
         recipients,
+        to,
+        amounts,
+        amounts_nicks,
+        bridge_deposit,
+        to_evm_address,
         fee,
+        fee_nicks,
         allow_low_fee,
         refund_pkh,
         index,
@@ -581,13 +660,22 @@ async fn main() -> Result<(), NockAppError> {
         notes_csv,
     } = &cli.command
     {
-        let recipient_specs = recipient_tokens_to_specs(recipients.clone())?;
+        let (recipient_specs, effective_fee) = resolve_ergonomic_outputs_and_fee(
+            recipients,
+            to,
+            amounts,
+            amounts_nicks,
+            *bridge_deposit,
+            to_evm_address.as_deref(),
+            *fee,
+            *fee_nicks,
+        )?;
         let signing_keys = Wallet::collect_signing_keys(*index, *hardened, sign_keys)?;
         poke = wallet
             .create_tx_with_planner(
                 synced_snapshot_for_planner.take(),
                 names.clone(),
-                *fee,
+                effective_fee,
                 recipient_specs,
                 *allow_low_fee,
                 refund_pkh.clone(),
@@ -607,7 +695,13 @@ async fn main() -> Result<(), NockAppError> {
         participants,
         names,
         recipients,
+        to,
+        amounts,
+        amounts_nicks,
+        bridge_deposit,
+        to_evm_address,
         fee,
+        fee_nicks,
         allow_low_fee,
         refund_pkh,
         index,
@@ -626,13 +720,22 @@ async fn main() -> Result<(), NockAppError> {
             multisig_lock.threshold,
             multisig_lock.participants.len()
         );
-        let recipient_specs = recipient_tokens_to_specs(recipients.clone())?;
+        let (recipient_specs, effective_fee) = resolve_ergonomic_outputs_and_fee(
+            recipients,
+            to,
+            amounts,
+            amounts_nicks,
+            *bridge_deposit,
+            to_evm_address.as_deref(),
+            *fee,
+            *fee_nicks,
+        )?;
         let signing_keys = Wallet::collect_signing_keys(*index, *hardened, sign_keys)?;
         poke = wallet
             .create_tx_with_planner(
                 synced_snapshot_for_planner.take(),
                 names.clone(),
-                *fee,
+                effective_fee,
                 recipient_specs,
                 *allow_low_fee,
                 refund_pkh.clone(),
@@ -655,10 +758,22 @@ async fn main() -> Result<(), NockAppError> {
     // can still exit cleanly — so gating note removal on `run()` returning `Ok`
     // alone silently drops notes that were never spent. Mirror the migrate-v0
     // path and gate on an actual written transaction (`./txs/<name>.tx`).
+    // Whether this invocation builds a transaction, and whether it is a multisig
+    // build (which needs a `sign-multisig-tx` step before broadcast). Used both to
+    // snapshot the tx directory and to print next-step guidance after the run.
+    let (is_create_tx, is_multisig_create) = match &cli.command {
+        Commands::CreateTx { .. } => (true, false),
+        Commands::CreateMultisigTx { .. } => (true, true),
+        _ => (false, false),
+    };
+
     let tx_dir = Path::new("txs");
-    let txs_before = match &csv_reservation {
-        Some(_) => Some(Wallet::snapshot_written_txs(tx_dir).await?),
-        None => None,
+    // Snapshot the tx directory before running when a notes-CSV reservation must
+    // be confirmed OR when we intend to report the newly-written tx path.
+    let txs_before = if csv_reservation.is_some() || is_create_tx {
+        Some(Wallet::snapshot_written_txs(tx_dir).await?)
+    } else {
+        None
     };
 
     wallet
@@ -671,9 +786,17 @@ async fn main() -> Result<(), NockAppError> {
 
     match wallet.app.run().await {
         Ok(_) => {
-            if let (Some(reservation), Some(before)) = (csv_reservation, txs_before) {
-                let after = Wallet::snapshot_written_txs(tx_dir).await?;
-                if Wallet::tx_files_changed(&before, &after) {
+            // Re-snapshot once and reuse for both the CSV-reservation gate and the
+            // next-step guidance so we never read the directory twice.
+            let after = match &txs_before {
+                Some(_) => Some(Wallet::snapshot_written_txs(tx_dir).await?),
+                None => None,
+            };
+
+            if let (Some(reservation), Some(before), Some(after)) =
+                (&csv_reservation, &txs_before, &after)
+            {
+                if Wallet::tx_files_changed(before, after) {
                     // A transaction file was written: the spend really happened,
                     // so drop the spent notes from the CSV to avoid reselection.
                     let removed =
@@ -697,11 +820,51 @@ async fn main() -> Result<(), NockAppError> {
                     )));
                 }
             }
+
+            // Report the saved tx file(s) and the exact next command(s) to run,
+            // so the user never has to hunt for the derived `./txs/<name>.tx`.
+            if is_create_tx {
+                if let (Some(before), Some(after)) = (&txs_before, &after) {
+                    let created = Wallet::changed_tx_paths(before, after);
+                    print_created_tx_guidance(&created, is_multisig_create);
+                }
+            }
             Ok(())
         }
         Err(e) => {
             error!("Command failed: {}", e);
             Err(e)
+        }
+    }
+}
+
+/// Prints the saved transaction path(s) and the exact next command(s) to run
+/// after a successful `create-tx` / `create-multisig-tx`. Multisig builds need a
+/// `sign-multisig-tx` step (to collect the remaining signatures) before the
+/// `send-tx` broadcast; single-signer builds are ready to broadcast directly.
+fn print_created_tx_guidance(created: &[String], is_multisig: bool) {
+    if created.is_empty() {
+        return;
+    }
+    let noun = if created.len() == 1 {
+        "transaction"
+    } else {
+        "transactions"
+    };
+    println!("\nSaved {} {} to ./txs:", created.len(), noun);
+    for path in created {
+        println!("  {path}");
+    }
+    println!("\nNext steps:");
+    for path in created {
+        if is_multisig {
+            println!(
+                "  # collect the remaining signatures (repeat per co-signer), then broadcast:"
+            );
+            println!("  nockchain-wallet sign-multisig-tx {path} --sign-keys <index[:hardened]>");
+            println!("  nockchain-wallet send-tx {path}");
+        } else {
+            println!("  nockchain-wallet send-tx {path}");
         }
     }
 }

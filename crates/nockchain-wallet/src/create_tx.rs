@@ -1149,6 +1149,27 @@ impl Wallet {
         Ok(changed)
     }
 
+    /// Returns the paths of every `.tx` file that is new or changed in `after`
+    /// relative to `before`, sorted for stable output. Unlike
+    /// [`detect_written_tx_paths`], this returns an empty vec (never an error)
+    /// when nothing changed, so callers can print next-step guidance without
+    /// coupling to the migrate-specific failure message.
+    pub(crate) fn changed_tx_paths(
+        before: &WrittenTxSnapshot,
+        after: &WrittenTxSnapshot,
+    ) -> Vec<String> {
+        let mut changed = after
+            .0
+            .iter()
+            .filter_map(|(path, metadata)| match before.0.get(path) {
+                Some(previous) if previous == metadata => None,
+                _ => Some(path.display().to_string()),
+            })
+            .collect::<Vec<_>>();
+        changed.sort();
+        changed
+    }
+
     /// Returns true when any `.tx` file in `after` is new or changed relative to
     /// `before`. Used to confirm a create-tx poke actually produced a
     /// transaction (the kernel writes `./txs/<name>.tx` via `save-transaction`)

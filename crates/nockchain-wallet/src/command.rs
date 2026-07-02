@@ -261,6 +261,11 @@ pub enum ClientType {
 
 #[derive(Debug)]
 #[allow(dead_code)]
+// The `Command` variant carries the full CLI `Commands` enum, which is large by
+// nature (every subcommand's args). A `WalletWire` is constructed once per
+// command invocation and immediately lowered via `to_wire()`, never stored in
+// bulk or on a hot path, so boxing it would only add indirection without value.
+#[allow(clippy::large_enum_variant)]
 /// Internal wallet event wires used for nockapp routing.
 pub enum WalletWire {
     ListNotes,
@@ -431,7 +436,7 @@ pub enum Commands {
     /// Create a transaction (use --refund-pkh when spending legacy v0 notes)
     #[command(
         name = "create-tx",
-        override_usage = "nockchain-wallet create-tx [--names <NAMES>] --recipient <RECIPIENT>... [--fee <FEE>] [--refund-pkh <REFUND_PKH>] [--include-data <BOOL>]\n\n# NOTE: --refund-pkh is required when spending from legacy v0 notes. For v1 notes, the refund defaults to the note owner. --include-data defaults to true (pass 'false' to exclude note data).\n# NOTE: if --names is omitted, the planner auto-selects spendable v1 notes. If provided, names are treated as a manual selection set.\n# NOTE: manual selection may spend either an all-v1 set or an all-v0 set; mixed-version manual sets are rejected.\n# NOTE: --fee is optional. If omitted, the planner computes a fee. If provided, it overrides the planner fee (subject to --allow-low-fee).\n# NOTE: --notes-csv reads candidate notes from a notes CSV (as written by 'list-notes-by-address-csv') instead of downloading the balance, and removes the spent notes from that CSV after the tx is created. Requires a prior sync so the wallet still holds the note data.\n# RECIPIENT accepts a legacy '<p2pkh>:<amount>' string or a JSON object. Supported JSON kinds:\n#   p2pkh:          {\"kind\":\"p2pkh\",\"address\":\"<pkh-b58>\",\"amount\":<nicks>}\n#   multisig:       {\"kind\":\"multisig\",\"threshold\":2,\"addresses\":[\"<pkh-a>\",\"<pkh-b>\"],\"amount\":<nicks>}\n#   bridge-deposit: {\"kind\":\"bridge-deposit\",\"evm-address\":\"0x<40-hex-chars>\",\"amount\":<nicks>}  (optional \"root\":\"<lock-root-b58>\")\n# BRIDGE DEPOSIT: to move NOCK onto the EVM bridge, add a 'bridge-deposit' recipient whose 'evm-address' is the 0x-prefixed 20-byte (40 hex char) destination on the EVM side; 'amount' is in nicks. The output is locked to the canonical bridge lock root by default, so only pass 'root' if directed to a non-default bridge lock. It is built like any other create-tx output, so broadcast it afterward with 'send-tx'.\n\nExamples:\n  # Auto-select spendable v1 notes and compute fee\n  nockchain-wallet create-tx \\\n    --recipient '{\"kind\":\"p2pkh\",\"address\":\"<p2pkh-b58>\",\"amount\":10000}'\n\n  # Manually pin notes and optionally override fee\n  nockchain-wallet create-tx \\\n    --names \"[first1 last1],[first2 last2]\" \\\n    --recipient '{\"kind\":\"p2pkh\",\"address\":\"<p2pkh-b58>\",\"amount\":10000}' \\\n    --fee 10\n\n  # Deposit 10000 nicks onto the EVM bridge (evm-address receives the bridged funds)\n  nockchain-wallet create-tx \\\n    --recipient '{\"kind\":\"bridge-deposit\",\"evm-address\":\"0xabcdef0123456789abcdef0123456789abcdef01\",\"amount\":10000}'\n\n  # Reuse a downloaded notes CSV instead of re-syncing; spent notes are pruned from it\n  nockchain-wallet create-tx \\\n    --notes-csv notes-<p2pkh-b58>.csv \\\n    --recipient '{\"kind\":\"p2pkh\",\"address\":\"<p2pkh-b58>\",\"amount\":10000}'"
+        override_usage = "nockchain-wallet create-tx [--names <NAMES>] (--recipient <RECIPIENT>... | --to <P2PKH_B58> (--amount <NOCKS> | --amount-nicks <NICKS>))... [--fee <NOCKS> | --fee-nicks <NICKS>] [--refund-pkh <REFUND_PKH>] [--include-data <BOOL>]\n\n# ERGONOMIC: instead of --recipient JSON you can pass --to <p2pkh-b58> --amount <NOCKS> (paired, repeatable, whole nocks only) to send NOCKS to a p2pkh recipient, so `--to A --amount 100` equals `--recipient '{\"kind\":\"p2pkh\",\"address\":\"A\",\"amount\":6553600}'` (100 x 65536 nicks). Use --amount-nicks <NICKS> to give the paired amount in raw nicks instead (mutually exclusive with --amount). --to and --recipient may be combined. To deposit onto the Base bridge instead, pass --bridge-deposit <NOCKS> --to-evm-address <0x...> (only one per transaction; minimum 100,000 nocks; the bridge charges a 0.3% fee). Fees: --fee is in whole nocks, --fee-nicks is in nicks (mutually exclusive).\n# NOTE: --refund-pkh is required when spending from legacy v0 notes. For v1 notes, the refund defaults to the note owner. --include-data defaults to true (pass 'false' to exclude note data).\n# NOTE: if --names is omitted, the planner auto-selects spendable v1 notes. If provided, names are treated as a manual selection set.\n# NOTE: manual selection may spend either an all-v1 set or an all-v0 set; mixed-version manual sets are rejected.\n# NOTE: --fee is optional. If omitted, the planner computes a fee. If provided, it overrides the planner fee (subject to --allow-low-fee).\n# NOTE: --notes-csv reads candidate notes from a notes CSV (as written by 'list-notes-by-address-csv') instead of downloading the balance, and removes the spent notes from that CSV after the tx is created. Requires a prior sync so the wallet still holds the note data.\n# RECIPIENT accepts a legacy '<p2pkh>:<amount>' string or a JSON object. Supported JSON kinds:\n#   p2pkh:          {\"kind\":\"p2pkh\",\"address\":\"<pkh-b58>\",\"amount\":<nicks>}\n#   multisig:       {\"kind\":\"multisig\",\"threshold\":2,\"addresses\":[\"<pkh-a>\",\"<pkh-b>\"],\"amount\":<nicks>}\n#   bridge-deposit: {\"kind\":\"bridge-deposit\",\"evm-address\":\"0x<40-hex-chars>\",\"amount\":<nicks>}  (optional \"root\":\"<lock-root-b58>\")\n# BRIDGE DEPOSIT: to move NOCK onto the Base bridge, add a 'bridge-deposit' recipient whose 'evm-address' is the 0x-prefixed 20-byte (40 hex char) destination on the Base side; 'amount' is in nicks. The bridge requires a minimum deposit of 100,000 nocks (6,553,600,000 nicks) and charges a 0.3% fee on the deposited amount. The output is locked to the canonical bridge lock root by default, so only pass 'root' if directed to a non-default bridge lock. It is built like any other create-tx output, so broadcast it afterward with 'send-tx'.\n\nExamples:\n  # Auto-select spendable v1 notes and compute fee\n  nockchain-wallet create-tx \\\n    --recipient '{\"kind\":\"p2pkh\",\"address\":\"<p2pkh-b58>\",\"amount\":10000}'\n\n  # Manually pin notes and optionally override fee\n  nockchain-wallet create-tx \\\n    --names \"[first1 last1],[first2 last2]\" \\\n    --recipient '{\"kind\":\"p2pkh\",\"address\":\"<p2pkh-b58>\",\"amount\":10000}' \\\n    --fee 10\n\n  # Deposit 100,000 nocks (the minimum) onto the Base bridge (evm-address receives the bridged funds)\n  nockchain-wallet create-tx \\\n    --recipient '{\"kind\":\"bridge-deposit\",\"evm-address\":\"0xabcdef0123456789abcdef0123456789abcdef01\",\"amount\":6553600000}'\n\n  # Reuse a downloaded notes CSV instead of re-syncing; spent notes are pruned from it\n  nockchain-wallet create-tx \\\n    --notes-csv notes-<p2pkh-b58>.csv \\\n    --recipient '{\"kind\":\"p2pkh\",\"address\":\"<p2pkh-b58>\",\"amount\":10000}'"
     )]
     CreateTx {
         /// Optional names of notes to spend (comma-separated) for manual selection.
@@ -439,7 +444,7 @@ pub enum Commands {
         names: Option<String>,
         /// Output(s); repeat --recipient per output. Accepts '<p2pkh>:<amount>'
         /// or a JSON object whose "kind" is "p2pkh", "multisig", or
-        /// "bridge-deposit" (use bridge-deposit to move funds onto the EVM
+        /// "bridge-deposit" (use bridge-deposit to move funds onto the Base
         /// bridge; see this command's help for formats and examples).
         #[arg(
             long = "recipient",
@@ -448,9 +453,48 @@ pub enum Commands {
             action = ArgAction::Append
         )]
         recipients: Vec<RecipientSpecToken>,
-        /// Optional transaction fee override.
-        #[arg(long)]
+        /// Ergonomic p2pkh recipient (base58). Pair each --to with one --amount
+        /// (in nocks); builds a p2pkh output identical to the nicks-based
+        /// --recipient JSON form. Repeat for multiple outputs.
+        #[arg(long = "to", value_name = "P2PKH_B58", action = ArgAction::Append)]
+        to: Vec<String>,
+        /// Amount in whole nocks (1 nock = 65536 nicks) for the paired --to
+        /// recipient. Repeat --to/--amount for multiple outputs.
+        #[arg(long = "amount", value_name = "NOCKS", action = ArgAction::Append)]
+        amounts: Vec<u64>,
+        /// Amount in nicks (raw protocol unit) for the paired --to recipient.
+        /// Mutually exclusive with --amount; use a single amount unit per command.
+        #[arg(
+            long = "amount-nicks",
+            value_name = "NICKS",
+            action = ArgAction::Append,
+            conflicts_with = "amounts"
+        )]
+        amounts_nicks: Vec<u64>,
+        /// Ergonomic Base bridge deposit amount in whole nocks (1 nock = 65536
+        /// nicks). Pair with --to-evm-address to move funds onto the Base bridge.
+        /// Only one bridge deposit is allowed per transaction.
+        #[arg(
+            long = "bridge-deposit",
+            value_name = "NOCKS",
+            requires = "to_evm_address"
+        )]
+        bridge_deposit: Option<u64>,
+        /// Base (EVM) destination address for the paired --bridge-deposit
+        /// (0x-prefixed 20-byte hex, 40 hex chars; the 0x prefix is optional).
+        #[arg(
+            long = "to-evm-address",
+            value_name = "EVM_ADDR",
+            requires = "bridge_deposit"
+        )]
+        to_evm_address: Option<String>,
+        /// Optional transaction fee override, in whole nocks (1 nock = 65536 nicks).
+        #[arg(long, value_name = "NOCKS")]
         fee: Option<u64>,
+        /// Optional transaction fee override, in nicks.
+        /// Mutually exclusive with --fee, which is denominated in nocks.
+        #[arg(long = "fee-nicks", value_name = "NICKS", conflicts_with = "fee")]
+        fee_nicks: Option<u64>,
         /// Allow fees below the estimated minimum (unsafe, testing only)
         #[arg(long, default_value = "false")]
         allow_low_fee: bool,
@@ -492,7 +536,7 @@ pub enum Commands {
 
     #[command(
         name = "create-multisig-tx",
-        override_usage = "nockchain-wallet create-multisig-tx --threshold <M> --participants <PKH,...> [--names <NAMES>] --recipient <RECIPIENT>... [--fee <FEE>] [--refund-pkh <REFUND_PKH>] [--include-data <BOOL>]\n\n# Spends v1 m-of-n multisig notes. --threshold and --participants describe the SAME multisig lock used with `watch multisig`; they are used to reconstruct the input lock so the planner can select and spend the multisig notes.\n# NOTE: if --names is omitted, the planner auto-selects spendable notes that belong to this multisig lock. If provided, names are treated as a manual selection set (and must all belong to the multisig).\n# NOTE: change returns to the multisig lock by default; pass --refund-pkh to send change to a single-signer address instead.\n# NOTE: this command produces an unsigned-or-partially-signed transaction file under ./txs; collect the remaining signatures with `sign-multisig-tx` before `send-tx`.\n# NOTE: --notes-csv reads candidate notes from a notes CSV (as written by 'list-notes-by-multisig-csv') instead of downloading the balance, and removes the spent notes from that CSV after the tx is created. Requires a prior sync so the wallet still holds the note data.\n# RECIPIENT accepts the same forms as create-tx: a legacy '<p2pkh>:<amount>' string or a JSON object with \"kind\" of \"p2pkh\", \"multisig\", or \"bridge-deposit\" (e.g. '{\"kind\":\"bridge-deposit\",\"evm-address\":\"0x<40-hex-chars>\",\"amount\":<nicks>}' to deposit onto the EVM bridge)."
+        override_usage = "nockchain-wallet create-multisig-tx --threshold <M> --participants <PKH,...> [--names <NAMES>] (--recipient <RECIPIENT>... | --to <P2PKH_B58> (--amount <NOCKS> | --amount-nicks <NICKS>))... [--fee <NOCKS> | --fee-nicks <NICKS>] [--refund-pkh <REFUND_PKH>] [--include-data <BOOL>]\n\n# ERGONOMIC: instead of --recipient JSON you can pass --to <p2pkh-b58> --amount <NOCKS> (paired, repeatable, whole nocks only) to send NOCKS to a p2pkh recipient; use --amount-nicks <NICKS> for the paired amount in raw nicks instead (mutually exclusive with --amount). Deposit onto the Base bridge with --bridge-deposit <NOCKS> --to-evm-address <0x...> (one per transaction; minimum 100,000 nocks; the bridge charges a 0.3% fee). Fees: --fee is in whole nocks, --fee-nicks is in nicks (mutually exclusive).\n# Spends v1 m-of-n multisig notes. --threshold and --participants describe the SAME multisig lock used with `watch multisig`; they are used to reconstruct the input lock so the planner can select and spend the multisig notes.\n# NOTE: if --names is omitted, the planner auto-selects spendable notes that belong to this multisig lock. If provided, names are treated as a manual selection set (and must all belong to the multisig).\n# NOTE: change returns to the multisig lock by default; pass --refund-pkh to send change to a single-signer address instead.\n# NOTE: this command produces an unsigned-or-partially-signed transaction file under ./txs; collect the remaining signatures with `sign-multisig-tx` before `send-tx`.\n# NOTE: --notes-csv reads candidate notes from a notes CSV (as written by 'list-notes-by-multisig-csv') instead of downloading the balance, and removes the spent notes from that CSV after the tx is created. Requires a prior sync so the wallet still holds the note data.\n# RECIPIENT accepts the same forms as create-tx: a legacy '<p2pkh>:<amount>' string or a JSON object with \"kind\" of \"p2pkh\", \"multisig\", or \"bridge-deposit\" (e.g. '{\"kind\":\"bridge-deposit\",\"evm-address\":\"0x<40-hex-chars>\",\"amount\":<nicks>}' to deposit onto the Base bridge; minimum 100,000 nocks and a 0.3% bridge fee apply)."
     )]
     CreateMultisigTx {
         /// Threshold (m) value for the m-of-n multisig being spent.
@@ -506,7 +550,7 @@ pub enum Commands {
         names: Option<String>,
         /// Output(s); repeat --recipient per output. Accepts '<p2pkh>:<amount>'
         /// or a JSON object whose "kind" is "p2pkh", "multisig", or
-        /// "bridge-deposit" (use bridge-deposit to move funds onto the EVM
+        /// "bridge-deposit" (use bridge-deposit to move funds onto the Base
         /// bridge; see this command's help for formats and examples).
         #[arg(
             long = "recipient",
@@ -515,9 +559,48 @@ pub enum Commands {
             action = ArgAction::Append
         )]
         recipients: Vec<RecipientSpecToken>,
-        /// Optional transaction fee override.
-        #[arg(long)]
+        /// Ergonomic p2pkh recipient (base58). Pair each --to with one --amount
+        /// (in nocks); builds a p2pkh output identical to the nicks-based
+        /// --recipient JSON form. Repeat for multiple outputs.
+        #[arg(long = "to", value_name = "P2PKH_B58", action = ArgAction::Append)]
+        to: Vec<String>,
+        /// Amount in whole nocks (1 nock = 65536 nicks) for the paired --to
+        /// recipient. Repeat --to/--amount for multiple outputs.
+        #[arg(long = "amount", value_name = "NOCKS", action = ArgAction::Append)]
+        amounts: Vec<u64>,
+        /// Amount in nicks (raw protocol unit) for the paired --to recipient.
+        /// Mutually exclusive with --amount; use a single amount unit per command.
+        #[arg(
+            long = "amount-nicks",
+            value_name = "NICKS",
+            action = ArgAction::Append,
+            conflicts_with = "amounts"
+        )]
+        amounts_nicks: Vec<u64>,
+        /// Ergonomic Base bridge deposit amount in whole nocks (1 nock = 65536
+        /// nicks). Pair with --to-evm-address to move funds onto the Base bridge.
+        /// Only one bridge deposit is allowed per transaction.
+        #[arg(
+            long = "bridge-deposit",
+            value_name = "NOCKS",
+            requires = "to_evm_address"
+        )]
+        bridge_deposit: Option<u64>,
+        /// Base (EVM) destination address for the paired --bridge-deposit
+        /// (0x-prefixed 20-byte hex, 40 hex chars; the 0x prefix is optional).
+        #[arg(
+            long = "to-evm-address",
+            value_name = "EVM_ADDR",
+            requires = "bridge_deposit"
+        )]
+        to_evm_address: Option<String>,
+        /// Optional transaction fee override, in whole nocks (1 nock = 65536 nicks).
+        #[arg(long, value_name = "NOCKS")]
         fee: Option<u64>,
+        /// Optional transaction fee override, in nicks.
+        /// Mutually exclusive with --fee, which is denominated in nocks.
+        #[arg(long = "fee-nicks", value_name = "NICKS", conflicts_with = "fee")]
+        fee_nicks: Option<u64>,
         /// Allow fees below the estimated minimum (unsafe, testing only)
         #[arg(long, default_value = "false")]
         allow_low_fee: bool,
@@ -816,6 +899,167 @@ mod tests {
             note_selection_strategy,
             NoteSelectionStrategyCli::Descending
         ));
+    }
+
+    #[test]
+    fn create_tx_accepts_paired_to_amount_flags() {
+        let cli = WalletCli::try_parse_from([
+            "nockchain-wallet", "create-tx", "--to", SAMPLE_P2PKH, "--amount", "100", "--to",
+            SAMPLE_P2PKH, "--amount", "5",
+        ])
+        .expect("create-tx with --to/--amount should parse");
+
+        let Commands::CreateTx {
+            to,
+            amounts,
+            amounts_nicks,
+            recipients,
+            ..
+        } = cli.command
+        else {
+            panic!("expected create-tx command");
+        };
+        assert_eq!(to, vec![SAMPLE_P2PKH.to_string(), SAMPLE_P2PKH.to_string()]);
+        assert_eq!(amounts, vec![100u64, 5u64]);
+        assert!(amounts_nicks.is_empty());
+        assert!(recipients.is_empty());
+    }
+
+    #[test]
+    fn create_tx_rejects_decimal_amount() {
+        let result = WalletCli::try_parse_from([
+            "nockchain-wallet", "create-tx", "--to", SAMPLE_P2PKH, "--amount", "5.5",
+        ]);
+        assert!(result.is_err(), "decimal --amount must be rejected");
+    }
+
+    #[test]
+    fn create_tx_accepts_amount_nicks() {
+        let cli = WalletCli::try_parse_from([
+            "nockchain-wallet", "create-tx", "--to", SAMPLE_P2PKH, "--amount-nicks", "6553600",
+        ])
+        .expect("create-tx with --amount-nicks should parse");
+        let Commands::CreateTx {
+            amounts,
+            amounts_nicks,
+            ..
+        } = cli.command
+        else {
+            panic!("expected create-tx command");
+        };
+        assert!(amounts.is_empty());
+        assert_eq!(amounts_nicks, vec![6_553_600u64]);
+    }
+
+    #[test]
+    fn create_tx_amount_and_amount_nicks_are_mutually_exclusive() {
+        let result = WalletCli::try_parse_from([
+            "nockchain-wallet", "create-tx", "--to", SAMPLE_P2PKH, "--amount", "1",
+            "--amount-nicks", "65536",
+        ]);
+        assert!(
+            result.is_err(),
+            "--amount and --amount-nicks must not be accepted together"
+        );
+    }
+
+    #[test]
+    fn create_multisig_tx_accepts_to_amount_flags() {
+        let cli = WalletCli::try_parse_from([
+            "nockchain-wallet",
+            "create-multisig-tx",
+            "--threshold",
+            "2",
+            "--participants",
+            &format!("{SAMPLE_P2PKH},{SAMPLE_P2PKH}"),
+            "--to",
+            SAMPLE_P2PKH,
+            "--amount",
+            "100",
+        ])
+        .expect("create-multisig-tx with --to/--amount should parse");
+
+        let Commands::CreateMultisigTx { to, amounts, .. } = cli.command else {
+            panic!("expected create-multisig-tx command");
+        };
+        assert_eq!(to, vec![SAMPLE_P2PKH.to_string()]);
+        assert_eq!(amounts, vec![100u64]);
+    }
+
+    #[test]
+    fn create_tx_fee_and_fee_nicks_are_mutually_exclusive() {
+        let result = WalletCli::try_parse_from([
+            "nockchain-wallet", "create-tx", "--to", SAMPLE_P2PKH, "--amount", "1", "--fee", "10",
+            "--fee-nicks", "1",
+        ]);
+        assert!(
+            result.is_err(),
+            "--fee and --fee-nicks must not be accepted together"
+        );
+    }
+
+    #[test]
+    fn create_tx_fee_is_nocks_and_fee_nicks_is_nicks() {
+        let cli = WalletCli::try_parse_from([
+            "nockchain-wallet", "create-tx", "--to", SAMPLE_P2PKH, "--amount", "1", "--fee", "2",
+        ])
+        .expect("create-tx with --fee (nocks) should parse");
+        let Commands::CreateTx { fee, fee_nicks, .. } = cli.command else {
+            panic!("expected create-tx command");
+        };
+        assert_eq!(fee, Some(2u64));
+        assert_eq!(fee_nicks, None);
+
+        let cli = WalletCli::try_parse_from([
+            "nockchain-wallet", "create-tx", "--to", SAMPLE_P2PKH, "--amount", "1", "--fee-nicks",
+            "3",
+        ])
+        .expect("create-tx with --fee-nicks should parse");
+        let Commands::CreateTx { fee, fee_nicks, .. } = cli.command else {
+            panic!("expected create-tx command");
+        };
+        assert_eq!(fee, None);
+        assert_eq!(fee_nicks, Some(3u64));
+    }
+
+    #[test]
+    fn create_tx_accepts_bridge_deposit_pair() {
+        let evm = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let cli = WalletCli::try_parse_from([
+            "nockchain-wallet", "create-tx", "--bridge-deposit", "100000", "--to-evm-address", evm,
+        ])
+        .expect("create-tx with bridge-deposit pair should parse");
+        let Commands::CreateTx {
+            bridge_deposit,
+            to_evm_address,
+            ..
+        } = cli.command
+        else {
+            panic!("expected create-tx command");
+        };
+        assert_eq!(bridge_deposit, Some(100_000u64));
+        assert_eq!(to_evm_address, Some(evm.to_string()));
+    }
+
+    #[test]
+    fn create_tx_bridge_deposit_flags_require_each_other() {
+        // --bridge-deposit without --to-evm-address (and vice versa) is rejected
+        // by clap's `requires` relationship.
+        assert!(
+            WalletCli::try_parse_from([
+                "nockchain-wallet", "create-tx", "--bridge-deposit", "100000",
+            ])
+            .is_err(),
+            "--bridge-deposit alone must be rejected"
+        );
+        assert!(
+            WalletCli::try_parse_from([
+                "nockchain-wallet", "create-tx", "--to-evm-address",
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ])
+            .is_err(),
+            "--to-evm-address alone must be rejected"
+        );
     }
 
     #[test]
