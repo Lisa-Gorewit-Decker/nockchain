@@ -433,6 +433,23 @@ pub enum Commands {
         tx_id: String,
     },
 
+    /// Show a transaction's lifecycle status: confirmed (with block height +
+    /// confirmations), pending in the mempool, or unknown to the node.
+    TxStatus {
+        /// Base58-encoded transaction ID
+        #[arg(value_name = "TX_ID")]
+        tx_id: String,
+
+        /// Poll until the tx is confirmed (or the timeout elapses) instead of
+        /// reporting once and exiting.
+        #[arg(long)]
+        wait: bool,
+
+        /// With --wait, give up after this many seconds (default 600).
+        #[arg(long, value_name = "SECS", default_value_t = 600)]
+        timeout_secs: u64,
+    },
+
     /// Create a transaction (use --refund-pkh when spending legacy v0 notes)
     #[command(
         name = "create-tx",
@@ -834,6 +851,7 @@ impl Commands {
             Commands::SignHash { .. } => "sign-hash",
             Commands::VerifyHash { .. } => "verify-hash",
             Commands::TxAccepted { .. } => "tx-accepted",
+            Commands::TxStatus { .. } => "tx-status",
             Commands::Watch { subcommand } => match subcommand {
                 WatchSubcommand::Address { .. } => "watch-address",
                 WatchSubcommand::Pubkey { .. } => "watch-address",

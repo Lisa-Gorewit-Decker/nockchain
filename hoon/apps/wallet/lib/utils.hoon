@@ -1025,7 +1025,17 @@
             %+  turn
               ~(tap z-in:zo ~(key z-by:zo p.inputs.metadata))
             |=  =nname:transact
-            =+  note=(get-note nname)
+            ::  Tolerate inputs missing from the synced balance (already spent,
+            ::  or not owned by this wallet) instead of bailing the whole
+            ::  display -- show a placeholder line so `show-tx`/`send-tx` still
+            ::  render a confirmed or partially-spent tx.
+            =/  m-note=(unit nnote:transact)  (mole |.((get-note nname)))
+            ?~  m-note
+              %+  rap  3
+              :~  '\0a- '  (name:v1:display nname)
+                  ': input note not in synced balance (already spent or not owned)'
+              ==
+            =/  note=nnote:transact  u.m-note
             ?@  -.note
               ~|  %expected-v0-note-but-got-v1-note  !!
             (cat 3 '\0a' (note:v0 note))
@@ -1033,7 +1043,13 @@
           %+  turn
             ~(tap z-by:zo p.inputs.metadata)
           |=  [name=nname:transact sc=spend-condition:transact]
-          =/  out-note=nnote:transact  (get-note name)
+          =/  m-note=(unit nnote:transact)  (mole |.((get-note name)))
+          ?~  m-note
+            %+  rap  3
+            :~  '\0a- '  (name:v1:display name)
+                ': input note not in synced balance (already spent or not owned)'
+            ==
+          =/  out-note=nnote:transact  u.m-note
           ?^  -.out-note
             ~|  %expected-v1-note-but-got-v0-note  !!
           (cat 3 '\0a' (note-from-input out-note sc))
@@ -1110,7 +1126,8 @@
           Wallet balance from block {(trip block-b58)} at height {<height.balance.state>}
           - Wallet Version: {<-.state>}
           - Number of Notes: {(trip (format-ui:common:display total-notes))}
-          - Balance: {(trip (format-ui:common:display total-nicks))} nicks
+          - Balance: {(trip (format-nocks:common:display total-nicks))}
+          - Balance (raw): {(trip (format-ui:common:display total-nicks))} nicks
           """
         (make-markdown-effect nodes)
       ::
