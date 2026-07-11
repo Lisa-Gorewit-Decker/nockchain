@@ -89,7 +89,7 @@ pub struct BlockchainConstants {
 }
 
 impl BlockchainConstants {
-    pub const DEFAULT_MAX_BLOCK_SIZE: u64 = 8_000_000;
+    pub const DEFAULT_MAX_BLOCK_SIZE: u64 = 16_000_000;
     pub const DEFAULT_BLOCKS_PER_EPOCH: u64 = 2_016;
     pub const DEFAULT_TARGET_EPOCH_DURATION: u64 = 1_209_600;
     pub const DEFAULT_UPDATE_CANDIDATE_TIMESTAMP_INTERVAL_SECS: u64 = 300;
@@ -552,7 +552,7 @@ mod tests {
         let constants = BlockchainConstants::new();
 
         assert_eq!(
-            constants.max_block_size, 8_000_000,
+            constants.max_block_size, 16_000_000,
             "max-block-size mismatch"
         );
         assert_eq!(
