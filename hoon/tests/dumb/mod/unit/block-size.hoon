@@ -61,7 +61,7 @@
   ^-  tang
   =/  candidate=page:v1:t  *page:v1:t
   =/  mined=page:v1:t  candidate(pow (some *proof:t))
-  (expect-eq
+  %+  expect-eq
     !>((compute-size-without-txs:page:t candidate))
-    !>((compute-size-without-txs:page:t mined)))
+    !>((compute-size-without-txs:page:t mined))
 --
