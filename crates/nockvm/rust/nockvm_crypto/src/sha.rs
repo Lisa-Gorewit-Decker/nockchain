@@ -100,7 +100,9 @@ mod urcrypt_tests {
     fn test_shas() {
         let mut message: [u8; 32] = [42; 32];
 
-        let mut uc_salt: [u8; 32] = [43; 32];
+        let mut generated_salt: [u8; 32] = [0; 32];
+        getrandom::getrandom(&mut generated_salt).expect("failed to generate random salt");
+        let mut uc_salt: [u8; 32] = generated_salt;
         let mut uc_out: [u8; 32] = [0; 32];
         unsafe {
             urcrypt_shas(
@@ -112,7 +114,7 @@ mod urcrypt_tests {
             )
         };
 
-        let mut ac_salt: [u8; 32] = [43; 32];
+        let mut ac_salt: [u8; 32] = generated_salt;
         let mut ac_out: [u8; 32] = [0; 32];
         ac_shas(&mut message, &mut ac_salt, &mut ac_out);
 
