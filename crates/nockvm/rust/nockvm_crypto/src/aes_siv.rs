@@ -252,6 +252,7 @@ mod urcrypt_tests {
         let mut ac_key = uc_key;
         let mut ac_message = uc_message;
         let mut ac_iv = [0u8; 16];
+        csprng.fill_bytes(&mut ac_iv);
         let mut ac_bytes = uc_bytes;
         let ac_data: &mut [&mut [u8]] = &mut [&mut ac_bytes];
         let mut ac_out = [0u8; 56];
