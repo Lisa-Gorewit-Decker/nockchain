@@ -263,8 +263,9 @@ mod util {
                 Err(_) => return Err(BAIL_FAIL),
             };
 
-let iv_handle = iv.in_space(space);
-            let iv_bytes = &iv_handle.as_ne_bytes()[0..16];
+            let iv_handle = iv.in_space(space);
+            let mut iv_bytes = [0u8; 16];
+            iv_bytes.copy_from_slice(&iv_handle.as_ne_bytes()[0..16]);
 
             let ac_siv_data = _allocate_ads(stack, ads, space)?;
             let siv_data: &mut [&mut [u8]] = std::slice::from_raw_parts_mut(
@@ -276,7 +277,7 @@ let iv_handle = iv.in_space(space);
 
             match txt_len {
                 0 => {
-                    ac_aes_siv_de::<N>(key, &mut [], siv_data, iv_bytes, &mut [0u8; 0])
+                    ac_aes_siv_de::<N>(key, &mut [], siv_data, &mut iv_bytes, &mut [0u8; 0])
                         .unwrap_or_else(|err| {
                             panic!(
                                 "Panicked with {err:?} at {}:{} (git sha: {:?})",
@@ -289,7 +290,7 @@ let iv_handle = iv.in_space(space);
                 _ => {
                     let (_txt_ida, txt_bytes) = IndirectAtom::new_raw_mut_bytes(stack, txt_len);
                     txt_bytes.copy_from_slice(&txt.in_space(space).as_ne_bytes()[0..txt_len]);
-                    ac_aes_siv_de::<N>(key, txt_bytes, siv_data, iv_bytes, out_bytes)
+                    ac_aes_siv_de::<N>(key, txt_bytes, siv_data, &mut iv_bytes, out_bytes)
                         .unwrap_or_else(|err| {
                             panic!(
                                 "Panicked with {err:?} at {}:{} (git sha: {:?})",
