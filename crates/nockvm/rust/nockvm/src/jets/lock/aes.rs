@@ -263,8 +263,7 @@ mod util {
                 Err(_) => return Err(BAIL_FAIL),
             };
 
-            let iv_bytes = &mut [0u8; 16];
-            iv_bytes.copy_from_slice(&iv.in_space(space).as_ne_bytes()[0..16]);
+            let iv_bytes = &iv.in_space(space).as_ne_bytes()[0..16];
 
             let ac_siv_data = _allocate_ads(stack, ads, space)?;
             let siv_data: &mut [&mut [u8]] = std::slice::from_raw_parts_mut(
