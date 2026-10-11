@@ -2559,7 +2559,10 @@ pub(crate) fn start_swarm(
             debug!("resolver configs and opts: {:?}", sys);
             sys
         } else {
-            (ResolverConfig::cloudflare(), ResolverOpts::default())
+            (
+                ResolverConfig::udp_and_tcp(&hickory_resolver::config::CLOUDFLARE),
+                ResolverOpts::default(),
+            )
         };
 
     let max_idle_timeout_millisecs = libp2p_config.max_idle_timeout_millisecs();
