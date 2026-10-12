@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
-use libp2p::peer_store::Store;
 use libp2p::request_response::ResponseChannel;
 use libp2p::{PeerId, Swarm};
+use libp2p_peer_store::Store;
 use nockapp::NockAppError;
 use serde_bytes::ByteBuf;
 use tokio::sync::{mpsc, Mutex};

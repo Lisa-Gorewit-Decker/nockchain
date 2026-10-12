@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use futures::AsyncWriteExt;
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
@@ -169,7 +168,6 @@ impl ProtocolRecordingCodec {
     }
 }
 
-#[async_trait]
 impl request_response::Codec for ProtocolRecordingCodec {
     type Protocol = libp2p::StreamProtocol;
     type Request = NockchainRequest;
@@ -1029,7 +1027,10 @@ fn build_req_res_test_swarm_internal(
         if let Ok(sys) = hickory_resolver::system_conf::read_system_conf() {
             sys
         } else {
-            (ResolverConfig::cloudflare(), ResolverOpts::default())
+            (
+                ResolverConfig::udp_and_tcp(&hickory_resolver::config::CLOUDFLARE),
+                ResolverOpts::default(),
+            )
         };
 
     let max_idle_timeout_millisecs = libp2p_config.max_idle_timeout_millisecs();
